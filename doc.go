@@ -9,6 +9,12 @@
 //
 // It imports only the Go standard library.
 //
+// Client and Server bind a connection (the hello, an Authenticator's
+// credential, version negotiation); Mux carries sessions over it as
+// net.Conns; Pool keeps several connections to one peer. Credit is the
+// per-session flow control, also for a caller that carries its sessions
+// on a transport of its own.
+//
 // # Wire format, version 1
 //
 //	hello  dialer -> listener: "NFDP" version(1) token(32 bytes) window(4)
@@ -20,11 +26,50 @@
 //
 // Integers are big endian. A session id (sid) is at most 255 bytes, chosen
 // by the side that opens the session. A window is how many bytes of one
-// session the side that announces it buffers (see Conn.Acquire). In
+// session the side that announces it buffers (see Credit.Acquire). In
 // version 1 the frames that open and close a session are message frames in
 // the caller's encoding (Codec); session ids that begin with '_' name
 // control frames, which Mux leaves to the caller.
 //
 // testdata/v1_session.golden holds a recorded version-1 session; the tests
 // hold every release to those bytes.
+//
+// # Wire format, version 2
+//
+// Same magic, the version byte 2; a listener serves both versions.
+//
+//	hello  "NFDP" version(1)=2 max_version(1) features(4) window(4)
+//	       max_sessions(4) interval_ms(4) timeout_ms(4)
+//	       auth_method(1) auth_len(2) auth(auth_len, at most 4096)
+//	reply  status(1):
+//	         0 bound:   version(1)=2 features(4) window(4) max_sessions(4)
+//	         1 refused (the credential)
+//	         2 version: max_version(1), the highest the listener speaks
+//	frame  as version 1, plus:
+//	  type 3, open:    sid_len(1) sid header (the opener's bytes, at most 64 KiB)
+//	  type 4, close:   sid_len(1) sid code(1): 0 the sender neither sends
+//	                   nor takes more; 1 it sends no more (half-close)
+//	  type 5, ping:    8 opaque bytes
+//	  type 6, pong:    the ping's 8 bytes
+//	  type 7, goaway:  drain_ms(4, 0 = none) reason (UTF-8, at most 1024)
+//
+// The dialer says which version it speaks (out of band, the listener
+// advertised which it speaks); a listener answers a version it does not
+// speak with status 2 and the dialer redials. A version-1 listener reads
+// 37 bytes of any hello before it refuses one of version 2.
+//
+// max_sessions is how many sessions the peer may have open toward the
+// side that announces it at once; an open past it ends the connection.
+// Feature bits are reserved: a side sends 0 and ignores the bits it does
+// not know. Liveness is the dialer's (interval 1s to 15s, timeout at
+// least one interval); a listener takes it unless it has its own: each
+// side pings once it received nothing for the interval and ends the
+// connection when nothing arrived for the timeout after that; every ping
+// is answered. An open starts the session's credit on both sides with the
+// peer's window; a close of code 0 ends it. A Mux picks session ids as
+// uvarints, odd on the dialer and even on the listener. After a goaway the
+// receiver opens no more sessions on the connection; opens that cross it
+// are refused with a close.
+//
+// testdata/v2_session.golden holds a recorded version-2 session.
 package link

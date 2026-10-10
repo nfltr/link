@@ -56,7 +56,7 @@ func FuzzRecv(f *testing.F) {
 		accepted := 0
 		for {
 			m, err := c.Recv()
-			if credit := c.cr.send["7"].n; credit > testWindow {
+			if credit := c.Credit.sessions["7"].n; credit > testWindow {
 				t.Fatalf("send credit %d past the peer's window %d", credit, testWindow)
 			}
 			if err != nil {
@@ -66,7 +66,7 @@ func FuzzRecv(f *testing.F) {
 				t.Fatalf("frame of %d bytes, maxFrame %d", n, maxFrame)
 			}
 			if (m.Data == nil) == (m.Msg == nil) {
-				t.Fatalf("frame %q is neither data nor a message", m)
+				t.Fatalf("frame %+v is neither data nor a message", m)
 			}
 			if m.SID == "7" {
 				if accepted += len(m.Data); accepted > testWindow {
@@ -104,7 +104,7 @@ func FuzzSendRecvRoundTrip(f *testing.F) {
 			t.Fatalf("Recv of a sent frame: %v", err)
 		}
 		if got.SID != want.SID || !bytes.Equal(got.Data, want.Data) || !bytes.Equal(got.Msg, want.Msg) {
-			t.Fatalf("got %q, want %q", got, want)
+			t.Fatalf("got %+v, want %+v", got, want)
 		}
 		if cr.n != wire.Len() {
 			t.Fatalf("Recv consumed %d of %d bytes", cr.n, wire.Len())

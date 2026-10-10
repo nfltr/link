@@ -75,6 +75,16 @@ func ReadHello(r io.Reader) (string, int, error) {
 	return string(b[1 : 1+TokenLen]), w, err
 }
 
+// readHelloV1 reads a version-1 hello after its Magic and version byte.
+func readHelloV1(r io.Reader) (string, int, error) {
+	var b [TokenLen + 4]byte
+	if _, err := io.ReadFull(r, b[:]); err != nil {
+		return "", 0, err
+	}
+	w, err := CheckWindow(binary.BigEndian.Uint32(b[TokenLen:]))
+	return string(b[:TokenLen]), w, err
+}
+
 // CheckWindow returns w as a window, or an error when it is out of range.
 func CheckWindow(w uint32) (int, error) {
 	if w < MinWindow || w > MaxWindow {

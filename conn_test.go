@@ -75,7 +75,7 @@ func TestFramesRoundTrip(t *testing.T) {
 			t.Fatalf("frame %d: %v", i, err)
 		}
 		if !reflect.DeepEqual(got, w) {
-			t.Fatalf("frame %d: got %q, want %q", i, got, w)
+			t.Fatalf("frame %d: got %+v, want %+v", i, got, w)
 		}
 	}
 }

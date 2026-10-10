@@ -15,6 +15,10 @@ TARGETS=(
 	". FuzzHelloReply"
 	". FuzzMuxServe"
 	". FuzzParseLiveness"
+	". FuzzServerHello"
+	". FuzzClientReply"
+	". FuzzRecvV2"
+	". FuzzMuxServeV2"
 )
 failed=0
 for t in "${TARGETS[@]}"; do

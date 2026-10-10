@@ -8,24 +8,30 @@ every frame queued at the time.
 
 - Standard library only (`TestModuleBoundary`).
 - Apache-2.0 (`LICENSE`, `NOTICE`; every source file carries an SPDX header).
-- Wire format version 1 is specified in `doc.go`; `testdata/v1_session.golden`
-  holds a recorded session every release is tested against, byte for byte.
+- Wire formats version 1 and 2 are specified in `doc.go`;
+  `testdata/v1_session.golden` and `testdata/v2_session.golden` hold recorded
+  sessions every release is tested against, byte for byte.
 
 ## Packages
 
 | package | what |
 |---|---|
-| `link` | `Hello`/`ReadHello`/`Reply` (the version-1 handshake), `Conn` (frames, per-session credit, write coalescing), `Mux` and `Session` (sessions as `net.Conn`s; the caller's `Codec` encodes opens and closes), `Liveness` and its presets |
-| `link/bytequeue` | a FIFO of byte slices bounded by total bytes |
+| `link` | `Client`/`Server` (the hello of either version, an `Authenticator`'s credential, version negotiation, `Config`, `Observer`), `Conn` (frames, write coalescing; version 2: OPEN/CLOSE, ping liveness, GOAWAY), `Credit` (per-session flow control, also over a caller's own transport), `Mux` and `Session` (sessions as `net.Conn`s), `Pool` (several connections per peer, growth, backoff, make-before-break drain), `Liveness` and its presets; `Hello`/`ReadHello`/`Reply` (the version-1 handshake by hand) |
+| `link/bytequeue` | a FIFO of byte slices bounded by total bytes; `PushWithin` for a pusher that serves other queues too |
 
 ## Use
 
 ```go
-window, err := link.Hello(nc, token, 16<<20)  // dialer
-c := link.NewConn(nc, 16<<20, window)
-m := link.NewMux(c, codec)
+c, err := link.Client(ctx, nc, link.Config{Window: 4 << 20, Liveness: link.LivenessFast, Auth: auth}) // dialer
+m := link.NewMux(c, nil)
 go m.Serve(nil)
-s, err := m.Open(func(sid string) ([]byte, error) { return codec.Open(sid, header) })
+s, err := m.Open(func(string) ([]byte, error) { return header, nil })
+
+c, id, err := link.Server(ctx, nc, link.Config{Auth: auth}) // listener
+go link.NewMux(c, nil).Serve(func(header []byte, s *link.Session) { /* ... */ })
+
+p := link.NewPool(link.PoolConfig{Link: cfg, Dial: dial, Max: 8, Backoff: backoff})
+s, err := p.Open(ctx, header)
 ```
 
 ## Checks
@@ -35,8 +41,9 @@ s, err := m.Open(func(sid string) ([]byte, error) { return codec.Open(sid, heade
 
 ## Status
 
-Phase 1 of the link package (version-1 wire, extracted unchanged from the
-nfltr's TCP data plane). Planned: wire version 2 (OPEN, CLOSE, PING,
-GOAWAY frames, link-chosen session ids), credit on every path, `Pool`
-(several connections per peer, make-before-break drain), `Authenticator`,
-`Observer`.
+v0.1.0: the version-1 wire, extracted unchanged from nfltr's TCP data
+plane. v0.2.0: wire version 2 (negotiated in the hello; version 1 served
+byte for byte), `Client`/`Server` with an `Authenticator`, ping liveness
+driven by the `Liveness` presets, GOAWAY, `Pool`, `Observer`, `Credit` for
+callers with a transport of their own. Planned: session deadlines, the
+replica link.

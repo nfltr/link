@@ -122,7 +122,7 @@ func TestV1GoldenReplay(t *testing.T) {
 		got = append(got, f)
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("decoded %q\nwant %q", got, want)
+		t.Fatalf("decoded %+v\nwant %+v", got, want)
 	}
 }
 

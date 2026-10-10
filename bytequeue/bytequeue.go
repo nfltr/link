@@ -8,8 +8,10 @@
 package bytequeue
 
 import (
+	"errors"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // Queue is safe for one or more pushers and poppers.
@@ -21,6 +23,7 @@ type Queue struct {
 	limit  int
 	closed bool
 	onPop  func(n int)
+	pops   uint64 // pops so far: PushWithin's progress
 }
 
 // SetLimit changes the limit; set it before the first push.
@@ -62,6 +65,62 @@ func (q *Queue) Push(b []byte) bool {
 	return true
 }
 
+// ErrStalled is PushWithin's report of a queue that took nothing for the
+// stall bound.
+var ErrStalled = errors.New("bytequeue: reader took nothing for the stall bound")
+
+// ErrClosed is PushWithin's report of a closed queue.
+var ErrClosed = errors.New("bytequeue: closed")
+
+// PushWithin is Push for a pusher that serves other queues too (a shared
+// receive loop): it waits while the queue is full only as long as its
+// reader keeps taking, and gives up (ErrStalled, b dropped) once the
+// reader took nothing for stall; each pop starts the wait again. It
+// reports ErrClosed, b dropped, once the queue is closed.
+func (q *Queue) PushWithin(b []byte, stall time.Duration) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.size >= q.limit && !q.closed {
+		// expired is set by the timer of the current wait only (gen): a
+		// stale timer that fires as a pop restarts the wait sets nothing.
+		var expired bool
+		var gen int
+		var t *time.Timer
+		arm := func() {
+			gen++
+			g := gen
+			t = time.AfterFunc(stall, func() {
+				q.mu.Lock()
+				if gen == g {
+					expired = true
+				}
+				q.mu.Unlock()
+				q.cond.Broadcast()
+			})
+		}
+		arm()
+		defer func() { t.Stop() }()
+		pops := q.pops
+		for q.size >= q.limit && !q.closed {
+			if q.pops != pops { // the reader took some: wait again
+				pops, expired = q.pops, false
+				t.Stop()
+				arm()
+			} else if expired {
+				return ErrStalled
+			}
+			q.cond.Wait()
+		}
+	}
+	if q.closed {
+		return ErrClosed
+	}
+	q.bufs = append(q.bufs, b)
+	q.size += len(b)
+	q.cond.Broadcast()
+	return nil
+}
+
 // Pop removes and returns the oldest slice, waiting for one. After Close it
 // still returns every slice pushed before, then false.
 func (q *Queue) Pop() ([]byte, bool) { return q.PopUnless(nil) }
@@ -88,6 +147,7 @@ func (q *Queue) PopUnless(stop *atomic.Bool) ([]byte, bool) {
 	q.bufs[0] = nil
 	q.bufs = q.bufs[1:]
 	q.size -= len(b)
+	q.pops++
 	q.cond.Broadcast()
 	q.mu.Unlock()
 	q.popped(len(b))
@@ -118,6 +178,7 @@ func (q *Queue) PopBatch(dst [][]byte, max int) ([][]byte, bool) {
 	}
 	q.bufs = q.bufs[k:]
 	q.size -= n
+	q.pops++
 	q.cond.Broadcast()
 	q.mu.Unlock()
 	q.popped(n)
