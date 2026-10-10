@@ -135,7 +135,7 @@ func NewConn(nc net.Conn, window, peerWindow int) *Conn {
 }
 
 // newConnV2 returns a version-2 Conn over nc, bound by Client (dialer) or
-// Server, and starts its liveness.
+// Server; up starts its liveness.
 func newConnV2(nc net.Conn, cfg Config, peerWindow, peerMaxSessions int, dialer bool) *Conn {
 	c := NewConn(nc, cfg.Window, peerWindow)
 	c.version, c.dialer, c.peerMaxSessions, c.live = 2, dialer, peerMaxSessions, cfg.Liveness
@@ -143,15 +143,18 @@ func newConnV2(nc net.Conn, cfg Config, peerWindow, peerMaxSessions int, dialer 
 	c.t0 = time.Now()
 	c.pong = make(chan [pingLen]byte, 1)
 	c.peerGoAway = make(chan struct{})
-	go c.keepAlive()
 	return c
 }
 
 // up records the connection's peer and observer and reports it up.
+// A version-2 connection's liveness starts here, once they are set.
 func (c *Conn) up(obs Observer, id Identity) {
 	c.id, c.obs = id, obs
 	if obs != nil {
 		obs.ConnUp(id)
+	}
+	if c.version >= 2 {
+		go c.keepAlive()
 	}
 }
 

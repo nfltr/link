@@ -14,7 +14,8 @@ import (
 // session it buffers (its window). A sender may have at most the peer's
 // window of a session's data unacknowledged (Acquire); the receiver
 // acknowledges bytes once they left its buffer (Consumed), in window
-// updates of at least half a window. A receive loop therefore never waits
+// updates of at least a quarter window (often enough that a session on a
+// long path keeps its window in flight). A receive loop therefore never waits
 // on one session's full buffer, and a session whose reader is slow stalls
 // only itself.
 //
@@ -182,7 +183,7 @@ func (c *Credit) Consumed(sid string, n int) {
 	}
 	s.consumed += n
 	r := s.consumed
-	if r < c.window/2 {
+	if r < c.window/4 {
 		c.mu.Unlock()
 		return
 	}

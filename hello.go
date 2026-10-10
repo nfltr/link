@@ -28,7 +28,8 @@ const (
 )
 
 // Window bounds: a side announces a window in [MinWindow, MaxWindow].
-// Credit returns in steps of half a window, which must hold a MaxChunk.
+// Credit returns in steps of a quarter window; a window of two MaxChunks
+// always returns a waiting sender the MaxChunk it asks for.
 const (
 	MinWindow = 2 * MaxChunk
 	MaxWindow = 1 << 30

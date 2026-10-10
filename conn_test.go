@@ -169,7 +169,7 @@ func TestHello(t *testing.T) {
 
 // TestCreditBoundsUnacknowledgedData guards per-session credit: a sender
 // sends at most the peer's window of a session before the receiver
-// consumed half of it; consuming returns credit in a window frame; another
+// consumed a quarter of it; consuming returns credit in a window frame; another
 // session is not held up; forgetting or closing ends a waiting sender.
 func TestCreditBoundsUnacknowledgedData(t *testing.T) {
 	ca, cb := pair(t)
@@ -200,7 +200,7 @@ func TestCreditBoundsUnacknowledgedData(t *testing.T) {
 		t.Fatal("a full session held up another")
 	}
 
-	// The receiver consumes: a window frame goes ca's way only at half a
+	// The receiver consumes: a window frame goes ca's way only at a quarter
 	// window, so ca's receive loop (here) applies it.
 	go func() {
 		for {
@@ -209,10 +209,10 @@ func TestCreditBoundsUnacknowledgedData(t *testing.T) {
 			}
 		}
 	}()
-	cb.Consumed("slow", testWindow/2-1)
+	cb.Consumed("slow", testWindow/4-1)
 	select {
 	case <-got:
-		t.Fatal("credit returned before half a window was consumed")
+		t.Fatal("credit returned before a quarter window was consumed")
 	case <-time.After(50 * time.Millisecond):
 	}
 	cb.Consumed("slow", 1)
