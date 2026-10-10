@@ -48,7 +48,9 @@
 //	frame  as version 1, plus:
 //	  type 3, open:    sid_len(1) sid header (the opener's bytes, at most 64 KiB)
 //	  type 4, close:   sid_len(1) sid code(1): 0 the sender neither sends
-//	                   nor takes more; 1 it sends no more (half-close)
+//	                   nor takes more; 1 it sends no more (half-close);
+//	                   2 as 0, and the session failed (reset; only to a
+//	                   peer that announced FeatureReset)
 //	  type 5, ping:    8 opaque bytes
 //	  type 6, pong:    the ping's 8 bytes
 //	  type 7, goaway:  drain_ms(4, 0 = none) reason (UTF-8, at most 1024)
@@ -60,8 +62,10 @@
 //
 // max_sessions is how many sessions the peer may have open toward the
 // side that announces it at once; an open past it ends the connection.
-// Feature bits are reserved: a side sends 0 and ignores the bits it does
-// not know. Liveness is the dialer's (interval 1s to 15s, timeout at
+// Feature bits: a side announces the ones it reads and ignores the bits
+// it does not know. Bit 0, FeatureReset (since v0.3.0): the side reads
+// CLOSE code 2; v0.2 sides announce none and end the connection on code 2,
+// so a reset to them is sent as code 0. Liveness is the dialer's (interval 1s to 15s, timeout at
 // least one interval); a listener takes it unless it has its own: each
 // side pings once it received nothing for the interval and ends the
 // connection when nothing arrived for the timeout after that; every ping

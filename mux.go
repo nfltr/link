@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -136,7 +137,7 @@ func (m *Mux) add(sid string, header []byte) (*Session, error) {
 	if len(m.sess) >= MaxSessions {
 		return nil, ErrFull
 	}
-	s := &Session{m: m, id: sid, q: bytequeue.New(m.c.window), header: header}
+	s := &Session{m: m, id: sid, q: bytequeue.New(m.c.window), header: header, done: make(chan struct{})}
 	s.q.OnPop(func(n int) { m.c.Consumed(sid, n) })
 	if m.c.version < 2 {
 		m.c.Open(sid) // version 2: the OPEN frame's
@@ -248,8 +249,10 @@ func (m *Mux) serveV2(f Frame, accept func([]byte, *Session)) {
 		if accept != nil && !m.c.GoingAway() {
 			s, _ = m.add(f.SID, f.Header)
 		}
-		if s == nil {
-			m.sendClose(f.SID, false)
+		if s == nil { // refused: the opener reads a reset, never a clean end
+			if m.c.SendReset(f.SID) == nil {
+				_ = m.c.Flush()
+			}
 			return
 		}
 		go accept(f.Header, s)
@@ -259,6 +262,9 @@ func (m *Mux) serveV2(f Frame, accept func([]byte, *Session)) {
 			return
 		}
 		if !f.Half {
+			if f.Reset {
+				s.fail(ErrReset)
+			}
 			s.peerClosed.Store(true)
 			m.drop(s)
 			return
@@ -283,7 +289,12 @@ func (m *Mux) close() {
 	m.sess = nil
 	m.mu.Unlock()
 	_ = m.c.Close() // senders waiting for credit give up
+	err := m.c.Err()
+	if err == nil {
+		err = ErrConnClosed
+	}
 	for _, s := range sess {
+		s.fail(err) // a session cut with its connection never reads a clean end
 		s.peerClosed.Store(true)
 		s.ended()
 	}
@@ -321,21 +332,56 @@ func (m *Mux) Close() error { return m.c.Close() }
 
 // Session is one session of a Mux. Read and WriteTo take the peer's bytes
 // in order, then io.EOF once the peer closed the session (or its write
-// side); Write sends on credit. Deadlines are not supported: Close ends a
-// session.
+// side), or the error that cut it: ErrReset (the peer's Reset), the
+// connection's (ErrDeadPeer, ErrConnClosed). Write sends on credit. A read
+// deadline ends a pending Read with os.ErrDeadlineExceeded; write
+// deadlines are not supported (Close ends a session).
 type Session struct {
 	m      *Mux
 	id     string
 	header []byte
 	q      *bytequeue.Queue
 	rest   []byte // unread tail of the last slice taken from q
+	cur    []byte // that slice, released once read
 
 	closed     atomic.Bool // Close called, or the session ended
 	peerClosed atomic.Bool // the peer closed it (or the connection ended): Close sends nothing
 	halfClosed atomic.Bool // CloseWrite called (version 2)
 	peerHalf   atomic.Bool // the peer closed its write side (version 2)
 	once       sync.Once
+
+	err     atomic.Pointer[error] // why the session was cut; nil: it ends with io.EOF
+	endOnce sync.Once
+	done    chan struct{} // closed once the session ended
+
+	dlMu    sync.Mutex
+	dlTimer *time.Timer
+	dlGen   uint64      // the deadline's generation: a stale timer does nothing
+	dlPast  atomic.Bool // the read deadline passed
 }
+
+// ErrReset is what a session reads once the peer reset it (Reset).
+var ErrReset = errors.New("link: session reset by the peer")
+
+// ErrConnClosed is what a session reads once its connection closed with
+// no error of the link's (the network's, or Close).
+var ErrConnClosed = errors.New("link: connection closed")
+
+// fail records why the session was cut (the first reason wins).
+func (s *Session) fail(err error) { s.err.CompareAndSwap(nil, &err) }
+
+// end is what Read returns once the queue is drained.
+func (s *Session) end() error {
+	if e := s.err.Load(); e != nil {
+		return *e
+	}
+	return io.EOF
+}
+
+// Done is closed once the session ended: both sides closed it, the peer
+// reset it, or its connection closed. Bytes already received stay
+// readable.
+func (s *Session) Done() <-chan struct{} { return s.done }
 
 // Header is the bytes that opened the session: the open message on
 // version 1, the OPEN frame's header on version 2. allow:wrapper
@@ -345,18 +391,25 @@ func (s *Session) Header() []byte { return s.header }
 func (s *Session) ended() {
 	s.closed.Store(true)
 	s.q.Close()
+	s.endOnce.Do(func() { close(s.done) })
 }
 
 func (s *Session) Read(b []byte) (int, error) {
 	if len(s.rest) == 0 {
-		data, ok := s.q.Pop()
+		data, ok := s.q.PopUnless(&s.dlPast)
 		if !ok {
-			return 0, io.EOF
+			if s.dlPast.Load() {
+				return 0, os.ErrDeadlineExceeded
+			}
+			return 0, s.end()
 		}
-		s.rest = data
+		s.rest, s.cur = data, data
 	}
 	n := copy(b, s.rest)
-	s.rest = s.rest[n:]
+	if s.rest = s.rest[n:]; len(s.rest) == 0 {
+		releaseData(s.cur)
+		s.cur = nil
+	}
 	return n, nil
 }
 
@@ -378,6 +431,8 @@ func (s *Session) WriteTo(w io.Writer) (int64, error) {
 		n, err := w.Write(s.rest)
 		total += int64(n)
 		s.rest = nil
+		releaseData(s.cur)
+		s.cur = nil
 		if err != nil {
 			return total, err
 		}
@@ -386,11 +441,14 @@ func (s *Session) WriteTo(w io.Writer) (int64, error) {
 	for {
 		var ok bool
 		if bufs, ok = s.q.PopBatch(bufs[:0], writeBuf); !ok {
-			return total, nil
+			return total, s.endErr()
 		}
 		nb := net.Buffers(bufs)
 		n, err := nb.WriteTo(w)
 		total += n
+		for _, b := range bufs { // written (a Writer keeps none of p)
+			releaseData(b)
+		}
 		clear(bufs)
 		if err != nil {
 			return total, err
@@ -402,11 +460,11 @@ func (s *Session) writeOwned(w OwnedWriter) (int64, error) {
 	var total int64
 	for {
 		b := s.rest
-		s.rest = nil
+		s.rest, s.cur = nil, nil // owned by w from here
 		if len(b) == 0 {
 			var ok bool
 			if b, ok = s.q.Pop(); !ok {
-				return total, nil
+				return total, s.endErr()
 			}
 		}
 		if err := w.WriteOwned(b); err != nil {
@@ -432,6 +490,27 @@ func (s *Session) Write(b []byte) (int, error) {
 	return len(b), s.m.c.Flush()
 }
 
+// WriteBuffers is Write of each of bufs in turn, with one flush at the
+// end (and before any wait for credit): a backlog goes to the network in
+// one write.
+func (s *Session) WriteBuffers(bufs [][]byte) (int64, error) {
+	var total int64
+	for _, b := range bufs {
+		for p := b; len(p) > 0; {
+			n := min(len(p), MaxChunk)
+			if s.closed.Load() || s.halfClosed.Load() || !s.m.c.Acquire(s.id, n) {
+				return total, io.ErrClosedPipe
+			}
+			if err := s.m.c.SendData(s.id, p[:n]); err != nil {
+				return total, err
+			}
+			p = p[n:]
+			total += int64(n)
+		}
+	}
+	return total, s.m.c.Flush()
+}
+
 // CloseWrite (version 2) ends the session's write side: the peer reads
 // io.EOF after what was written; this side still reads the peer's bytes.
 // The session ends once both sides closed their write side.
@@ -450,6 +529,15 @@ func (s *Session) CloseWrite() error {
 	return nil
 }
 
+// endErr is WriteTo's error once the session ended: nil at a clean end
+// (io.Copy's contract), else why it was cut.
+func (s *Session) endErr() error {
+	if err := s.end(); err != io.EOF {
+		return err
+	}
+	return nil
+}
+
 // Close ends the session: the peer gets a close unless it closed it; a
 // pending Read returns.
 func (s *Session) Close() error {
@@ -462,13 +550,69 @@ func (s *Session) Close() error {
 	return nil
 }
 
+// Reset ends the session as failed: the peer reads ErrReset (version 2
+// with a peer that announced FeatureReset; else it reads a close).
+// Reads here end as after Close.
+func (s *Session) Reset() error {
+	s.once.Do(func() {
+		s.m.drop(s)
+		if s.peerClosed.Load() {
+			return
+		}
+		var err error
+		if s.m.c.version >= 2 {
+			err = s.m.c.SendReset(s.id)
+		} else {
+			var msg []byte
+			if msg, err = s.m.codec.Close(s.id); err == nil {
+				err = s.m.c.SendMsg(msg)
+			}
+		}
+		if err == nil {
+			_ = s.m.c.Flush()
+		}
+	})
+	return nil
+}
+
 // LocalAddr is the connection's. allow:wrapper
 func (s *Session) LocalAddr() net.Addr { return s.m.c.nc.LocalAddr() }
 
 // RemoteAddr is the connection's. allow:wrapper
 func (s *Session) RemoteAddr() net.Addr { return s.m.c.nc.RemoteAddr() }
 
-// SetDeadline and its siblings are no-ops: Close ends a session.
-func (s *Session) SetDeadline(time.Time) error      { return nil }
-func (s *Session) SetReadDeadline(time.Time) error  { return nil }
+// SetDeadline is SetReadDeadline: write deadlines are not supported.
+func (s *Session) SetDeadline(t time.Time) error { return s.SetReadDeadline(t) }
+
+// SetReadDeadline makes a pending or later Read return
+// os.ErrDeadlineExceeded once t passed; zero t clears it. WriteTo ignores
+// it.
+func (s *Session) SetReadDeadline(t time.Time) error {
+	s.dlMu.Lock()
+	defer s.dlMu.Unlock()
+	s.dlGen++
+	if s.dlTimer != nil {
+		s.dlTimer.Stop()
+		s.dlTimer = nil
+	}
+	d := time.Until(t)
+	s.dlPast.Store(!t.IsZero() && d <= 0)
+	if s.dlPast.Load() {
+		s.q.Wake()
+	}
+	if !t.IsZero() && d > 0 {
+		gen := s.dlGen
+		s.dlTimer = time.AfterFunc(d, func() {
+			s.dlMu.Lock()
+			if s.dlGen == gen {
+				s.dlPast.Store(true)
+			}
+			s.dlMu.Unlock()
+			s.q.Wake()
+		})
+	}
+	return nil
+}
+
+// SetWriteDeadline is a no-op: Close ends a session whose writes wait.
 func (s *Session) SetWriteDeadline(time.Time) error { return nil }

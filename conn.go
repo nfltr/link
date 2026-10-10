@@ -51,9 +51,42 @@ const (
 
 // CLOSE frame codes (version 2).
 const (
-	closeFull = 0 // the sender neither sends nor takes more of the session
-	closeHalf = 1 // the sender sends no more; it still takes the peer's
+	closeFull  = 0 // the sender neither sends nor takes more of the session
+	closeHalf  = 1 // the sender sends no more; it still takes the peer's
+	closeReset = 2 // as closeFull, and the session failed (FeatureReset)
 )
+
+// Feature bits a version-2 side announces in its hello or reply.
+const (
+	// FeatureReset: the side reads CLOSE code 2 (a reset). A side sends
+	// code 2 only to a peer that announced it, else code 0.
+	FeatureReset uint32 = 1 << 0
+
+	features = FeatureReset // what this package announces
+)
+
+// dataBufs holds data frames' buffers of MaxChunk bytes: a Mux session
+// returns one once its bytes were read or written on (Read, WriteTo), so a
+// busy session reuses them instead of allocating and zeroing one per
+// frame. A buffer handed elsewhere (Recv's caller, an OwnedWriter) is
+// never returned: it is the garbage collector's.
+var dataBufs = sync.Pool{New: func() any { b := make([]byte, MaxChunk); return &b }}
+
+func newData(n int) []byte {
+	if n > MaxChunk || n < MaxChunk/16 {
+		return make([]byte, n)
+	}
+	return (*dataBufs.Get().(*[]byte))[:n]
+}
+
+// releaseData returns b, a data frame's buffer nothing references any
+// more, to dataBufs.
+func releaseData(b []byte) {
+	if cap(b) == MaxChunk {
+		b = b[:MaxChunk]
+		dataBufs.Put(&b)
+	}
+}
 
 var writeBufs = sync.Pool{New: func() any { b := make([]byte, 0, writeBuf); return &b }}
 
@@ -84,6 +117,7 @@ type Frame struct {
 	Header []byte
 	Close  bool
 	Half   bool
+	Reset  bool // a close that says the session failed (code 2)
 }
 
 // Conn sends and receives frames on a bound connection. One goroutine
@@ -109,6 +143,7 @@ type Conn struct {
 	version         int
 	dialer          bool // this side dialed: Mux picks odd session ids
 	peerMaxSessions int
+	peerFeatures    uint32
 	maxSessions     int // the peer may have this many open toward this side
 	live            Liveness
 	id              Identity
@@ -169,6 +204,10 @@ func (c *Conn) Identity() Identity { return c.id }
 // peer at once (version 2). allow:wrapper
 func (c *Conn) PeerMaxSessions() int { return c.peerMaxSessions }
 
+// PeerFeatures is the feature bits the peer announced (version 2).
+// allow:wrapper
+func (c *Conn) PeerFeatures() uint32 { return c.peerFeatures }
+
 // SendMsg buffers a message frame; Flush, or a full buffer, writes it. The
 // caller does not modify b afterwards.
 func (c *Conn) SendMsg(b []byte) error {
@@ -225,16 +264,31 @@ func (c *Conn) SendOpen(sid string, header []byte) error {
 // sends no more of the session and still takes the peer's; else it
 // neither sends nor takes more, and the session's credit ends.
 func (c *Conn) SendClose(sid string, half bool) error {
+	code := byte(closeFull)
+	if half {
+		code = closeHalf
+	}
+	return c.sendClose(sid, code)
+}
+
+// SendReset is SendClose of the whole session saying it failed: a peer
+// that announced FeatureReset reads it as a reset, another as a close.
+func (c *Conn) SendReset(sid string) error {
+	code := byte(closeFull)
+	if c.peerFeatures&FeatureReset != 0 {
+		code = closeReset
+	}
+	return c.sendClose(sid, code)
+}
+
+func (c *Conn) sendClose(sid string, code byte) error {
 	if c.version < 2 {
 		return errV1
 	}
 	if len(sid) > MaxSID {
 		return errSID
 	}
-	code := byte(closeFull)
-	if half {
-		code = closeHalf
-	} else {
+	if code != closeHalf {
 		c.Forget(sid)
 	}
 	c.wmu.Lock()
@@ -420,7 +474,7 @@ func (c *Conn) recv() (Frame, bool, error) {
 		if _, err := io.ReadFull(c.nc, sid); err != nil {
 			return Frame{}, false, err
 		}
-		f := Frame{SID: string(sid), Data: make([]byte, n-1-l)}
+		f := Frame{SID: string(sid), Data: newData(n - 1 - l)}
 		if _, err := io.ReadFull(c.nc, f.Data); err != nil {
 			return Frame{}, false, err
 		}
@@ -463,14 +517,14 @@ func (c *Conn) recv() (Frame, bool, error) {
 			return Frame{}, false, err
 		}
 		l := int(b[0])
-		if l != n-2 || b[n-1] > closeHalf {
+		if l != n-2 || b[n-1] > closeReset {
 			return Frame{}, false, ErrFrame
 		}
 		sid, half := string(b[1:1+l]), b[n-1] == closeHalf
 		if !half {
 			c.Forget(sid)
 		}
-		return Frame{SID: sid, Close: true, Half: half}, true, nil
+		return Frame{SID: sid, Close: true, Half: half, Reset: b[n-1] == closeReset}, true, nil
 	case typePing, typePong:
 		b, err := c.small(n, pingLen, pingLen)
 		if err != nil {

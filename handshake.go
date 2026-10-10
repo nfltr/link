@@ -204,7 +204,7 @@ func Client(ctx context.Context, nc net.Conn, cfg Config) (*Conn, error) {
 		return c, nil
 	}
 	h := appendHelloV2(nil, helloV2{
-		maxVersion: MaxVersion, window: uint32(cfg.Window), maxSessions: uint32(cfg.MaxSessions), // #nosec G115 -- checked
+		maxVersion: MaxVersion, features: features, window: uint32(cfg.Window), maxSessions: uint32(cfg.MaxSessions), // #nosec G115 -- checked
 		liveness: cfg.Liveness, method: method, auth: auth,
 	})
 	if _, err := nc.Write(h); err != nil {
@@ -218,6 +218,7 @@ func Client(ctx context.Context, nc net.Conn, cfg Config) (*Conn, error) {
 		return nil, err
 	}
 	c := newConnV2(nc, cfg, int(rep.window), int(rep.maxSessions), true)
+	c.peerFeatures = rep.features
 	c.up(cfg.Observer, Identity{})
 	return c, nil
 }
@@ -273,7 +274,7 @@ func Server(ctx context.Context, nc net.Conn, cfg Config) (*Conn, Identity, erro
 			_, _ = nc.Write([]byte{StatusRefused})
 			return nil, Identity{}, fmt.Errorf("%w: %w", ErrAuth, err)
 		}
-		rep := appendReplyV2(nil, replyV2{window: uint32(cfg.Window), maxSessions: uint32(cfg.MaxSessions)}) // #nosec G115 -- checked
+		rep := appendReplyV2(nil, replyV2{features: features, window: uint32(cfg.Window), maxSessions: uint32(cfg.MaxSessions)}) // #nosec G115 -- checked
 		if _, err := nc.Write(rep); err != nil {
 			return nil, Identity{}, err
 		}
@@ -284,6 +285,7 @@ func Server(ctx context.Context, nc net.Conn, cfg Config) (*Conn, Identity, erro
 			cfg.Liveness = h.liveness
 		}
 		c := newConnV2(nc, cfg, int(h.window), int(h.maxSessions), false)
+		c.peerFeatures = h.features
 		c.up(cfg.Observer, id)
 		return c, id, nil
 	case v > 1:

@@ -45,5 +45,8 @@ v0.1.0: the version-1 wire, extracted unchanged from nfltr's TCP data
 plane. v0.2.0: wire version 2 (negotiated in the hello; version 1 served
 byte for byte), `Client`/`Server` with an `Authenticator`, ping liveness
 driven by the `Liveness` presets, GOAWAY, `Pool`, `Observer`, `Credit` for
-callers with a transport of their own. Planned: session deadlines, the
-replica link.
+callers with a transport of their own. v0.3.0: `Session.Reset` (CLOSE
+code 2, announced by feature bit `FeatureReset`; sent as a plain close to
+v0.2 peers), a session cut with its connection reads the connection's
+error (never `io.EOF`), `Session.Done`, session read deadlines (net/http
+serves sessions). Write deadlines are not supported.
