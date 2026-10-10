@@ -1,0 +1,3 @@
+# gosec baseline (scripts/sast-baseline.py): accepted or false-positive
+# findings, triaged by rule. Regenerate only after triaging every new finding:
+#   scripts/check-gosec.sh --update
