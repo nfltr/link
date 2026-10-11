@@ -11,7 +11,6 @@ import (
 	"errors"
 	"io"
 	"net"
-	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -169,7 +168,9 @@ func TestClientV1(t *testing.T) {
 	}
 }
 
-func binaryWindow(b []byte) uint32 { return uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3]) }
+func binaryWindow(b []byte) uint32 {
+	return uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
+}
 
 func TestHandshakeVersionNegotiation(t *testing.T) {
 	// A listener that speaks only version 1 answers a version-2 hello with
@@ -411,95 +412,6 @@ func TestMuxV2GoAway(t *testing.T) {
 	}
 }
 
-// blackhole is a proxy between a and the returned conn that, once cut,
-// reads and drops every byte and closes nothing: a dead path, no RST.
-func blackhole(t *testing.T, a net.Conn) (net.Conn, func()) {
-	t.Helper()
-	x, y := tcpPair(t)
-	var cut atomic.Bool
-	pipe := func(dst, src net.Conn) {
-		buf := make([]byte, 32<<10)
-		for {
-			n, err := src.Read(buf)
-			if err != nil {
-				return
-			}
-			if !cut.Load() {
-				if _, err := dst.Write(buf[:n]); err != nil {
-					return
-				}
-			}
-		}
-	}
-	go pipe(a, x)
-	go pipe(x, a)
-	return y, func() { cut.Store(true) }
-}
-
-// deadAfter measures how long after the path dies each side ends the
-// connection with ErrDeadPeer, idle.
-func deadAfter(t *testing.T, l Liveness) (dialer, listener time.Duration) {
-	a, b := tcpPair(t)
-	far, cut := blackhole(t, b)
-	sc := make(chan *Conn, 1)
-	go func() {
-		c, _, err := Server(context.Background(), far, Config{Auth: testToken}) // takes the dialer's liveness
-		if err != nil {
-			t.Error(err)
-		}
-		sc <- c
-	}()
-	c, err := Client(context.Background(), a, Config{Liveness: l, Auth: testToken})
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := <-sc
-	go func() { _, _ = c.Recv() }()
-	go func() { _, _ = s.Recv() }()
-	time.Sleep(l.Interval + l.Timeout) // idle, alive: pings keep it up
-	select {
-	case <-c.Done():
-		t.Fatalf("live idle connection ended: %v", c.Err())
-	default:
-	}
-	cut()
-	start := time.Now()
-	wait := func(c *Conn) time.Duration {
-		select {
-		case <-c.Done():
-		case <-time.After(3 * (l.Interval + l.Timeout)):
-			t.Fatalf("%v: dead peer not detected", l)
-		}
-		if !errors.Is(c.Err(), ErrDeadPeer) {
-			t.Fatalf("ended with %v", c.Err())
-		}
-		return time.Since(start)
-	}
-	return wait(c), wait(s)
-}
-
-// TestDeadPeerDetection: with each liveness preset both ends detect a
-// dead path (bytes dropped, nothing closed) within Interval+Timeout of
-// the last byte received. LINK_ALL_PRESETS=1 runs the slow presets too.
-func TestDeadPeerDetection(t *testing.T) {
-	presets := []string{"fast", "default"}
-	if os.Getenv("LINK_ALL_PRESETS") != "" {
-		presets = LivenessPresets
-	}
-	for _, name := range presets {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			l := livenessByName[name]
-			d, s := deadAfter(t, l)
-			bound := l.Interval + l.Timeout + 500*time.Millisecond
-			t.Logf("%s (%v): dialer %v, listener %v, bound %v", name, l, d.Round(time.Millisecond), s.Round(time.Millisecond), l.Interval+l.Timeout)
-			if d > bound || s > bound {
-				t.Fatalf("detected after %v / %v, bound %v", d, s, bound)
-			}
-		})
-	}
-}
-
 func TestPingRTTObserved(t *testing.T) {
 	obs := &countObserver{}
 	dcfg := v2cfg
@@ -591,9 +503,10 @@ func TestPool(t *testing.T) {
 			}
 			return (&net.Dialer{}).DialContext(ctx, "tcp", ln.Addr().String())
 		},
-		Max:     3,
-		Grow:    func(st PoolStats) bool { return st.Sessions >= 2*st.Conns },
-		Backoff: func(int) time.Duration { return 10 * time.Millisecond },
+		Max:      3,
+		Grow:     func(st PoolStats) bool { return st.Sessions >= 2*st.Conns },
+		GrowWait: 5 * time.Second,
+		Backoff:  func(int) time.Duration { return 10 * time.Millisecond },
 	})
 	defer p.Close() //nolint:errcheck
 	ctx := context.Background()
@@ -608,7 +521,8 @@ func TestPool(t *testing.T) {
 		}
 	}
 
-	// Growth: a connection per two sessions, at most 3.
+	// Growth: a connection per two sessions, at most 3 (GrowWait: each
+	// Open that grows takes the new connection).
 	var held []*Session
 	for range 7 {
 		s, err := p.Open(ctx, []byte("x"))

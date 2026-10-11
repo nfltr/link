@@ -12,14 +12,14 @@ JSON line per run to OUT/<mode>.jsonl; `summarize` prints the medians.
 Env: REPS (default 5), CASES (comma list, default all of the mode's),
 DUR (seconds per throughput run, default 5; 8 under loss), NETEMS (comma
 list of netem labels), LOAD_GATE (wait before each run until the 1-min
-load average is below it, at most an hour per pass), FD_DUR (falsedead phase seconds, default 60), KEEP=1
-(leave the containers up).
+load average is below it, at most an hour per pass), FD_DUR (falsedead phase seconds, default 60), LIBS
+(comma list, default link,yamux), KEEP=1 (leave the containers up).
 """
 import json, os, statistics, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPS = int(os.environ.get("REPS", "5"))
-LIBS = ["link", "yamux"]
+LIBS = os.environ.get("LIBS", "link,yamux").split(",")
 TRANSPORTS = {"mtls": ["-tls"], "plain": []}
 NETEM = [("none", None), ("2ms-0.1%", "delay 2ms loss 0.1%"), ("20ms-1%", "delay 20ms loss 1%"), ("50ms-2%", "delay 50ms loss 2%")]
 if os.environ.get("NETEMS"):
@@ -145,6 +145,8 @@ def rig_up():
     rig_down()
     sh("docker", "network", "create", "--subnet", SUBNET + ".0/24", NET)
     for (lib, side), ip in IP.items():
+        if lib not in LIBS:
+            continue
         cmd = ["sleep", "infinity"]
         if side == "b":
             cmd = ["sh", "-c", "while true; do /lc/bin/lc serve $(cat /lc/args-%s) >>/lc/b-%s.log 2>&1; sleep 1; done" % (lib, lib)]

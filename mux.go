@@ -62,8 +62,9 @@ type Mux struct {
 	sess  map[string]*Session
 	done  bool // Serve returned: no more sessions
 	// leaving: this side sent GOAWAY; the connection closes once its last
-	// session ends.
+	// session ended and the peer read the GOAWAY (Conn.Drained).
 	leaving bool
+	left    bool // the close began
 }
 
 // NewMux returns a Mux over c whose open and close messages codec reads
@@ -157,11 +158,29 @@ func (m *Mux) drop(s *Session) {
 		delete(m.sess, s.id)
 		m.c.Forget(s.id)
 	}
-	last := m.leaving && len(m.sess) == 0
 	m.mu.Unlock()
 	s.ended()
+	m.leave()
+}
+
+// leave closes a leaving connection once it carries no session and the
+// peer read the GOAWAY, after the frames buffered for it went out.
+func (m *Mux) leave() {
+	m.mu.Lock()
+	last := m.leaving && !m.left && len(m.sess) == 0 && closed(m.c.drained)
+	m.left = m.left || last
+	m.mu.Unlock()
 	if last {
-		_ = m.c.Close()
+		go m.c.closeFlushed(m.c.live.Timeout)
+	}
+}
+
+func closed(ch <-chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -247,7 +266,10 @@ func (m *Mux) serveV2(f Frame, accept func([]byte, *Session)) {
 	switch {
 	case f.Open:
 		var s *Session
-		if accept != nil && !m.c.GoingAway() {
+		// An OPEN that crossed this side's GOAWAY runs like any other;
+		// one after the peer's GOAWAY, or after it read ours (Drained),
+		// breaks the protocol.
+		if accept != nil && !closed(m.c.peerGoAway) && !closed(m.c.drained) {
 			s, _ = m.add(f.SID, f.Header)
 		}
 		if s == nil { // refused: the opener reads a reset, never a clean end
@@ -305,8 +327,9 @@ func (m *Mux) close() {
 
 // GoAway (version 2) tells the peer to open no more sessions here and
 // stops this side opening more; the connection closes once its last
-// session ends, and at deadline at the latest (zero: no deadline). OPENs
-// that arrive afterwards are refused: their opener retries elsewhere.
+// session ended and the peer read the GOAWAY (an OPEN it sent before
+// that runs like the others), with every frame written; at deadline at
+// the latest (zero: no deadline).
 func (m *Mux) GoAway(deadline time.Time) error {
 	var drain time.Duration
 	if !deadline.IsZero() {
@@ -315,17 +338,25 @@ func (m *Mux) GoAway(deadline time.Time) error {
 	if err := m.c.GoAway(drain, ""); err != nil {
 		return err
 	}
+	m.c.ping() // its pong: the peer read the GOAWAY (Drained)
 	m.mu.Lock()
 	m.leaving = true
-	empty := len(m.sess) == 0
 	m.mu.Unlock()
-	if empty {
-		return m.c.Close()
-	}
+	var t *time.Timer
 	if drain > 0 {
-		t := time.AfterFunc(drain, func() { _ = m.c.Close() })
-		go func() { <-m.c.Done(); t.Stop() }()
+		t = time.AfterFunc(drain, func() { _ = m.c.Close() })
 	}
+	go func() {
+		select {
+		case <-m.c.drained:
+			m.leave()
+		case <-m.c.Done():
+		}
+		if t != nil {
+			<-m.c.Done()
+			t.Stop()
+		}
+	}()
 	return nil
 }
 
@@ -653,10 +684,10 @@ func (s *Session) endErr() error {
 // pending Read returns.
 func (s *Session) Close() error {
 	s.once.Do(func() {
-		s.m.drop(s)
 		if !s.peerClosed.Load() {
-			s.m.sendClose(s.id, false)
+			s.m.sendClose(s.id, false) // before drop: a leaving connection closes after it
 		}
+		s.m.drop(s)
 	})
 	return nil
 }
@@ -666,7 +697,7 @@ func (s *Session) Close() error {
 // Reads here end as after Close.
 func (s *Session) Reset() error {
 	s.once.Do(func() {
-		s.m.drop(s)
+		defer s.m.drop(s) // after the reset: a leaving connection closes after it
 		if s.peerClosed.Load() {
 			return
 		}

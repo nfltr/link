@@ -155,9 +155,17 @@ type Conn struct {
 	goingAway       atomic.Bool // either side sent GOAWAY
 	peerGoAway      chan struct{}
 	peerGoAwayOnce  sync.Once
+	// goAwayAt is time.Since(t0) when this side sent GOAWAY (0: not yet);
+	// drained is closed once a pong answered a ping sent after it:
+	// the peer read the GOAWAY, and every OPEN it sent before has arrived.
+	goAwayAt    atomic.Int64
+	drained     chan struct{}
+	drainedOnce sync.Once
 
 	errMu   sync.Mutex
 	err     error // why the connection ended (ErrDeadPeer), set before it closes
+	cause   error // what ended it when the peer or the network did (ConnDown)
+	closing atomic.Bool
 	downOne sync.Once
 }
 
@@ -180,6 +188,7 @@ func newConnV2(nc net.Conn, cfg Config, peerWindow, peerMaxSessions int, dialer 
 	c.t0 = time.Now()
 	c.pong = make(chan [pingLen]byte, 1)
 	c.peerGoAway = make(chan struct{})
+	c.drained = make(chan struct{})
 	return c
 }
 
@@ -251,14 +260,18 @@ func (c *Conn) SendOpen(sid string, header []byte) error {
 		return errSID
 	case len(header) > maxHeader:
 		return errHeader
-	case c.goingAway.Load():
-		return ErrGoAway
 	case c.count(byUs) >= c.peerMaxSessions:
 		return ErrFull
 	}
-	c.open(sid, byUs)
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
+	// Checked with the frame buffered under one lock: once the peer's
+	// GOAWAY was read, no OPEN goes out after a frame written since (the
+	// pong that ends the peer's drain barrier, GoAway).
+	if c.goingAway.Load() {
+		return ErrGoAway
+	}
+	c.open(sid, byUs)
 	return c.frameLocked(typeOpen, sid, header)
 }
 
@@ -315,9 +328,28 @@ func (c *Conn) GoAway(drain time.Duration, reason string) error {
 	if err := c.frameLocked(typeGoAway, "", append(b, reason...)); err != nil {
 		return err
 	}
+	c.goAwayAt.CompareAndSwap(0, int64(time.Since(c.t0)))
 	c.flushLocked()
 	return c.werr
 }
+
+// ping sends a ping now (its pong arrives after every frame the peer sent
+// before it read this one).
+func (c *Conn) ping() {
+	var b [pingLen]byte
+	binary.BigEndian.PutUint64(b[:], uint64(time.Since(c.t0))) // #nosec G115 -- a duration since t0 is positive
+	c.control(typePing, b[:])
+}
+
+// Drained (version 2) is closed once the peer answered a ping this side
+// sent after its GOAWAY (Mux.GoAway sends one at once): the peer has read
+// the GOAWAY, so it opens nothing more here, and every OPEN it sent
+// before has arrived (frames keep their order). An OPEN that crossed the
+// GOAWAY is a session like any other; one after Drained breaks the
+// protocol. A peer before v0.4.2 answers only one of two pings that
+// arrive together: then a later ping of the liveness's closes it, or the
+// drain deadline ends the connection.
+func (c *Conn) Drained() <-chan struct{} { return c.drained }
 
 // PeerGoAway is closed once the peer sent GOAWAY (version 2; never on
 // version 1).
@@ -367,7 +399,9 @@ func (c *Conn) frameLocked(typ byte, sid string, body []byte) error {
 		c.waiting--
 	}
 	// A full buffer goes out first, by this sender or the write in flight.
-	for c.werr == nil && c.wbuf != nil && len(*c.wbuf)+5+n > cap(*c.wbuf) {
+	// Pings and pongs never wait: keepAlive must not block on a network
+	// that takes nothing more.
+	for typ != typePing && typ != typePong && c.werr == nil && c.wbuf != nil && len(*c.wbuf)+5+n > cap(*c.wbuf) {
 		if c.writing {
 			c.waiting++
 			c.wcond.Wait()
@@ -487,11 +521,13 @@ func (c *Conn) Recv() (Frame, error) {
 			if e := c.Err(); e != nil {
 				return Frame{}, e
 			}
+			c.lost(err)
 			return Frame{}, err
 		}
 		if ok {
 			if n := len(f.Data); n > 0 {
 				if err := c.Received(f.SID, n); err != nil {
+					c.lost(err)
 					return Frame{}, err
 				}
 			}
@@ -584,13 +620,20 @@ func (c *Conn) recv() (Frame, bool, error) {
 			return Frame{}, false, err
 		}
 		if typ == typePing {
+			// keepAlive answers, never this loop; only the latest ping
+			// needs an answer (a GOAWAY's ping must get one). recv is the
+			// only sender, so the send finds room.
 			select {
-			case c.pong <- [pingLen]byte(b): // keepAlive answers: never this loop
-			default: // one answer pending is enough
+			case <-c.pong:
+			default:
 			}
-		} else if c.obs != nil {
+			c.pong <- [pingLen]byte(b)
+		} else {
 			sent := time.Duration(binary.BigEndian.Uint64(b)) // #nosec G115 -- our own ping's time
-			if rtt := time.Since(c.t0) - sent; rtt >= 0 && sent > 0 {
+			if at := c.goAwayAt.Load(); at > 0 && int64(sent) >= at {
+				c.drainedOnce.Do(func() { close(c.drained) })
+			}
+			if rtt := time.Since(c.t0) - sent; c.obs != nil && rtt >= 0 && sent > 0 {
 				c.obs.PingRTT(rtt)
 			}
 		}
@@ -661,20 +704,24 @@ func (c *Conn) keepAlive() {
 			t.Reset(iv - idle)
 			continue
 		}
-		var b [pingLen]byte
-		binary.BigEndian.PutUint64(b[:], uint64(now)) // #nosec G115 -- a duration since t0 is positive
-		c.control(typePing, b[:])
+		c.ping()
 		pingAt = now
-		t.Reset(to)
+		// Look again an interval on (Timeout is at least that): once the
+		// pong came the next ping goes Interval after it, so a peer that
+		// dies right after it is dead Interval + Timeout after its last
+		// frame (not 2 x Timeout).
+		t.Reset(iv)
 	}
 }
 
-// control writes a ping or pong at once.
+// control writes a ping or pong at once, from a goroutine of its own when
+// no write is in flight: keepAlive never waits for the network.
 func (c *Conn) control(typ byte, b []byte) {
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
-	if c.frameLocked(typ, "", b) == nil {
-		c.flushLocked()
+	if c.frameLocked(typ, "", b) == nil && !c.writing {
+		c.writing = true
+		go c.drain()
 	}
 }
 
@@ -688,14 +735,66 @@ func (c *Conn) fail(err error) {
 	_ = c.Close()
 }
 
+// lost records what ended the connection when this side did not close it
+// (ConnDown's error): the peer's close (io.EOF), a reset, a broken frame.
+func (c *Conn) lost(err error) {
+	select {
+	case <-c.closed:
+		return
+	default:
+	}
+	if c.closing.Load() {
+		return
+	}
+	c.errMu.Lock()
+	if c.cause == nil {
+		c.cause = err
+	}
+	c.errMu.Unlock()
+}
+
 // Close closes the connection; senders waiting for credit give up.
+// ConnDown gets why it ended: ErrDeadPeer, what the peer or the network
+// did (lost), or nil when this side closed it.
 func (c *Conn) Close() error {
 	c.Credit.Close()
 	err := c.nc.Close()
 	c.downOne.Do(func() {
 		if c.obs != nil {
-			c.obs.ConnDown(c.id, c.Err())
+			c.errMu.Lock()
+			why := c.err
+			if why == nil {
+				why = c.cause
+			}
+			c.errMu.Unlock()
+			c.obs.ConnDown(c.id, why)
 		}
 	})
 	return err
+}
+
+// closeFlushed closes the connection once the frames buffered so far are
+// written: a leaving connection's last tails and CLOSE frames reach the
+// peer. Where the connection has a write side of its own to close (TCP,
+// TLS) it closes that and leaves the rest to the peer's close, so frames
+// the peer sends meanwhile (window updates) do not reset the connection
+// under bytes it has yet to read; after wait it closes anyway.
+func (c *Conn) closeFlushed(wait time.Duration) {
+	c.closing.Store(true)
+	c.wmu.Lock()
+	for (c.writing || c.wbuf != nil) && c.werr == nil {
+		if !c.writing {
+			c.flushLocked()
+			continue
+		}
+		c.wcond.Wait()
+	}
+	c.wmu.Unlock()
+	if cw, ok := c.nc.(interface{ CloseWrite() error }); ok && cw.CloseWrite() == nil {
+		t := time.AfterFunc(wait, func() { _ = c.Close() })
+		<-c.closed
+		t.Stop()
+		return
+	}
+	_ = c.Close()
 }

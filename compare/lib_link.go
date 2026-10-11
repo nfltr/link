@@ -44,10 +44,11 @@ func (l *linkLib) config() link.Config {
 
 func (l *linkLib) client(dial func(context.Context) (net.Conn, error), maxConns int) client {
 	return linkClient{link.NewPool(link.PoolConfig{
-		Link: l.config(),
-		Dial: dial,
-		Max:  maxConns,
-		Grow: func(st link.PoolStats) bool { return st.Sessions >= 2*st.Conns },
+		Link:     l.config(),
+		Dial:     dial,
+		Max:      maxConns,
+		Grow:     func(st link.PoolStats) bool { return st.Sessions >= 2*st.Conns },
+		GrowWait: 500 * time.Millisecond,
 	})}
 }
 

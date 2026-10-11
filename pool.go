@@ -21,12 +21,19 @@ type PoolConfig struct {
 	// proxy): the caller's.
 	Dial func(ctx context.Context) (net.Conn, error)
 	// Min connections are kept open, redialled with Backoff when one ends;
-	// Max (0 is 1) is the most open at once.
+	// Max (0 is 1) is the most open at once, not counting those going away
+	// (GOAWAY), which take no new session.
 	Min, Max int
 	// Grow, when set, says whether Open dials one more connection (below
-	// Max) although one could take the session; nil grows only when none
-	// can.
+	// Max) although one could take the session: in the background, one
+	// such dial at a time. nil grows only when none can.
 	Grow func(PoolStats) bool
+	// GrowWait is how long the Open that started a growth dial waits for
+	// it: the session goes on the new connection when it is up by then,
+	// else on one that is up (the dial goes on). 0: it does not wait.
+	// Sessions opened in a burst spread over the connections only when
+	// the Open waits.
+	GrowWait time.Duration
 	// Backoff is how long to wait before redialling after attempt failed
 	// dials (from 1). nil: Open fails with the dial's error, and Min is
 	// redialled once a second.
@@ -50,6 +57,7 @@ type Pool struct {
 	mu      sync.Mutex
 	conns   []*Mux
 	dials   int           // in flight
+	growing bool          // a background growth dial is in flight
 	changed chan struct{} // closed when conns change
 }
 
@@ -92,41 +100,71 @@ func (p *Pool) statsLocked() PoolStats {
 	return st
 }
 
+// staying is how many connections count against Max: those open and not
+// going away, and the dials in flight.
+func (p *Pool) stayingLocked() int {
+	n := p.dials
+	for _, m := range p.conns {
+		if !m.c.GoingAway() && !closed(m.c.Done()) {
+			n++
+		}
+	}
+	return n
+}
+
 // pick returns the connection with the fewest sessions that takes one
-// (nil when none), and whether to dial another.
-func (p *Pool) pick() (*Mux, bool, error) {
+// (nil when none), and whether to dial another: synchronously when none
+// takes the session, else in the background (growBG).
+func (p *Pool) pick() (best *Mux, grow, growBG bool, err error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.ctx.Err() != nil {
-		return nil, false, net.ErrClosed
+		return nil, false, false, net.ErrClosed
 	}
-	var best *Mux
 	for _, m := range p.conns {
 		if takes(m) && (best == nil || m.Sessions() < best.Sessions()) {
 			best = m
 		}
 	}
-	room := len(p.conns)+p.dials < p.cfg.Max
-	grow := room && (best == nil || p.cfg.Grow != nil && p.cfg.Grow(p.statsLocked()))
-	if best == nil && !room && len(p.conns) > 0 {
-		return nil, false, ErrFull
+	staying := p.stayingLocked()
+	room := staying < p.cfg.Max
+	if best == nil {
+		if !room && staying > p.dials {
+			return nil, false, false, ErrFull // every connection carries its most sessions
+		}
+		return nil, room, false, nil
 	}
-	return best, grow, nil
+	growBG = room && !p.growing && p.cfg.Grow != nil && p.cfg.Grow(p.statsLocked())
+	p.growing = p.growing || growBG
+	return best, false, growBG, nil
 }
 
 // Open opens a session with header on one of the Pool's connections.
 func (p *Pool) Open(ctx context.Context, header []byte) (*Session, error) {
 	for attempt := 0; ; {
-		m, grow, err := p.pick()
+		m, grow, growBG, err := p.pick()
 		if err != nil {
 			return nil, err
 		}
-		if grow {
+		if growBG {
+			grown := make(chan *Mux, 1)
+			go func() { grown <- p.grow(ctx) }()
+			if p.cfg.GrowWait > 0 {
+				t := time.NewTimer(p.cfg.GrowWait)
+				select {
+				case nm := <-grown:
+					if nm != nil {
+						m = nm
+					}
+				case <-t.C:
+				case <-ctx.Done():
+				}
+				t.Stop()
+			}
+		}
+		if grow { // none takes the session: Open waits for this dial
 			nm, err := p.dial(ctx)
-			switch {
-			case err == nil:
-				m, attempt = nm, 0
-			case m == nil:
+			if err != nil {
 				attempt++
 				if p.cfg.Backoff == nil {
 					return nil, err
@@ -136,6 +174,7 @@ func (p *Pool) Open(ctx context.Context, header []byte) (*Session, error) {
 				}
 				continue
 			}
+			m, attempt = nm, 0
 		}
 		if m == nil { // dials in flight hold the room: wait for one
 			if err := p.waitChange(ctx); err != nil {
@@ -152,6 +191,23 @@ func (p *Pool) Open(ctx context.Context, header []byte) (*Session, error) {
 		}
 		// m stopped taking sessions meanwhile: pick again.
 	}
+}
+
+// grow dials one more connection in the background, bounded by the
+// deadline of the Open that asked for it (not its cancel: Open returns
+// first); a failure leaves the next Open to ask again.
+func (p *Pool) grow(ctx context.Context) *Mux {
+	dctx := p.ctx
+	if dl, ok := ctx.Deadline(); ok {
+		var cancel context.CancelFunc
+		dctx, cancel = context.WithDeadline(p.ctx, dl)
+		defer cancel()
+	}
+	m, _ := p.dial(dctx)
+	p.mu.Lock()
+	p.growing = false
+	p.mu.Unlock()
+	return m
 }
 
 // dial opens one more connection and adds it to the Pool.
@@ -234,7 +290,7 @@ func (p *Pool) sleep(ctx context.Context, d time.Duration) error {
 func (p *Pool) maintain() {
 	for attempt := 0; p.ctx.Err() == nil; {
 		p.mu.Lock()
-		need := p.statsLocked().Conns+p.dials < p.cfg.Min && len(p.conns)+p.dials < p.cfg.Max
+		need := p.statsLocked().Conns+p.dials < p.cfg.Min && p.stayingLocked() < p.cfg.Max
 		ch := p.changed
 		p.mu.Unlock()
 		if !need {

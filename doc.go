@@ -68,12 +68,17 @@
 // so a reset to them is sent as code 0. Liveness is the dialer's (interval 1s to 15s, timeout at
 // least one interval); a listener takes it unless it has its own: each
 // side pings once it received nothing for the interval and ends the
-// connection when nothing arrived for the timeout after that; every ping
-// is answered. An open starts the session's credit on both sides with the
-// peer's window; a close of code 0 ends it. A Mux picks session ids as
-// uvarints, odd on the dialer and even on the listener. After a goaway the
-// receiver opens no more sessions on the connection; opens that cross it
-// are refused with a close.
+// connection when nothing arrived for the timeout after that (dead within
+// interval + timeout of the peer's last frame, idle or busy); every ping
+// is answered (the latest, when several wait). An open starts the
+// session's credit on both sides with the peer's window; a close of code 0
+// ends it. A Mux picks session ids as uvarints, odd on the dialer and even
+// on the listener. After a goaway the receiver opens no more sessions on
+// the connection. The sender follows its goaway with a ping: opens that
+// arrive before that ping's pong crossed the goaway and run like any other
+// session (since v0.4.2; before, they were refused with a close), opens
+// after it are refused; the sender closes the connection once its last
+// session ended and the pong arrived, after writing every frame.
 //
 // testdata/v2_session.golden holds a recorded version-2 session.
 package link

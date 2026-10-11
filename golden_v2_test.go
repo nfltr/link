@@ -71,8 +71,12 @@ func v2Record(t *testing.T) map[string][]byte {
 		}
 	}
 	c.sendWindow(v2Session, 0x8000)
-	c.control(typePing, v2Ping[:])
-	c.control(typePong, v2Ping[:])
+	for _, typ := range []byte{typePing, typePong} { // as control, written inline
+		c.wmu.Lock()
+		_ = c.frameLocked(typ, "", v2Ping[:])
+		c.flushLocked()
+		c.wmu.Unlock()
+	}
 	if err := c.GoAway(5*time.Second, "restart"); err != nil {
 		t.Fatal(err)
 	}
