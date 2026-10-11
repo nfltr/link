@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-// StatusVersion is a version-2 listener's reply to a hello whose version
+// StatusVersion is a listener's reply to a hello whose version
 // it does not speak; its highest version follows.
 const StatusVersion = 2
 
@@ -169,8 +169,9 @@ func handshake(ctx context.Context, nc net.Conn) func() {
 // it sends the hello of cfg.Version with cfg.Auth's credential and reads
 // the listener's reply. A listener that does not speak the version
 // answers with a VersionError (errors.Is ErrVersion) naming the versions
-// it speaks, or, at version 1, by closing the connection; redial with one
-// it speaks. A refusal is ErrRefused. On error the caller closes nc.
+// it speaks; a listener of link v0.4 or older that speaks only version 1
+// closes the connection after it read 37 bytes. A refusal is ErrRefused.
+// On error the caller closes nc.
 func Client(ctx context.Context, nc net.Conn, cfg Config) (*Conn, error) {
 	cfg = cfg.withDefaults()
 	if cfg.Auth == nil {
@@ -190,18 +191,6 @@ func Client(ctx context.Context, nc net.Conn, cfg Config) (*Conn, error) {
 	}
 	if len(auth) > MaxAuth {
 		return nil, fmt.Errorf("link: auth payload of %d bytes", len(auth))
-	}
-	if cfg.Version == 1 {
-		if method != MethodToken {
-			return nil, errors.New("link: version 1 carries only a token")
-		}
-		peer, err := Hello(nc, string(auth), cfg.Window)
-		if err != nil {
-			return nil, err
-		}
-		c := NewConn(nc, cfg.Window, peer)
-		c.up(cfg.Observer, Identity{})
-		return c, nil
 	}
 	h := appendHelloV2(nil, helloV2{
 		maxVersion: MaxVersion, features: features, window: uint32(cfg.Window), maxSessions: uint32(cfg.MaxSessions), // #nosec G115 -- checked
@@ -227,9 +216,10 @@ func Client(ctx context.Context, nc net.Conn, cfg Config) (*Conn, error) {
 // listener: it reads the dialer's hello (Magic first: a caller that
 // sniffed it replays it), verifies its credential with cfg.Auth, replies,
 // and returns the connection and who the dialer is. It speaks every
-// version up to cfg.Version: a version-1 hello is a token (MethodToken)
-// and gets the version-1 reply, byte for byte. A refused dialer gets the
-// refusal and Server ErrAuth. On error the caller closes nc.
+// version up to cfg.Version. A version-1 hello (a dialer of link v0.4 or
+// older) gets the version reply (StatusVersion, MaxVersion), which such a
+// dialer reads as a refusal, and Server returns ErrV1. A refused dialer
+// gets the refusal and Server ErrAuth. On error the caller closes nc.
 func Server(ctx context.Context, nc net.Conn, cfg Config) (*Conn, Identity, error) {
 	cfg = cfg.withDefaults()
 	if cfg.Auth == nil {
@@ -249,21 +239,8 @@ func Server(ctx context.Context, nc net.Conn, cfg Config) (*Conn, Identity, erro
 	cs := connState(nc)
 	switch v := int(head[len(Magic)]); {
 	case v == 1:
-		token, window, err := readHelloV1(nc)
-		if err != nil {
-			return nil, Identity{}, err
-		}
-		id, err := cfg.Auth.Verify(ctx, cs, MethodToken, []byte(token))
-		if err != nil {
-			_ = Reply(nc, StatusRefused, 0)
-			return nil, Identity{}, fmt.Errorf("%w: %w", ErrAuth, err)
-		}
-		if err := Reply(nc, StatusBound, cfg.Window); err != nil {
-			return nil, Identity{}, err
-		}
-		c := NewConn(nc, cfg.Window, window)
-		c.up(cfg.Observer, id)
-		return c, id, nil
+		_, _ = nc.Write([]byte{StatusVersion, MaxVersion})
+		return nil, Identity{}, ErrV1
 	case v > 1 && v <= cfg.Version:
 		h, err := readHelloV2(nc)
 		if err != nil {

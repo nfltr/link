@@ -67,7 +67,7 @@ func (l *linkLib) serve(nc net.Conn, handle func([]byte, net.Conn)) {
 		_ = nc.Close()
 		return
 	}
-	m := link.NewMux(c, nil)
+	m := link.NewMux(c)
 	l.mu.Lock()
 	if l.muxs == nil {
 		l.muxs = map[*link.Mux]struct{}{}

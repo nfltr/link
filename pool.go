@@ -14,8 +14,7 @@ import (
 
 // PoolConfig is a Pool's settings. Every policy is the caller's.
 type PoolConfig struct {
-	// Link is each connection's Config; a Pool speaks version 2 (Version
-	// 0 or 2).
+	// Link is each connection's Config.
 	Link Config
 	// Dial opens a connection to the peer, its security done (TLS, a
 	// proxy): the caller's.
@@ -239,9 +238,6 @@ func (p *Pool) dial(ctx context.Context) (*Mux, error) {
 }
 
 func (p *Pool) connect(ctx context.Context) (*Mux, error) {
-	if p.cfg.Link.Version == 1 {
-		return nil, errV1
-	}
 	nc, err := p.cfg.Dial(ctx)
 	if err != nil {
 		return nil, err
@@ -251,7 +247,7 @@ func (p *Pool) connect(ctx context.Context) (*Mux, error) {
 		_ = nc.Close()
 		return nil, err
 	}
-	return NewMux(c, nil), nil
+	return NewMux(c), nil
 }
 
 func (p *Pool) changedLocked() {

@@ -5,11 +5,8 @@ package link
 
 import (
 	"bytes"
-	"encoding/binary"
-	"errors"
 	"io"
 	"strings"
-	"sync"
 	"testing"
 )
 
@@ -30,7 +27,7 @@ func (c *countingReader) Read(b []byte) (int, error) {
 // window frames): no panic, no frame larger than maxFrame accepted, and the
 // credit caps hold: session "7" never has more send credit than the peer's
 // window nor more data accepted (none consumed) than this side's window.
-// Seeds: testdata/fuzz/FuzzRecv (the recorded v1 session's frames).
+// Seeds: testdata/fuzz/FuzzRecv (frames of a recorded session).
 func FuzzRecv(f *testing.F) {
 	for _, seed := range [][]byte{
 		frame(maxFrame+1, typeData),
@@ -51,7 +48,7 @@ func FuzzRecv(f *testing.F) {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, wire []byte) {
-		c := NewConn(bufConn{r: bytes.NewReader(wire)}, testWindow, testWindow)
+		c := newTestConn(bufConn{r: bytes.NewReader(wire)}, testWindow, testWindow)
 		c.Open("7") // window frames for "7" reach the credit path
 		accepted := 0
 		for {
@@ -65,8 +62,8 @@ func FuzzRecv(f *testing.F) {
 			if n := len(m.Data) + len(m.Msg); n > maxFrame {
 				t.Fatalf("frame of %d bytes, maxFrame %d", n, maxFrame)
 			}
-			if (m.Data == nil) == (m.Msg == nil) {
-				t.Fatalf("frame %+v is neither data nor a message", m)
+			if !m.Open && !m.Close && (m.Data == nil) == (m.Msg == nil) {
+				t.Fatalf("frame %+v is neither data, a message, an open nor a close", m)
 			}
 			if m.SID == "7" {
 				if accepted += len(m.Data); accepted > testWindow {
@@ -86,7 +83,7 @@ func FuzzSendRecvRoundTrip(f *testing.F) {
 	f.Add(strings.Repeat("s", 255), []byte("x"), false)
 	f.Fuzz(func(t *testing.T, sid string, body []byte, msg bool) {
 		var wire bytes.Buffer
-		s := NewConn(bufConn{w: &wire}, testWindow, testWindow)
+		s := newTestConn(bufConn{w: &wire}, testWindow, testWindow)
 		want, send := Frame{SID: sid, Data: body}, func() error { return s.SendData(sid, body) }
 		if msg {
 			want, send = Frame{Msg: body}, func() error { return s.SendMsg(body) }
@@ -99,7 +96,7 @@ func FuzzSendRecvRoundTrip(f *testing.F) {
 			t.Fatal(err)
 		}
 		cr := &countingReader{r: bytes.NewReader(wire.Bytes())}
-		got, err := NewConn(bufConn{r: cr}, testWindow, testWindow).Recv()
+		got, err := newTestConn(bufConn{r: cr}, testWindow, testWindow).Recv()
 		if err != nil {
 			t.Fatalf("Recv of a sent frame: %v", err)
 		}
@@ -112,114 +109,12 @@ func FuzzSendRecvRoundTrip(f *testing.F) {
 	})
 }
 
-// FuzzReadHello: the listener's hello parser reads exactly the hello, and
-// accepts only this version with an in-range window, returning its token.
-func FuzzReadHello(f *testing.F) {
-	token := strings.Repeat("ab", TokenLen/2)
-	hello := func(ver byte, window uint32) []byte {
-		return binary.BigEndian.AppendUint32(append([]byte{ver}, token...), window)
-	}
-	f.Add(hello(Version, testWindow))
-	f.Add(hello(2, testWindow))
-	f.Add(hello(Version, MaxChunk))
-	f.Add(hello(Version, MaxWindow+1))
-	f.Add([]byte{Version})
-	f.Fuzz(func(t *testing.T, wire []byte) {
-		cr := &countingReader{r: bytes.NewReader(wire)}
-		tok, w, err := ReadHello(cr)
-		if cr.n > 1+TokenLen+4 {
-			t.Fatalf("consumed %d bytes, hello is %d", cr.n, 1+TokenLen+4)
-		}
-		if err != nil {
-			return
-		}
-		if wire[0] != Version || tok != string(wire[1:1+TokenLen]) ||
-			w != int(binary.BigEndian.Uint32(wire[1+TokenLen:])) || w < MinWindow || w > MaxWindow {
-			t.Fatalf("accepted %x as token %q window %d", wire, tok, w)
-		}
-	})
-}
-
-// FuzzHelloReply: the dialer's parser of the listener's reply binds only
-// on StatusBound with an in-range window, and refuses any other status.
-func FuzzHelloReply(f *testing.F) {
-	f.Add([]byte{StatusBound, 0, 4, 0, 0})
-	f.Add([]byte{StatusRefused})
-	f.Add([]byte{StatusBound, 0, 0, 0, 1})
-	f.Add([]byte{StatusBound, 0xff, 0xff, 0xff, 0xff})
-	f.Add([]byte{})
-	token := strings.Repeat("ab", TokenLen/2)
-	f.Fuzz(func(t *testing.T, reply []byte) {
-		cr := &countingReader{r: bytes.NewReader(reply)}
-		w, err := Hello(bufConn{r: cr, w: io.Discard}, token, testWindow)
-		if cr.n > 5 {
-			t.Fatalf("consumed %d bytes, reply is at most 5", cr.n)
-		}
-		switch {
-		case len(reply) > 0 && reply[0] != StatusBound:
-			if !errors.Is(err, ErrRefused) {
-				t.Fatalf("status %d: %v, want ErrRefused", reply[0], err)
-			}
-		case err == nil && (w < MinWindow || w > MaxWindow || w != int(binary.BigEndian.Uint32(reply[1:]))):
-			t.Fatalf("bound with window %d from %x", w, reply)
-		}
-	})
-}
-
 // closingConn is a bufConn whose Close does nothing (Serve closes it).
 type closingConn struct{ bufConn }
 
 // Close: no-op. allow:wrapper
 func (closingConn) Close() error { return nil }
 
-// FuzzMuxServe feeds a peer's arbitrary frames to the accepting side of a
-// Mux: no panic, Serve returns when the bytes run out, and the sessions
-// get no more bytes than arrived.
-// Seeds: testdata/fuzz/FuzzMuxServe (the recorded v1 Mux session).
-func FuzzMuxServe(f *testing.F) {
-	var sent bytes.Buffer
-	s := NewConn(bufConn{w: &sent}, testWindow, testWindow)
-	open, _ := opening("agent")("1")
-	reopen, _ := opening("")("1")
-	for _, err := range []error{
-		s.SendMsg(open),
-		s.SendData("1", []byte("hello")),
-		s.SendMsg(reopen),
-		s.SendData("_ctl", []byte("x")),
-		s.SendData("2", []byte("orphan")),
-		s.SendMsg([]byte("c1")),
-		s.Flush(),
-	} {
-		if err != nil {
-			f.Fatal(err)
-		}
-	}
-	f.Add(sent.Bytes())
-	f.Add(frame(2, typeData, 1, '1'))
-	f.Fuzz(func(t *testing.T, wire []byte) {
-		m := NewMux(NewConn(closingConn{bufConn{r: bytes.NewReader(wire), w: io.Discard}}, testWindow, testWindow), testCodec{})
-		var mu sync.Mutex
-		var got int
-		err := m.Serve(func(_ []byte, s *Session) {
-			n, _ := io.Copy(io.Discard, s) // ends: Serve's return ends every session
-			mu.Lock()
-			got += int(n)
-			mu.Unlock()
-			_ = s.Close()
-		})
-		if err == nil {
-			t.Fatal("Serve returned nil")
-		}
-		mu.Lock()
-		defer mu.Unlock()
-		if got > len(wire) {
-			t.Fatalf("sessions got %d bytes of %d", got, len(wire))
-		}
-	})
-}
-
-// FuzzParseLiveness: a spec ParseLiveness accepts is valid and reads back
-// the same from its String.
 func FuzzParseLiveness(f *testing.F) {
 	for _, s := range []string{"", "default", "fast", "nat", "datacenter", "mobile", "mobile,timeout=90s",
 		"interval=2s,timeout=6s", "interval=0s", "timeout=-1s", "fast,interval=1h", "x=1", ",", "MOBILE"} {

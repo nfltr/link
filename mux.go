@@ -9,8 +9,6 @@ import (
 	"io"
 	"net"
 	"os"
-	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,28 +18,11 @@ import (
 
 // MaxSessions is the most sessions one Mux carries at once by default:
 // Open refuses more (ErrFull), Serve closes a session the peer opens past
-// it. On version 2 the peer's hello sets the limit toward it.
+// it. The peer's hello sets the limit toward it.
 const MaxSessions = 1024
 
 // ErrFull is Open's refusal of a session past the most sessions allowed.
 var ErrFull = errors.New("link: connection carries its most sessions")
-
-// Codec reads and writes the messages that open and close sessions: in
-// wire version 1 their encoding is the caller's. Version 2 needs none.
-type Codec interface {
-	// Close returns the message that closes session sid.
-	Close(sid string) ([]byte, error)
-	// Parse reads a received message: the session it names, whether it
-	// opens or closes it, and data it carries for the session.
-	Parse(msg []byte) (Message, error)
-}
-
-// Message is a parsed message frame (Codec.Parse).
-type Message struct {
-	SID         string
-	Open, Close bool
-	Data        []byte
-}
 
 // Mux carries sessions over a Conn, each a net.Conn. Either side opens
 // sessions (Open), the other takes them (Serve's accept).
@@ -49,28 +30,24 @@ type Message struct {
 // stalls only itself; a Write goes to the network inline, or with the
 // frames of other sessions when a write is in flight (Conn).
 //
-// On version 1 opens and closes are the caller's messages (Codec), and
-// the Mux picks session ids from 1 up. On version 2 they are OPEN and
-// CLOSE frames, the open carrying the opener's header, and the Mux picks
-// ids as uvarints, odd on the dialer and even on the listener, so the two
+// Opens and closes are OPEN and CLOSE frames, the open carrying the
+// opener's header, and the Mux picks ids as uvarints, odd on the dialer and even on the listener, so the two
 // sides never pick the same.
 type Mux struct {
-	c     *Conn
-	codec Codec
-	ids   atomic.Uint64
-	mu    sync.Mutex
-	sess  map[string]*Session
-	done  bool // Serve returned: no more sessions
+	c    *Conn
+	ids  atomic.Uint64
+	mu   sync.Mutex
+	sess map[string]*Session
+	done bool // Serve returned: no more sessions
 	// leaving: this side sent GOAWAY; the connection closes once its last
 	// session ended and the peer read the GOAWAY (Conn.Drained).
 	leaving bool
 	left    bool // the close began
 }
 
-// NewMux returns a Mux over c whose open and close messages codec reads
-// and writes (version 1; nil on version 2).
-func NewMux(c *Conn, codec Codec) *Mux {
-	return &Mux{c: c, codec: codec, sess: map[string]*Session{}}
+// NewMux returns a Mux over c.
+func NewMux(c *Conn) *Mux {
+	return &Mux{c: c, sess: map[string]*Session{}}
 }
 
 // Conn is the Mux's connection. allow:wrapper
@@ -85,11 +62,7 @@ func (m *Mux) Sessions() int {
 
 // nextSID picks a session id this side has not used.
 func (m *Mux) nextSID() string {
-	n := m.ids.Add(1)
-	if m.c.version < 2 {
-		return strconv.FormatUint(n, 36)
-	}
-	n = 2 * n // even: the listener's
+	n := 2 * m.ids.Add(1) // even: the listener's
 	if m.c.dialer {
 		n--
 	}
@@ -97,8 +70,7 @@ func (m *Mux) nextSID() string {
 }
 
 // Open starts a session: open returns the bytes that open it for the
-// session id the Mux chose (version 1: the caller's open message;
-// version 2: the OPEN frame's header). Open sends it at once, so a peer
+// session id the Mux chose (the OPEN frame's header). Open sends it at once, so a peer
 // that speaks first is reached without the caller's bytes.
 func (m *Mux) Open(open func(sid string) ([]byte, error)) (*Session, error) {
 	if m.c.GoingAway() {
@@ -112,11 +84,7 @@ func (m *Mux) Open(open func(sid string) ([]byte, error)) (*Session, error) {
 	msg, err := open(sid)
 	if err == nil {
 		s.header = msg
-		if m.c.version >= 2 {
-			err = m.c.SendOpen(sid, msg)
-		} else {
-			err = m.c.SendMsg(msg)
-		}
+		err = m.c.SendOpen(sid, msg)
 	}
 	if err == nil {
 		err = m.c.Flush()
@@ -140,9 +108,6 @@ func (m *Mux) add(sid string, header []byte) (*Session, error) {
 	}
 	s := &Session{m: m, id: sid, q: bytequeue.New(m.c.window), header: header, done: make(chan struct{})}
 	s.q.OnPop(func(n int) { m.c.Consumed(sid, n) })
-	if m.c.version < 2 {
-		m.c.Open(sid) // version 2: the OPEN frame's
-	}
 	if old := m.sess[sid]; old != nil { // a peer reusing an id ends the old session
 		old.ended()
 	}
@@ -190,19 +155,9 @@ func (m *Mux) get(sid string) *Session {
 	return m.sess[sid]
 }
 
-// sendClose sends the frame that closes sid (half: its write side,
-// version 2).
+// sendClose sends the frame that closes sid (half: its write side).
 func (m *Mux) sendClose(sid string, half bool) {
-	var err error
-	if m.c.version >= 2 {
-		err = m.c.SendClose(sid, half)
-	} else {
-		var msg []byte
-		if msg, err = m.codec.Close(sid); err == nil {
-			err = m.c.SendMsg(msg)
-		}
-	}
-	if err == nil {
+	if m.c.SendClose(sid, half) == nil {
 		_ = m.c.Flush()
 	}
 }
@@ -210,8 +165,7 @@ func (m *Mux) sendClose(sid string, half bool) {
 // Serve receives frames until the connection fails, then closes it and
 // ends every session. accept, nil on a side that takes no sessions, runs
 // in a goroutine of its own for each session the peer opens, with the
-// bytes that opened it (version 1: the open message; version 2: the
-// header); it owns the session and closes it.
+// header that opened it; it owns the session and closes it.
 func (m *Mux) Serve(accept func(open []byte, s *Session)) error {
 	defer m.close()
 	for {
@@ -219,50 +173,12 @@ func (m *Mux) Serve(accept func(open []byte, s *Session)) error {
 		if err != nil {
 			return err
 		}
-		if m.c.version >= 2 {
-			m.serveV2(f, accept)
-			continue
-		}
-		msg := Message{SID: f.SID, Data: f.Data}
-		if f.Msg != nil {
-			if msg, err = m.codec.Parse(f.Msg); err != nil {
-				return err
-			}
-			if n := len(msg.Data); n > 0 {
-				if err := m.c.Received(msg.SID, n); err != nil {
-					return err
-				}
-			}
-		}
-		id := msg.SID
-		switch {
-		case strings.HasPrefix(id, "_"): // control frames: the caller's
-		case msg.Open:
-			var s *Session
-			if accept != nil {
-				s, err = m.add(id, f.Msg)
-			}
-			if s == nil {
-				m.sendClose(id, false)
-				continue
-			}
-			go accept(f.Msg, s)
-		case msg.Close:
-			if s := m.get(id); s != nil {
-				s.peerClosed.Store(true)
-				m.drop(s)
-			}
-		case len(msg.Data) > 0:
-			if s := m.get(id); s != nil {
-				s.q.Push(msg.Data) // within its credit: does not wait
-				s.kick()
-			}
-		}
+		m.serve(f, accept)
 	}
 }
 
-// serveV2 applies a version-2 frame. Messages have no meaning to a Mux.
-func (m *Mux) serveV2(f Frame, accept func([]byte, *Session)) {
+// serve applies a frame. Messages have no meaning to a Mux.
+func (m *Mux) serve(f Frame, accept func([]byte, *Session)) {
 	switch {
 	case f.Open:
 		var s *Session
@@ -325,7 +241,7 @@ func (m *Mux) close() {
 	}
 }
 
-// GoAway (version 2) tells the peer to open no more sessions here and
+// GoAway tells the peer to open no more sessions here and
 // stops this side opening more; the connection closes once its last
 // session ended and the peer read the GOAWAY (an OPEN it sent before
 // that runs like the others), with every frame written; at deadline at
@@ -380,8 +296,8 @@ type Session struct {
 
 	closed     atomic.Bool // Close called, or the session ended
 	peerClosed atomic.Bool // the peer closed it (or the connection ended): Close sends nothing
-	halfClosed atomic.Bool // CloseWrite called (version 2)
-	peerHalf   atomic.Bool // the peer closed its write side (version 2)
+	halfClosed atomic.Bool // CloseWrite called
+	peerHalf   atomic.Bool // the peer closed its write side
 	once       sync.Once
 
 	err     atomic.Pointer[error] // why the session was cut; nil: it ends with io.EOF
@@ -429,8 +345,8 @@ func (s *Session) end() error {
 // readable.
 func (s *Session) Done() <-chan struct{} { return s.done }
 
-// Header is the bytes that opened the session: the open message on
-// version 1, the OPEN frame's header on version 2. allow:wrapper
+// Header is the bytes that opened the session: the OPEN frame's header.
+// allow:wrapper
 func (s *Session) Header() []byte { return s.header }
 
 // ended stops writes and lets reads drain the queue.
@@ -653,13 +569,10 @@ func (s *Session) WriteBuffers(bufs [][]byte) (int64, error) {
 	return total, s.m.c.Flush()
 }
 
-// CloseWrite (version 2) ends the session's write side: the peer reads
+// CloseWrite ends the session's write side: the peer reads
 // io.EOF after what was written; this side still reads the peer's bytes.
 // The session ends once both sides closed their write side.
 func (s *Session) CloseWrite() error {
-	if s.m.c.version < 2 {
-		return errV1
-	}
 	if s.closed.Load() || s.halfClosed.Swap(true) {
 		return nil
 	}
@@ -692,8 +605,8 @@ func (s *Session) Close() error {
 	return nil
 }
 
-// Reset ends the session as failed: the peer reads ErrReset (version 2
-// with a peer that announced FeatureReset; else it reads a close).
+// Reset ends the session as failed: the peer reads ErrReset (a peer that
+// announced FeatureReset; else it reads a close).
 // Reads here end as after Close.
 func (s *Session) Reset() error {
 	s.once.Do(func() {
@@ -701,16 +614,7 @@ func (s *Session) Reset() error {
 		if s.peerClosed.Load() {
 			return
 		}
-		var err error
-		if s.m.c.version >= 2 {
-			err = s.m.c.SendReset(s.id)
-		} else {
-			var msg []byte
-			if msg, err = s.m.codec.Close(s.id); err == nil {
-				err = s.m.c.SendMsg(msg)
-			}
-		}
-		if err == nil {
+		if s.m.c.SendReset(s.id) == nil {
 			_ = s.m.c.Flush()
 		}
 	})

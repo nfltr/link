@@ -49,14 +49,14 @@ const (
 	writeBuf = 256 << 10
 )
 
-// CLOSE frame codes (version 2).
+// CLOSE frame codes.
 const (
 	closeFull  = 0 // the sender neither sends nor takes more of the session
 	closeHalf  = 1 // the sender sends no more; it still takes the peer's
 	closeReset = 2 // as closeFull, and the session failed (FeatureReset)
 )
 
-// Feature bits a version-2 side announces in its hello or reply.
+// Feature bits a side announces in its hello or reply.
 const (
 	// FeatureReset: the side reads CLOSE code 2 (a reset). A side sends
 	// code 2 only to a peer that announced it, else code 0.
@@ -98,14 +98,12 @@ var (
 	errSID = errors.New("link: session id longer than 255 bytes")
 	// errEmpty is a send of an empty message (a frame body is never empty).
 	errEmpty = errors.New("link: empty message")
-	// errV1 is a version-2 frame sent on a version-1 connection.
-	errV1 = errors.New("link: frame of wire version 2 on a version-1 connection")
 	// errHeader is an OPEN header longer than the format allows.
 	errHeader = errors.New("link: session header too long")
 )
 
 // Frame is a received frame: a session's data (SID, Data), a message
-// (Msg, the caller's bytes), or in version 2 a session's open (SID, Open,
+// (Msg, the caller's bytes), a session's open (SID, Open,
 // Header: the opener's bytes) or close (SID, Close; Half when the peer
 // only stopped sending). Window, ping, pong and goaway frames never
 // surface: Recv applies them.
@@ -141,8 +139,6 @@ type Conn struct {
 	inBuf   map[string]bool // sessions with a data frame in wbuf (turns)
 	werr    error
 
-	// Version 2.
-	version         int
 	dialer          bool // this side dialed: Mux picks odd session ids
 	peerMaxSessions int
 	peerFeatures    uint32
@@ -169,21 +165,14 @@ type Conn struct {
 	downOne sync.Once
 }
 
-// NewConn returns a version-1 Conn over nc, whose hello is done: window
-// is this side's window, peerWindow the other side's.
-func NewConn(nc net.Conn, window, peerWindow int) *Conn {
-	c := &Conn{nc: nc, version: 1}
-	c.Credit = NewCredit(window, peerWindow, c.sendWindow)
+// newConnV2 returns a Conn over nc, bound by Client (dialer) or Server;
+// up starts its liveness.
+func newConnV2(nc net.Conn, cfg Config, peerWindow, peerMaxSessions int, dialer bool) *Conn {
+	c := &Conn{nc: nc}
+	c.Credit = NewCredit(cfg.Window, peerWindow, c.sendWindow)
 	c.Credit.flush = c.Flush
 	c.wcond.L = &c.wmu
-	return c
-}
-
-// newConnV2 returns a version-2 Conn over nc, bound by Client (dialer) or
-// Server; up starts its liveness.
-func newConnV2(nc net.Conn, cfg Config, peerWindow, peerMaxSessions int, dialer bool) *Conn {
-	c := NewConn(nc, cfg.Window, peerWindow)
-	c.version, c.dialer, c.peerMaxSessions, c.live = 2, dialer, peerMaxSessions, cfg.Liveness
+	c.dialer, c.peerMaxSessions, c.live = dialer, peerMaxSessions, cfg.Liveness
 	c.maxSessions = cfg.MaxSessions
 	c.t0 = time.Now()
 	c.pong = make(chan [pingLen]byte, 1)
@@ -193,29 +182,27 @@ func newConnV2(nc net.Conn, cfg Config, peerWindow, peerMaxSessions int, dialer 
 }
 
 // up records the connection's peer and observer and reports it up.
-// A version-2 connection's liveness starts here, once they are set.
+// The connection's liveness starts here, once they are set.
 func (c *Conn) up(obs Observer, id Identity) {
 	c.id, c.obs = id, obs
 	if obs != nil {
 		obs.ConnUp(id)
 	}
-	if c.version >= 2 {
-		go c.keepAlive()
-	}
+	go c.keepAlive()
 }
 
-// Version is the connection's wire version. allow:wrapper
-func (c *Conn) Version() int { return c.version }
+// Version is the connection's wire version: 2, the only one since v0.5.0.
+func (c *Conn) Version() int { return MaxVersion }
 
 // Identity is who the peer is, as the listener's Authenticator said (zero
 // on the dialer). allow:wrapper
 func (c *Conn) Identity() Identity { return c.id }
 
 // PeerMaxSessions is how many sessions this side may have open toward the
-// peer at once (version 2). allow:wrapper
+// peer at once. allow:wrapper
 func (c *Conn) PeerMaxSessions() int { return c.peerMaxSessions }
 
-// PeerFeatures is the feature bits the peer announced (version 2).
+// PeerFeatures is the feature bits the peer announced.
 // allow:wrapper
 func (c *Conn) PeerFeatures() uint32 { return c.peerFeatures }
 
@@ -248,14 +235,12 @@ func (c *Conn) SendData(sid string, data []byte) error {
 	return nil
 }
 
-// SendOpen buffers an OPEN frame (version 2) for session sid, with header
+// SendOpen buffers an OPEN frame for session sid, with header
 // (the opener's bytes, at most 64 KiB), and starts the session's credit.
 // It refuses a session past the peer's max sessions (ErrFull) and any on a
 // connection that is going away (ErrGoAway).
 func (c *Conn) SendOpen(sid string, header []byte) error {
 	switch {
-	case c.version < 2:
-		return errV1
 	case len(sid) > MaxSID:
 		return errSID
 	case len(header) > maxHeader:
@@ -275,7 +260,7 @@ func (c *Conn) SendOpen(sid string, header []byte) error {
 	return c.frameLocked(typeOpen, sid, header)
 }
 
-// SendClose buffers a CLOSE frame (version 2) for sid: half, the side
+// SendClose buffers a CLOSE frame for sid: half, the side
 // sends no more of the session and still takes the peer's; else it
 // neither sends nor takes more, and the session's credit ends.
 func (c *Conn) SendClose(sid string, half bool) error {
@@ -297,9 +282,6 @@ func (c *Conn) SendReset(sid string) error {
 }
 
 func (c *Conn) sendClose(sid string, code byte) error {
-	if c.version < 2 {
-		return errV1
-	}
 	if len(sid) > MaxSID {
 		return errSID
 	}
@@ -311,13 +293,10 @@ func (c *Conn) sendClose(sid string, code byte) error {
 	return c.frameLocked(typeClose, sid, []byte{code})
 }
 
-// GoAway tells the peer (version 2) to open no more sessions on this
+// GoAway tells the peer to open no more sessions on this
 // connection: the open ones may run for drain, then this side closes it.
 // It also stops this side opening more (ErrGoAway). It writes at once.
 func (c *Conn) GoAway(drain time.Duration, reason string) error {
-	if c.version < 2 {
-		return errV1
-	}
 	if len(reason) > maxReason {
 		reason = reason[:maxReason]
 	}
@@ -341,7 +320,7 @@ func (c *Conn) ping() {
 	c.control(typePing, b[:])
 }
 
-// Drained (version 2) is closed once the peer answered a ping this side
+// Drained is closed once the peer answered a ping this side
 // sent after its GOAWAY (Mux.GoAway sends one at once): the peer has read
 // the GOAWAY, so it opens nothing more here, and every OPEN it sent
 // before has arrived (frames keep their order). An OPEN that crossed the
@@ -351,8 +330,7 @@ func (c *Conn) ping() {
 // drain deadline ends the connection.
 func (c *Conn) Drained() <-chan struct{} { return c.drained }
 
-// PeerGoAway is closed once the peer sent GOAWAY (version 2; never on
-// version 1).
+// PeerGoAway is closed once the peer sent GOAWAY.
 func (c *Conn) PeerGoAway() <-chan struct{} { return c.peerGoAway }
 
 // GoingAway reports whether either side sent GOAWAY. allow:wrapper
@@ -541,17 +519,12 @@ func (c *Conn) recv() (Frame, bool, error) {
 	if _, err := io.ReadFull(c.nc, c.rhdr[:6]); err != nil {
 		return Frame{}, false, err
 	}
-	if c.version >= 2 {
-		c.rxAt.Store(int64(time.Since(c.t0)))
-	}
+	c.rxAt.Store(int64(time.Since(c.t0)))
 	n := int(binary.BigEndian.Uint32(c.rhdr[:4]))
 	if n > maxFrame || n < 1 {
 		return Frame{}, false, ErrFrame
 	}
 	typ := c.rhdr[4]
-	if typ > typeWindow && c.version < 2 {
-		return Frame{}, false, ErrFrame
-	}
 	// rhdr[5] is the body's first byte: a data, open or close frame's sid_len.
 	switch typ {
 	case typeData:
@@ -672,7 +645,7 @@ func (c *Conn) small(n, lo, hi int) ([]byte, error) {
 	return b, nil
 }
 
-// keepAlive runs a version-2 connection's liveness: it pings once nothing
+// keepAlive runs a connection's liveness: it pings once nothing
 // arrived for the interval, ends the connection (ErrDeadPeer) once nothing
 // arrived for the timeout after the ping, and answers the peer's pings.
 func (c *Conn) keepAlive() {

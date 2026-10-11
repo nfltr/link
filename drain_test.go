@@ -76,7 +76,7 @@ func TestGoAwayDrainKeepsTails(t *testing.T) {
 // it runs, and the connection closes once it ended.
 func TestCrossedOpenRunsOnTheLeavingConnection(t *testing.T) {
 	c, s := v2pair(t, v2cfg, v2cfg)
-	dm, lm := NewMux(c, nil), NewMux(s, nil)
+	dm, lm := NewMux(c), NewMux(s)
 	go func() { _ = dm.Serve(nil) }()
 	sess, err := openV2(dm, "x") // waits unread at the listener
 	if err != nil {
@@ -128,7 +128,7 @@ func echoListener(t *testing.T) (addr string, muxes func() []*Mux, accepted *ato
 					return
 				}
 				accepted.Add(1)
-				m := NewMux(c, nil)
+				m := NewMux(c)
 				mu.Lock()
 				ms = append(ms, m)
 				mu.Unlock()

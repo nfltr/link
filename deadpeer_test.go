@@ -198,7 +198,7 @@ func TestDeadPeerBusy(t *testing.T) {
 					}
 				}
 				sink := func(s *Session) { _, _ = io.Copy(io.Discard, s) }
-				dm, lm := NewMux(c, nil), NewMux(s, nil)
+				dm, lm := NewMux(c), NewMux(s)
 				go func() { _ = dm.Serve(nil) }()
 				go func() {
 					_ = lm.Serve(func(_ []byte, s *Session) {
@@ -259,7 +259,7 @@ func TestConnDownCause(t *testing.T) {
 				t.Fatal(err)
 			}
 			served := make(chan struct{})
-			go func() { _ = NewMux(c, nil).Serve(nil); close(served) }()
+			go func() { _ = NewMux(c).Serve(nil); close(served) }()
 			tc.end(c, b)
 			<-served
 			waitUntil(t, func() bool { return obs.down.Load() == 1 })

@@ -15,28 +15,11 @@
 // per-session flow control, also for a caller that carries its sessions
 // on a transport of its own.
 //
-// # Wire format, version 1
-//
-//	hello  dialer -> listener: "NFDP" version(1) token(32 bytes) window(4)
-//	reply  listener -> dialer: status(1), 0 = bound; window(4) when bound
-//	frame  both ways:          length(4, of the body) type(1) body
-//	  type 0, data:    sid_len(1) sid payload
-//	  type 1, message: opaque bytes of the caller's (never empty)
-//	  type 2, window:  sid_len(1) sid increment(4)
-//
-// Integers are big endian. A session id (sid) is at most 255 bytes, chosen
-// by the side that opens the session. A window is how many bytes of one
-// session the side that announces it buffers (see Credit.Acquire). In
-// version 1 the frames that open and close a session are message frames in
-// the caller's encoding (Codec); session ids that begin with '_' name
-// control frames, which Mux leaves to the caller.
-//
-// testdata/v1_session.golden holds a recorded version-1 session; the tests
-// hold every release to those bytes.
-//
 // # Wire format, version 2
 //
-// Same magic, the version byte 2; a listener serves both versions.
+// Version 2 is the only version since v0.5.0 (version 1, the hello of a
+// bare token and opens and closes in the caller's messages, was removed;
+// a version-1 hello gets the version reply, below, and Server ErrV1).
 //
 //	hello  "NFDP" version(1)=2 max_version(1) features(4) window(4)
 //	       max_sessions(4) interval_ms(4) timeout_ms(4)
@@ -45,7 +28,10 @@
 //	         0 bound:   version(1)=2 features(4) window(4) max_sessions(4)
 //	         1 refused (the credential)
 //	         2 version: max_version(1), the highest the listener speaks
-//	frame  as version 1, plus:
+//	frame  both ways: length(4, of the body) type(1) body
+//	  type 0, data:    sid_len(1) sid payload
+//	  type 1, message: opaque bytes of the caller's (never empty)
+//	  type 2, window:  sid_len(1) sid increment(4)
 //	  type 3, open:    sid_len(1) sid header (the opener's bytes, at most 64 KiB)
 //	  type 4, close:   sid_len(1) sid code(1): 0 the sender neither sends
 //	                   nor takes more; 1 it sends no more (half-close);
@@ -55,10 +41,14 @@
 //	  type 6, pong:    the ping's 8 bytes
 //	  type 7, goaway:  drain_ms(4, 0 = none) reason (UTF-8, at most 1024)
 //
-// The dialer says which version it speaks (out of band, the listener
-// advertised which it speaks); a listener answers a version it does not
-// speak with status 2 and the dialer redials. A version-1 listener reads
-// 37 bytes of any hello before it refuses one of version 2.
+// Integers are big endian. A session id (sid) is at most 255 bytes. A
+// window is how many bytes of one session the side that announces it
+// buffers (see Credit.Acquire). Session ids that begin with '_' name
+// control frames, which Mux leaves to the caller.
+//
+// A listener answers a version it does not speak with status 2. A
+// listener of link v0.4 or older that speaks only version 1 reads 37
+// bytes of a version-2 hello before it closes the connection.
 //
 // max_sessions is how many sessions the peer may have open toward the
 // side that announces it at once; an open past it ends the connection.

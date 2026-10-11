@@ -31,7 +31,7 @@ func (a tokenAuth) Verify(_ context.Context, _ tls.ConnectionState, method byte,
 	return Identity{Method: "token", Subject: "agent-1"}, nil
 }
 
-var testToken = tokenAuth(bytes.Repeat([]byte("ab"), TokenLen/2))
+var testToken = tokenAuth(bytes.Repeat([]byte("ab"), 16))
 
 // countObserver counts events.
 type countObserver struct {
@@ -126,70 +126,33 @@ func TestHandshakeV2(t *testing.T) {
 	}
 }
 
-// TestServerSpeaksV1ByteForByte: a version-1 hello to Server gets the
-// version-1 reply of the recording, and the token goes to the
-// Authenticator as MethodToken.
-func TestServerSpeaksV1ByteForByte(t *testing.T) {
-	segs := golden(t)
-	token := string(segs["hello"][5 : 5+TokenLen])
-	window := int(binaryWindow(segs["reply-bound"][1:]))
-	for name, auth := range map[string]Authenticator{"reply-bound": tokenAuth(token), "reply-refused": tokenAuth("other")} {
-		var out bytes.Buffer
-		c, id, err := Server(context.Background(), bufConn{r: bytes.NewReader(segs["hello"]), w: &out}, Config{Window: window, Auth: auth})
-		if !bytes.Equal(out.Bytes(), segs[name]) {
-			t.Fatalf("%s: wrote %x, want %x", name, out.Bytes(), segs[name])
-		}
-		if name == "reply-refused" {
-			if !errors.Is(err, ErrAuth) {
-				t.Fatalf("refused: %v", err)
-			}
-			continue
-		}
-		if err != nil || c.Version() != 1 || id.Subject != "agent-1" {
-			t.Fatalf("bound: %v version %d %+v", err, c.Version(), id)
-		}
-	}
-}
-
-func TestClientV1(t *testing.T) {
-	segs := golden(t)
-	token := tokenAuth(segs["hello"][5 : 5+TokenLen])
-	window := int(binaryWindow(segs["hello"][5+TokenLen:]))
-	var out bytes.Buffer
-	c, err := Client(context.Background(), bufConn{r: bytes.NewReader(segs["reply-bound"]), w: &out}, Config{Version: 1, Window: window, Auth: token})
-	if err != nil || c.Version() != 1 {
-		t.Fatalf("%v", err)
-	}
-	if !bytes.Equal(out.Bytes(), segs["hello"]) {
-		t.Fatalf("hello %x, want %x", out.Bytes(), segs["hello"])
-	}
-	if _, err := Client(context.Background(), bufConn{w: io.Discard}, Config{Version: 1, Auth: NoAuth}); err == nil {
-		t.Fatal("version 1 without a token")
-	}
-}
-
-func binaryWindow(b []byte) uint32 {
-	return uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
-}
-
 func TestHandshakeVersionNegotiation(t *testing.T) {
-	// A listener that speaks only version 1 answers a version-2 hello with
-	// the versions it speaks; the dialer redials with version 1.
-	a, b := tcpPair(t)
-	go func() { _, _, _ = Server(context.Background(), b, Config{Version: 1, Auth: testToken}) }()
-	_, err := Client(context.Background(), a, Config{Auth: testToken})
+	// A version-1 hello (a dialer of link v0.4 or older) gets the version
+	// reply, which such a dialer reads as a refusal (its status is not
+	// bound), and Server returns ErrV1.
+	v1 := append([]byte(Magic+"\x01"), bytes.Repeat([]byte("ab"), 16)...)
+	v1 = append(v1, 0, 4, 0, 0)
+	var out bytes.Buffer
+	if _, _, err := Server(context.Background(), bufConn{r: bytes.NewReader(v1), w: &out}, v2cfg); !errors.Is(err, ErrV1) || !errors.Is(err, ErrVersion) {
+		t.Fatalf("v1 hello: %v, want ErrV1", err)
+	}
+	if !bytes.Equal(out.Bytes(), []byte{StatusVersion, MaxVersion}) {
+		t.Fatalf("v1 hello: reply %x, want the version reply", out.Bytes())
+	}
+	// A hello of a version past this package's gets the version reply too.
+	v3 := append([]byte(Magic+"\x03"), make([]byte, helloV2Fixed)...)
+	out.Reset()
+	if _, _, err := Server(context.Background(), bufConn{r: bytes.NewReader(v3), w: &out}, v2cfg); !errors.Is(err, ErrVersion) {
+		t.Fatalf("v3 hello: %v", err)
+	}
 	var ve *VersionError
-	if !errors.As(err, &ve) || ve.Max != 1 || !errors.Is(err, ErrVersion) {
-		t.Fatalf("v2 hello to a v1 listener: %v", err)
+	_, err := Client(context.Background(), bufConn{r: bytes.NewReader(out.Bytes()), w: io.Discard}, Config{Auth: testToken})
+	if !errors.As(err, &ve) || ve.Max != MaxVersion {
+		t.Fatalf("version reply to the dialer: %v", err)
 	}
-	c, s := v2pair(t, Config{Version: 1, Auth: testToken}, Config{Version: 1, Auth: testToken})
-	if c.Version() != 1 || s.Version() != 1 {
-		t.Fatal("redial with version 1")
-	}
-	// A version-2 listener serves version-1 dialers too.
-	c, s = v2pair(t, Config{Version: 1, Auth: testToken}, v2cfg)
-	if c.Version() != 1 || s.Version() != 1 {
-		t.Fatal("v1 dialer, v2 listener")
+	// Version 1 is no Config's.
+	if _, err := Client(context.Background(), bufConn{w: io.Discard}, Config{Version: 1, Auth: testToken}); err == nil {
+		t.Fatal("Client with Version 1")
 	}
 }
 
@@ -232,7 +195,7 @@ func TestIsHello(t *testing.T) {
 func v2muxPair(t *testing.T, accept func([]byte, *Session), dialer, listener Config) (*Mux, *Mux) {
 	t.Helper()
 	c, s := v2pair(t, dialer, listener)
-	dm, lm := NewMux(c, nil), NewMux(s, nil)
+	dm, lm := NewMux(c), NewMux(s)
 	go func() { _ = dm.Serve(accept) }()
 	go func() { _ = lm.Serve(accept) }()
 	return dm, lm
@@ -485,7 +448,7 @@ func TestPool(t *testing.T) {
 					return
 				}
 				accepted.Add(1)
-				m := NewMux(c, nil)
+				m := NewMux(c)
 				listeners.Store(m, struct{}{})
 				_ = m.Serve(v2echo)
 			}()
@@ -616,7 +579,7 @@ func TestPoolMin(t *testing.T) {
 				c, _, err := Server(context.Background(), nc, v2cfg)
 				if err == nil {
 					conns <- c
-					_ = NewMux(c, nil).Serve(nil)
+					_ = NewMux(c).Serve(nil)
 				}
 			}()
 		}
@@ -636,18 +599,6 @@ func TestPoolMin(t *testing.T) {
 
 // TestV2RejectsV1Peers: version-2 frame types are malformed on a
 // version-1 connection.
-func TestV2FramesMalformedOnV1(t *testing.T) {
-	for typ := byte(typeOpen); typ <= typeGoAway; typ++ {
-		c := NewConn(bufConn{r: bytes.NewReader(frame(9, typ, 1, 'a', 0, 0, 0, 0, 0, 0, 0))}, testWindow, testWindow)
-		if _, err := c.Recv(); !errors.Is(err, ErrFrame) {
-			t.Fatalf("type %d on v1: %v", typ, err)
-		}
-		if err := c.SendClose("a", false); !errors.Is(err, errV1) {
-			t.Fatal("SendClose on v1")
-		}
-	}
-}
-
 func TestSendOpenLimits(t *testing.T) {
 	c, _ := v2pair(t, v2cfg, v2cfg)
 	if err := c.SendOpen(string(make([]byte, MaxSID+1)), nil); !errors.Is(err, errSID) {

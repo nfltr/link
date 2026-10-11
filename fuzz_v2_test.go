@@ -33,7 +33,7 @@ func FuzzServerHello(f *testing.F) {
 	v2 := appendHelloV2(nil, helloV2{maxVersion: 2, window: testWindow, maxSessions: 4, liveness: LivenessFast, method: MethodToken, auth: []byte("tok")})
 	f.Add(v2)
 	f.Add(v2[:len(v2)-1])
-	f.Add(append([]byte("NFDP\x01"), bytes.Repeat([]byte("a"), TokenLen+4)...))
+	f.Add(append([]byte("NFDP\x01"), bytes.Repeat([]byte("a"), 32+4)...))
 	f.Add([]byte("NFDP\x03"))
 	f.Add([]byte("NFDP\x00"))
 	f.Add([]byte("PRI * HTTP/2.0"))
@@ -159,7 +159,7 @@ func FuzzMuxServeV2(f *testing.F) {
 	}
 	f.Add(sent.Bytes())
 	f.Fuzz(func(t *testing.T, wire []byte) {
-		m := NewMux(v2Conn(closingConn{bufConn{r: bytes.NewReader(wire), w: io.Discard}}), nil)
+		m := NewMux(v2Conn(closingConn{bufConn{r: bytes.NewReader(wire), w: io.Discard}}))
 		var mu sync.Mutex
 		var got int
 		err := m.Serve(func(_ []byte, s *Session) {

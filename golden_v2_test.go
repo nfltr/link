@@ -33,8 +33,8 @@ var (
 
 // v2Conn is a version-2 Conn over nc without liveness (a recording).
 func v2Conn(nc net.Conn) *Conn {
-	c := NewConn(nc, testWindow, testWindow)
-	c.version, c.peerMaxSessions, c.maxSessions = 2, 16, 16
+	c := newTestConn(nc, testWindow, testWindow)
+	c.peerMaxSessions, c.maxSessions = 16, 16
 	c.t0, c.pong, c.peerGoAway = time.Now(), make(chan [pingLen]byte, 1), make(chan struct{})
 	return c
 }
@@ -129,7 +129,7 @@ func TestV2Golden(t *testing.T) {
 	if string(h[:4]) != "NFDP" || h[4] != 2 || h[5] != 2 || be.Uint32(h[6:]) != FeatureReset ||
 		be.Uint32(h[10:]) != 0x00050000 || be.Uint32(h[14:]) != MaxSessions ||
 		be.Uint32(h[18:]) != 1500 || be.Uint32(h[22:]) != 3000 || h[26] != MethodToken ||
-		int(be.Uint16(h[27:])) != TokenLen || string(h[29:]) != v2Token {
+		int(be.Uint16(h[27:])) != 32 || string(h[29:]) != v2Token {
 		t.Fatalf("hello %x", h)
 	}
 	r := want["reply-bound"]

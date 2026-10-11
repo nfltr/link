@@ -15,35 +15,20 @@ import (
 	"time"
 )
 
-// testCodec: an open is "o" sid NUL header, a close "c" sid.
-type testCodec struct{}
-
-func (testCodec) Close(sid string) ([]byte, error) { return []byte("c" + sid), nil }
-
-func (testCodec) Parse(msg []byte) (Message, error) {
-	switch {
-	case len(msg) > 1 && msg[0] == 'o' && bytes.IndexByte(msg, 0) > 0:
-		return Message{SID: string(msg[1:bytes.IndexByte(msg, 0)]), Open: true}, nil
-	case len(msg) > 1 && msg[0] == 'c':
-		return Message{SID: string(msg[1:]), Close: true}, nil
-	}
-	return Message{}, ErrFrame
-}
-
 // opening returns Mux.Open's argument for a session with header.
 func opening(header string) func(sid string) ([]byte, error) {
-	return func(sid string) ([]byte, error) { return []byte("o" + sid + "\x00" + header), nil }
+	return func(string) ([]byte, error) { return []byte(header), nil }
 }
 
-// header is an open message's header.
-func header(open []byte) string { return string(open[bytes.IndexByte(open, 0)+1:]) }
+// header is an open's header. allow:wrapper
+func header(open []byte) string { return string(open) }
 
 // muxPair returns an opener Mux and the accepting Mux's peer, serving
 // sessions with accept.
 func muxPair(t *testing.T, accept func([]byte, *Session)) *Mux {
 	t.Helper()
-	a, b := net.Pipe()
-	client, server := NewMux(NewConn(a, testWindow, testWindow), testCodec{}), NewMux(NewConn(b, testWindow, testWindow), testCodec{})
+	ca, cb := v2pair(t, Config{Window: testWindow, Auth: testToken}, Config{Window: testWindow, Auth: testToken})
+	client, server := NewMux(ca), NewMux(cb)
 	go func() { _ = client.Serve(nil) }()
 	go func() { _ = server.Serve(accept) }()
 	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
@@ -166,7 +151,7 @@ func TestMuxSlowSessionIsolated(t *testing.T) {
 // writer that waits with buffered chunks hangs every run.
 func TestMuxWriteFlushesBeforeWaitingForCredit(t *testing.T) {
 	a, b := net.Pipe()
-	client, server := NewMux(NewConn(a, MinWindow, MinWindow), testCodec{}), NewMux(NewConn(b, MinWindow, MinWindow), testCodec{})
+	client, server := NewMux(newTestConn(a, MinWindow, MinWindow)), NewMux(newTestConn(b, MinWindow, MinWindow))
 	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
 	got := make(chan int64, 1)
 	go func() { _ = client.Serve(nil) }()
@@ -223,23 +208,7 @@ func TestMuxMaxSessions(t *testing.T) {
 	if _, err := client.Open(opening("a")); err != nil {
 		t.Fatalf("after one closed: %v", err)
 	}
-
-	// The accepting side closes a session opened past it.
-	a, b := net.Pipe()
-	raw, server := NewConn(a, testWindow, testWindow), NewMux(NewConn(b, testWindow, testWindow), testCodec{})
-	go func() { _ = server.Serve(func([]byte, *Session) { <-hold }) }()
-	t.Cleanup(func() { _ = raw.Close(); _ = server.Close() })
-	go func() {
-		for i := range MaxSessions + 1 {
-			msg, _ := opening("a")(fmt.Sprint(i))
-			_ = raw.SendMsg(msg)
-		}
-		_ = raw.Flush()
-	}()
-	f, err := raw.Recv()
-	if err != nil || string(f.Msg) != "c"+fmt.Sprint(MaxSessions) {
-		t.Fatalf("got %v, %v; want the close of session %d", f, err, MaxSessions)
-	}
+	// An open past the accepting side's limit: TestMuxV2MaxSessions.
 }
 
 // countConn counts writes and slows reads, so writes queue up.
@@ -266,7 +235,7 @@ func (c *countConn) Read(b []byte) (int, error) {
 func TestConnCombinesWrites(t *testing.T) {
 	a, b := net.Pipe()
 	ca, cb := &countConn{Conn: a}, &countConn{Conn: b, slow: true}
-	sender, receiver := NewConn(ca, testWindow, testWindow), NewConn(cb, testWindow, testWindow)
+	sender, receiver := newTestConn(ca, testWindow, testWindow), newTestConn(cb, testWindow, testWindow)
 	t.Cleanup(func() { _ = sender.Close(); _ = receiver.Close() })
 	const sessions, frames = 16, 200
 	var wg sync.WaitGroup

@@ -8,15 +8,15 @@ every frame queued at the time.
 
 - Standard library only (`TestModuleBoundary`).
 - Apache-2.0 (`LICENSE`, `NOTICE`; every source file carries an SPDX header).
-- Wire formats version 1 and 2 are specified in `doc.go`;
-  `testdata/v1_session.golden` and `testdata/v2_session.golden` hold recorded
-  sessions every release is tested against, byte for byte.
+- Wire format version 2 is specified in `doc.go`;
+  `testdata/v2_session.golden` holds a recorded session every release is
+  tested against, byte for byte. Version 1 was removed in v0.5.0.
 
 ## Packages
 
 | package | what |
 |---|---|
-| `link` | `Client`/`Server` (the hello of either version, an `Authenticator`'s credential, version negotiation, `Config`, `Observer`), `Conn` (frames, write coalescing; version 2: OPEN/CLOSE, ping liveness, GOAWAY), `Credit` (per-session flow control, also over a caller's own transport), `Mux` and `Session` (sessions as `net.Conn`s), `Pool` (several connections per peer, growth, backoff, make-before-break drain), `Liveness` and its presets; `Hello`/`ReadHello`/`Reply` (the version-1 handshake by hand) |
+| `link` | `Client`/`Server` (the hello, an `Authenticator`'s credential, `Config`, `Observer`), `Conn` (frames, write coalescing, OPEN/CLOSE, ping liveness, GOAWAY), `Credit` (per-session flow control, also over a caller's own transport), `Mux` and `Session` (sessions as `net.Conn`s), `Pool` (several connections per peer, growth, backoff, make-before-break drain), `Liveness` and its presets |
 | `link/bytequeue` | a FIFO of byte slices bounded by total bytes; `PushWithin` for a pusher that serves other queues too |
 
 ## Use
@@ -27,12 +27,12 @@ sessions, and a dialer's `Pool` opening sessions on it. In short:
 
 ```go
 c, err := link.Client(ctx, nc, link.Config{Window: 4 << 20, Liveness: link.LivenessFast, Auth: auth}) // dialer
-m := link.NewMux(c, nil)
+m := link.NewMux(c)
 go m.Serve(nil)
 s, err := m.Open(func(string) ([]byte, error) { return header, nil })
 
 c, id, err := link.Server(ctx, nc, link.Config{Auth: auth}) // listener
-go link.NewMux(c, nil).Serve(func(header []byte, s *link.Session) { /* ... */ })
+go link.NewMux(c).Serve(func(header []byte, s *link.Session) { /* ... */ })
 
 p := link.NewPool(link.PoolConfig{Link: cfg, Dial: dial, Max: 8, Backoff: backoff})
 s, err := p.Open(ctx, header)
@@ -59,3 +59,12 @@ runs only while bytes are queued: an idle session holds none),
 `Session.WriteTo` returns received buffers to the pool after a writev
 (it dropped them), a drained `bytequeue` reuses its array,
 `bytequeue.TryPopBatch` and `Ready`. No wire change.
+
+**v0.5.0 (breaking): wire version 1 removed.** Version 2 is the only wire
+version: `Hello`, `ReadHello`, `Reply`, `Version`, `TokenLen`, `NewConn`,
+`Codec` and `Message` are gone, `NewMux` takes only the connection, and
+`Config.Version` is 0 or 2. A version-1 hello (a dialer of v0.4 or older)
+gets the version reply, which such a dialer reads as a refusal, and
+`Server` returns `ErrV1` (`errors.Is` `ErrVersion`). A v0.5 dialer to a
+listener that speaks only version 1 is refused after the listener read 37
+bytes. Version 2 on the wire is unchanged (`testdata/v2_session.golden`).

@@ -62,7 +62,7 @@ func TestSessionsTakeTurnsOnASlowConn(t *testing.T) {
 	for i := range n {
 		last[i].Store(time.Now().UnixNano())
 	}
-	dm, lm := NewMux(r.c, nil), NewMux(sc, nil)
+	dm, lm := NewMux(r.c), NewMux(sc)
 	t.Cleanup(func() { _ = dm.Close(); _ = lm.Close() })
 	go func() {
 		_ = lm.Serve(func(h []byte, s *Session) {

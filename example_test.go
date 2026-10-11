@@ -66,7 +66,7 @@ func Example() {
 					return
 				}
 				who <- id
-				_ = link.NewMux(c, nil).Serve(func(header []byte, s *link.Session) {
+				_ = link.NewMux(c).Serve(func(header []byte, s *link.Session) {
 					defer s.Close()
 					body, _ := io.ReadAll(s) // until the dialer's CloseWrite
 					fmt.Fprintf(s, "%s: %s", header, bytes.ToUpper(body))

@@ -30,10 +30,16 @@ func (c bufConn) Read(b []byte) (int, error) { return c.r.Read(b) }
 // Write: net.Conn over w. allow:wrapper
 func (c bufConn) Write(b []byte) (int, error) { return c.w.Write(b) }
 
+// newTestConn is a bound Conn over nc without a hello: window is this
+// side's window, peerWindow the peer's.
+func newTestConn(nc net.Conn, window, peerWindow int) *Conn {
+	return newConnV2(nc, Config{Window: window, MaxSessions: MaxSessions}, peerWindow, MaxSessions, false)
+}
+
 func pair(t *testing.T) (*Conn, *Conn) {
 	t.Helper()
 	a, b := net.Pipe()
-	ca, cb := NewConn(a, testWindow, testWindow), NewConn(b, testWindow, testWindow)
+	ca, cb := newTestConn(a, testWindow, testWindow), newTestConn(b, testWindow, testWindow)
 	t.Cleanup(func() { _ = ca.Close(); _ = cb.Close() })
 	return ca, cb
 }
@@ -84,7 +90,7 @@ func TestFramesRoundTrip(t *testing.T) {
 // payload as sent.
 func TestDataFrameIsRaw(t *testing.T) {
 	var buf bytes.Buffer
-	c := NewConn(bufConn{w: &buf}, testWindow, testWindow)
+	c := newTestConn(bufConn{w: &buf}, testWindow, testWindow)
 	if err := c.SendData("12", []byte("abc")); err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +102,7 @@ func TestDataFrameIsRaw(t *testing.T) {
 }
 
 func TestSendRefusesWhatTheFormatCannotCarry(t *testing.T) {
-	c := NewConn(bufConn{w: io.Discard}, testWindow, testWindow)
+	c := newTestConn(bufConn{w: io.Discard}, testWindow, testWindow)
 	if c.SendMsg(nil) == nil {
 		t.Fatal("empty message sent")
 	}
@@ -117,7 +123,7 @@ func TestRecvRejectsMalformedFrames(t *testing.T) {
 		"window sid wrong": frame(6, typeWindow, 2, 'a', 0, 0, 0, 1),
 	} {
 		t.Run(name, func(t *testing.T) {
-			c := NewConn(bufConn{r: bytes.NewReader(raw)}, testWindow, testWindow)
+			c := newTestConn(bufConn{r: bytes.NewReader(raw)}, testWindow, testWindow)
 			if _, err := c.Recv(); err == nil {
 				t.Fatal("accepted")
 			}
@@ -125,52 +131,6 @@ func TestRecvRejectsMalformedFrames(t *testing.T) {
 	}
 }
 
-func TestHello(t *testing.T) {
-	token := strings.Repeat("ab", TokenLen/2)
-	for _, status := range []byte{StatusBound, StatusRefused} {
-		a, b := net.Pipe()
-		type result struct {
-			w   int
-			err error
-		}
-		res := make(chan result, 1)
-		go func() { w, err := Hello(a, token, 3*MaxChunk); res <- result{w, err} }()
-		magic := make([]byte, len(Magic))
-		if _, err := io.ReadFull(b, magic); err != nil || string(magic) != Magic {
-			t.Fatalf("magic %q, %v", magic, err)
-		}
-		got, w, err := ReadHello(b)
-		if err != nil || got != token || w != 3*MaxChunk {
-			t.Fatalf("token %q window %d, %v", got, w, err)
-		}
-		_ = Reply(b, status, 5*MaxChunk)
-		r := <-res
-		if status == StatusBound && (r.err != nil || r.w != 5*MaxChunk) || status != StatusBound && !errors.Is(r.err, ErrRefused) {
-			t.Fatalf("status %d: window %d, %v", status, r.w, r.err)
-		}
-		_ = a.Close()
-		_ = b.Close()
-	}
-	hello := func(ver byte, window uint32) []byte {
-		return binary.BigEndian.AppendUint32(append([]byte{ver}, token...), window)
-	}
-	for name, b := range map[string][]byte{
-		"another version":  hello(2, testWindow),
-		"window too small": hello(Version, MaxChunk),
-	} {
-		if _, _, err := ReadHello(bytes.NewReader(b)); err == nil {
-			t.Fatalf("%s accepted", name)
-		}
-	}
-	if _, err := Hello(bufConn{w: io.Discard}, "short", testWindow); err == nil {
-		t.Fatal("a short token sent")
-	}
-}
-
-// TestCreditBoundsUnacknowledgedData guards per-session credit: a sender
-// sends at most the peer's window of a session before the receiver
-// consumed a quarter of it; consuming returns credit in a window frame; another
-// session is not held up; forgetting or closing ends a waiting sender.
 func TestCreditBoundsUnacknowledgedData(t *testing.T) {
 	ca, cb := pair(t)
 	for _, sid := range []string{"slow", "other"} {
@@ -260,7 +220,7 @@ func TestCreditCapsMaliciousPeer(t *testing.T) {
 		return frameOf(typeData, append(append([]byte{byte(len(sid))}, sid...), make([]byte, n)...))
 	}
 	recvAll := func(wire []byte, setup func(*Conn)) error {
-		c := NewConn(bufConn{r: bytes.NewReader(wire)}, testWindow, testWindow)
+		c := newTestConn(bufConn{r: bytes.NewReader(wire)}, testWindow, testWindow)
 		c.Open("s")
 		if setup != nil {
 			setup(c)
@@ -297,7 +257,7 @@ func TestCreditCapsMaliciousPeer(t *testing.T) {
 		})
 	}
 	// Data a message carries is charged by the caller (Received).
-	c := NewConn(bufConn{r: bytes.NewReader(nil)}, testWindow, testWindow)
+	c := newTestConn(bufConn{r: bytes.NewReader(nil)}, testWindow, testWindow)
 	c.Open("s")
 	if err := c.Received("s", testWindow); err != nil {
 		t.Fatal(err)
@@ -311,7 +271,7 @@ func TestCreditCapsMaliciousPeer(t *testing.T) {
 // consumed data, the peer may send that much more without ErrCredit.
 func TestCreditReturnedDataIsAcceptedAgain(t *testing.T) {
 	var wire bytes.Buffer
-	peer := NewConn(bufConn{w: &wire}, testWindow, testWindow)
+	peer := newTestConn(bufConn{w: &wire}, testWindow, testWindow)
 	for range 3 {
 		if err := peer.SendData("s", make([]byte, testWindow/2)); err != nil {
 			t.Fatal(err)
@@ -320,7 +280,7 @@ func TestCreditReturnedDataIsAcceptedAgain(t *testing.T) {
 	if err := peer.Flush(); err != nil {
 		t.Fatal(err)
 	}
-	c := NewConn(bufConn{r: &wire, w: io.Discard}, testWindow, testWindow)
+	c := newTestConn(bufConn{r: &wire, w: io.Discard}, testWindow, testWindow)
 	c.Open("s")
 	for i := range 3 {
 		if _, err := c.Recv(); err != nil {

@@ -13,18 +13,16 @@ import (
 
 // Config is one side's settings for a connection (Client, Server).
 type Config struct {
-	// Version is the highest wire version to speak: 0 is MaxVersion. A
-	// dialer speaks it; give it what the listener advertised (out of
-	// band): a version-1 listener refuses a version-2 hello only after it
-	// read 37 bytes of it.
+	// Version is the wire version to speak: 0 is MaxVersion, the only
+	// version since v0.5.0.
 	Version int
 	// Window is how many bytes of one session this side buffers: 0 is
 	// DefaultWindow.
 	Window int
 	// MaxSessions is how many sessions the peer may have open toward this
-	// side at once (version 2): 0 is MaxSessions.
+	// side at once: 0 is MaxSessions.
 	MaxSessions int
-	// Liveness (version 2): this side declares the connection dead when it
+	// Liveness: this side declares the connection dead when it
 	// received nothing for Interval, sent a ping, and received nothing for
 	// Timeout more (ErrDeadPeer). A dialer's zero is LivenessDefault; a
 	// listener's zero is the dialer's, so both ends detect a dead path
@@ -47,7 +45,7 @@ const DefaultWindow = 1 << 20
 // Authenticator's to define (128 and up are never assigned here).
 const (
 	MethodNone  byte = 0 // no credential (NoAuth)
-	MethodToken byte = 1 // a bearer token the listener issued; version 1 carries only this, TokenLen bytes
+	MethodToken byte = 1 // a bearer token the listener issued
 )
 
 // MaxAuth bounds a hello's auth payload.
@@ -90,11 +88,11 @@ func (noAuth) Verify(_ context.Context, _ tls.ConnectionState, method byte, payl
 type Observer interface {
 	ConnUp(Identity)
 	ConnDown(Identity, error)
-	SessionOpen()             // a session opened by an OPEN frame (version 2)
+	SessionOpen()             // a session opened by an OPEN frame
 	SessionClose(error)       // one of those ended
 	CreditWait(time.Duration) // a sender waited this long for credit
-	PingRTT(time.Duration)    // a ping's round trip (version 2)
-	GoAway(Identity)          // the peer sent GOAWAY (version 2)
+	PingRTT(time.Duration)    // a ping's round trip
+	GoAway(Identity)          // the peer sent GOAWAY
 }
 
 // NopObserver ignores every event.
@@ -118,6 +116,9 @@ var (
 	// ErrAuth is a listener's refusal of a dialer its Authenticator did
 	// not verify.
 	ErrAuth = errors.New("link: peer not authenticated")
+	// ErrV1 is a listener's refusal of a version-1 hello: a dialer of
+	// link v0.4 or older (version 1 was removed in v0.5.0).
+	ErrV1 = fmt.Errorf("link: a version-1 hello: the peer is older than link v0.5.0, which speaks only version 2: %w", ErrVersion)
 	// ErrVersion is a peer that does not speak the version asked for
 	// (VersionError says which it speaks).
 	ErrVersion = errors.New("link: wire version not supported")
@@ -149,8 +150,8 @@ func (cfg Config) withDefaults() Config {
 }
 
 func (cfg Config) check() error {
-	if cfg.Version < 1 || cfg.Version > MaxVersion {
-		return fmt.Errorf("link: version %d, this package speaks 1 to %d", cfg.Version, MaxVersion)
+	if cfg.Version != MaxVersion {
+		return fmt.Errorf("link: version %d, this package speaks only %d", cfg.Version, MaxVersion)
 	}
 	if cfg.Window < MinWindow || cfg.Window > MaxWindow {
 		return fmt.Errorf("link: window %d out of range", cfg.Window)
