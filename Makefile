@@ -33,3 +33,16 @@ check-semgrep:
 # vulnerability is the toolchain's; update Go.
 check-govulncheck:
 	go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
+
+# link vs yamux (compare/, a module of its own; its README). OUT holds the
+# JSON lines; compare-docker needs docker with NET_ADMIN (about an hour).
+OUT ?= $(CURDIR)/compare/out
+.PHONY: compare compare-docker compare-summary
+compare:
+	cd compare && GOWORK=off python3 rig.py host $(OUT)
+
+compare-docker:
+	cd compare && GOWORK=off python3 rig.py docker $(OUT)
+
+compare-summary:
+	cd compare && python3 rig.py summarize $(OUT)
