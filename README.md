@@ -21,6 +21,10 @@ every frame queued at the time.
 
 ## Use
 
+`example_test.go` (`Example`, run by `go test`, shown by `go doc`) is a
+complete program: a TLS listener that authenticates dialers and serves
+sessions, and a dialer's `Pool` opening sessions on it. In short:
+
 ```go
 c, err := link.Client(ctx, nc, link.Config{Window: 4 << 20, Liveness: link.LivenessFast, Auth: auth}) // dialer
 m := link.NewMux(c, nil)
