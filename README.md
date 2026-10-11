@@ -49,4 +49,9 @@ callers with a transport of their own. v0.3.0: `Session.Reset` (CLOSE
 code 2, announced by feature bit `FeatureReset`; sent as a plain close to
 v0.2 peers), a session cut with its connection reads the connection's
 error (never `io.EOF`), `Session.Done`, session read deadlines (net/http
-serves sessions). Write deadlines are not supported.
+serves sessions). Write deadlines are not supported. v0.4.0:
+`Session.Pump` (a session's bytes go to a writer from a goroutine that
+runs only while bytes are queued: an idle session holds none),
+`Session.WriteTo` returns received buffers to the pool after a writev
+(it dropped them), a drained `bytequeue` reuses its array,
+`bytequeue.TryPopBatch` and `Ready`. No wire change.

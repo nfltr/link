@@ -111,3 +111,23 @@ func TestOnPopReportsBytesTaken(t *testing.T) {
 		t.Fatalf("OnPop reported %v, want [5 1]", got)
 	}
 }
+
+// A queue that drains reuses its array: pushes and pops in turn allocate
+// nothing.
+func TestDrainedQueueReusesItsArray(t *testing.T) {
+	q := New(1 << 20)
+	b := []byte("x")
+	var dst [][]byte
+	q.Push(b)
+	q.Push(b)
+	dst, _ = q.PopBatch(dst[:0], 10)
+	if n := testing.AllocsPerRun(100, func() {
+		q.Push(b)
+		q.Push(b)
+		dst, _ = q.PopBatch(dst[:0], 10)
+		q.Push(b)
+		q.Pop()
+	}); n != 0 {
+		t.Fatalf("%.1f allocations per push/pop round", n)
+	}
+}

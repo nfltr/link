@@ -236,6 +236,7 @@ func (m *Mux) Serve(accept func(open []byte, s *Session)) error {
 		case len(msg.Data) > 0:
 			if s := m.get(id); s != nil {
 				s.q.Push(msg.Data) // within its credit: does not wait
+				s.kick()
 			}
 		}
 	}
@@ -270,6 +271,7 @@ func (m *Mux) serveV2(f Frame, accept func([]byte, *Session)) {
 			return
 		}
 		s.q.Close() // reads end once the queue drains
+		s.kick()
 		if s.peerHalf.Store(true); s.halfClosed.Load() {
 			s.peerClosed.Store(true)
 			m.drop(s) // both sides stopped sending
@@ -277,6 +279,7 @@ func (m *Mux) serveV2(f Frame, accept func([]byte, *Session)) {
 	case len(f.Data) > 0:
 		if s := m.get(f.SID); s != nil {
 			s.q.Push(f.Data) // within its credit: does not wait
+			s.kick()
 		}
 	}
 }
@@ -358,6 +361,18 @@ type Session struct {
 	dlTimer *time.Timer
 	dlGen   uint64      // the deadline's generation: a stale timer does nothing
 	dlPast  atomic.Bool // the read deadline passed
+
+	pump    atomic.Pointer[pump] // set by Pump
+	pumping atomic.Bool          // a pump goroutine runs, or the pump ended
+}
+
+// pump is a Session's Pump: where its bytes go.
+type pump struct {
+	w     io.Writer
+	done  func(int64, error)
+	total int64
+	bufs  [][]byte // scratch, kept across runs
+	bw    batchWriter
 }
 
 // ErrReset is what a session reads once the peer reset it (Reset).
@@ -391,6 +406,7 @@ func (s *Session) Header() []byte { return s.header }
 func (s *Session) ended() {
 	s.closed.Store(true)
 	s.q.Close()
+	s.kick()
 	s.endOnce.Do(func() { close(s.done) })
 }
 
@@ -438,22 +454,117 @@ func (s *Session) WriteTo(w io.Writer) (int64, error) {
 		}
 	}
 	var bufs [][]byte
+	bw := new(batchWriter)
 	for {
 		var ok bool
 		if bufs, ok = s.q.PopBatch(bufs[:0], writeBuf); !ok {
 			return total, s.endErr()
 		}
-		nb := net.Buffers(bufs)
-		n, err := nb.WriteTo(w)
+		n, err := bw.write(w, bufs)
 		total += n
-		for _, b := range bufs { // written (a Writer keeps none of p)
-			releaseData(b)
-		}
-		clear(bufs)
 		if err != nil {
 			return total, err
 		}
 	}
+}
+
+// batchWriter writes batches of received slices in one net.Buffers write
+// each, then releases them (a Writer keeps none of p). Its scratch is
+// reused: net.Buffers.WriteTo moves its receiver to the heap.
+type batchWriter struct {
+	wb [][]byte
+	nb net.Buffers
+}
+
+func (bw *batchWriter) write(w io.Writer, bufs [][]byte) (int64, error) {
+	// net.Buffers clears the slices it wrote (writev): it gets a copy,
+	// bufs keeps them for the release.
+	bw.wb = append(bw.wb[:0], bufs...)
+	bw.nb = bw.wb
+	n, err := bw.nb.WriteTo(w)
+	for _, b := range bufs {
+		releaseData(b)
+	}
+	clear(bufs)
+	clear(bw.wb)
+	return n, err
+}
+
+// Pump writes the peer's bytes to w as WriteTo does, without a goroutine
+// waiting while the session is idle: one runs only while bytes are
+// queued, started as they arrive (the receive loop never waits for it).
+// done gets what WriteTo would return, once, from that goroutine: the
+// session ended, or w failed (the session's further bytes stay unread:
+// close it). Pump takes over the session's reads: no Read, WriteTo or
+// second Pump after it.
+func (s *Session) Pump(w io.Writer, done func(n int64, err error)) {
+	s.pump.Store(&pump{w: w, done: done})
+	s.kick()
+}
+
+// kick starts the pump's goroutine unless one runs.
+func (s *Session) kick() {
+	if s.pump.Load() != nil && s.pumping.CompareAndSwap(false, true) {
+		go s.drain()
+	}
+}
+
+// drain writes what is queued, then stops; a push meanwhile restarts it.
+// Only one runs at a time (pumping), so bytes go out in order.
+func (s *Session) drain() {
+	p := s.pump.Load()
+	ow, owned := p.w.(OwnedWriter)
+	var err error
+	if len(s.rest) > 0 { // the tail of a Read before Pump
+		b := s.rest
+		s.rest, s.cur = nil, nil
+		if err = writeOwnedOrCopy(p.w, ow, owned, b); err != nil {
+			p.done(p.total, err)
+			return
+		}
+		p.total += int64(len(b))
+	}
+	for {
+		bufs, ok, ended := s.q.TryPopBatch(p.bufs[:0], writeBuf)
+		p.bufs = bufs
+		if !ok {
+			if ended {
+				p.done(p.total, s.endErr()) // pumping stays set: no other runs
+				return
+			}
+			s.pumping.Store(false)
+			if !s.q.Ready() || !s.pumping.CompareAndSwap(false, true) {
+				return // idle, or a push started another
+			}
+			continue
+		}
+		var n int64
+		if owned {
+			for _, b := range bufs {
+				if err = ow.WriteOwned(b); err != nil {
+					break
+				}
+				n += int64(len(b))
+			}
+			clear(bufs)
+		} else {
+			n, err = p.bw.write(p.w, bufs)
+		}
+		p.total += n
+		if err != nil {
+			p.done(p.total, err)
+			return
+		}
+	}
+}
+
+// writeOwnedOrCopy writes b to an OwnedWriter (which keeps it) or w.
+func writeOwnedOrCopy(w io.Writer, ow OwnedWriter, owned bool, b []byte) error {
+	if owned {
+		return ow.WriteOwned(b)
+	}
+	_, err := w.Write(b)
+	return err
 }
 
 func (s *Session) writeOwned(w OwnedWriter) (int64, error) {

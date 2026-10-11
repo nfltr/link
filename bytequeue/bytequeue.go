@@ -145,7 +145,7 @@ func (q *Queue) PopUnless(stop *atomic.Bool) ([]byte, bool) {
 	}
 	b := q.bufs[0]
 	q.bufs[0] = nil
-	q.bufs = q.bufs[1:]
+	q.bufs = q.trim(1)
 	q.size -= len(b)
 	q.pops++
 	q.cond.Broadcast()
@@ -166,6 +166,31 @@ func (q *Queue) PopBatch(dst [][]byte, max int) ([][]byte, bool) {
 		q.mu.Unlock()
 		return dst, false
 	}
+	return q.popBatchLocked(dst, max), true
+}
+
+// TryPopBatch is PopBatch that never waits: ok is false when nothing is
+// queued, ended too once the queue is closed and drained.
+func (q *Queue) TryPopBatch(dst [][]byte, max int) (out [][]byte, ok, ended bool) {
+	q.mu.Lock()
+	if len(q.bufs) == 0 {
+		ended = q.closed
+		q.mu.Unlock()
+		return dst, false, ended
+	}
+	return q.popBatchLocked(dst, max), true, false
+}
+
+// Ready reports whether a pop would not wait: slices are queued, or the
+// queue is closed.
+func (q *Queue) Ready() bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return len(q.bufs) > 0 || q.closed
+}
+
+// popBatchLocked pops at least one slice (one is queued); it unlocks mu.
+func (q *Queue) popBatchLocked(dst [][]byte, max int) [][]byte {
 	n, k := 0, 0
 	for _, b := range q.bufs {
 		if k > 0 && n+len(b) > max {
@@ -176,13 +201,22 @@ func (q *Queue) PopBatch(dst [][]byte, max int) ([][]byte, bool) {
 		q.bufs[k] = nil
 		k++
 	}
-	q.bufs = q.bufs[k:]
+	q.bufs = q.trim(k)
 	q.size -= n
 	q.pops++
 	q.cond.Broadcast()
 	q.mu.Unlock()
 	q.popped(n)
-	return dst, true
+	return dst
+}
+
+// trim drops the first k queued slices; a drained queue keeps its array
+// (pushes then reuse it, not grow a new one).
+func (q *Queue) trim(k int) [][]byte {
+	if k == len(q.bufs) {
+		return q.bufs[:0]
+	}
+	return q.bufs[k:]
 }
 
 // Close stops further pushes and wakes every waiter. Already queued slices
