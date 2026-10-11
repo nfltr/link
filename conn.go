@@ -134,9 +134,11 @@ type Conn struct {
 	rhdr [5 + 1 + MaxSID + 4]byte // a header, and a window or close frame or a data frame's sid
 
 	wmu     sync.Mutex
-	wcond   sync.Cond // on wmu: a write finished or took the buffer
-	wbuf    *[]byte   // frames not yet written; nil when none
-	writing bool      // a write is in flight, wmu released
+	wcond   sync.Cond       // on wmu: a write finished or took the buffer
+	wbuf    *[]byte         // frames not yet written; nil when none
+	writing bool            // a write is in flight, wmu released
+	waiting int             // senders waiting on wcond for room or their turn
+	inBuf   map[string]bool // sessions with a data frame in wbuf (turns)
 	werr    error
 
 	// Version 2.
@@ -350,10 +352,26 @@ func (c *Conn) frameLocked(typ byte, sid string, body []byte) error {
 	if withSID {
 		n += 1 + len(sid)
 	}
+	// Turns: while senders wait for room, a session whose data is already
+	// in the buffer waits for the next one, so they each get a frame into
+	// every write instead of one busy session filling buffer after buffer
+	// (a waiter wakes only when a write takes the buffer, a running sender
+	// at once; on a slow link one of 8 sessions moved nothing for seconds).
+	for typ == typeData && c.werr == nil && c.waiting > 0 && c.wbuf != nil && c.inBuf[sid] {
+		if !c.writing { // no write to wait for: this sender writes the buffer
+			c.writeLocked(false)
+			continue
+		}
+		c.waiting++
+		c.wcond.Wait()
+		c.waiting--
+	}
 	// A full buffer goes out first, by this sender or the write in flight.
 	for c.werr == nil && c.wbuf != nil && len(*c.wbuf)+5+n > cap(*c.wbuf) {
 		if c.writing {
+			c.waiting++
 			c.wcond.Wait()
+			c.waiting--
 		} else {
 			c.writeLocked(false)
 		}
@@ -370,6 +388,12 @@ func (c *Conn) frameLocked(typ byte, sid string, body []byte) error {
 		b = append(append(b, byte(len(sid))), sid...) // #nosec G115 -- len(sid) <= MaxSID
 	}
 	*c.wbuf = append(b, body...)
+	if typ == typeData {
+		if c.inBuf == nil {
+			c.inBuf = map[string]bool{}
+		}
+		c.inBuf[sid] = true
+	}
 	return nil
 }
 
@@ -380,6 +404,12 @@ func (c *Conn) frameLocked(typ byte, sid string, body []byte) error {
 // yield the writer first lets other runnable goroutines run: on a busy
 // CPU they buffer their frames for this write instead of each writing
 // its own; on an idle one it returns at once.
+//
+// The sender that starts writing writes once: what was buffered meanwhile
+// goes out from a drain goroutine, so that sender gets back to its own
+// session. Writing for as long as others kept buffering, a sender on a
+// slow, busy connection never did (its session stalled for seconds while
+// the others moved).
 func (c *Conn) writeLocked(yield bool) {
 	c.writing = true
 	if yield {
@@ -387,23 +417,46 @@ func (c *Conn) writeLocked(yield bool) {
 		runtime.Gosched()
 		c.wmu.Lock()
 	}
-	for c.wbuf != nil && c.werr == nil {
-		b := c.wbuf
-		c.wbuf = nil
-		c.wcond.Broadcast() // senders waiting on the full buffer start a new one
-		c.wmu.Unlock()
-		_, err := c.nc.Write(*b)
-		if cap(*b) <= writeBuf { // not one grown for a huge frame
-			*b = (*b)[:0]
-			writeBufs.Put(b)
-		}
-		c.wmu.Lock()
-		if err != nil {
-			c.werr = err
-		}
+	c.writeOneLocked()
+	if c.wbuf != nil && c.werr == nil {
+		go c.drain() // writing stays set until it is done
+		return
 	}
 	c.writing = false
 	c.wcond.Broadcast()
+}
+
+// drain writes what was buffered while a sender wrote, and what is
+// buffered meanwhile, until none is left.
+func (c *Conn) drain() {
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
+	for c.wbuf != nil && c.werr == nil {
+		c.writeOneLocked()
+	}
+	c.writing = false
+	c.wcond.Broadcast()
+}
+
+// writeOneLocked writes the buffered frames, wmu released meanwhile.
+func (c *Conn) writeOneLocked() {
+	if c.wbuf == nil || c.werr != nil {
+		return
+	}
+	b := c.wbuf
+	c.wbuf = nil
+	clear(c.inBuf)      // a new buffer: every session's turn again
+	c.wcond.Broadcast() // senders waiting on the full buffer start a new one
+	c.wmu.Unlock()
+	_, err := c.nc.Write(*b)
+	if cap(*b) <= writeBuf { // not one grown for a huge frame
+		*b = (*b)[:0]
+		writeBufs.Put(b)
+	}
+	c.wmu.Lock()
+	if err != nil {
+		c.werr = err
+	}
 }
 
 // Flush writes the buffered frames: inline when no write is in flight,
