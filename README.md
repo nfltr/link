@@ -22,7 +22,8 @@ every frame queued at the time.
 | `link/peerlink/peerlinktest` | the contract's conformance suite (`Run`) and the fault-injecting `Proxy`, for any implementation |
 
 `peerlink/grpclink` (a module of its own, `make check-grpclink`) implements
-`peerlink.Link` over gRPC streams and passes the same suite.
+`peerlink.Link` over gRPC streams and passes the same suite (one
+direction: the dialer opens).
 
 ## Use
 
@@ -77,4 +78,16 @@ bytes. Version 2 on the wire is unchanged (`testdata/v2_session.golden`).
 
 v0.6.0: `peerlink` (the `Link` API, its contract, `Node` over `Pool` and
 `Mux`), `peerlink/peerlinktest` (the conformance suite) and the
-`peerlink/grpclink` module. No wire change.
+`peerlink/grpclink` module. No wire change. v0.6.1: `peerlink.Config.ServedPeer` names an
+accepted connection's peer.
+
+v0.7.0: the reverse direction. `peerlink.Node` without `Config.Dial`
+opens sessions on the connections its peers dialled in (peers behind
+NAT); `Open` toward a peer with none up waits until its context ends, then
+fails with `peerlink.ErrPeerUnreachable`. `Config.Connect` keeps a
+dialler's connections up so that its peers open sessions on them, and
+`Serve` takes sessions on dialled connections too (it no longer needs a
+`Listener`). `PoolConfig.Accept` takes the sessions a peer opens on a
+`Pool`'s connections (they were refused). `peerlinktest`: `Pair.Reverse`,
+cases `Reconnect` and `Unreachable`. `grpclink` does not support the
+reverse direction. No wire change.

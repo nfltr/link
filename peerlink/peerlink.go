@@ -35,6 +35,13 @@
 //     Read). Once its sessions ended, or at ctx's end, when it cuts the
 //     rest, Drain releases everything the Link holds and Serve returns.
 //   - A header of up to 4 KiB reaches the peer's accept as it was sent.
+//   - An implementation may open sessions on the connections a peer
+//     dialled in (toward a peer behind NAT, which it cannot dial), and
+//     says whether it does. Its Open toward such a peer with no
+//     connection up waits for one until ctx ends, then fails with an
+//     error that is ErrPeerUnreachable and ctx's error; once the peer
+//     dials again, sessions open on the new connection. Every other rule
+//     holds in that direction too.
 //   - Policy is the caller's: which peer to use, retries, who may connect
 //     (the implementation's authenticator or credentials), and timeouts.
 //
@@ -71,3 +78,8 @@ type Link interface {
 
 // ErrDraining is Open's refusal on a Link that is draining.
 var ErrDraining = errors.New("peerlink: draining")
+
+// ErrPeerUnreachable is Open's failure toward a peer it opens sessions to
+// only on connections the peer dialled, when none came up before Open's
+// ctx ended; the error is ctx's error too.
+var ErrPeerUnreachable = errors.New("peerlink: peer unreachable")

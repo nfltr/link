@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/nfltr/link"
+	"github.com/nfltr/link/peerlink"
 	"github.com/nfltr/link/peerlink/grpclink"
 	"github.com/nfltr/link/peerlink/peerlinktest"
 	"google.golang.org/grpc"
@@ -68,4 +70,27 @@ func TestConformance(t *testing.T) {
 			BlackHole: px.BlackHole, Cut: px.Cut, Throttle: px.Throttle,
 		}
 	})
+}
+
+// TestReverseUnsupported: a Node opens no sessions on connections its
+// peers dialled; without Config.Dial, Open fails at once (it does not wait
+// for the peer as peerlink.Node does).
+func TestReverseUnsupported(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close() //nolint:errcheck
+	n := grpclink.New(grpclink.Config{Listener: ln, Identify: identify})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	start := time.Now()
+	s, err := n.Open(ctx, "a", nil)
+	if err == nil {
+		_ = s.Close()
+		t.Fatal("Open without Config.Dial succeeded")
+	}
+	if errors.Is(err, peerlink.ErrPeerUnreachable) || time.Since(start) > time.Second {
+		t.Fatalf("Open without Config.Dial: %v after %v, want an immediate refusal", err, time.Since(start))
+	}
 }

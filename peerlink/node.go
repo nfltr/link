@@ -6,6 +6,7 @@ package peerlink
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"net"
 	"slices"
@@ -21,8 +22,16 @@ type Config struct {
 	// Dial connects to peer with its security done (TLS, mutual TLS, or
 	// none on a trusted path). It is also where a caller fails fast toward
 	// a peer it takes for unreachable: its error returns from Open at once
-	// (with Pool.Backoff nil).
+	// (with Pool.Backoff nil). nil: the Node dials nothing, and Open opens
+	// on the connections the peer dialled in (Serve accepted them): see
+	// Open.
 	Dial func(ctx context.Context, peer string) (net.Conn, error)
+	// Connect is the peers Serve dials when it starts and keeps Pool.Min
+	// connections to (at least one) until Drain, so that they open
+	// sessions toward this Node on connections it dialled: a Node behind
+	// NAT, say, that its peers cannot dial. Serve takes those sessions as
+	// it takes the ones on accepted connections.
+	Connect []string
 	// Listener is where Serve accepts connections, its security done (a
 	// TLS listener, say). nil: the Node only dials.
 	Listener net.Listener
@@ -47,24 +56,33 @@ type Config struct {
 }
 
 // Node is a Link over github.com/nfltr/link: a link.Pool per peer it opens
-// sessions to (made at the first Open, kept until Drain), and a link.Mux
-// per connection Serve accepts. Sessions are *link.Session (dialled ones
-// wrapped, with every method): read deadlines, no write deadlines.
+// sessions to (made at the first Open, or by Serve for Config.Connect,
+// kept until Drain), and a link.Mux per connection Serve accepts. Sessions
+// go both ways on every connection: a peer opens sessions on the
+// connections this Node dialled (Serve takes them), and a Node without
+// Config.Dial opens sessions on the connections its peers dialled in.
+// Sessions are *link.Session (some wrapped, with every method): read
+// deadlines, no write deadlines.
 type Node struct {
 	cfg Config
 
 	mu       sync.Mutex
 	pools    map[string]*link.Pool
-	served   map[*link.Mux]struct{}
+	served   map[*link.Mux]string // accepted connections and their peer
+	changed  chan struct{}        // closed when served changes
+	accept   func(string, []byte, net.Conn)
 	draining bool
+	drained  chan struct{}  // closed when Drain starts
 	opened   sync.WaitGroup // dialled sessions not yet closed
+	accepted sync.WaitGroup // sessions taken on dialled connections, not yet closed
 }
 
 var _ Link = (*Node)(nil)
 
 // New returns a Node; it dials nothing until Open.
 func New(cfg Config) *Node {
-	return &Node{cfg: cfg, pools: map[string]*link.Pool{}, served: map[*link.Mux]struct{}{}}
+	return &Node{cfg: cfg, pools: map[string]*link.Pool{}, served: map[*link.Mux]string{},
+		changed: make(chan struct{}), drained: make(chan struct{})}
 }
 
 // DeadAfter is the Node's dead-peer bound: Interval + Timeout of
@@ -78,21 +96,21 @@ func (n *Node) DeadAfter() time.Duration {
 	return l.Interval + l.Timeout
 }
 
-// Open opens a session to peer on one of its pool's connections.
+// Open opens a session to peer on one of its pool's connections. Without
+// Config.Dial it opens on one of the connections peer dialled in (the one
+// with the fewest sessions, not going away); while peer has none, Open
+// waits for one until ctx ends, then fails with ErrPeerUnreachable (and
+// ctx's error).
 func (n *Node) Open(ctx context.Context, peer string, header []byte) (net.Conn, error) {
 	if n.cfg.Dial == nil {
-		return nil, errors.New("peerlink: Open needs Config.Dial")
+		return n.openServed(ctx, peer, header)
 	}
 	n.mu.Lock()
 	if n.draining {
 		n.mu.Unlock()
 		return nil, ErrDraining
 	}
-	p := n.pools[peer]
-	if p == nil {
-		p = n.newPool(peer)
-		n.pools[peer] = p
-	}
+	p := n.poolLocked(peer)
 	n.opened.Add(1) // before Drain's Wait: both under mu
 	n.mu.Unlock()
 	s, err := p.Open(ctx, header)
@@ -103,8 +121,58 @@ func (n *Node) Open(ctx context.Context, peer string, header []byte) (net.Conn, 
 	return &session{Session: s, done: n.opened.Done}, nil
 }
 
+// openServed opens a session on a connection peer dialled in.
+func (n *Node) openServed(ctx context.Context, peer string, header []byte) (net.Conn, error) {
+	refused := map[*link.Mux]bool{}
+	for {
+		n.mu.Lock()
+		if n.draining {
+			n.mu.Unlock()
+			return nil, ErrDraining
+		}
+		var best *link.Mux
+		for m, p := range n.served {
+			if p == peer && !refused[m] && !m.Conn().GoingAway() && (best == nil || m.Sessions() < best.Sessions()) {
+				best = m
+			}
+		}
+		changed := n.changed
+		n.mu.Unlock()
+		if best == nil {
+			select {
+			case <-changed:
+				continue
+			case <-ctx.Done():
+				return nil, fmt.Errorf("%w %q: %w", ErrPeerUnreachable, peer, ctx.Err())
+			}
+		}
+		s, err := best.Open(func(string) ([]byte, error) { return header, nil })
+		if err == nil {
+			return s, nil
+		}
+		if !errors.Is(err, link.ErrGoAway) && !errors.Is(err, link.ErrFull) && !errors.Is(err, net.ErrClosed) {
+			return nil, err
+		}
+		refused[best] = true // it stopped taking sessions meanwhile
+	}
+}
+
+// poolLocked returns peer's pool, made at the first call.
+func (n *Node) poolLocked(peer string) *link.Pool {
+	p := n.pools[peer]
+	if p == nil {
+		p = n.newPool(peer)
+		n.pools[peer] = p
+	}
+	return p
+}
+
 func (n *Node) newPool(peer string) *link.Pool {
 	pc := n.cfg.Pool
+	if slices.Contains(n.cfg.Connect, peer) {
+		pc.Min = max(pc.Min, 1)
+	}
+	pc.Accept = func(h []byte, s *link.Session) { n.acceptDialled(peer, h, s) }
 	pc.Link = n.cfg.Link
 	pc.Link.Observer = nil
 	if n.cfg.Observer != nil {
@@ -116,7 +184,25 @@ func (n *Node) newPool(peer string) *link.Pool {
 	return link.NewPool(pc)
 }
 
-// session is a dialled session: Drain waits for its Close or Reset.
+// acceptDialled hands a session peer opened on a connection this Node
+// dialled to Serve's accept; before Serve or once draining, it is reset.
+func (n *Node) acceptDialled(peer string, h []byte, s *link.Session) {
+	n.mu.Lock()
+	accept := n.accept
+	ok := accept != nil && !n.draining
+	if ok {
+		n.accepted.Add(1) // before Drain's Wait: both under mu
+	}
+	n.mu.Unlock()
+	if !ok {
+		_ = s.Reset()
+		return
+	}
+	accept(peer, h, &session{Session: s, done: n.accepted.Done})
+}
+
+// session is a session on a dialled connection: Drain waits for its Close
+// or Reset.
 type session struct {
 	*link.Session
 	once sync.Once
@@ -135,12 +221,26 @@ func (s *session) Reset() error {
 	return err
 }
 
-// Serve accepts connections on Config.Listener and serves their sessions
-// until Drain. A failed handshake closes that connection only; an Accept
-// error other than Drain's ends Serve.
+// Serve takes the sessions peers open until Drain: on the connections it
+// accepts on Config.Listener (if any), and on the connections this Node
+// dialled, Config.Connect's among them, which it dials now. A failed
+// handshake closes that connection only; an Accept error other than
+// Drain's ends Serve.
 func (n *Node) Serve(accept func(peer string, header []byte, s net.Conn)) error {
+	if len(n.cfg.Connect) > 0 && n.cfg.Dial == nil {
+		return errors.New("peerlink: Config.Connect needs Config.Dial")
+	}
+	n.mu.Lock()
+	n.accept = accept
+	if !n.draining {
+		for _, peer := range n.cfg.Connect {
+			n.poolLocked(peer)
+		}
+	}
+	n.mu.Unlock()
 	if n.cfg.Listener == nil {
-		return errors.New("peerlink: Serve needs Config.Listener")
+		<-n.drained
+		return nil
 	}
 	for {
 		nc, err := n.cfg.Listener.Accept()
@@ -172,19 +272,26 @@ func (n *Node) serveConn(nc net.Conn, accept func(string, []byte, net.Conn)) {
 		return
 	}
 	m := link.NewMux(c)
+	peer := n.servedPeer(nc, id)
 	n.mu.Lock()
 	if n.draining {
 		n.mu.Unlock()
 		_ = m.Close()
 		return
 	}
-	n.served[m] = struct{}{}
+	n.served[m] = peer
+	n.changedLocked()
 	n.mu.Unlock()
-	peer := n.servedPeer(nc, id)
 	_ = m.Serve(func(h []byte, s *link.Session) { accept(peer, h, s) })
 	n.mu.Lock()
 	delete(n.served, m)
+	n.changedLocked()
 	n.mu.Unlock()
+}
+
+func (n *Node) changedLocked() {
+	close(n.changed)
+	n.changed = make(chan struct{})
 }
 
 func (n *Node) servedPeer(nc net.Conn, id link.Identity) string {
@@ -195,14 +302,18 @@ func (n *Node) servedPeer(nc net.Conn, id link.Identity) string {
 }
 
 // Drain closes the listener, sends GOAWAY on every accepted connection
-// (each closes once its sessions ended), waits for the sessions this Node
-// opened to be closed, then closes every pool. At ctx's end it closes
-// everything at once and returns ctx's error.
+// (each closes once its sessions ended), resets the sessions peers open on
+// dialled connections from then on, waits for the sessions on dialled
+// connections to be closed, then closes every pool. At ctx's end it
+// closes everything at once and returns ctx's error.
 func (n *Node) Drain(ctx context.Context) error {
 	n.mu.Lock()
 	first := !n.draining
 	n.draining = true
 	served := slices.Collect(maps.Keys(n.served))
+	if first {
+		close(n.drained)
+	}
 	n.mu.Unlock()
 	if first && n.cfg.Listener != nil {
 		_ = n.cfg.Listener.Close()
@@ -213,6 +324,7 @@ func (n *Node) Drain(ctx context.Context) error {
 	idle := make(chan struct{})
 	go func() {
 		n.opened.Wait()
+		n.accepted.Wait()
 		for _, m := range served {
 			<-m.Conn().Done()
 		}

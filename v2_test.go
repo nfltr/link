@@ -597,6 +597,55 @@ func TestPoolMin(t *testing.T) {
 	}
 }
 
+// TestPoolAccept: sessions the peer opens on a Pool's connection go to
+// Accept; without Accept they are refused (a reset).
+func TestPoolAccept(t *testing.T) {
+	for _, withAccept := range []bool{true, false} {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		served := make(chan *Mux, 1)
+		go func() {
+			nc, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			c, _, err := Server(context.Background(), nc, v2cfg)
+			if err != nil {
+				return
+			}
+			m := NewMux(c)
+			served <- m
+			_ = m.Serve(nil)
+		}()
+		pc := PoolConfig{Link: v2cfg, Min: 1, Dial: func(ctx context.Context) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "tcp", ln.Addr().String())
+		}}
+		if withAccept {
+			pc.Accept = v2echo
+		}
+		p := NewPool(pc)
+		m := <-served
+		s, err := m.Open(func(string) ([]byte, error) { return []byte("x"), nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = s.Write([]byte("ping"))
+		b := make([]byte, 4)
+		_, err = io.ReadFull(s, b)
+		if withAccept && (err != nil || string(b) != "ping") {
+			t.Errorf("with Accept: echo %q %v", b, err)
+		}
+		if !withAccept && !errors.Is(err, ErrReset) {
+			t.Errorf("without Accept: read %v, want ErrReset", err)
+		}
+		_ = s.Close()
+		_ = p.Close()
+		_ = ln.Close()
+	}
+}
+
 // TestV2RejectsV1Peers: version-2 frame types are malformed on a
 // version-1 connection.
 func TestSendOpenLimits(t *testing.T) {

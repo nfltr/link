@@ -37,6 +37,10 @@ type PoolConfig struct {
 	// dials (from 1). nil: Open fails with the dial's error, and Min is
 	// redialled once a second.
 	Backoff func(attempt int) time.Duration
+	// Accept, when set, takes the sessions the peer opens on the Pool's
+	// connections (Mux.Serve's accept: it owns the session and closes
+	// it). nil: they are refused.
+	Accept func(open []byte, s *Session)
 }
 
 // PoolStats is a Pool's load: open connections that take sessions, and
@@ -47,7 +51,7 @@ type PoolStats struct{ Conns, Sessions int }
 // one with the fewest sessions, dialling more as Grow says. A connection
 // the peer sends GOAWAY on takes no more sessions; its open ones run on.
 // Drain replaces every connection make-before-break. Sessions the peer
-// opens toward a Pool are refused.
+// opens on the Pool's connections go to Accept (nil: refused).
 type Pool struct {
 	cfg    PoolConfig
 	ctx    context.Context
@@ -228,7 +232,7 @@ func (p *Pool) dial(ctx context.Context) (*Mux, error) {
 	p.conns = append(p.conns, m)
 	p.changedLocked()
 	go func() {
-		_ = m.Serve(nil)
+		_ = m.Serve(p.cfg.Accept)
 		p.mu.Lock()
 		p.conns = slices.DeleteFunc(p.conns, func(x *Mux) bool { return x == m })
 		p.changedLocked()

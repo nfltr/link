@@ -41,6 +41,11 @@ import (
 // Pair is two connected Links: A opens sessions to B.
 type Pair struct {
 	A, B peerlink.Link
+	// Reverse: B dials A, and A opens its sessions on the connections B
+	// dialled (B behind NAT, say). The suite then calls Serve on A too
+	// (to accept B's connections) and runs the cases of that direction.
+	// false: A dials B.
+	Reverse bool
 	// BName is the peer name A opens sessions to B with; AName is the name
 	// B's accept is given for A.
 	AName, BName string
@@ -62,12 +67,14 @@ type Pair struct {
 const Within = time.Minute
 
 // Run runs every case of the suite, each on a Pair of its own from newPair
-// (some cases make two). The suite calls Serve on B and Drain on both
-// (when a case ends: with a done context); newPair must not.
+// (some cases make two). The suite calls Serve on B (and on A in a Reverse
+// Pair) and Drain on both (when a case ends: with a done context); newPair
+// must not.
 func Run(t *testing.T, newPair func(t *testing.T) Pair) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) { c.run(t, newPair) })
 	}
+	t.Run("Unreachable", func(t *testing.T) { testUnreachable(t, newPair) })
 }
 
 var cases = []struct {
@@ -88,6 +95,7 @@ var cases = []struct {
 	{"DrainAccepter", testDrainAccepter},
 	{"DrainOpener", testDrainOpener},
 	{"DrainDeadline", testDrainDeadline},
+	{"Reconnect", testReconnect},
 }
 
 // --- helpers ---
@@ -98,20 +106,32 @@ func pair(t *testing.T, newPair func(*testing.T) Pair, accept func(peer string, 
 	if p.A == nil || p.B == nil || p.DeadAfter <= 0 || p.BlackHole == nil || p.Cut == nil || p.Throttle == nil {
 		t.Fatal("peerlinktest: a Pair needs A, B, DeadAfter, BlackHole, Cut and Throttle")
 	}
-	served := make(chan error, 1)
+	served := make(chan error, 2)
 	go func() { served <- p.B.Serve(accept) }()
+	serving := 1
+	if p.Reverse {
+		serving++
+		go func() {
+			served <- p.A.Serve(func(_ string, _ []byte, s net.Conn) {
+				t.Error("A accepted a session: in this suite only A opens")
+				_ = s.Close()
+			})
+		}()
+	}
 	t.Cleanup(func() {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		_ = p.A.Drain(ctx)
 		_ = p.B.Drain(ctx)
-		select {
-		case err := <-served:
-			if err != nil {
-				t.Errorf("Serve: %v, want nil after Drain", err)
+		for range serving {
+			select {
+			case err := <-served:
+				if err != nil {
+					t.Errorf("Serve: %v, want nil after Drain", err)
+				}
+			case <-time.After(Within):
+				t.Error("Serve did not return after Drain")
 			}
-		case <-time.After(Within):
-			t.Error("Serve did not return after Drain")
 		}
 	})
 	return p
@@ -705,5 +725,61 @@ func testDrainDeadline(t *testing.T, newPair func(*testing.T) Pair) {
 				cutErr(t, "session cut by a drain", err)
 			}
 		})
+	}
+}
+
+// Reconnect: after a cut, opens work again within the dead-peer bound
+// (the opener retrying the ones that fail; in a Reverse Pair once B dialled
+// again).
+func testReconnect(t *testing.T, newPair func(*testing.T) Pair) {
+	p := pair(t, newPair, echo)
+	if err := exchange(open(t, p, "echo"), 1); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	p.Cut()
+	var last error
+	for time.Since(start) < deadBound(p) {
+		last = func() error {
+			ctx, cancel := context.WithDeadline(context.Background(), start.Add(deadBound(p)))
+			defer cancel()
+			s, err := p.A.Open(ctx, p.BName, []byte("echo"))
+			if err != nil {
+				return err
+			}
+			defer s.Close()
+			return exchange(s, 1<<10)
+		}()
+		if last == nil {
+			t.Logf("opens worked again %v after the cut", time.Since(start).Round(time.Millisecond))
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("no open worked within %v of the cut: %v", deadBound(p), last)
+}
+
+// Unreachable (Reverse Pairs): Open toward a peer with no connection up
+// waits until its ctx ends, then fails with ErrPeerUnreachable and ctx's
+// error.
+func testUnreachable(t *testing.T, newPair func(*testing.T) Pair) {
+	p := pair(t, newPair, echo)
+	if !p.Reverse {
+		t.Skip("a Reverse Pair's case: A dials the peers it opens to")
+	}
+	const wait = 300 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
+	defer cancel()
+	start := time.Now()
+	s, err := p.A.Open(ctx, "no such peer", nil)
+	if err == nil {
+		_ = s.Close()
+		t.Fatal("Open toward a peer with no connection succeeded")
+	}
+	if !errors.Is(err, peerlink.ErrPeerUnreachable) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("Open: %v, want ErrPeerUnreachable and context.DeadlineExceeded", err)
+	}
+	if d := time.Since(start); d < wait {
+		t.Errorf("Open returned after %v, before its ctx ended (%v)", d, wait)
 	}
 }

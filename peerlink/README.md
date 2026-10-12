@@ -47,6 +47,12 @@ it in full. In short:
   its context's end it cuts what is left. The caller decides when to call
   it; until then `Serve` and `Open` run as usual.
 - Headers of up to 4 KiB arrive as sent.
+- The reverse direction, where an implementation supports it: `Open` on
+  the connections a peer dialled in (a peer behind NAT, which the opener
+  cannot dial). With none up, `Open` waits for the peer to connect until
+  its context ends, then fails with `ErrPeerUnreachable` (and the
+  context's error); once the peer dials again, sessions open on the new
+  connection. Every other rule holds that way too.
 - Policy is the caller's: which peer, retries, who may connect, timeouts.
 
 ## Running the suite against your implementation
@@ -70,13 +76,52 @@ func TestConformance(t *testing.T) {
 Your implementation needs only to accept a custom dialer: the suite's
 `Proxy` relays TCP and black-holes (nothing crosses, nothing closes),
 resets, or throttles the path. The suite calls `Serve` on B and `Drain` on
-both. Every time bound comes from your `DeadAfter` or is a generous bound
+both. With `Pair.Reverse`, B dials A and A opens its sessions on B's
+connections (the reverse direction); the suite then calls `Serve` on A
+too, and runs every case that way, plus `Unreachable`. Every time bound comes from your `DeadAfter` or is a generous bound
 for work that must finish at all (`peerlinktest.Within`); none is tied to a
 transport. Cases: `Echo`, `Header`, `HalfCloseOpenerFirst`,
 `HalfCloseAccepterFirst`, `Large` (64 MiB each way, checksummed),
 `Concurrent` (32 sessions), `StuckReader` (8 sessions beside a stuck one),
 `Fairness` (8 sessions on a 1 MiB/s path), `DeadPeer`, `Cut`, `Reset`,
-`DrainAccepter`, `DrainOpener`, `DrainDeadline`.
+`DrainAccepter`, `DrainOpener`, `DrainDeadline`, `Reconnect` (opens work
+again within the bound after a cut, the opener retrying), `Unreachable`
+(reverse only: `Open` toward a peer with no connection waits until its
+context ends, then `ErrPeerUnreachable`).
+
+## The reverse direction (peers behind NAT)
+
+A `peerlink.Node` without `Config.Dial` opens its sessions on the
+connections its peers dialled in: the one with the fewest sessions among
+that peer's connections not going away (as a `link.Pool` picks), so a
+connection going away moves new opens to the others. The peer is the name
+`Serve` gives its accept (`Config.ServedPeer`, else the authenticated
+`Identity.Subject`). The dialling side lists the peer in `Config.Connect`:
+its `Serve` dials it and keeps `Pool.Min` connections (at least one) up,
+redialling as they end, and takes the sessions opened on them.
+
+```go
+// The agent, behind NAT: dials the relay, serves what it opens.
+agent := peerlink.New(peerlink.Config{
+	Dial: dialRelay, Connect: []string{"relay"},
+	Link: link.Config{Auth: agentCreds},
+	Pool: link.PoolConfig{Min: 2, Max: 2},
+})
+go agent.Serve(handle)
+
+// The relay: no Dial, so Open uses the agent's connections.
+relay := peerlink.New(peerlink.Config{Listener: ln, Link: link.Config{Auth: verifyAgents}})
+go relay.Serve(handleAgentOpens)
+s, err := relay.Open(ctx, agentID, header) // waits for agentID until ctx ends
+```
+
+Liveness and drain are as in the other direction: pings on every
+connection, a dead peer surfacing on both ends within `DeadAfter`, the
+listener's `Drain` sending GOAWAY, the dialler's `Drain` refusing (a reset)
+the sessions opened toward it from then on. A Node that both dials some
+peers and is reached by others behind NAT uses two Nodes (one per
+listener). How many connections the dialler keeps is its `Pool` setting;
+the listener cannot ask for more.
 
 ## Implementations
 
@@ -87,10 +132,13 @@ transport. Cases: `Echo`, `Header`, `HalfCloseOpenerFirst`,
 | who the opener is | the `Identity.Subject` of the caller's `link.Authenticator` | the caller's `Identify(ctx)` (metadata, credentials) |
 | dead-peer bound (`DeadAfter`) | Interval + Timeout of the liveness (`LivenessFast`: 4.5 s) | max(Interval, 10 s) + Timeout + 5 s (`LivenessFast`: 18 s): gRPC clients ping no more often than every 10 s, and a client whose writes are stuck waits 5 s to send GOAWAY before closing |
 | deadlines | read deadlines | none (`errors.ErrUnsupported`) |
-| suite | every case | every case |
+| reverse direction (`Open` on connections the peer dialled) | yes, without `Config.Dial` | no: a gRPC stream starts at the client (`TestReverseUnsupported`) |
+| suite | every case, both directions | every case (forward) |
 
 Suite results on loopback (an arm64 laptop, `-race`, three runs each): both pass
-every case. Dead peer: link surfaces it on all six sessions at 4.50 s
+every case; link in both directions (reverse: the same dead-peer and
+fairness figures, opens working again within 30 ms of a cut, once the
+dialler redialled). Dead peer: link surfaces it on all six sessions at 4.50 s
 (bound 4.5 s); gRPC at 4.5 s on the listener and 13.0 s on the dialer, 18.0 s when its
 writes were stuck (bound 18 s).
 Fairness at 1 MiB/s, 8 sessions: link 416-576 KiB each in 4 s (longest

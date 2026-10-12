@@ -13,6 +13,13 @@
 // A Reset cancels the stream (opener) or ends it with codes.Aborted
 // (accepter), so the peer reads an error, never io.EOF.
 //
+// Sessions go one way on a connection: the dialer opens them (a gRPC
+// stream starts at the client). A Node opens nothing on the connections
+// its peers dialled, so it cannot open sessions toward a peer it cannot
+// dial (one behind NAT): Open needs Config.Dial. That would take the
+// dialer keeping streams open for the listener to take as sessions, a
+// protocol of its own on top of gRPC; peerlink.Node does it.
+//
 // Liveness is gRPC keepalive, set from a link.Liveness: the dialer pings
 // after max(Interval, 10 s) of silence (gRPC's floor for clients), the
 // listener after Interval, each waiting Timeout for an answer; a dialer
