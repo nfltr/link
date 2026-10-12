@@ -99,6 +99,11 @@ wait for a turn under 1 s), gRPC 480-512 KiB (under 0.3 s).
 `grpclink` runs with `make check-grpclink` (build, vet, the suite with
 `-race`).
 
+`grpclink/example_test.go` (`Example`) is application code written against
+`peerlink.Link` only (a service and a caller over `net.Conn` sessions),
+wired to gRPC in one function; swapping in `peerlink.Node` changes that
+function alone.
+
 ## What shaped the API
 
 The link-backed `Node` was shaped by a server-to-server link between
