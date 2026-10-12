@@ -115,7 +115,9 @@ replicas of one service, which needed:
   authentication (`Config.Dial`, `Config.Link.Auth`);
 - the session header as the caller's routing bytes, opaque to the link;
 - metrics per peer: connections up and down, sessions, credit waits, ping
-  round trips (`Config.Observer`, a `link.Observer` per peer);
+  round trips (`Config.Observer`, a `link.Observer` per peer), with an
+  accepted connection's peer named by the caller where peers share one
+  credential (`Config.ServedPeer`: its remote address, say);
 - failing fast toward a peer the caller considers unreachable: the
   caller's `Dial` sees every dial and its latency and can refuse at once;
   its error returns from `Open` (with no `Pool.Backoff`);

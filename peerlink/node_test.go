@@ -103,3 +103,52 @@ func TestObserverPerPeer(t *testing.T) {
 		t.Errorf("connections came up for peers %v, want a (accepted) and b (dialled)", got)
 	}
 }
+
+// TestServedPeer: Config.ServedPeer names an accepted connection's peer,
+// for accept and the Observer, from the connection and its Identity (here
+// with its remote address: peers sharing one credential stay apart).
+func TestServedPeer(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	up := make(chan string, 1)
+	b := peerlink.New(peerlink.Config{
+		Listener:   ln,
+		Link:       link.Config{Auth: nameAuth("b")},
+		ServedPeer: func(nc net.Conn, id link.Identity) string { return id.Subject + "@" + nc.RemoteAddr().String() },
+		Observer:   func(peer string) link.Observer { return upObserver{peer: peer, up: up} },
+	})
+	from := make(chan string, 1)
+	a := peerlink.New(peerlink.Config{
+		Link: link.Config{Auth: nameAuth("a")},
+		Dial: func(ctx context.Context, _ string) (net.Conn, error) {
+			var d net.Dialer
+			nc, err := d.DialContext(ctx, "tcp", ln.Addr().String())
+			if err == nil {
+				from <- nc.LocalAddr().String()
+			}
+			return nc, err
+		},
+	})
+	accepted := make(chan string, 1)
+	go func() { _ = b.Serve(func(peer string, _ []byte, s net.Conn) { accepted <- peer; _ = s.Close() }) }()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_ = a.Drain(ctx)
+		_ = b.Drain(ctx)
+	})
+	s, err := a.Open(context.Background(), "b", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	want := "a@" + <-from
+	if got := <-accepted; got != want {
+		t.Errorf("accept got peer %q, want %q", got, want)
+	}
+	if got := <-up; got != want {
+		t.Errorf("observer of peer %q, want %q", got, want)
+	}
+}

@@ -39,6 +39,11 @@ type Config struct {
 	// given, for an accepted one the authenticated Subject, asked once the
 	// handshake verified it.
 	Observer func(peer string) link.Observer
+	// ServedPeer, when set, names the peer of a connection Serve accepted,
+	// for accept and Observer, from the connection Listener returned and
+	// the Identity Link.Auth verified (its remote address, say, where
+	// peers share one credential). nil: the Identity's Subject.
+	ServedPeer func(nc net.Conn, id link.Identity) string
 }
 
 // Node is a Link over github.com/nfltr/link: a link.Pool per peer it opens
@@ -156,7 +161,7 @@ func (n *Node) serveConn(nc net.Conn, accept func(string, []byte, net.Conn)) {
 	cfg := n.cfg.Link
 	cfg.Observer = nil
 	if n.cfg.Observer != nil {
-		cfg.Observer = &servedObserver{of: n.cfg.Observer}
+		cfg.Observer = &servedObserver{of: func(id link.Identity) link.Observer { return n.cfg.Observer(n.servedPeer(nc, id)) }}
 	}
 	// A dialer silent for the dead-peer bound in its handshake is dead too.
 	ctx, cancel := context.WithTimeout(context.Background(), n.DeadAfter())
@@ -175,10 +180,18 @@ func (n *Node) serveConn(nc net.Conn, accept func(string, []byte, net.Conn)) {
 	}
 	n.served[m] = struct{}{}
 	n.mu.Unlock()
-	_ = m.Serve(func(h []byte, s *link.Session) { accept(id.Subject, h, s) })
+	peer := n.servedPeer(nc, id)
+	_ = m.Serve(func(h []byte, s *link.Session) { accept(peer, h, s) })
 	n.mu.Lock()
 	delete(n.served, m)
 	n.mu.Unlock()
+}
+
+func (n *Node) servedPeer(nc net.Conn, id link.Identity) string {
+	if n.cfg.ServedPeer != nil {
+		return n.cfg.ServedPeer(nc, id)
+	}
+	return id.Subject
 }
 
 // Drain closes the listener, sends GOAWAY on every accepted connection
@@ -226,7 +239,7 @@ func (n *Node) Drain(ctx context.Context) error {
 // servedObserver hands an accepted connection's events to the observer
 // Config.Observer returns for its peer, once ConnUp names the peer.
 type servedObserver struct {
-	of func(string) link.Observer
+	of func(link.Identity) link.Observer
 	o  atomic.Pointer[link.Observer]
 }
 
@@ -238,7 +251,7 @@ func (s *servedObserver) get() link.Observer {
 }
 
 func (s *servedObserver) ConnUp(id link.Identity) {
-	o := s.of(id.Subject)
+	o := s.of(id)
 	if o == nil {
 		o = link.NopObserver{}
 	}
