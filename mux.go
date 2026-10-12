@@ -33,6 +33,11 @@ var ErrFull = errors.New("link: connection carries its most sessions")
 // Opens and closes are OPEN and CLOSE frames, the open carrying the
 // opener's header, and the Mux picks ids as uvarints, odd on the dialer and even on the listener, so the two
 // sides never pick the same.
+//
+// Message frames (Conn.SendMsg) are a Conn-level feature for callers that
+// run their own receive loop; a Mux owns the Conn's receive loop and drops
+// them. Per-peer control traffic on a Mux goes in a session whose header
+// names its purpose.
 type Mux struct {
 	c    *Conn
 	ids  atomic.Uint64

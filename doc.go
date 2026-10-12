@@ -30,7 +30,8 @@
 //	         2 version: max_version(1), the highest the listener speaks
 //	frame  both ways: length(4, of the body) type(1) body
 //	  type 0, data:    sid_len(1) sid payload
-//	  type 1, message: opaque bytes of the caller's (never empty)
+//	  type 1, message: opaque bytes of the caller's (never empty; Conn.SendMsg
+//	                   and Conn.Recv carry them, a Mux drops them)
 //	  type 2, window:  sid_len(1) sid increment(4)
 //	  type 3, open:    sid_len(1) sid header (the opener's bytes, at most 64 KiB)
 //	  type 4, close:   sid_len(1) sid code(1): 0 the sender neither sends

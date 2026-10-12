@@ -207,7 +207,9 @@ func (c *Conn) PeerMaxSessions() int { return c.peerMaxSessions }
 func (c *Conn) PeerFeatures() uint32 { return c.peerFeatures }
 
 // SendMsg buffers a message frame; Flush, or a full buffer, writes it. The
-// caller does not modify b afterwards.
+// caller does not modify b afterwards. The peer reads it from Recv
+// (Frame.Msg); a Mux on the peer drops it, so messages are for callers that
+// drive the Conn themselves.
 func (c *Conn) SendMsg(b []byte) error {
 	if len(b) == 0 {
 		return errEmpty
