@@ -34,6 +34,12 @@ check-semgrep:
 check-govulncheck:
 	go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
 
+# peerlink over gRPC (peerlink/grpclink, a module of its own: gRPC never
+# enters link's dependencies): build, vet, the conformance suite with -race.
+.PHONY: check-grpclink
+check-grpclink:
+	cd peerlink/grpclink && GOWORK=off go build ./... && GOWORK=off go vet ./... && GOWORK=off go test -count=1 -race ./...
+
 # link vs yamux (compare/, a module of its own; its README). OUT holds the
 # JSON lines; compare-docker needs docker with NET_ADMIN (about an hour).
 OUT ?= $(CURDIR)/compare/out

@@ -18,6 +18,11 @@ every frame queued at the time.
 |---|---|
 | `link` | `Client`/`Server` (the hello, an `Authenticator`'s credential, `Config`, `Observer`), `Conn` (frames, write coalescing, OPEN/CLOSE, ping liveness, GOAWAY), `Credit` (per-session flow control, also over a caller's own transport), `Mux` and `Session` (sessions as `net.Conn`s), `Pool` (several connections per peer, growth, backoff, make-before-break drain), `Liveness` and its presets |
 | `link/bytequeue` | a FIFO of byte slices bounded by total bytes; `PushWithin` for a pusher that serves other queues too |
+| `link/peerlink` | a transport-neutral API for sessions between peers (`Link`: `Open`, `Serve`, `Drain`), its contract, and `Node`, an implementation over `Pool` and `Mux` ([peerlink/README.md](peerlink/README.md)) |
+| `link/peerlink/peerlinktest` | the contract's conformance suite (`Run`) and the fault-injecting `Proxy`, for any implementation |
+
+`peerlink/grpclink` (a module of its own, `make check-grpclink`) implements
+`peerlink.Link` over gRPC streams and passes the same suite.
 
 ## Use
 
@@ -42,6 +47,7 @@ s, err := p.Open(ctx, header)
 
 `make check`: build, vet, tests with `-race`, `fuzz-short` (every decoder,
 `FUZZTIME` each, default 10s), gosec, semgrep (docker), govulncheck.
+`make check-grpclink`: the gRPC implementation's module.
 
 ## Status
 
@@ -68,3 +74,7 @@ gets the version reply, which such a dialer reads as a refusal, and
 `Server` returns `ErrV1` (`errors.Is` `ErrVersion`). A v0.5 dialer to a
 listener that speaks only version 1 is refused after the listener read 37
 bytes. Version 2 on the wire is unchanged (`testdata/v2_session.golden`).
+
+v0.6.0: `peerlink` (the `Link` API, its contract, `Node` over `Pool` and
+`Mux`), `peerlink/peerlinktest` (the conformance suite) and the
+`peerlink/grpclink` module. No wire change.
