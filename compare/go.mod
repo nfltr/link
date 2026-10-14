@@ -5,7 +5,7 @@ go 1.27.0
 require (
 	github.com/hashicorp/yamux v0.1.2
 	github.com/nfltr/link v0.7.1
-	github.com/nfltr/link/peerlink/quiclink v0.0.0-00010101000000-000000000000
+	github.com/nfltr/link/peerlink/quiclink v0.1.0
 	github.com/quic-go/quic-go v0.63.0
 )
 

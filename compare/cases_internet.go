@@ -161,7 +161,7 @@ func lastOctet(ip string) string {
 }
 
 func ipcmd(script string) {
-	if out, err := exec.Command("sh", "-c", script).CombinedOutput(); err != nil { // #nosec G204 -- the rig's own addresses
+	if out, err := exec.Command("sh", "-c", script).CombinedOutput(); err != nil { // #nosec G204 nosemgrep: dangerous-exec-command -- the rig's own addresses, from its flags
 		log.Printf("%s: %v %s", script, err, out)
 	}
 }
