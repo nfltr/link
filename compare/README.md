@@ -13,6 +13,14 @@ with `../`, so the harness measures the checkout it sits in.
 Results and the decision they fed: nfltr
 `docs/decisions/link-vs-yamux-2026-10-11.md`.
 
+A third library, `quic` (`lib_quic.go`: `peerlink/quiclink`, QUIC over
+UDP, mutual TLS only), compares link with QUIC for the internet hop
+(agents behind NAT, lossy and long paths): `LIBS=link,quic
+TRANSPORTS=mtls`, with the cases `hs`, `hol` and `netchange` below and
+the netems `50ms-1%`, `100ms-3%`, `150ms-5%` (one-way delay: the RTT is
+twice it). Results: nfltr `docs/decisions/quiclink-2026-10-14.md` and
+`peerlink/quiclink/README.md`.
+
 ## Running it
 
 ```sh
@@ -66,6 +74,9 @@ load average at its run.
 | `kill` | B SIGKILLs itself mid-transfer (its supervisor restarts it): how fast and how A's sessions ended, recovery, leaks |
 | `drain` | B sends GOAWAY with sessions open: old sessions finish intact, new sessions open on another connection, old connections close |
 | `falsedead` | 8 echo sessions busy then idle for `-dur` each under netem loss and a CPU limit (`-gcpressure`): dead-peer declarations on both sides |
+| `hs` | cold connect to first byte, `-n` times: a new client, a session, 64 bytes echoed (TCP + TLS + link hello, or QUIC's 1-RTT handshake) |
+| `hol` | 8 downloads; a burst of 5 % random loss on this side's input (iptables statistic) for `-dur`: per 10 ms tick, ticks where every session stalled vs some did, each session's longest gap, before and during the burst |
+| `netchange` | one checked download; this side's address changes (`-oldip` removed, `-newip` added, as a laptop changing networks): did the session live on, the longest stretch without bytes, sessions it took |
 
 `rig.py docker` runs `tput` under netem (none, 2 ms/0.1 %, 20 ms/1 %,
 50 ms/2 %, both directions), `fair` at 50 ms/2 %, `part` with the

@@ -45,7 +45,7 @@ func main() {
 	}
 	fs := flag.NewFlagSet(os.Args[1], flag.ExitOnError)
 	o := &opts{}
-	fs.StringVar(&o.lib, "lib", "link", "link or yamux")
+	fs.StringVar(&o.lib, "lib", "link", "link, yamux or quic")
 	fs.BoolVar(&o.tls, "tls", false, "mutual TLS 1.3 (else plaintext TCP)")
 	fs.StringVar(&o.certs, "certs", "certs", "certificate directory (gencert)")
 	fs.StringVar(&o.live, "live", "default", "liveness preset: default or fast")
@@ -53,7 +53,7 @@ func main() {
 	fs.StringVar(&o.raw, "raw", "127.0.0.1:7001", "listener's raw echo address (latency baseline)")
 	fs.StringVar(&o.ctl, "ctl", "127.0.0.1:7002", "listener's control HTTP address")
 	fs.BoolVar(&o.gcp, "gcpressure", false, "allocate garbage in the background (32 MiB live, 12.8 MB/s)")
-	fs.StringVar(&o.test, "test", "tput", "run: tput lat mem busy iso fair part kill drain falsedead")
+	fs.StringVar(&o.test, "test", "tput", "run: tput lat mem busy iso fair part kill drain falsedead hs hol netchange")
 	fs.IntVar(&o.sessions, "sessions", 1, "run: sessions")
 	fs.IntVar(&o.pool, "pool", 1, "run: connections at most")
 	fs.DurationVar(&o.dur, "dur", 5*time.Second, "run: measured duration")
@@ -61,6 +61,8 @@ func main() {
 	fs.IntVar(&o.n, "n", 1000, "lat: ops; mem: sessions")
 	fs.IntVar(&o.preload, "preload", 0, "mem: bytes echoed per session before idling")
 	fs.StringVar(&o.mode, "mode", "a", "iso: a (dialer stops reading) or b (listener stops reading)")
+	fs.StringVar(&o.oldIP, "oldip", "", "netchange: this side's address now")
+	fs.StringVar(&o.newIP, "newip", "", "netchange: its address after the change")
 	_ = fs.Parse(os.Args[2:])
 	l, ok := presets[o.live]
 	if !ok {
@@ -72,6 +74,8 @@ func main() {
 		o.L = &linkLib{live: l, ev: ev}
 	case "yamux":
 		o.L = &yamuxLib{live: l, ev: ev}
+	case "quic": // mutual TLS always (-tls or not)
+		o.L = &quicLib{live: l, certs: o.certs}
 	default:
 		log.Fatalf("lib %q", o.lib)
 	}
@@ -96,6 +100,7 @@ func main() {
 
 type opts struct {
 	lib, certs, live, addr, raw, ctl, test, dir, mode string
+	oldIP, newIP                                      string
 	tls, gcp                                          bool
 	sessions, pool, n, preload                        int
 	dur                                               time.Duration
@@ -177,16 +182,11 @@ func chunk(off int64, n int) []byte { k := int(off % 251); return pat[k : k+n] }
 // ---- listener side
 
 func serve(o *opts) {
-	ln := o.listen(o.addr)
-	go func() {
-		for {
-			nc, err := ln.Accept()
-			if err != nil {
-				log.Fatal(err)
-			}
-			go o.L.serve(nc, handle)
-		}
-	}()
+	if u, ok := o.L.(udpLib); ok {
+		u.listenUDP(o.addr, handle)
+	} else {
+		go o.acceptTCP()
+	}
 	raw := o.listen(o.raw)
 	go func() {
 		for {
@@ -204,6 +204,17 @@ func serve(o *opts) {
 	http.HandleFunc("/die", func(http.ResponseWriter, *http.Request) { _ = syscall.Kill(os.Getpid(), syscall.SIGKILL) })
 	srv := &http.Server{Addr: o.ctl, ReadHeaderTimeout: 5 * time.Second}
 	log.Fatal(srv.ListenAndServe())
+}
+
+func (o *opts) acceptTCP() {
+	ln := o.listen(o.addr)
+	for {
+		nc, err := ln.Accept()
+		if err != nil {
+			log.Fatal(err)
+		}
+		go o.L.serve(nc, handle)
+	}
 }
 
 // handle serves one session by its header: "echo", "src N" (N bytes of

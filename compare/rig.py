@@ -11,7 +11,8 @@ JSON line per run to OUT/<mode>.jsonl; `summarize` prints the medians.
 
 Env: REPS (default 5), CASES (comma list, default all of the mode's),
 DUR (seconds per throughput run, default 5; 8 under loss), NETEMS (comma
-list of netem labels), LOAD_GATE (wait before each run until the 1-min
+list of netem labels), TRANSPORTS (comma list: mtls,plain; quic is mtls
+only), CELLS (tput sessions/pool, default 1/1,8/1,8/4), LOAD_GATE (wait before each run until the 1-min
 load average is below it, at most an hour per pass), FD_DUR (falsedead phase seconds, default 60), LIBS
 (comma list, default link,yamux), KEEP=1 (leave the containers up).
 """
@@ -21,7 +22,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPS = int(os.environ.get("REPS", "5"))
 LIBS = os.environ.get("LIBS", "link,yamux").split(",")
 TRANSPORTS = {"mtls": ["-tls"], "plain": []}
-NETEM = [("none", None), ("2ms-0.1%", "delay 2ms loss 0.1%"), ("20ms-1%", "delay 20ms loss 1%"), ("50ms-2%", "delay 50ms loss 2%")]
+if os.environ.get("TRANSPORTS"):  # quic is mtls only
+    TRANSPORTS = {t: TRANSPORTS[t] for t in os.environ["TRANSPORTS"].split(",")}
+NETEM = [("none", None), ("2ms-0.1%", "delay 2ms loss 0.1%"), ("20ms-1%", "delay 20ms loss 1%"), ("50ms-2%", "delay 50ms loss 2%"),
+         # the internet hop (link vs quic): one-way delay, so RTT is twice it
+         ("50ms-1%", "delay 50ms loss 1%"), ("100ms-3%", "delay 100ms loss 3%"), ("150ms-5%", "delay 150ms loss 5%")]
 if os.environ.get("NETEMS"):
     NETEM = [n for n in NETEM if n[0] in os.environ["NETEMS"].split(",")]
 FD_DUR = os.environ.get("FD_DUR", "60") + "s"  # falsedead: busy, then idle, this long each
@@ -126,7 +131,9 @@ def host():
 
 IMAGE = "nfltr-link-faults-rig:1"  # the replica fault rig's image (scripts/replica-link-faults.py in nfltr)
 NET, SUBNET = "lcmp", "172.30.88"
-IP = {("link", "a"): SUBNET + ".11", ("link", "b"): SUBNET + ".12", ("yamux", "a"): SUBNET + ".21", ("yamux", "b"): SUBNET + ".22"}
+IP = {("link", "a"): SUBNET + ".11", ("link", "b"): SUBNET + ".12", ("yamux", "a"): SUBNET + ".21", ("yamux", "b"): SUBNET + ".22",
+      ("quic", "a"): SUBNET + ".31", ("quic", "b"): SUBNET + ".32"}
+NEWIP = {"link": SUBNET + ".111", "yamux": SUBNET + ".121", "quic": SUBNET + ".131"}  # netchange
 CPUS = {"a": "0-3", "b": "4-7"}
 
 
@@ -228,18 +235,18 @@ def docker():
     build()
     rig_up()
     try:
-        todo = cases("tput,lat,iso,fair,part,kill,drain,falsedead")
+        todo = cases("tput,lat,iso,fair,part,kill,drain,falsedead,hs,hol,netchange")
         if "tput" in todo:
             for t in TRANSPORTS:
                 set_b(t)
                 for label, spec in NETEM:
                     netem(spec)
                     dur = os.environ.get("DUR", "5" if spec is None else "8") + "s"
-                    cells = [("1", "1"), ("8", "1"), ("8", "4")]
+                    cells = [tuple(c.split("/")) for c in os.environ.get("CELLS", "1/1,8/1,8/4").split(",")]
                     for rep in range(REPS):
                         for s, p in cells:
                             args = ("-test", "tput", "-sessions", s, "-pool", p, "-dur", dur)
-                            if label in ("20ms-1%", "50ms-2%"):  # network-bound: both at once
+                            if spec and "loss" in spec and label != "2ms-0.1%":  # network-bound: both at once
                                 for lib, r in both(t, "default", *args).items():
                                     record("docker", dict(r, transport=t, netem=label, rep=rep, concurrent=True))
                             else:
@@ -297,6 +304,32 @@ def docker():
                         record("docker", dict(r, transport="mtls", cpus=c, netem="50ms-2%", rep=0, concurrent=True))
                     cpus(4)
             netem(None)
+        if "hs" in todo:  # cold connect to first byte
+            set_b("mtls")
+            for label, spec in NETEM:
+                netem(spec)
+                for rep in range(REPS):
+                    for lib in interleave(rep):
+                        record("docker", dict(drun(lib, "mtls", "default", "-test", "hs", "-n", "20"), transport="mtls", netem=label, rep=rep))
+            netem(None)
+        if "hol" in todo:  # 8 downloads, a 5 % loss burst: do all stall together?
+            set_b("mtls")
+            for label, spec in (("20ms", "delay 20ms"), ("50ms", "delay 50ms")):
+                netem(spec)
+                for rep in range(REPS):
+                    for lib in interleave(rep):
+                        record("docker", dict(drun(lib, "mtls", "default", "-test", "hol", "-dur", "3s"), transport="mtls", netem=label, rep=rep))
+            netem(None)
+        if "netchange" in todo:  # this side's address changes mid-download
+            for live in ("fast", "default"):
+                set_b("mtls", live)
+                for rep in range(min(REPS, 3)):
+                    for lib in interleave(rep):
+                        old = IP[(lib, "a")]
+                        record("docker", dict(drun(lib, "mtls", live, "-test", "netchange", "-oldip", old, "-newip", NEWIP[lib]),
+                                              transport="mtls", rep=rep))
+                        dx(lib, "a", "sh", "-c", "ip addr add %s/24 dev eth0; ip addr del %s/32 dev eth0; true" % (old, NEWIP[lib]), check=False)
+                        set_b("mtls", live)
     finally:
         if not os.environ.get("KEEP"):
             rig_down()
@@ -307,6 +340,17 @@ def docker():
 KEYS = ("test", "transport", "netem", "sessions", "pool", "dir", "n", "preload", "mode", "live", "cpus")
 
 
+def flat(r):
+    """Nested results (hol's before/during) as dotted fields."""
+    out = {}
+    for k, v in r.items():
+        if isinstance(v, dict):
+            out.update({"%s.%s" % (k, kk): vv for kk, vv in v.items()})
+        else:
+            out[k] = v
+    return out
+
+
 def summarize(path):
     rows = {}
     for mode in ("host", "docker"):
@@ -314,7 +358,7 @@ def summarize(path):
         if not os.path.exists(p):
             continue
         for line in open(p):
-            r = json.loads(line)
+            r = flat(json.loads(line))
             k = (mode,) + tuple(str(r.get(x, "")) for x in KEYS)
             rows.setdefault(k, {}).setdefault(r["lib"], []).append(r)
     for k in sorted(rows):

@@ -44,6 +44,12 @@ func run(o *opts) result {
 		return drain(o)
 	case "falsedead":
 		return falsedead(o)
+	case "hs":
+		return hs(o)
+	case "hol":
+		return hol(o)
+	case "netchange":
+		return netchange(o)
 	case "ping":
 		return result{"ok": o.peerStats(false, false).T > 0}
 	}
@@ -51,7 +57,12 @@ func run(o *opts) result {
 	return nil
 }
 
-func (o *opts) newClient() client { return o.L.client(o.dialer(o.addr), o.pool) }
+func (o *opts) newClient() client {
+	if u, ok := o.L.(udpLib); ok {
+		return u.dialUDP(o.addr)
+	}
+	return o.L.client(o.dialer(o.addr), o.pool)
+}
 
 // tput: sessions moving bytes for dur (after 1 s of warm-up): MB/s,
 // per-session spread, CPU and allocations per MB on both sides, peak heap.
