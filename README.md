@@ -54,6 +54,9 @@ s, err := p.Open(ctx, header)
 `FUZZTIME` each, default 10s), gosec, semgrep (docker), govulncheck.
 `make check-grpclink`, `make check-quiclink`: the gRPC and QUIC
 implementations' modules.
+GitHub Actions (`.github/workflows/check.yml`) runs all three on every
+push and pull request, and every fuzz target for 5 minutes weekly.
+`make fuzz-long FUZZTIME=30m` is the long fuzz run ([FUZZING.md](FUZZING.md)).
 
 ## Status
 
