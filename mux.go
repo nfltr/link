@@ -41,6 +41,7 @@ var ErrFull = errors.New("link: connection carries its most sessions")
 type Mux struct {
 	c    *Conn
 	ids  atomic.Uint64
+	used atomic.Bool // a session went on it, either side's
 	mu   sync.Mutex
 	sess map[string]*Session
 	done bool // Serve returned: no more sessions
@@ -117,6 +118,7 @@ func (m *Mux) add(sid string, header []byte) (*Session, error) {
 		old.ended()
 	}
 	m.sess[sid] = s
+	m.used.Store(true)
 	return s, nil
 }
 

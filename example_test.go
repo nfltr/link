@@ -60,7 +60,11 @@ func Example() {
 				return
 			}
 			go func() {
-				c, id, err := link.Server(ctx, nc, link.Config{Auth: auth})
+				// The handshake's deadline: a dialer that never finishes its
+				// hello does not hold the connection (SECURITY.md).
+				hctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+				c, id, err := link.Server(hctx, nc, link.Config{Auth: auth})
+				cancel()
 				if err != nil {
 					nc.Close()
 					return

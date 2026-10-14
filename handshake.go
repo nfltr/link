@@ -220,6 +220,10 @@ func Client(ctx context.Context, nc net.Conn, cfg Config) (*Conn, error) {
 // older) gets the version reply (StatusVersion, MaxVersion), which such a
 // dialer reads as a refusal, and Server returns ErrV1. A refused dialer
 // gets the refusal and Server ErrAuth. On error the caller closes nc.
+//
+// ctx bounds the handshake: give it a deadline. Without one, a dialer
+// that sends its hello slowly, or not at all, holds nc and this goroutine
+// for as long as it likes.
 func Server(ctx context.Context, nc net.Conn, cfg Config) (*Conn, Identity, error) {
 	cfg = cfg.withDefaults()
 	if cfg.Auth == nil {

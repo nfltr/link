@@ -27,6 +27,8 @@ type Config struct {
 	// Timeout more (ErrDeadPeer). A dialer's zero is LivenessDefault; a
 	// listener's zero is the dialer's, so both ends detect a dead path
 	// within the same bound.
+	// A listener that must bound how long a vanished dialer holds its
+	// connection sets its own: the dialer's Timeout has no upper bound.
 	Liveness Liveness
 	// Auth builds the dialer's credential (Hello) and verifies it on the
 	// listener (Verify). A dialer's nil is NoAuth; a listener needs one.
@@ -53,6 +55,13 @@ const MaxAuth = 4096
 
 // Authenticator proves a dialer to a listener. The connection's TLS state
 // (zero on a plaintext one) is there for channel binding.
+//
+// Verify runs before the listener has bound anything, on bytes from an
+// unauthenticated peer (SECURITY.md): it compares secrets in constant time
+// (crypto/subtle), bounds its own work (ctx carries the handshake's
+// deadline), and returns an Identity whose Subject names the peer
+// uniquely where callers route by it (peerlink names a peer by Subject).
+// Its error is not sent to the dialer, which reads only a refusal.
 type Authenticator interface {
 	// Hello returns the dialer's auth method and payload (at most MaxAuth
 	// bytes).

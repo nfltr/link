@@ -137,6 +137,7 @@ type Conn struct {
 	writing bool            // a write is in flight, wmu released
 	waiting int             // senders waiting on wcond for room or their turn
 	inBuf   map[string]bool // sessions with a data frame in wbuf (turns)
+	pongEnd int             // len(*wbuf) when its last frame is a pong; 0: it is not
 	werr    error
 
 	dialer          bool // this side dialed: Mux picks odd session ids
@@ -458,7 +459,7 @@ func (c *Conn) writeOneLocked() {
 		return
 	}
 	b := c.wbuf
-	c.wbuf = nil
+	c.wbuf, c.pongEnd = nil, 0
 	clear(c.inBuf)      // a new buffer: every session's turn again
 	c.wcond.Broadcast() // senders waiting on the full buffer start a new one
 	c.wmu.Unlock()
@@ -691,10 +692,25 @@ func (c *Conn) keepAlive() {
 
 // control writes a ping or pong at once, from a goroutine of its own when
 // no write is in flight: keepAlive never waits for the network.
+//
+// A pong that still waits as the last frame buffered answers a newer ping
+// in its place (it is then still after every frame sent before that ping
+// was read): a peer that pings faster than it reads gets one pong per
+// write, never a buffer that grows with its pings.
 func (c *Conn) control(typ byte, b []byte) {
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
-	if c.frameLocked(typ, "", b) == nil && !c.writing {
+	if typ == typePong && c.wbuf != nil && len(*c.wbuf) == c.pongEnd {
+		copy((*c.wbuf)[c.pongEnd-pingLen:], b)
+		return
+	}
+	if c.frameLocked(typ, "", b) != nil {
+		return
+	}
+	if typ == typePong {
+		c.pongEnd = len(*c.wbuf)
+	}
+	if !c.writing {
 		c.writing = true
 		go c.drain()
 	}

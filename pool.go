@@ -62,6 +62,11 @@ type Pool struct {
 	dials   int           // in flight
 	growing bool          // a background growth dial is in flight
 	changed chan struct{} // closed when conns change
+	// refused counts the connections in a row the peer refused: they
+	// ended carrying no session after its GOAWAY, or within their
+	// liveness interval (a peer shutting down that still accepts). Min
+	// is redialled after Backoff(refused), never in a tight loop.
+	refused int
 }
 
 // NewPool returns a Pool; it dials its Min connections in the background.
@@ -232,8 +237,14 @@ func (p *Pool) dial(ctx context.Context) (*Mux, error) {
 	p.conns = append(p.conns, m)
 	p.changedLocked()
 	go func() {
+		up := time.Now()
 		_ = m.Serve(p.cfg.Accept)
 		p.mu.Lock()
+		if !m.used.Load() && (closed(m.c.PeerGoAway()) || time.Since(up) < m.c.live.Interval) {
+			p.refused++
+		} else {
+			p.refused = 0
+		}
 		p.conns = slices.DeleteFunc(p.conns, func(x *Mux) bool { return x == m })
 		p.changedLocked()
 		p.mu.Unlock()
@@ -291,7 +302,7 @@ func (p *Pool) maintain() {
 	for attempt := 0; p.ctx.Err() == nil; {
 		p.mu.Lock()
 		need := p.statsLocked().Conns+p.dials < p.cfg.Min && p.stayingLocked() < p.cfg.Max
-		ch := p.changed
+		ch, refused := p.changed, p.refused
 		p.mu.Unlock()
 		if !need {
 			select {
@@ -300,17 +311,24 @@ func (p *Pool) maintain() {
 			}
 			continue
 		}
+		if refused > 0 && attempt == 0 { // the last ones were refused: as a failed dial
+			_ = p.sleep(p.ctx, p.backoff(refused))
+		}
 		if _, err := p.dial(p.ctx); err != nil {
 			attempt++
-			d := time.Second
-			if p.cfg.Backoff != nil {
-				d = p.cfg.Backoff(attempt)
-			}
-			_ = p.sleep(p.ctx, d)
+			_ = p.sleep(p.ctx, p.backoff(attempt))
 			continue
 		}
 		attempt = 0
 	}
+}
+
+// backoff is how long maintain waits after attempt failed dials.
+func (p *Pool) backoff(attempt int) time.Duration {
+	if p.cfg.Backoff == nil {
+		return time.Second
+	}
+	return p.cfg.Backoff(attempt)
 }
 
 // Drain replaces the Pool's connections make-before-break: it dials a
