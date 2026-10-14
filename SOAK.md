@@ -52,8 +52,9 @@ Each pair's path runs at `SOAKRATE` (default 8 MiB/s each way) with
 |---|---|---:|---|---:|---:|---:|---:|---|---|---|
 | 2026-10-14 | macOS arm64, 10 CPUs, shared (load average 7-35 from other work) | 1.08 | all four, 12 epochs | 191882 | 77.7 | 0 | 0 failures | link 4.51 s, QUIC 5.22 s | none: 2 goroutines, 5 FDs after every epoch; heap 4-13 MiB in use | pass |
 | 2026-10-14 | GitHub Actions ubuntu, linux/amd64, 4 CPUs | 1.08 | all four, 12 epochs | 172626 | 69.9 | 0 | 0 failures | link 4.50 s, QUIC 4.99 s | none: 2 goroutines, 9 FDs after every epoch; heap 5-10 MiB in use | pass |
+| 2026-10-14 | macOS arm64, 10 CPUs, shared; quiclink with the dead-peer fix | 0.18 | all four, 2 epochs | 33681 | 13.5 | 0 | 0 failures | link 4.50 s, QUIC 3.86 s | none: 2 goroutines, 5 FDs after every epoch | pass |
 
-Cumulative: 2.17 h. The summaries are in [`soak/results/`](soak/results/).
+Cumulative: 2.35 h. The summaries are in [`soak/results/`](soak/results/).
 
 Per pair (that run): link-forward 52547 echoes (21.3 GiB), link-reverse
 52377 (21.3 GiB), quic-forward 43482 (17.4 GiB), quic-reverse 43476

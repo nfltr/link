@@ -235,7 +235,7 @@ Evidence that link works, provable from this repository alone:
 | security review of the hello and the Authenticator contract | SECURITY.md (threat model, review record) | met (2026-10-14) |
 | standard library only | `TestModuleBoundary` | met |
 | CI green on every change, with history | GitHub Actions (`check`) | since 2026-10-14 |
-| cumulative soak hours under faults, with leak and integrity checks | SOAK.md (`make soak`), summaries in `soak/results/` | 2.2 h (macOS, Linux CI), clean (target: 24 h) |
+| cumulative soak hours under faults, with leak and integrity checks | SOAK.md (`make soak`), summaries in `soak/results/` | 2.35 h (macOS, Linux CI), clean (target: 24 h) |
 | benchmarks published in the repository | `compare/README.md` (link vs yamux), `peerlink/quiclink/README.md` | met |
 | API reviewed for v1.0 | the checklist below; `make check-api` (apidiff against the latest release, in CI); `TestExportedNamesDocumented` | open (v0.8.0: API trimmed, constructors checked, every name documented) |
 
