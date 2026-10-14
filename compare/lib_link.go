@@ -43,13 +43,13 @@ func (l *linkLib) config() link.Config {
 }
 
 func (l *linkLib) client(dial func(context.Context) (net.Conn, error), maxConns int) client {
-	return linkClient{link.NewPool(link.PoolConfig{
+	return linkClient{must(link.NewPool(link.PoolConfig{
 		Link:     l.config(),
 		Dial:     dial,
 		Max:      maxConns,
 		Grow:     func(st link.PoolStats) bool { return st.Sessions >= 2*st.Conns },
 		GrowWait: 500 * time.Millisecond,
-	})}
+	}))}
 }
 
 type linkClient struct{ p *link.Pool }
@@ -92,4 +92,11 @@ func (l *linkLib) served() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return len(l.muxs)
+}
+
+func must[T any](v T, err error) T {
+	if err != nil {
+		panic(err)
+	}
+	return v
 }

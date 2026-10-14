@@ -6,20 +6,61 @@ peer, each session a bidirectional QUIC stream. It is a module of its own,
 so quic-go never enters link's dependencies (link stays standard library
 only).
 
-```go
-// The listener: a UDP socket and its TLS; peers named by their certificates.
-pc, _ := net.ListenPacket("udp", ":7000")
-b := quiclink.New(quiclink.Config{PacketConn: pc, TLS: serverTLS, Liveness: link.LivenessNAT})
-go b.Serve(handle)
+`Example` (mutual TLS; `examplePKI` in [example_test.go](example_test.go) makes a throwaway CA):
 
-// The dialler: QUIC settings from the Node, TLS and address from the caller.
-a := quiclink.New(quiclink.Config{
-	Liveness: link.LivenessNAT,
-	Dial: func(ctx context.Context, peer string, qc *quic.Config) (*quic.Conn, error) {
-		return quic.DialAddr(ctx, addrOf(peer), clientTLS(peer), qc) // NextProtos: quiclink.ALPN
-	},
-})
-s, err := a.Open(ctx, "b", header)
+```go
+func Example() {
+	pool, certs := examplePKI("a", "b")
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		panic(err)
+	}
+	b, err := quiclink.New(quiclink.Config{PacketConn: pc, TLS: &tls.Config{
+		Certificates: []tls.Certificate{certs["b"]},
+		ClientCAs:    pool,
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		MinVersion:   tls.VersionTLS13,
+	}})
+	if err != nil {
+		panic(err)
+	}
+	go b.Serve(func(peer string, header []byte, s net.Conn) {
+		defer s.Close()
+		msg, _ := io.ReadAll(s)
+		fmt.Fprintf(s, "%s %s %s", peer, header, msg)
+	})
+
+	a, err := quiclink.New(quiclink.Config{
+		Dial: func(ctx context.Context, peer string, qc *quic.Config) (*quic.Conn, error) {
+			return quic.DialAddr(ctx, pc.LocalAddr().String(), &tls.Config{
+				Certificates: []tls.Certificate{certs["a"]},
+				RootCAs:      pool,
+				ServerName:   peer,
+				NextProtos:   []string{quiclink.ALPN},
+				MinVersion:   tls.VersionTLS13,
+			}, qc)
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	s, err := a.Open(ctx, "b", []byte("echo"))
+	if err != nil {
+		panic(err)
+	}
+	_, _ = io.WriteString(s, "hello")
+	_ = s.(peerlink.Session).CloseWrite()
+	reply, _ := io.ReadAll(s)
+	_ = s.Close()
+	fmt.Println(string(reply))
+
+	_ = a.Drain(ctx)
+	_ = b.Drain(ctx)
+	// Output: a echo hello
+}
 ```
 
 ## When to use it
@@ -62,8 +103,14 @@ What it costs, and when not to use it:
   certificate's Subject CommonName (none: the connection is closed).
 - Liveness from a `link.Liveness`: a keep-alive PING `Interval` after the
   last packet received, QUIC's idle timeout of `Timeout` (from the first
-  packet sent after the last one received). `DeadAfter` = Interval +
-  Timeout (`LivenessFast`: 4.5 s).
+  packet sent after the last one received), and a check of its own: a
+  connection that received no packet for `Interval + Timeout/2`, sampled
+  every `Timeout/4`, is closed (`CodeDeadPeer`). `DeadAfter` = Interval +
+  Timeout (`LivenessFast`: 4.5 s). The check is needed because QUIC's
+  idle timer starts only once a packet is sent: a side that cannot send
+  when the path goes silent (writes stalled, congestion window full)
+  would time out late by as long as it could not send
+  (`TestDeadPeerSendStalled`: 5.4 s before, within 4.5 s now).
 - Drain: refuses new connections (CONNECTION_REFUSED) and new streams
   (code 1); sends GOAWAY on each connection's control stream, then DONE
   once its own sessions there ended; a connection closes once one side

@@ -63,8 +63,10 @@ drains each, 12 rebinds for QUIC.
 
 Finding: QUIC's dead peer was detected at up to 5.22 s (macOS, loaded)
 and 4.99 s (Linux CI, otherwise idle) against `quiclink`'s stated bound
-of 4.5 s (link: 4.50-4.51 s), within the soak's 2 s allowance; the
-conformance suite's `DeadPeer` measured 3.0-4.5 s with fewer sessions.
-Since it shows on an idle runner too, the stated bound likely misses a
-term of quic-go's idle timer (with sessions busy until the black hole);
-open, for quiclink.
+of 4.5 s (link: 4.50-4.51 s), within the soak's 2 s allowance. The
+missing term: QUIC's idle timer starts at the first packet sent after the
+last one received, so a side that could not send when the path went
+silent (writes stalled, congestion window full) timed out late by as long
+as it could not send. Fixed in `peerlink/quiclink` v0.2.0, which closes a
+connection silent for Interval + Timeout/2 itself
+(`TestDeadPeerSendStalled`: 5.4 s before, within 4.5 s after).

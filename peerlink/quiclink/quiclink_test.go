@@ -99,8 +99,8 @@ func TestConformance(t *testing.T) {
 	peerlinktest.Run(t, func(t *testing.T) peerlinktest.Pair {
 		pc := listenUDP(t)
 		px := peerlinktest.NewUDPProxy(t, pc.LocalAddr().String())
-		b := quiclink.New(quiclink.Config{PacketConn: pc, TLS: serverTLS("b"), Liveness: link.LivenessFast})
-		a := quiclink.New(quiclink.Config{Dial: dialer("a", "b", px.Addr()), Liveness: link.LivenessFast})
+		b := mustNew(t, quiclink.Config{PacketConn: pc, TLS: serverTLS("b"), Liveness: link.LivenessFast})
+		a := mustNew(t, quiclink.Config{Dial: dialer("a", "b", px.Addr()), Liveness: link.LivenessFast})
 		return peerlinktest.Pair{
 			A: a, B: b, AName: "a", BName: "b",
 			DeadAfter: a.DeadAfter(),
@@ -115,8 +115,8 @@ func TestConformanceReverse(t *testing.T) {
 	peerlinktest.Run(t, func(t *testing.T) peerlinktest.Pair {
 		pc := listenUDP(t)
 		px := peerlinktest.NewUDPProxy(t, pc.LocalAddr().String())
-		a := quiclink.New(quiclink.Config{PacketConn: pc, TLS: serverTLS("a"), Liveness: link.LivenessFast})
-		b := quiclink.New(quiclink.Config{Dial: dialer("b", "a", px.Addr()), Connect: []string{"a"}, Liveness: link.LivenessFast})
+		a := mustNew(t, quiclink.Config{PacketConn: pc, TLS: serverTLS("a"), Liveness: link.LivenessFast})
+		b := mustNew(t, quiclink.Config{Dial: dialer("b", "a", px.Addr()), Connect: []string{"a"}, Liveness: link.LivenessFast})
 		return peerlinktest.Pair{
 			A: a, B: b, AName: "a", BName: "b", Reverse: true,
 			DeadAfter: a.DeadAfter(),
@@ -156,13 +156,13 @@ func TestMigration(t *testing.T) {
 					}
 				}
 			}
-			listener := quiclink.New(quiclink.Config{PacketConn: pc, TLS: serverTLS("b"), Liveness: link.LivenessFast})
+			listener := mustNew(t, quiclink.Config{PacketConn: pc, TLS: serverTLS("b"), Liveness: link.LivenessFast})
 			dcfg := quiclink.Config{Dial: dialer("a", "b", px.Addr()), Liveness: link.LivenessFast}
 			opener, peer := peerlink.Link(nil), "b"
 			if reverse {
 				dcfg.Connect = []string{"b"}
 			}
-			dialling := quiclink.New(dcfg)
+			dialling := mustNew(t, dcfg)
 			if reverse {
 				opener, peer = listener, "a"
 				go func() { _ = listener.Serve(func(_ string, _ []byte, s net.Conn) { _ = s.Close() }) }()
@@ -216,8 +216,8 @@ func TestMigration(t *testing.T) {
 // (here MaxSessions 2: a third session waits for one to end).
 func TestListenerSettings(t *testing.T) {
 	pc := listenUDP(t)
-	b := quiclink.New(quiclink.Config{PacketConn: pc, TLS: serverTLS("b"), MaxSessions: 2})
-	a := quiclink.New(quiclink.Config{Dial: dialer("a", "b", pc.LocalAddr().String())})
+	b := mustNew(t, quiclink.Config{PacketConn: pc, TLS: serverTLS("b"), MaxSessions: 2})
+	a := mustNew(t, quiclink.Config{Dial: dialer("a", "b", pc.LocalAddr().String())})
 	go func() {
 		_ = b.Serve(func(_ string, _ []byte, s net.Conn) { _, _ = io.Copy(io.Discard, s); _ = s.Close() })
 	}()
@@ -243,4 +243,13 @@ func TestListenerSettings(t *testing.T) {
 		_ = s.Close()
 		t.Fatal("a third session opened toward a listener taking 2")
 	}
+}
+
+func mustNew(t testing.TB, cfg quiclink.Config) *quiclink.Node {
+	t.Helper()
+	n, err := quiclink.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
 }

@@ -38,6 +38,15 @@ check-semgrep:
 check-govulncheck:
 	go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
 
+# The exported API of each module against its latest release (apidiff,
+# pinned in the script): the changes must be the ones api/ lists. A change
+# on purpose: CHANGELOG.md, then UPDATE=1 make check-api.
+.PHONY: check-api
+check-api:
+	./scripts/check-api.sh . '' link
+	./scripts/check-api.sh peerlink/quiclink peerlink/quiclink/ quiclink
+	./scripts/check-api.sh peerlink/grpclink peerlink/grpclink/ grpclink
+
 # peerlink over gRPC (peerlink/grpclink, a module of its own: gRPC never
 # enters link's dependencies): build, vet, the conformance suite with -race.
 .PHONY: check-grpclink

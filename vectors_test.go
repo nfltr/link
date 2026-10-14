@@ -85,7 +85,7 @@ type wireVector struct {
 var vecSID = hexBytes{0x01}
 
 func h2(f func(*vecHello)) *vecHello {
-	h := &vecHello{MaxVersion: 2, Features: FeatureReset, Window: 1 << 20, MaxSessions: 1024, IntervalMS: 5000, TimeoutMS: 10000, AuthMethod: MethodToken, Auth: hexBytes("token")}
+	h := &vecHello{MaxVersion: 2, Features: featureReset, Window: 1 << 20, MaxSessions: 1024, IntervalMS: 5000, TimeoutMS: 10000, AuthMethod: MethodToken, Auth: hexBytes("token")}
 	if f != nil {
 		f(h)
 	}
@@ -120,13 +120,13 @@ func wireVectors() []wireVector {
 		{Name: "hello-timeout-under-interval", Kind: "hello", Invalid: "ErrFrame", Hex: hello(h2(func(h *vecHello) { h.TimeoutMS = 4999 }))},
 		{Name: "hello-truncated", Kind: "hello", Invalid: "error", Hex: hello(h2(nil))[:20]},
 
-		{Name: "reply-bound", Kind: "reply", Reply: &vecReply{Status: StatusBound, Features: FeatureReset, Window: 1 << 20, MaxSessions: 1024}},
-		{Name: "reply-refused", Kind: "reply", Reply: &vecReply{Status: StatusRefused}},
-		{Name: "reply-version", Kind: "reply", Reply: &vecReply{Status: StatusVersion, MaxVersion: MaxVersion}},
+		{Name: "reply-bound", Kind: "reply", Reply: &vecReply{Status: statusBound, Features: featureReset, Window: 1 << 20, MaxSessions: 1024}},
+		{Name: "reply-refused", Kind: "reply", Reply: &vecReply{Status: statusRefused}},
+		{Name: "reply-version", Kind: "reply", Reply: &vecReply{Status: statusVersion, MaxVersion: MaxVersion}},
 		{Name: "reply-bad-status", Kind: "reply", Invalid: "ErrFrame", Hex: hexBytes{3}},
-		{Name: "reply-bound-version-3", Kind: "reply", Invalid: "ErrFrame", Hex: cat([]byte{StatusBound, 3}, be(0), be(1<<20), be(1024))},
-		{Name: "reply-window-too-small", Kind: "reply", Invalid: "ErrFrame", Hex: cat([]byte{StatusBound, 2}, be(0), be(MinWindow-1), be(1024))},
-		{Name: "reply-max-sessions-0", Kind: "reply", Invalid: "ErrFrame", Hex: cat([]byte{StatusBound, 2}, be(0), be(1<<20), be(0))},
+		{Name: "reply-bound-version-3", Kind: "reply", Invalid: "ErrFrame", Hex: cat([]byte{statusBound, 3}, be(0), be(1<<20), be(1024))},
+		{Name: "reply-window-too-small", Kind: "reply", Invalid: "ErrFrame", Hex: cat([]byte{statusBound, 2}, be(0), be(MinWindow-1), be(1024))},
+		{Name: "reply-max-sessions-0", Kind: "reply", Invalid: "ErrFrame", Hex: cat([]byte{statusBound, 2}, be(0), be(1<<20), be(0))},
 
 		{Name: "data", Kind: "frame", Frame: &vecFrame{Type: "data", SID: vecSID, Payload: hexBytes("hello")}},
 		{Name: "data-empty", Kind: "frame", Frame: &vecFrame{Type: "data", SID: hexBytes("\x02"), Payload: hexBytes{}}},
@@ -172,11 +172,11 @@ func (v wireVector) encode(t *testing.T) hexBytes {
 	switch {
 	case v.Hello != nil:
 		return appendHelloV2(nil, v.Hello.toHello())
-	case v.Reply != nil && v.Reply.Status == StatusBound:
+	case v.Reply != nil && v.Reply.Status == statusBound:
 		return appendReplyV2(nil, replyV2{features: v.Reply.Features, window: v.Reply.Window, maxSessions: v.Reply.MaxSessions})
 	case v.Reply != nil: // what Server writes to a hello of version 3, and to one it refuses
 		hello := []byte("NFDP\x03")
-		if v.Reply.Status == StatusRefused {
+		if v.Reply.Status == statusRefused {
 			hello = appendHelloV2(nil, h2(nil).toHello())
 		}
 		var out bytes.Buffer
@@ -203,7 +203,7 @@ func (v wireVector) encode(t *testing.T) hexBytes {
 		case closeFull, closeHalf:
 			err = c.SendClose(sid, f.Code == closeHalf)
 		default:
-			c.peerFeatures = FeatureReset
+			c.peerFeatures = featureReset
 			err = c.SendReset(sid)
 		}
 	case "ping", "pong":
@@ -254,13 +254,13 @@ func decodeReply(b []byte) (*vecReply, error) {
 	var ve *VersionError
 	switch {
 	case errors.Is(err, ErrRefused):
-		return &vecReply{Status: StatusRefused}, nil
+		return &vecReply{Status: statusRefused}, nil
 	case errors.As(err, &ve):
-		return &vecReply{Status: StatusVersion, MaxVersion: byte(ve.Max)}, nil // #nosec G115 -- a byte on the wire
+		return &vecReply{Status: statusVersion, MaxVersion: byte(ve.Max)}, nil // #nosec G115 -- a byte on the wire
 	case err != nil:
 		return nil, err
 	}
-	return &vecReply{Status: StatusBound, Features: r.features, Window: r.window, MaxSessions: r.maxSessions}, nil
+	return &vecReply{Status: statusBound, Features: r.features, Window: r.window, MaxSessions: r.maxSessions}, nil
 }
 
 // decodeFrame reads one frame on a connection where session vecSID is

@@ -24,10 +24,10 @@ type bufConn struct {
 	w io.Writer
 }
 
-// Read: net.Conn over r. allow:wrapper
+// Read: net.Conn over r.
 func (c bufConn) Read(b []byte) (int, error) { return c.r.Read(b) }
 
-// Write: net.Conn over w. allow:wrapper
+// Write: net.Conn over w.
 func (c bufConn) Write(b []byte) (int, error) { return c.w.Write(b) }
 
 // newTestConn is a bound Conn over nc without a hello: window is this

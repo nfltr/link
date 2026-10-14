@@ -172,11 +172,11 @@ func TestServerTakesAHelloWithoutFeatures(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close() //nolint:errcheck
-	if c.PeerFeatures() != 0 {
-		t.Fatalf("features %x", c.PeerFeatures())
+	if c.peerFeatures != 0 {
+		t.Fatalf("features %x", c.peerFeatures)
 	}
 	rep, err := readReplyV2(a)
-	if err != nil || rep.features != FeatureReset {
+	if err != nil || rep.features != featureReset {
 		t.Fatalf("reply %+v, %v", rep, err)
 	}
 	if !bytes.HasPrefix(old, []byte(Magic)) {

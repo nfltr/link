@@ -56,7 +56,7 @@ func NewMux(c *Conn) *Mux {
 	return &Mux{c: c, sess: map[string]*Session{}}
 }
 
-// Conn is the Mux's connection. allow:wrapper
+// Conn is the Mux's connection.
 func (m *Mux) Conn() *Conn { return m.c }
 
 // Sessions is how many sessions are open.
@@ -284,7 +284,6 @@ func (m *Mux) GoAway(deadline time.Time) error {
 }
 
 // Close closes the connection: Serve returns and every session ends.
-// allow:wrapper
 func (m *Mux) Close() error { return m.c.Close() }
 
 // Session is one session of a Mux. Read and WriteTo take the peer's bytes
@@ -353,7 +352,6 @@ func (s *Session) end() error {
 func (s *Session) Done() <-chan struct{} { return s.done }
 
 // Header is the bytes that opened the session: the OPEN frame's header.
-// allow:wrapper
 func (s *Session) Header() []byte { return s.header }
 
 // ended stops writes and lets reads drain the queue.
@@ -628,10 +626,10 @@ func (s *Session) Reset() error {
 	return nil
 }
 
-// LocalAddr is the connection's. allow:wrapper
+// LocalAddr is the connection's.
 func (s *Session) LocalAddr() net.Addr { return s.m.c.nc.LocalAddr() }
 
-// RemoteAddr is the connection's. allow:wrapper
+// RemoteAddr is the connection's.
 func (s *Session) RemoteAddr() net.Addr { return s.m.c.nc.RemoteAddr() }
 
 // SetDeadline is SetReadDeadline: write deadlines are not supported.

@@ -66,9 +66,9 @@ func FuzzServerHello(f *testing.F) {
 // version 2 with an in-range window, and reports refusals and versions.
 func FuzzClientReply(f *testing.F) {
 	f.Add(appendReplyV2(nil, replyV2{window: testWindow, maxSessions: 8}))
-	f.Add([]byte{StatusRefused})
-	f.Add([]byte{StatusVersion, 1})
-	f.Add([]byte{StatusBound, 1, 0, 0, 0, 0})
+	f.Add([]byte{statusRefused})
+	f.Add([]byte{statusVersion, 1})
+	f.Add([]byte{statusBound, 1, 0, 0, 0, 0})
 	f.Add([]byte{9})
 	addVectors(f, "reply", nil)
 	f.Fuzz(func(t *testing.T, reply []byte) {
@@ -79,17 +79,17 @@ func FuzzClientReply(f *testing.F) {
 		}
 		var ve *VersionError
 		switch {
-		case len(reply) > 0 && reply[0] == StatusRefused:
+		case len(reply) > 0 && reply[0] == statusRefused:
 			if !errors.Is(err, ErrRefused) {
 				t.Fatalf("refused: %v", err)
 			}
-		case len(reply) > 1 && reply[0] == StatusVersion:
+		case len(reply) > 1 && reply[0] == statusVersion:
 			if !errors.As(err, &ve) || ve.Max != int(reply[1]) {
 				t.Fatalf("version: %v", err)
 			}
 		case err == nil:
 			defer c.Close() //nolint:errcheck
-			if reply[0] != StatusBound || reply[1] != 2 || c.PeerWindow() != int(binary.BigEndian.Uint32(reply[6:])) ||
+			if reply[0] != statusBound || reply[1] != 2 || c.PeerWindow() != int(binary.BigEndian.Uint32(reply[6:])) ||
 				c.PeerWindow() < MinWindow || c.PeerWindow() > MaxWindow {
 				t.Fatalf("bound on %x", reply)
 			}

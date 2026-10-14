@@ -4,6 +4,8 @@
 package bytequeue
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -130,4 +132,15 @@ func TestDrainedQueueReusesItsArray(t *testing.T) {
 	}); n != 0 {
 		t.Fatalf("%.1f allocations per push/pop round", n)
 	}
+}
+
+// TestNewRefusesNoLimit: a queue that would take nothing panics at New,
+// saying why, instead of blocking its first Push for good.
+func TestNewRefusesNoLimit(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil || !strings.Contains(fmt.Sprint(r), "limit") {
+			t.Fatalf("New(0) recovered %v, want a panic about the limit", r)
+		}
+	}()
+	New(0)
 }

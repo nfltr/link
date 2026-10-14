@@ -1,17 +1,166 @@
 # link
 
-`github.com/nfltr/link` is the nfltr endpoint-to-endpoint link layer: many
-sessions, each a byte stream with its own flow control, multiplexed over one
-connection the caller dials and secures (TLS, a proxy, a pipe). A session
-whose reader is slow stalls only itself; one write to the network carries
-every frame queued at the time.
+`github.com/nfltr/link` multiplexes many byte-stream sessions, each a
+`net.Conn` with its own flow control, over connections you dial and secure
+(plain TCP, TLS, mutual TLS). A slow reader stalls only its own session,
+a dead peer is noticed within a bound you pick, and the main module
+imports only the Go standard library (Apache-2.0).
 
-- Standard library only (`TestModuleBoundary`).
-- Apache-2.0 (`LICENSE`, `NOTICE`; every source file carries an SPDX header).
-- Wire format version 2 is specified in [WIRE.md](WIRE.md), with test
-  vectors for every message (`testdata/wire_vectors.json`);
-  `testdata/v2_session.golden` holds a recorded session. Every release is
-  tested against both, byte for byte. Version 1 was removed in v0.5.0.
+## Quick start
+
+Two peers in one program: `a` dials `b` over plaintext TCP, then each
+opens a session to the other on that one connection. Run it with
+`go run github.com/nfltr/link/examples/quickstart@latest`, or save it as
+`main.go` in a module of your own (`go get github.com/nfltr/link@latest`):
+
+```go
+// Command quickstart runs two peers, a and b, in one process: a dials b
+// over plaintext TCP, then each opens a session to the other on that one
+// connection.
+package main
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"log"
+	"net"
+	"time"
+
+	"github.com/nfltr/link"
+	"github.com/nfltr/link/peerlink"
+)
+
+func main() {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// b listens. NameAuth: each peer sends its name and is known by it
+	// (a trusted network only; see docs/recipes.md for mutual TLS).
+	b, err := peerlink.New(peerlink.Config{
+		Listener: ln,
+		Link:     link.Config{Auth: link.NameAuth("b")},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	go b.Serve(reply("b"))
+
+	// a dials b, and keeps a connection to it (Connect) so that b can
+	// open sessions to a as well.
+	a, err := peerlink.New(peerlink.Config{
+		Link:    link.Config{Auth: link.NameAuth("a")},
+		Connect: []string{"b"},
+		Dial: func(ctx context.Context, peer string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "tcp", ln.Addr().String()) // peer is "b"
+		},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	go a.Serve(reply("a"))
+
+	fmt.Println(ask(a, "b")) // a opens a session to b
+	fmt.Println(ask(b, "a")) // b opens one to a, on the connection a dialled
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = a.Drain(ctx)
+	_ = b.Drain(ctx)
+}
+
+// reply serves each session a peer opens: it reads the request and
+// answers it.
+func reply(me string) func(peer string, header []byte, s net.Conn) {
+	return func(peer string, header []byte, s net.Conn) {
+		defer s.Close()
+		req, _ := io.ReadAll(s) // until the opener's CloseWrite
+		fmt.Fprintf(s, "%s got %q (%s) from %s", me, req, header, peer)
+	}
+}
+
+// ask opens a session to peer, sends a request and reads the answer.
+func ask(l peerlink.Link, peer string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	s, err := l.Open(ctx, peer, []byte("greeting"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := io.WriteString(s, "hello"); err != nil {
+		log.Fatal(err)
+	}
+	// The peer reads io.EOF after "hello"; this side can still read.
+	if err := s.(peerlink.Session).CloseWrite(); err != nil {
+		log.Fatal(err)
+	}
+	answer, err := io.ReadAll(s)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return string(answer)
+}
+```
+
+It prints:
+
+```
+b got "hello" (greeting) from a
+a got "hello" (greeting) from b
+```
+
+In two processes, each side does the same with the other's address in
+`Dial` and its own `net.Listen`. For mutual TLS, gRPC or HTTP over a
+link, liveness, draining, reconnects and metrics, see the
+[recipes](docs/recipes.md).
+
+## Which API
+
+| you want | use |
+|---|---|
+| sessions between named peers over TCP or TLS: **start here** | `peerlink.Node` ([peerlink](peerlink/README.md)) |
+| the same over QUIC (UDP), surviving address changes | `quiclink.Node` ([peerlink/quiclink](peerlink/quiclink/README.md), a module of its own) |
+| the same over a network that passes only gRPC | `grpclink.Node` (`peerlink/grpclink`, a module of its own) |
+| gRPC or HTTP served over a link | `peerlink.Listener` ([recipes](docs/recipes.md#grpc-over-a-link)) |
+| code that works with any of these, and tests that check them | the `peerlink.Link` interface; `peerlinktest.Run` (the conformance suite) |
+| advanced: your own connection management | `link.Pool` (connections to one peer), `link.Mux` (sessions on one connection), `link.Client`/`link.Server` (the handshake) |
+| advanced: your own receive loop or transport | `link.Conn` (frames), `link.Credit` (per-session flow control) |
+
+Constructors check their configuration and name the field to fix
+(`peerlink.New`, `link.NewPool`, `link.Config.Validate`); a zero
+`link.Config` is valid. Each package's documentation (`go doc`, or
+[pkg.go.dev](https://pkg.go.dev/github.com/nfltr/link)) has an Example for
+each common use.
+
+## Errors
+
+Test errors with `errors.Is` (or `errors.As` for `*link.VersionError`);
+the messages name what to change.
+
+| error | where you see it | what it means | what to change |
+|---|---|---|---|
+| `link.ErrHandshake` (wraps the network's error) | `Open` (dialing), `Client`, `Server`, `peerlink.Config.HandshakeError` | the hello or its reply did not arrive whole: the other end closed or timed out, is not link, or speaks TLS where this end does not | TLS on both ends or neither; the address of a link listener |
+| `link.ErrRefused` | `Open` (dialing), `Client` | the listener's Authenticator refused the dialer's credential | the dialer's `Config.Auth`: what the listener accepts (`CertAuth`'s certificate, the token) |
+| `link.ErrAuth` (wraps `Verify`'s error) | `Server`, `peerlink.Config.HandshakeError` | this listener refused a dialer | the reason it wraps; the dialer's credential or this `Config.Auth` |
+| `link.ErrVersion`, `*link.VersionError`, `link.ErrV1` | `Client`, `Server` | the peer speaks another wire version | upgrade the older end (every release since v0.5.0 speaks version 2) |
+| `link.ErrDeadPeer` | session reads, `Mux.Serve`, `Observer.ConnDown` | nothing arrived for the liveness bound: the peer or the path died | nothing, if it did; else a preset with a longer bound for a path that goes silent (`LivenessNAT`, `LivenessMobile`) |
+| `link.ErrGoAway` | `Mux.Open`, `Conn.SendOpen` | the connection is going away (a drain) | open on another connection (`Pool` and `Node` do) |
+| `link.ErrFull` | `Open` | the peer's most sessions at once are open | close sessions sooner, raise the peer's `Config.MaxSessions`, or allow more connections (`Pool.Max`) |
+| `peerlink.ErrDraining` | `Node.Open` | this Node is draining | nothing: it is shutting down |
+| `peerlink.ErrPeerUnreachable` (and the context's error) | `Node.Open` without `Dial` | no connection from that peer before the context ended | the peer's name (the error lists the connected ones); that peer's `Connect` and `Dial`; a longer context |
+| `link.ErrReset` | session reads | the peer reset the session | the peer's reason |
+| `link.ErrConnClosed` | session reads | the connection closed under the session | open a new session (`Pool` and `Node` redial) |
+| `link.ErrFrame`, `link.ErrCredit` | `Conn.Recv`, `Mux.Serve` | the peer broke the wire protocol | a peer that is not link, or a bug: please report it |
+| a message naming a field | `peerlink.New`, `link.NewPool`, `Validate`, `Client`, `Server` | a configuration that cannot work | the field it names, as it says |
+| `io.EOF` | session reads | the peer ended its writes on purpose (`CloseWrite`, `Close`) | nothing: the normal end |
+| `os.ErrDeadlineExceeded` | session reads | the read deadline passed | nothing, or a later deadline |
+
+quiclink adds its own codes (`quiclink.Code*`, in the QUIC errors its
+sessions read); grpclink's are gRPC statuses.
 
 ## Packages
 
@@ -19,8 +168,9 @@ every frame queued at the time.
 |---|---|
 | `link` | `Client`/`Server` (the hello, an `Authenticator`'s credential, `Config`, `Observer`), `Conn` (frames, write coalescing, OPEN/CLOSE, ping liveness, GOAWAY), `Credit` (per-session flow control, also over a caller's own transport), `Mux` and `Session` (sessions as `net.Conn`s), `Pool` (several connections per peer, growth, backoff, make-before-break drain), `Liveness` and its presets |
 | `link/bytequeue` | a FIFO of byte slices bounded by total bytes; `PushWithin` for a pusher that serves other queues too |
-| `link/peerlink` | a transport-neutral API for sessions between peers (`Link`: `Open`, `Serve`, `Drain`), its contract, and `Node`, an implementation over `Pool` and `Mux` ([peerlink/README.md](peerlink/README.md)) |
+| `link/peerlink` | a transport-neutral API for sessions between peers (`Link`: `Open`, `Serve`, `Drain`), its contract, `Node` (an implementation over `Pool` and `Mux`) and `Listener` ([peerlink/README.md](peerlink/README.md)) |
 | `link/peerlink/peerlinktest` | the contract's conformance suite (`Run`) and the fault-injecting `Proxy` (TCP) and `UDPProxy`, for any implementation |
+| `link/examples/quickstart` | the quick start above |
 
 `peerlink/grpclink` (a module of its own, `make check-grpclink`) implements
 `peerlink.Link` over gRPC streams and passes the same suite (one
@@ -29,38 +179,29 @@ direction: the dialer opens). `peerlink/quiclink` (a module of its own,
 suite in both directions; its connections survive the dialler's address
 changing ([peerlink/quiclink/README.md](peerlink/quiclink/README.md)).
 
-## Use
-
-`example_test.go` (`Example`, run by `go test`, shown by `go doc`) is a
-complete program: a TLS listener that authenticates dialers and serves
-sessions, and a dialer's `Pool` opening sessions on it. In short:
-
-```go
-c, err := link.Client(ctx, nc, link.Config{Window: 4 << 20, Liveness: link.LivenessFast, Auth: auth}) // dialer
-m := link.NewMux(c)
-go m.Serve(nil)
-s, err := m.Open(func(string) ([]byte, error) { return header, nil })
-
-c, id, err := link.Server(ctx, nc, link.Config{Auth: auth}) // listener
-go link.NewMux(c).Serve(func(header []byte, s *link.Session) { /* ... */ })
-
-p := link.NewPool(link.PoolConfig{Link: cfg, Dial: dial, Max: 8, Backoff: backoff})
-s, err := p.Open(ctx, header)
-```
+Wire format version 2 is specified in [WIRE.md](WIRE.md), with test
+vectors for every message (`testdata/wire_vectors.json`);
+`testdata/v2_session.golden` holds a recorded session. Every release is
+tested against both, byte for byte.
 
 ## Checks
 
-`make check`: build, vet, tests with `-race`, `fuzz-short` (every decoder,
-`FUZZTIME` each, default 10s), gosec, semgrep (docker), govulncheck.
-`make check-grpclink`, `make check-quiclink`: the gRPC and QUIC
-implementations' modules.
-GitHub Actions (`.github/workflows/check.yml`) runs all three on every
-push and pull request, and every fuzz target for 5 minutes weekly.
-`make fuzz-long FUZZTIME=30m` is the long fuzz run ([FUZZING.md](FUZZING.md)).
+`make check`: build, vet, tests with `-race` (the Examples, and
+`TestDocCodeBlocksAreCompiled`: every Go block in the Markdown here is a
+verbatim excerpt of a Go file, so a doc cannot rot), `fuzz-short` (every
+decoder, `FUZZTIME` each, default 10s), gosec, semgrep (docker),
+govulncheck. `make check-api`: the exported API against the latest
+release, with [apidiff](https://pkg.go.dev/golang.org/x/exp/cmd/apidiff);
+the changes must be the ones listed in `api/` (an API change is never
+an accident). `make check-grpclink`, `make check-quiclink`: the gRPC and
+QUIC implementations' modules. GitHub Actions
+(`.github/workflows/check.yml`) runs them on every push and pull request,
+and every fuzz target for 5 minutes weekly. `make fuzz-long FUZZTIME=30m`
+is the long fuzz run ([FUZZING.md](FUZZING.md)).
 
 ## Status and compatibility
 
-The latest release is v0.7.2; [CHANGELOG.md](CHANGELOG.md) lists every
+The latest release is v0.8.0; [CHANGELOG.md](CHANGELOG.md) lists every
 release. link is pre-1.0 and follows [semantic versioning](https://semver.org)
 as Go modules do for v0:
 

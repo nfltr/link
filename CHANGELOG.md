@@ -5,6 +5,86 @@ it (`peerlink/grpclink/vX.Y.Z`, `peerlink/quiclink/vX.Y.Z`). The wire
 format is [WIRE.md](WIRE.md); every release since v0.2.0 speaks the same
 version 2 unless an entry says otherwise.
 
+## v0.8.0 (2026-10-14)
+
+Developer experience: a quick start, recipes, constructors that check
+their configuration, errors that say what to change. No wire change.
+
+Breaking changes, and the migration:
+
+- `link.NewPool` returns `(*Pool, error)`: it refuses a `PoolConfig`
+  without `Dial`, with `Min` over `Max`, or with an invalid `Link`.
+  Migration: `p, err := link.NewPool(cfg); if err != nil { ... }`.
+- `peerlink.New` returns `(*Node, error)`: it refuses a `Config` with
+  neither `Dial` nor `Listener`, a `Listener` without `Link.Auth` (every
+  handshake failed, silently), `Connect` without `Dial` (was an error from
+  `Serve`), or an invalid `Link` or `Pool`. Migration as above.
+- `link.Config.Version` removed: version 2 is the only one, and any other
+  value was refused. Migration: delete the field.
+- `link.StatusBound`, `StatusRefused`, `StatusVersion`, `FeatureReset` and
+  `(*Conn).PeerFeatures` unexported: wire details (WIRE.md) no caller
+  needs; a reset is sent as one to every peer that reads it, as before.
+  Migration: delete the uses.
+- `bytequeue.New` panics on a limit under 1 (such a queue blocked its
+  first `Push` for good).
+
+Added:
+
+- `link.NameAuth(name)` (a trusted network: the dialer's name is its
+  `Identity.Subject`; method `MethodName`) and `link.CertAuth` (mutual
+  TLS: the verified client certificate's CommonName, else its first DNS
+  name). `NoAuth`'s docs say that every peer it accepts is named `""`.
+- `link.Config.Validate` and `link.PoolConfig.Validate`: errors name the
+  field and what to set; `Client`, `Server` and `NewPool` use them.
+- `link.ErrHandshake`: a hello or reply that did not arrive whole (a TLS
+  mismatch either way, a peer that is not link's), on both ends, wrapping
+  the network's error and saying to check TLS; it was a bare `io.EOF` or
+  `ErrFrame`.
+- `peerlink.Listener` (`NewListener`, `Handle`): a `net.Listener` of
+  sessions, to serve gRPC or HTTP over a link.
+- `peerlink.Session`: the contract's `CloseWrite` and `Reset`, for
+  `s.(peerlink.Session)` in place of an anonymous interface.
+- `peerlink.Config.HandshakeError`: hears of each accepted connection
+  whose handshake failed (they were closed silently).
+- `peerlink.ErrPeerUnreachable`'s message lists the peers that are
+  connected, so a misspelt peer name shows.
+- The README's quick start (`examples/quickstart`, also
+  `go run github.com/nfltr/link/examples/quickstart@latest`), a table of
+  the errors with what to change, docs/recipes.md (plaintext and mutual
+  TLS, liveness presets, gRPC and HTTP over a link, drain, reconnects,
+  metrics), each a runnable Example; every Example self-contained.
+- `TestDocCodeBlocksAreCompiled`: every Go block in the Markdown is a
+  verbatim excerpt of a Go file. `make check-api` (CI): the API against
+  the latest release with apidiff must match what `api/` lists.
+- Package docs start with what the package is for, and say where to
+  start; lint markers no longer show in them.
+
+## peerlink/quiclink v0.2.0 (2026-10-14)
+
+- Fix: a dead peer is noticed within `DeadAfter` (Interval + Timeout)
+  again. QUIC's idle timer starts at the first packet sent after the last
+  one received; a side that could not send when the path went silent
+  (writes stalled, congestion window full) timed out late by as long as
+  it could not send (the soak measured 4.99 s and 5.22 s against 4.5 s;
+  `TestDeadPeerSendStalled`: 5.4 s). Each connection now also closes
+  itself once no packet arrived for Interval + Timeout/2, sampled every
+  Timeout/4 (`CodeDeadPeer`).
+- Breaking: `New` returns `(*Node, error)`: it refuses neither `Dial`
+  nor `PacketConn`, a `PacketConn` without `TLS`, `Connect` without
+  `Dial` (was an error from `Serve`), and an invalid `Liveness`, `Window`
+  or `MaxSessions`. Migration: `n, err := quiclink.New(cfg)`.
+- `*Session` implements `peerlink.Session`; the Example is
+  self-contained. Requires link v0.8.0.
+
+## peerlink/grpclink v0.2.0 (2026-10-14)
+
+- Breaking: `New` returns `(*Node, error)`: it refuses neither `Dial` nor
+  `Listener` and an invalid `Liveness`. Migration:
+  `n, err := grpclink.New(cfg)`.
+- `Example_grpcOverLink`: a gRPC service served over a link
+  (`peerlink.Listener`), the other way round from this package. Requires
+  link v0.8.0.
+
 ## v0.7.2 (2026-10-14)
 
 Fixes, docs and checks; no wire change, no API change.

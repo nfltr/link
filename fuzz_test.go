@@ -16,7 +16,7 @@ type countingReader struct {
 	n int
 }
 
-// Read: io.Reader over r, counting. allow:wrapper
+// Read: io.Reader over r, counting.
 func (c *countingReader) Read(b []byte) (int, error) {
 	n, err := c.r.Read(b)
 	c.n += n
@@ -112,7 +112,7 @@ func FuzzSendRecvRoundTrip(f *testing.F) {
 // closingConn is a bufConn whose Close does nothing (Serve closes it).
 type closingConn struct{ bufConn }
 
-// Close: no-op. allow:wrapper
+// Close: no-op.
 func (closingConn) Close() error { return nil }
 
 func FuzzParseLiveness(f *testing.F) {

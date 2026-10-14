@@ -44,7 +44,7 @@ func v2Record(t *testing.T) map[string][]byte {
 	t.Helper()
 	segs := map[string][]byte{}
 	var out bytes.Buffer
-	reply := appendReplyV2(nil, replyV2{features: FeatureReset, window: 0x00040000, maxSessions: 512})
+	reply := appendReplyV2(nil, replyV2{features: featureReset, window: 0x00040000, maxSessions: 512})
 	hc, err := Client(context.Background(), closingConn{bufConn{r: bytes.NewReader(reply), w: &out}},
 		Config{Window: 0x00050000, Liveness: LivenessFast, Auth: tokenAuth(v2Token)})
 	if err != nil {
@@ -52,8 +52,8 @@ func v2Record(t *testing.T) map[string][]byte {
 	}
 	_ = hc.Close() // stops its liveness before it pings
 	segs["hello"], segs["reply-bound"] = bytes.Clone(out.Bytes()), reply
-	segs["reply-refused"] = []byte{StatusRefused}
-	segs["reply-version"] = []byte{StatusVersion, 1}
+	segs["reply-refused"] = []byte{statusRefused}
+	segs["reply-version"] = []byte{statusVersion, 1}
 
 	out.Reset()
 	c := v2Conn(bufConn{w: &out})
@@ -64,7 +64,7 @@ func v2Record(t *testing.T) map[string][]byte {
 		c.SendClose(v2Session, true),
 		c.SendClose("\x02", false),
 		c.SendReset("\x03"), // a peer without FeatureReset: code 0
-		func() error { c.peerFeatures = FeatureReset; return c.SendReset("\x04") }(),
+		func() error { c.peerFeatures = featureReset; return c.SendReset("\x04") }(),
 	} {
 		if err != nil {
 			t.Fatal(err)
@@ -126,14 +126,14 @@ func TestV2Golden(t *testing.T) {
 	// The hello, field by field (doc.go).
 	h := want["hello"]
 	be := binary.BigEndian
-	if string(h[:4]) != "NFDP" || h[4] != 2 || h[5] != 2 || be.Uint32(h[6:]) != FeatureReset ||
+	if string(h[:4]) != "NFDP" || h[4] != 2 || h[5] != 2 || be.Uint32(h[6:]) != featureReset ||
 		be.Uint32(h[10:]) != 0x00050000 || be.Uint32(h[14:]) != MaxSessions ||
 		be.Uint32(h[18:]) != 1500 || be.Uint32(h[22:]) != 3000 || h[26] != MethodToken ||
 		int(be.Uint16(h[27:])) != 32 || string(h[29:]) != v2Token {
 		t.Fatalf("hello %x", h)
 	}
 	r := want["reply-bound"]
-	if r[0] != StatusBound || r[1] != 2 || be.Uint32(r[2:]) != FeatureReset || be.Uint32(r[6:]) != 0x00040000 || be.Uint32(r[10:]) != 512 || len(r) != 14 {
+	if r[0] != statusBound || r[1] != 2 || be.Uint32(r[2:]) != featureReset || be.Uint32(r[6:]) != 0x00040000 || be.Uint32(r[10:]) != 512 || len(r) != 14 {
 		t.Fatalf("reply %x", r)
 	}
 

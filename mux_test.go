@@ -20,7 +20,7 @@ func opening(header string) func(sid string) ([]byte, error) {
 	return func(string) ([]byte, error) { return []byte(header), nil }
 }
 
-// header is an open's header. allow:wrapper
+// header is an open's header.
 func header(open []byte) string { return string(open) }
 
 // muxPair returns an opener Mux and the accepting Mux's peer, serving

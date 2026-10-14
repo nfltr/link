@@ -82,7 +82,7 @@ func Example() {
 	// Dialer: a Pool dials (TLS is the caller's), authenticates, and opens
 	// sessions on its connections; the listener adopts the dialer's
 	// liveness, so both ends notice a dead path within 1.5 s + 3 s.
-	p := link.NewPool(link.PoolConfig{
+	p, err := link.NewPool(link.PoolConfig{
 		Link: link.Config{Auth: auth, Liveness: link.LivenessFast},
 		Dial: func(ctx context.Context) (net.Conn, error) {
 			var d tls.Dialer
@@ -92,6 +92,9 @@ func Example() {
 		Max:     2,
 		Backoff: func(attempt int) time.Duration { return time.Duration(attempt) * 100 * time.Millisecond },
 	})
+	if err != nil {
+		panic(err)
+	}
 	defer p.Close()
 
 	for _, msg := range []string{"hello", "world"} {
@@ -113,6 +116,26 @@ func Example() {
 	// upper: HELLO
 	// upper: WORLD
 	// listener saw: example-client
+}
+
+// ExampleParseLiveness: the presets, and a preset with an override (from a
+// flag, say). A connection is dead once nothing arrived for Interval +
+// Timeout; idle, each side sends a frame every Interval.
+func ExampleParseLiveness() {
+	for _, spec := range []string{"fast", "default", "nat", "datacenter", "mobile", "nat,timeout=40s"} {
+		l, err := link.ParseLiveness(spec)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Printf("%-16s a frame every %v idle, dead after %v\n", spec, l.Interval, l.Interval+l.Timeout)
+	}
+	// Output:
+	// fast             a frame every 1.5s idle, dead after 4.5s
+	// default          a frame every 5s idle, dead after 15s
+	// nat              a frame every 10s idle, dead after 30s
+	// datacenter       a frame every 15s idle, dead after 45s
+	// mobile           a frame every 15s idle, dead after 1m0s
+	// nat,timeout=40s  a frame every 10s idle, dead after 50s
 }
 
 // exampleTLS is a throwaway self-signed certificate for 127.0.0.1 and the

@@ -75,6 +75,7 @@ const (
 	CodeDone          quic.ApplicationErrorCode = 0 // drained: no session was left
 	CodeDrainDeadline quic.ApplicationErrorCode = 1 // a Drain's ctx ended with sessions open
 	CodeUnnamed       quic.ApplicationErrorCode = 2 // ServedPeer refused the connection
+	CodeDeadPeer      quic.ApplicationErrorCode = 3 // nothing arrived for DeadAfter
 )
 
 // MaxHeader is the longest session header.
@@ -133,10 +134,27 @@ type Node struct {
 	tr       *quic.Transport
 }
 
-var _ peerlink.Link = (*Node)(nil)
+var (
+	_ peerlink.Link    = (*Node)(nil)
+	_ peerlink.Session = (*Session)(nil)
+)
 
-// New returns a Node; it dials nothing until Open or Serve.
-func New(cfg Config) *Node {
+// New returns a Node; it dials nothing until Open or Serve. It refuses a
+// Config that cannot work, naming the field: neither Dial nor PacketConn;
+// a PacketConn without TLS; Connect without Dial; an invalid Liveness,
+// Window or MaxSessions (as link.Config.Validate).
+func New(cfg Config) (*Node, error) {
+	switch {
+	case cfg.Dial == nil && cfg.PacketConn == nil:
+		return nil, errors.New("quiclink: Config.Dial and Config.PacketConn are both nil: set Dial to open sessions to peers, PacketConn (and TLS) to take theirs, or both")
+	case cfg.PacketConn != nil && cfg.TLS == nil:
+		return nil, errors.New("quiclink: Config.PacketConn is set but Config.TLS is nil: set the listener's certificate (and ClientCAs with ClientAuth tls.RequireAndVerifyClientCert, to name peers by their certificates)")
+	case len(cfg.Connect) > 0 && cfg.Dial == nil:
+		return nil, errors.New("quiclink: Config.Connect needs Config.Dial: set Dial to reach the peers it names")
+	}
+	if err := (link.Config{Liveness: cfg.Liveness, Window: cfg.Window, MaxSessions: cfg.MaxSessions}).Validate(); err != nil {
+		return nil, fmt.Errorf("quiclink: %w", err)
+	}
 	n := &Node{cfg: cfg, dialled: map[string]*peerConns{}, served: map[*conn]bool{},
 		changed: make(chan struct{}), drained: make(chan struct{})}
 	l := n.liveness()
@@ -152,7 +170,7 @@ func New(cfg Config) *Node {
 		MaxIncomingStreams:             int64(cmpOr(cfg.MaxSessions, link.MaxSessions)),
 		MaxIncomingUniStreams:          1, // the control stream
 	}
-	return n
+	return n, nil
 }
 
 func cmpOr(v, def int) int {
@@ -220,6 +238,34 @@ func (c *conn) end() {
 	c.n.sessions.Done()
 }
 
+// watch closes c once no packet arrived for DeadAfter. QUIC's idle timer
+// runs from the first packet sent after the last one received, and a
+// connection that cannot send then (its writes stalled, its congestion
+// window full) sends it late: by as long as it could not send.
+// Sampling every Timeout/4 and closing after Interval + Timeout/2 without
+// a packet keeps the bound (Interval + Timeout) while a live peer's
+// keep-alives (every Interval) arrive within a round trip under Timeout/2.
+func (c *conn) watch() {
+	l := c.n.liveness()
+	g, quiet := l.Timeout/4, l.Interval+l.Timeout/2
+	tk := time.NewTicker(g)
+	defer tk.Stop()
+	last, seen := c.q.ConnectionStats().PacketsReceived, time.Now()
+	for {
+		select {
+		case <-c.q.Context().Done():
+			return
+		case now := <-tk.C:
+			if n := c.q.ConnectionStats().PacketsReceived; n != last {
+				last, seen = n, now
+			} else if now.Sub(seen) >= quiet {
+				_ = c.q.CloseWithError(CodeDeadPeer, "dead peer")
+				return
+			}
+		}
+	}
+}
+
 // waitIdle waits until c has no session of this Node's, or ctx ends.
 func (c *conn) waitIdle(ctx context.Context) bool {
 	for {
@@ -243,6 +289,7 @@ func (c *conn) waitIdle(ctx context.Context) bool {
 // stream, and closing c once the peer is DONE and c is idle.
 func (c *conn) run() {
 	go c.control()
+	go c.watch()
 	go func() {
 		select {
 		case <-c.done:
@@ -480,9 +527,6 @@ func (n *Node) acceptStream(c *conn, st *quic.Stream) {
 // dialled, Config.Connect's among them, which it dials now. An error of
 // the listener other than Drain's ends Serve.
 func (n *Node) Serve(accept func(peer string, header []byte, s net.Conn)) error {
-	if len(n.cfg.Connect) > 0 && n.cfg.Dial == nil {
-		return errors.New("quiclink: Config.Connect needs Config.Dial")
-	}
 	n.mu.Lock()
 	n.accept = accept
 	draining := n.draining

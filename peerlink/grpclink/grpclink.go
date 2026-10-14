@@ -6,6 +6,10 @@
 // per peer. It needs no generated code: the service is registered with a
 // hand-written grpc.ServiceDesc and messages are raw bytes.
 //
+// It carries peerlink sessions over gRPC, for a network that passes only
+// gRPC. To serve a gRPC service over a link instead, give a grpc.Server a
+// peerlink.Listener and dial it with Open (Example_grpcOverLink).
+//
 // On the wire a session is the stream /peerlink.v1.Link/Session; the
 // opener's header travels in the metadata key peerlink-header-bin. Every
 // message is one kind byte and its bytes: 0 data, 1 the sender writes no
@@ -91,11 +95,22 @@ type Node struct {
 	opened   sync.WaitGroup // dialled streams not yet ended
 }
 
-var _ peerlink.Link = (*Node)(nil)
+var (
+	_ peerlink.Link    = (*Node)(nil)
+	_ peerlink.Session = (*session)(nil)
+)
 
-// New returns a Node; it dials nothing until Open.
-func New(cfg Config) *Node {
-	return &Node{cfg: cfg, clients: map[string]*grpc.ClientConn{}}
+// New returns a Node; it dials nothing until Open. It refuses a Config
+// that cannot work, naming the field: neither Dial nor Listener, or an
+// invalid Liveness.
+func New(cfg Config) (*Node, error) {
+	if cfg.Dial == nil && cfg.Listener == nil {
+		return nil, errors.New("grpclink: Config.Dial and Config.Listener are both nil: set Dial to open sessions to peers, Listener to take theirs, or both")
+	}
+	if err := (link.Config{Liveness: cfg.Liveness}).Validate(); err != nil {
+		return nil, fmt.Errorf("grpclink: %w", err)
+	}
+	return &Node{cfg: cfg, clients: map[string]*grpc.ClientConn{}}, nil
 }
 
 const (

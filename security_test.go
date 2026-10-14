@@ -101,7 +101,7 @@ func TestPoolBacksOffRefusingPeer(t *testing.T) {
 		}
 	}()
 	var dials atomic.Int32
-	p := NewPool(PoolConfig{Min: 1, Backoff: func(int) time.Duration { return 100 * time.Millisecond },
+	p := mustPool(t, PoolConfig{Min: 1, Backoff: func(int) time.Duration { return 100 * time.Millisecond },
 		Dial: func(ctx context.Context) (net.Conn, error) {
 			dials.Add(1)
 			return (&net.Dialer{}).DialContext(ctx, "tcp", ln.Addr().String())

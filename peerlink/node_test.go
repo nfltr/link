@@ -5,10 +5,11 @@ package peerlink_test
 
 import (
 	"context"
-	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -17,21 +18,6 @@ import (
 	"github.com/nfltr/link/peerlink"
 	"github.com/nfltr/link/peerlink/peerlinktest"
 )
-
-// nameAuth sends a name and takes the one it is sent: an Authenticator for
-// tests only (it proves nothing).
-type nameAuth string
-
-func (a nameAuth) Hello(context.Context, tls.ConnectionState) (byte, []byte, error) {
-	return 128, []byte(a), nil
-}
-
-func (nameAuth) Verify(_ context.Context, _ tls.ConnectionState, method byte, payload []byte) (link.Identity, error) {
-	if method != 128 {
-		return link.Identity{}, fmt.Errorf("method %d", method)
-	}
-	return link.Identity{Method: "name", Subject: string(payload)}, nil
-}
 
 // nodes returns a listening Node b and a Node a that dials "b" at addr
 // (through the caller's proxy, say) with Liveness l.
@@ -43,9 +29,9 @@ func nodes(t *testing.T, l link.Liveness, addr func(net.Listener) string, obs fu
 	}
 	t.Cleanup(func() { _ = ln.Close() })
 	to := addr(ln)
-	b = peerlink.New(peerlink.Config{Listener: ln, Link: link.Config{Liveness: l, Auth: nameAuth("b")}, Observer: obs})
-	a = peerlink.New(peerlink.Config{
-		Link: link.Config{Liveness: l, Auth: nameAuth("a")},
+	b = mustNew(t, peerlink.Config{Listener: ln, Link: link.Config{Liveness: l, Auth: link.NameAuth("b")}, Observer: obs})
+	a = mustNew(t, peerlink.Config{
+		Link: link.Config{Liveness: l, Auth: link.NameAuth("a")},
 		Dial: func(ctx context.Context, peer string) (net.Conn, error) {
 			if peer != "b" {
 				return nil, fmt.Errorf("no peer %q", peer)
@@ -84,9 +70,9 @@ func reverse(t *testing.T, l link.Liveness, pool link.PoolConfig, addr func(net.
 	}
 	t.Cleanup(func() { _ = ln.Close() })
 	to := addr(ln)
-	a = peerlink.New(peerlink.Config{Listener: ln, Link: link.Config{Liveness: l, Auth: nameAuth("a")}, Observer: obs})
-	b = peerlink.New(peerlink.Config{
-		Link:    link.Config{Liveness: l, Auth: nameAuth("b")},
+	a = mustNew(t, peerlink.Config{Listener: ln, Link: link.Config{Liveness: l, Auth: link.NameAuth("a")}, Observer: obs})
+	b = mustNew(t, peerlink.Config{
+		Link:    link.Config{Liveness: l, Auth: link.NameAuth("b")},
 		Pool:    pool,
 		Connect: []string{"a"},
 		Dial: func(ctx context.Context, peer string) (net.Conn, error) {
@@ -217,11 +203,40 @@ func TestSeveralConnections(t *testing.T) {
 	}
 }
 
-// TestServeNeedsDialForConnect: Config.Connect without Dial is refused.
-func TestServeNeedsDialForConnect(t *testing.T) {
-	n := peerlink.New(peerlink.Config{Connect: []string{"x"}})
-	if err := n.Serve(echoAccept); err == nil {
-		t.Fatalf("Serve: %v, want an error", err)
+func mustNew(t testing.TB, cfg peerlink.Config) *peerlink.Node {
+	t.Helper()
+	n, err := peerlink.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// TestNewRefuses: New refuses a Config that cannot work, naming the field.
+func TestNewRefuses(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	dial := func(context.Context, string) (net.Conn, error) { return nil, errors.New("no") }
+	for _, c := range []struct {
+		cfg  peerlink.Config
+		want string
+	}{
+		{peerlink.Config{}, "Config.Dial and Config.Listener"},
+		{peerlink.Config{Listener: ln}, "Config.Link.Auth"},
+		{peerlink.Config{Listener: ln, Link: link.Config{Auth: link.NoAuth}, Connect: []string{"x"}}, "Config.Connect"},
+		{peerlink.Config{Dial: dial, Link: link.Config{Window: 1}}, "Config.Window"},
+		{peerlink.Config{Dial: dial, Link: link.Config{Liveness: link.Liveness{Interval: time.Hour, Timeout: time.Hour}}}, "Config.Liveness"},
+		{peerlink.Config{Dial: dial, Pool: link.PoolConfig{Min: 3, Max: 2}}, "PoolConfig.Min"},
+	} {
+		if _, err := peerlink.New(c.cfg); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("New(%+v): %v, want an error naming %s", c.cfg, err, c.want)
+		}
+	}
+	if _, err := peerlink.New(peerlink.Config{Dial: dial}); err != nil {
+		t.Errorf("New with only Dial: %v", err)
 	}
 }
 
@@ -267,15 +282,15 @@ func TestServedPeer(t *testing.T) {
 		t.Fatal(err)
 	}
 	up := make(chan string, 1)
-	b := peerlink.New(peerlink.Config{
+	b := mustNew(t, peerlink.Config{
 		Listener:   ln,
-		Link:       link.Config{Auth: nameAuth("b")},
+		Link:       link.Config{Auth: link.NameAuth("b")},
 		ServedPeer: func(nc net.Conn, id link.Identity) string { return id.Subject + "@" + nc.RemoteAddr().String() },
 		Observer:   func(peer string) link.Observer { return upObserver{peer: peer, up: up} },
 	})
 	from := make(chan string, 1)
-	a := peerlink.New(peerlink.Config{
-		Link: link.Config{Auth: nameAuth("a")},
+	a := mustNew(t, peerlink.Config{
+		Link: link.Config{Auth: link.NameAuth("a")},
 		Dial: func(ctx context.Context, _ string) (net.Conn, error) {
 			var d net.Dialer
 			nc, err := d.DialContext(ctx, "tcp", ln.Addr().String())
@@ -305,4 +320,70 @@ func TestServedPeer(t *testing.T) {
 	if got := <-up; got != want {
 		t.Errorf("observer of peer %q, want %q", got, want)
 	}
+}
+
+// TestHandshakeErrorHook: a connection whose handshake fails reaches
+// Config.HandshakeError with why.
+func TestHandshakeErrorHook(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make(chan error, 1)
+	n := mustNew(t, peerlink.Config{Listener: ln, Link: link.Config{Auth: link.NameAuth("b")},
+		HandshakeError: func(_ net.Conn, err error) { got <- err }})
+	go func() { _ = n.Serve(echoAccept) }()
+	defer drainNow(n)
+	c, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_, _ = io.WriteString(c, "GET / HTTP/1.1\r\n\r\n")
+	select {
+	case err := <-got:
+		if !errors.Is(err, link.ErrHandshake) {
+			t.Fatalf("HandshakeError got %v, want ErrHandshake", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("HandshakeError not called")
+	}
+}
+
+// TestUnreachableNamesConnected: Open toward a peer with no connection
+// names the peers that are connected (a typo shows).
+func TestUnreachableNamesConnected(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := mustNew(t, peerlink.Config{Listener: ln, Link: link.Config{Auth: link.NameAuth("b")}})
+	go func() { _ = b.Serve(echoAccept) }()
+	defer drainNow(b)
+	a := mustNew(t, peerlink.Config{Link: link.Config{Auth: link.NameAuth("client-1")}, Connect: []string{"b"},
+		Dial: func(ctx context.Context, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "tcp", ln.Addr().String())
+		}})
+	go func() { _ = a.Serve(echoAccept) }()
+	defer drainNow(a)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if s, err := b.Open(ctx, "client-1", nil); err != nil { // up
+		t.Fatal(err)
+	} else {
+		_ = s.Close()
+	}
+	ctx, cancel = context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_, err = b.Open(ctx, "client-l", nil)
+	if !errors.Is(err, peerlink.ErrPeerUnreachable) || !strings.Contains(err.Error(), `"client-1"`) {
+		t.Fatalf("Open toward a misnamed peer: %v, want ErrPeerUnreachable naming client-1", err)
+	}
+}
+
+func drainNow(n *peerlink.Node) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_ = n.Drain(ctx)
 }

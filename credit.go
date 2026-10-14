@@ -75,10 +75,10 @@ func NewCredit(window, peerWindow int, grant func(sid string, n int)) *Credit {
 	}
 }
 
-// Window is this side's window. allow:wrapper
+// Window is this side's window.
 func (c *Credit) Window() int { return c.window }
 
-// PeerWindow is the other side's window. allow:wrapper
+// PeerWindow is the other side's window.
 func (c *Credit) PeerWindow() int { return c.peerWindow }
 
 // Open starts the credit of a session on both sides: the opener before it

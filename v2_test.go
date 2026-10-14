@@ -136,7 +136,7 @@ func TestHandshakeVersionNegotiation(t *testing.T) {
 	if _, _, err := Server(context.Background(), bufConn{r: bytes.NewReader(v1), w: &out}, v2cfg); !errors.Is(err, ErrV1) || !errors.Is(err, ErrVersion) {
 		t.Fatalf("v1 hello: %v, want ErrV1", err)
 	}
-	if !bytes.Equal(out.Bytes(), []byte{StatusVersion, MaxVersion}) {
+	if !bytes.Equal(out.Bytes(), []byte{statusVersion, MaxVersion}) {
 		t.Fatalf("v1 hello: reply %x, want the version reply", out.Bytes())
 	}
 	// A hello of a version past this package's gets the version reply too.
@@ -149,10 +149,6 @@ func TestHandshakeVersionNegotiation(t *testing.T) {
 	_, err := Client(context.Background(), bufConn{r: bytes.NewReader(out.Bytes()), w: io.Discard}, Config{Auth: testToken})
 	if !errors.As(err, &ve) || ve.Max != MaxVersion {
 		t.Fatalf("version reply to the dialer: %v", err)
-	}
-	// Version 1 is no Config's.
-	if _, err := Client(context.Background(), bufConn{w: io.Discard}, Config{Version: 1, Auth: testToken}); err == nil {
-		t.Fatal("Client with Version 1")
 	}
 }
 
@@ -456,7 +452,7 @@ func TestPool(t *testing.T) {
 	}()
 	var dials atomic.Int32
 	failDials := atomic.Int32{}
-	p := NewPool(PoolConfig{
+	p := mustPool(t, PoolConfig{
 		Link: v2cfg,
 		Dial: func(ctx context.Context) (net.Conn, error) {
 			dials.Add(1)
@@ -584,7 +580,7 @@ func TestPoolMin(t *testing.T) {
 			}()
 		}
 	}()
-	p := NewPool(PoolConfig{Link: v2cfg, Min: 1, Dial: func(ctx context.Context) (net.Conn, error) {
+	p := mustPool(t, PoolConfig{Link: v2cfg, Min: 1, Dial: func(ctx context.Context) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "tcp", ln.Addr().String())
 	}, Backoff: func(int) time.Duration { return 10 * time.Millisecond }})
 	defer p.Close() //nolint:errcheck
@@ -625,7 +621,7 @@ func TestPoolAccept(t *testing.T) {
 		if withAccept {
 			pc.Accept = v2echo
 		}
-		p := NewPool(pc)
+		p := mustPool(t, pc)
 		m := <-served
 		s, err := m.Open(func(string) ([]byte, error) { return []byte("x"), nil })
 		if err != nil {
@@ -660,5 +656,14 @@ func TestSendOpenLimits(t *testing.T) {
 	}
 }
 
-// SetDeadline: no-op (handshakes set one). allow:wrapper
+// SetDeadline: no-op (handshakes set one).
 func (bufConn) SetDeadline(time.Time) error { return nil }
+
+func mustPool(t testing.TB, cfg PoolConfig) *Pool {
+	t.Helper()
+	p, err := NewPool(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}

@@ -9,6 +9,7 @@ package bytequeue
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -41,8 +42,12 @@ func (q *Queue) popped(n int) {
 }
 
 // New returns a queue that accepts pushes while it holds fewer than limit
-// bytes (so it holds at most limit-1 plus one slice).
+// bytes (so it holds at most limit-1 plus one slice). It panics on a limit
+// under 1, a queue that would take nothing.
 func New(limit int) *Queue {
+	if limit < 1 {
+		panic(fmt.Sprintf("bytequeue: New(%d): the limit is at least 1 byte", limit))
+	}
 	q := &Queue{limit: limit}
 	q.cond.L = &q.mu
 	return q

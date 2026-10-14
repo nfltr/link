@@ -49,8 +49,8 @@ func TestConformance(t *testing.T) {
 		}
 		t.Cleanup(func() { _ = ln.Close() })
 		px := peerlinktest.NewProxy(t, ln.Addr().String())
-		b := grpclink.New(grpclink.Config{Listener: ln, Liveness: link.LivenessFast, Identify: identify})
-		a := grpclink.New(grpclink.Config{
+		b := mustNew(t, grpclink.Config{Listener: ln, Liveness: link.LivenessFast, Identify: identify})
+		a := mustNew(t, grpclink.Config{
 			Liveness: link.LivenessFast,
 			Dial: func(ctx context.Context, peer string) (net.Conn, error) {
 				if peer != "b" {
@@ -81,7 +81,7 @@ func TestReverseUnsupported(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ln.Close() //nolint:errcheck
-	n := grpclink.New(grpclink.Config{Listener: ln, Identify: identify})
+	n := mustNew(t, grpclink.Config{Listener: ln, Identify: identify})
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	start := time.Now()
@@ -93,4 +93,13 @@ func TestReverseUnsupported(t *testing.T) {
 	if errors.Is(err, peerlink.ErrPeerUnreachable) || time.Since(start) > time.Second {
 		t.Fatalf("Open without Config.Dial: %v after %v, want an immediate refusal", err, time.Since(start))
 	}
+}
+
+func mustNew(t testing.TB, cfg grpclink.Config) *grpclink.Node {
+	t.Helper()
+	n, err := grpclink.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
 }

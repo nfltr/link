@@ -6,6 +6,7 @@ package link
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"slices"
 	"sync"
@@ -70,14 +71,36 @@ type Pool struct {
 }
 
 // NewPool returns a Pool; it dials its Min connections in the background.
-func NewPool(cfg PoolConfig) *Pool {
+// It refuses a PoolConfig that Validate refuses.
+func NewPool(cfg PoolConfig) (*Pool, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 	cfg.Max = max(cfg.Max, cfg.Min, 1)
 	p := &Pool{cfg: cfg, changed: make(chan struct{})}
 	p.ctx, p.cancel = context.WithCancel(context.Background())
 	if cfg.Min > 0 {
 		go p.maintain()
 	}
-	return p
+	return p, nil
+}
+
+// Validate reports the first field of cfg that NewPool refuses, naming it
+// and what to set: Dial is required; Min and Max are not negative, and Min
+// is at most a Max that is set; Link is valid (Config.Validate).
+func (cfg PoolConfig) Validate() error {
+	switch {
+	case cfg.Dial == nil:
+		return errors.New("link: PoolConfig.Dial is nil: set the function that dials the peer (its TLS, if any, done)")
+	case cfg.Min < 0 || cfg.Max < 0:
+		return fmt.Errorf("link: PoolConfig.Min %d, Max %d: neither is negative", cfg.Min, cfg.Max)
+	case cfg.Max > 0 && cfg.Min > cfg.Max:
+		return fmt.Errorf("link: PoolConfig.Min %d is over Max %d: lower Min or raise Max", cfg.Min, cfg.Max)
+	}
+	if err := cfg.Link.Validate(); err != nil {
+		return fmt.Errorf("PoolConfig.Link: %w", err)
+	}
+	return nil
 }
 
 // takes reports whether m takes a new session.

@@ -53,6 +53,11 @@ type Config struct {
 	// the Identity Link.Auth verified (its remote address, say, where
 	// peers share one credential). nil: the Identity's Subject.
 	ServedPeer func(nc net.Conn, id link.Identity) string
+	// HandshakeError, when set, gets each connection Serve accepted whose
+	// handshake failed (a wrong credential, a TLS mismatch, a dialer that
+	// is not link's) and why; the connection is closed. nil: they are
+	// closed silently.
+	HandshakeError func(nc net.Conn, err error)
 }
 
 // Node is a Link over github.com/nfltr/link: a link.Pool per peer it opens
@@ -77,12 +82,37 @@ type Node struct {
 	accepted sync.WaitGroup // sessions taken on dialled connections, not yet closed
 }
 
-var _ Link = (*Node)(nil)
+var (
+	_ Link    = (*Node)(nil)
+	_ Session = (*session)(nil)
+	_ Session = (*link.Session)(nil)
+)
 
-// New returns a Node; it dials nothing until Open.
-func New(cfg Config) *Node {
+// New returns a Node; it dials nothing until Open or Serve. It refuses a
+// Config that cannot work, naming the field: neither Dial nor Listener;
+// a Listener without Link.Auth; Connect without Dial; an invalid Link
+// (link.Config.Validate) or Pool.
+func New(cfg Config) (*Node, error) {
+	switch {
+	case cfg.Dial == nil && cfg.Listener == nil:
+		return nil, errors.New("peerlink: Config.Dial and Config.Listener are both nil: set Dial to open sessions to peers, Listener to take theirs, or both")
+	case cfg.Listener != nil && cfg.Link.Auth == nil:
+		return nil, errors.New("peerlink: Config.Listener is set but Config.Link.Auth is nil: set link.NameAuth(name) on a trusted network, link.CertAuth over mutual TLS, or an Authenticator of your own")
+	case len(cfg.Connect) > 0 && cfg.Dial == nil:
+		return nil, errors.New("peerlink: Config.Connect needs Config.Dial: set Dial to reach the peers it names")
+	}
+	if err := cfg.Link.Validate(); err != nil {
+		return nil, fmt.Errorf("peerlink: Config.Link: %w", err)
+	}
+	if cfg.Dial != nil {
+		pc := cfg.Pool
+		pc.Link, pc.Dial = cfg.Link, func(ctx context.Context) (net.Conn, error) { return cfg.Dial(ctx, "") } // as newPool sets them
+		if err := pc.Validate(); err != nil {
+			return nil, fmt.Errorf("peerlink: Config.Pool: %w", err)
+		}
+	}
 	return &Node{cfg: cfg, pools: map[string]*link.Pool{}, served: map[*link.Mux]string{},
-		changed: make(chan struct{}), drained: make(chan struct{})}
+		changed: make(chan struct{}), drained: make(chan struct{})}, nil
 }
 
 // DeadAfter is the Node's dead-peer bound: Interval + Timeout of
@@ -131,7 +161,9 @@ func (n *Node) openServed(ctx context.Context, peer string, header []byte) (net.
 			return nil, ErrDraining
 		}
 		var best *link.Mux
+		names := map[string]bool{}
 		for m, p := range n.served {
+			names[p] = true
 			if p == peer && !refused[m] && !m.Conn().GoingAway() && (best == nil || m.Sessions() < best.Sessions()) {
 				best = m
 			}
@@ -143,7 +175,7 @@ func (n *Node) openServed(ctx context.Context, peer string, header []byte) (net.
 			case <-changed:
 				continue
 			case <-ctx.Done():
-				return nil, fmt.Errorf("%w %q: %w", ErrPeerUnreachable, peer, ctx.Err())
+				return nil, fmt.Errorf("%w %q (no connection from it; connected: %q): %w", ErrPeerUnreachable, peer, slices.Sorted(maps.Keys(names)), ctx.Err())
 			}
 		}
 		s, err := best.Open(func(string) ([]byte, error) { return header, nil })
@@ -181,7 +213,11 @@ func (n *Node) newPool(peer string) *link.Pool {
 		}
 	}
 	pc.Dial = func(ctx context.Context) (net.Conn, error) { return n.cfg.Dial(ctx, peer) }
-	return link.NewPool(pc)
+	p, err := link.NewPool(pc)
+	if err != nil {
+		panic(err) // New validated pc's fields
+	}
+	return p
 }
 
 // acceptDialled hands a session peer opened on a connection this Node
@@ -224,12 +260,9 @@ func (s *session) Reset() error {
 // Serve takes the sessions peers open until Drain: on the connections it
 // accepts on Config.Listener (if any), and on the connections this Node
 // dialled, Config.Connect's among them, which it dials now. A failed
-// handshake closes that connection only; an Accept error other than
-// Drain's ends Serve.
+// handshake closes that connection only (Config.HandshakeError hears of
+// it); an Accept error other than Drain's ends Serve.
 func (n *Node) Serve(accept func(peer string, header []byte, s net.Conn)) error {
-	if len(n.cfg.Connect) > 0 && n.cfg.Dial == nil {
-		return errors.New("peerlink: Config.Connect needs Config.Dial")
-	}
 	n.mu.Lock()
 	n.accept = accept
 	if !n.draining {
@@ -269,6 +302,9 @@ func (n *Node) serveConn(nc net.Conn, accept func(string, []byte, net.Conn)) {
 	cancel()
 	if err != nil {
 		_ = nc.Close()
+		if n.cfg.HandshakeError != nil {
+			n.cfg.HandshakeError(nc, err)
+		}
 		return
 	}
 	m := link.NewMux(c)

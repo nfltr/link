@@ -160,7 +160,7 @@ func echoOK(t *testing.T, s *Session) {
 // away ones do not count against Max), while the old sessions run on.
 func TestPoolReplacesConnectionsGoingAway(t *testing.T) {
 	addr, muxes, accepted := echoListener(t)
-	p := NewPool(PoolConfig{
+	p := mustPool(t, PoolConfig{
 		Link: v2cfg,
 		Dial: func(ctx context.Context) (net.Conn, error) { return (&net.Dialer{}).DialContext(ctx, "tcp", addr) },
 		Max:  2,
@@ -206,7 +206,7 @@ func TestPoolGrowsInTheBackground(t *testing.T) {
 	addr, _, accepted := echoListener(t)
 	var dials atomic.Int32
 	hold := make(chan struct{})
-	p := NewPool(PoolConfig{
+	p := mustPool(t, PoolConfig{
 		Link: v2cfg,
 		Dial: func(ctx context.Context) (net.Conn, error) {
 			if dials.Add(1) == 2 {

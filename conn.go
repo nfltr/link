@@ -60,9 +60,9 @@ const (
 const (
 	// FeatureReset: the side reads CLOSE code 2 (a reset). A side sends
 	// code 2 only to a peer that announced it, else code 0.
-	FeatureReset uint32 = 1 << 0
+	featureReset uint32 = 1 << 0
 
-	features = FeatureReset // what this package announces
+	features = featureReset // what this package announces
 )
 
 // dataBufs holds data frames' buffers of MaxChunk bytes: a Mux session
@@ -125,8 +125,9 @@ type Frame struct {
 //
 // Reads go straight to the connection: over TLS, tls.Conn's record buffer
 // serves the small header reads, and an idle connection pins no buffer.
-// ponytail: a plaintext connection (loopback, dev) reads the socket for
-// each header; give it a bufio.Reader if one carries real traffic.
+// On a plaintext connection each frame header is a read of the socket:
+// where one carries heavy traffic, give Client or Server a net.Conn whose
+// Read goes through a bufio.Reader.
 type Conn struct {
 	*Credit
 	nc   net.Conn
@@ -200,16 +201,12 @@ func (c *Conn) up(obs Observer, id Identity) {
 func (c *Conn) Version() int { return MaxVersion }
 
 // Identity is who the peer is, as the listener's Authenticator said (zero
-// on the dialer). allow:wrapper
+// on the dialer).
 func (c *Conn) Identity() Identity { return c.id }
 
 // PeerMaxSessions is how many sessions this side may have open toward the
-// peer at once. allow:wrapper
+// peer at once.
 func (c *Conn) PeerMaxSessions() int { return c.peerMaxSessions }
-
-// PeerFeatures is the feature bits the peer announced.
-// allow:wrapper
-func (c *Conn) PeerFeatures() uint32 { return c.peerFeatures }
 
 // SendMsg buffers a message frame; Flush, or a full buffer, writes it. The
 // caller does not modify b afterwards. The peer reads it from Recv
@@ -282,7 +279,7 @@ func (c *Conn) SendClose(sid string, half bool) error {
 // that announced FeatureReset reads it as a reset, another as a close.
 func (c *Conn) SendReset(sid string) error {
 	code := byte(closeFull)
-	if c.peerFeatures&FeatureReset != 0 {
+	if c.peerFeatures&featureReset != 0 {
 		code = closeReset
 	}
 	return c.sendClose(sid, code)
@@ -340,10 +337,10 @@ func (c *Conn) Drained() <-chan struct{} { return c.drained }
 // PeerGoAway is closed once the peer sent GOAWAY.
 func (c *Conn) PeerGoAway() <-chan struct{} { return c.peerGoAway }
 
-// GoingAway reports whether either side sent GOAWAY. allow:wrapper
+// GoingAway reports whether either side sent GOAWAY.
 func (c *Conn) GoingAway() bool { return c.goingAway.Load() }
 
-// Done is closed once the connection is closed. allow:wrapper
+// Done is closed once the connection is closed.
 func (c *Conn) Done() <-chan struct{} { return c.closed }
 
 // Err is why the connection ended when the link ended it (ErrDeadPeer),

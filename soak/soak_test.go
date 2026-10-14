@@ -576,12 +576,12 @@ func linkPair(t *testing.T, reverse bool) pair {
 	l := link.LivenessFast
 	var a, b *peerlink.Node
 	if reverse {
-		a = peerlink.New(peerlink.Config{Listener: ln, Link: link.Config{Liveness: l, Auth: nameAuth("a")}})
-		b = peerlink.New(peerlink.Config{Link: link.Config{Liveness: l, Auth: nameAuth("b")}, Connect: []string{"a"}, Dial: dial,
+		a = mustPeer(t, peerlink.Config{Listener: ln, Link: link.Config{Liveness: l, Auth: nameAuth("a")}})
+		b = mustPeer(t, peerlink.Config{Link: link.Config{Liveness: l, Auth: nameAuth("b")}, Connect: []string{"a"}, Dial: dial,
 			Pool: link.PoolConfig{Backoff: func(int) time.Duration { return 100 * time.Millisecond }}})
 	} else {
-		b = peerlink.New(peerlink.Config{Listener: ln, Link: link.Config{Liveness: l, Auth: nameAuth("b")}})
-		a = peerlink.New(peerlink.Config{Link: link.Config{Liveness: l, Auth: nameAuth("a")}, Dial: dial,
+		b = mustPeer(t, peerlink.Config{Listener: ln, Link: link.Config{Liveness: l, Auth: nameAuth("b")}})
+		a = mustPeer(t, peerlink.Config{Link: link.Config{Liveness: l, Auth: nameAuth("a")}, Dial: dial,
 			Pool: link.PoolConfig{Backoff: func(int) time.Duration { return 100 * time.Millisecond }}})
 	}
 	return pair{a: a, b: b, reverse: reverse, deadAfter: a.DeadAfter(), blackHole: px.BlackHole, cut: px.Cut, throttle: px.Throttle}
@@ -604,11 +604,11 @@ func quicPair(t *testing.T, reverse bool) pair {
 	}
 	var a, b *quiclink.Node
 	if reverse {
-		a = quiclink.New(quiclink.Config{PacketConn: pc, TLS: serverTLS("a"), Liveness: l})
-		b = quiclink.New(quiclink.Config{Dial: dial("b", "a"), Connect: []string{"a"}, Liveness: l})
+		a = mustQuic(t, quiclink.Config{PacketConn: pc, TLS: serverTLS("a"), Liveness: l})
+		b = mustQuic(t, quiclink.Config{Dial: dial("b", "a"), Connect: []string{"a"}, Liveness: l})
 	} else {
-		b = quiclink.New(quiclink.Config{PacketConn: pc, TLS: serverTLS("b"), Liveness: l})
-		a = quiclink.New(quiclink.Config{Dial: dial("a", "b"), Liveness: l})
+		b = mustQuic(t, quiclink.Config{PacketConn: pc, TLS: serverTLS("b"), Liveness: l})
+		a = mustQuic(t, quiclink.Config{Dial: dial("a", "b"), Liveness: l})
 	}
 	return pair{a: a, b: b, reverse: reverse, deadAfter: a.DeadAfter(), blackHole: px.BlackHole, cut: px.Cut, throttle: px.Throttle, rebind: px.Rebind}
 }
@@ -652,4 +652,22 @@ func clientTLS(name, peer string) *tls.Config {
 	p := pki()
 	return &tls.Config{Certificates: []tls.Certificate{p.certs[name]}, RootCAs: p.pool, ServerName: peer,
 		NextProtos: []string{quiclink.ALPN}, MinVersion: tls.VersionTLS13}
+}
+
+func mustPeer(t testing.TB, cfg peerlink.Config) *peerlink.Node {
+	t.Helper()
+	n, err := peerlink.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func mustQuic(t testing.TB, cfg quiclink.Config) *quiclink.Node {
+	t.Helper()
+	n, err := quiclink.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
 }

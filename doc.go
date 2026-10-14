@@ -1,39 +1,79 @@
 // Copyright 2026 nfltr
 // SPDX-License-Identifier: Apache-2.0
 
-// Package link is the nfltr endpoint-to-endpoint link layer: many
-// sessions, each a byte stream with its own flow control, multiplexed over
-// one connection the caller dials and secures (TLS, a proxy, a pipe).
-// A session whose reader is slow stalls only itself; one write to the
-// network carries every frame queued at the time.
+// Package link multiplexes many byte-stream sessions, each a net.Conn with
+// its own flow control, over one connection that the caller dials and
+// secures (plain TCP, TLS, a pipe). A session whose reader is slow stalls
+// only itself, dead peers are noticed within a bound the caller picks, and
+// the package imports only the Go standard library.
 //
-// It imports only the Go standard library.
+// # Where to start
 //
-// Client and Server bind a connection (the hello, an Authenticator's
-// credential, version negotiation); Mux carries sessions over it as
-// net.Conns; Pool keeps several connections to one peer. Credit is the
-// per-session flow control, also for a caller that carries its sessions
-// on a transport of its own.
+// Most programs want [github.com/nfltr/link/peerlink]: a Node opens
+// sessions to named peers and serves the sessions they open, keeping the
+// connections (dialling, redialling, draining) for it. The README's quick
+// start and docs/recipes.md (plaintext and mutual TLS, liveness presets,
+// gRPC and HTTP over a link, graceful drain, reconnects, metrics) build on
+// it.
+//
+// This package is the layer below, for callers that manage connections
+// themselves:
+//
+//   - [Client] and [Server] run the handshake on a connection (the hello,
+//     an [Authenticator]'s credential) and return a [Conn].
+//   - [Mux] carries sessions over a Conn as [Session]s (net.Conns).
+//   - [Pool] keeps several connections to one peer, with growth, dial
+//     backoff and make-before-break [Pool.Drain].
+//   - [Conn] and [Credit] are frames and per-session flow control, for a
+//     caller with its own receive loop or its own transport.
+//
+// Authenticators: [NameAuth] on a trusted network, [CertAuth] over mutual
+// TLS, [NoAuth] where peers need no names, or the caller's own (SECURITY.md).
+// [Config.Validate] and [PoolConfig.Validate] name the field to fix.
+//
+// # Liveness
+//
+// A connection is dead once nothing arrived for Interval + Timeout ([ErrDeadPeer]):
+// each side pings once it received nothing for Interval. Pick a preset by
+// how fast a dead peer must be noticed against how many idle frames you can
+// afford (one small frame each way per Interval per connection):
+//
+//   - [LivenessFast] (4.5 s): failover and interactive use on a good network.
+//   - [LivenessDefault] (15 s): most services; what a zero Config gets.
+//   - [LivenessNAT] (30 s): paths through NATs, conntrack or load balancers
+//     that drop mappings idle for 30 s or more.
+//   - [LivenessDatacenter] (45 s): stable networks where fewer wakeups matter
+//     more than fast failover.
+//   - [LivenessMobile] (60 s): laptops and phones whose radio sleeps or hands
+//     over: the fewest wakeups, and a short silence is not taken for death.
+//
+// [ParseLiveness] reads a preset by name, with overrides ("nat,timeout=40s"),
+// for a flag or a config file. The listener takes the dialer's liveness
+// unless its Config sets one.
 //
 // # Errors
 //
-// The errors to test with errors.Is, by where they come from:
+// Every error to test with errors.Is, by where it comes from (the README
+// has the same as a table, with what to change):
 //
-//   - Client: ErrRefused (the listener refused the credential), ErrVersion
-//     (errors.As a *VersionError for the versions the listener speaks),
-//     ErrFrame (a malformed reply), ctx's error, the network's.
-//   - Server: ErrAuth (the Authenticator refused; it wraps Verify's
-//     error), ErrV1 and ErrVersion (a version it does not speak),
-//     ErrFrame (a malformed hello), ctx's error, the network's.
-//   - Conn.Recv, Mux.Serve: ErrFrame, ErrCredit, ErrFull (the peer broke
-//     the protocol), ErrDeadPeer (liveness ended the connection), the
-//     network's (io.EOF once the peer closed).
-//   - Conn.SendOpen, Mux.Open, Pool.Open: ErrFull (the peer's max
-//     sessions), ErrGoAway (the connection is going away); Mux.Open after
+//   - Client: [ErrRefused] (the listener refused the credential),
+//     [ErrVersion] (errors.As a *[VersionError]), [ErrHandshake] (the reply
+//     did not arrive: not a link listener, or a TLS mismatch; it wraps the
+//     network's error), [ErrFrame], ctx's error.
+//   - Server: [ErrAuth] (the Authenticator refused; it wraps Verify's
+//     error), [ErrV1] and [ErrVersion], [ErrHandshake] (with [ErrFrame] when
+//     the first bytes are not a hello), ctx's error.
+//   - Conn.Recv, Mux.Serve: [ErrFrame], [ErrCredit], [ErrFull] (the peer
+//     broke the protocol), [ErrDeadPeer] (liveness ended the connection),
+//     the network's (io.EOF once the peer closed).
+//   - Conn.SendOpen, Mux.Open, Pool.Open: [ErrFull] (the peer's max
+//     sessions), [ErrGoAway] (the connection is going away); Mux.Open after
 //     Serve returned: net.ErrClosed.
 //   - Session reads: io.EOF (the peer ended its writes on purpose),
-//     ErrReset (the peer's Reset), ErrDeadPeer or ErrConnClosed (the
+//     [ErrReset] (the peer's Reset), [ErrDeadPeer] or [ErrConnClosed] (the
 //     connection ended under the session), os.ErrDeadlineExceeded.
+//   - Config.Validate, PoolConfig.Validate, NewPool, Client, Server: a
+//     message naming the field and what to set.
 //
 // # Wire format, version 2
 //
@@ -77,7 +117,7 @@
 // max_sessions is how many sessions the peer may have open toward the
 // side that announces it at once; an open past it ends the connection.
 // Feature bits: a side announces the ones it reads and ignores the bits
-// it does not know. Bit 0, FeatureReset (since v0.3.0): the side reads
+// it does not know. Bit 0, reset (since v0.3.0): the side reads
 // CLOSE code 2; v0.2 sides announce none and end the connection on code 2,
 // so a reset to them is sent as code 0. Liveness is the dialer's (interval 1s to 15s, timeout at
 // least one interval); a listener takes it unless it has its own: each

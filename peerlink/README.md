@@ -5,11 +5,28 @@ byte-stream sessions between peers, a conformance suite that checks an
 implementation keeps its contract, and implementations over
 `github.com/nfltr/link` and over gRPC.
 
+New here? The [quick start](../README.md#quick-start) and the
+[recipes](../docs/recipes.md) use `Node`; every Example in this package
+runs as written (`go doc -all github.com/nfltr/link/peerlink`).
+
 ```go
-// Link carries byte-stream sessions between peers.
 type Link interface {
+	// Open opens a session to peer, a name the implementation's dialer
+	// resolves, with header: the bytes the peer's accept receives. ctx
+	// bounds the open, not the session. A peer's refusal surfaces as
+	// Open's error or as the session's first Read error (never io.EOF).
 	Open(ctx context.Context, peer string, header []byte) (net.Conn, error)
+	// Serve takes the sessions peers open until Drain. accept runs in a
+	// goroutine of its own for each, with the opener's name as the
+	// implementation authenticated it and the header; it owns the session
+	// and closes it (it may return first). Serve returns nil once Drain
+	// stopped it, else the error that did.
 	Serve(accept func(peer string, header []byte, s net.Conn)) error
+	// Drain stops the Link: no new sessions either way, open ones run to
+	// their end, then everything is released; at ctx's end the sessions
+	// still open are cut and Drain returns ctx's error. It is the only way
+	// to release a Link (a done ctx closes at once), and the caller
+	// chooses when: until then Serve and Open run as usual.
 	Drain(ctx context.Context) error
 }
 ```
@@ -33,7 +50,7 @@ it in full. In short:
 
 - A session is a `net.Conn`, with `CloseWrite() error` (half-close: the
   peer reads `io.EOF` after every byte written and can still write back)
-  and `Reset() error` (the peer reads an error), reached by type assertion.
+  and `Reset() error` (the peer reads an error): `s.(peerlink.Session)`.
 - `io.EOF` means the peer ended its writes on purpose. A session cut any
   other way (reset, broken or closed connection, dead peer, a drain's
   deadline) reads an error that is not `io.EOF`.
@@ -60,20 +77,22 @@ it in full. In short:
 ```go
 func TestConformance(t *testing.T) {
 	peerlinktest.Run(t, func(t *testing.T) peerlinktest.Pair {
-		ln, _ := net.Listen("tcp", "127.0.0.1:0")
-		px := peerlinktest.NewProxy(t, ln.Addr().String()) // injects the faults
-		b := yourlink.New(ln)                              // listens
-		a := yourlink.New(nil, dialVia(px.Addr()))         // dials "b" through the proxy
+		pc := listenUDP(t)
+		px := peerlinktest.NewUDPProxy(t, pc.LocalAddr().String())
+		b := mustNew(t, quiclink.Config{PacketConn: pc, TLS: serverTLS("b"), Liveness: link.LivenessFast})
+		a := mustNew(t, quiclink.Config{Dial: dialer("a", "b", px.Addr()), Liveness: link.LivenessFast})
 		return peerlinktest.Pair{
 			A: a, B: b, AName: "a", BName: "b",
-			DeadAfter: a.DeadAfter(), // your stated dead-peer bound
+			DeadAfter: a.DeadAfter(),
 			BlackHole: px.BlackHole, Cut: px.Cut, Throttle: px.Throttle,
 		}
 	})
 }
 ```
 
-Your implementation needs only to accept a custom dialer: the suite's
+That is quiclink's (`peerlink/quiclink/quiclink_test.go`); `mustNew` is
+its `New` failing the test on an error. Your implementation needs only to
+accept a custom dialer: the suite's
 `Proxy` relays TCP and black-holes (nothing crosses, nothing closes),
 resets, or throttles the path; `UDPProxy` does the same for UDP (a cut
 there drops the flows for good, as UDP has no reset to send) and also
@@ -104,26 +123,34 @@ its `Serve` dials it and keeps `Pool.Min` connections (at least one) up,
 redialling as they end, and takes the sessions opened on them.
 
 ```go
-// The agent, behind NAT: dials the relay, serves what it opens.
-agent := peerlink.New(peerlink.Config{
-	Dial: dialRelay, Connect: []string{"relay"},
-	Link: link.Config{Auth: agentCreds},
-	Pool: link.PoolConfig{Min: 2, Max: 2},
-})
-go agent.Serve(handle)
+func ExampleNode_reverse() {
+	ln := must(net.Listen("tcp", "127.0.0.1:0"))
+	server := must(peerlink.New(peerlink.Config{Listener: ln, Link: link.Config{Auth: link.NameAuth("server")}}))
+	go server.Serve(echo)
+	defer drain(server)
 
-// The relay: no Dial, so Open uses the agent's connections.
-relay := peerlink.New(peerlink.Config{Listener: ln, Link: link.Config{Auth: verifyAgents}})
-go relay.Serve(handleAgentOpens)
-s, err := relay.Open(ctx, agentID, header) // waits for agentID until ctx ends
+	client := must(peerlink.New(peerlink.Config{
+		Link:    link.Config{Auth: link.NameAuth("client")},
+		Connect: []string{"server"},
+		Dial:    dialTCP(ln.Addr().String()),
+	}))
+	go client.Serve(echo)
+	defer drain(client)
+
+	// Open waits (up to its ctx) for the client's connection to come up.
+	fmt.Println(call(server, "client", "hello"))
+	// Output: server echo hello
+}
 ```
 
 Liveness and drain are as in the other direction: pings on every
 connection, a dead peer surfacing on both ends within `DeadAfter`, the
 listener's `Drain` sending GOAWAY, the dialler's `Drain` refusing (a reset)
-the sessions opened toward it from then on. A Node that both dials some
-peers and is reached by others behind NAT uses two Nodes (one per
-listener). How many connections the dialler keeps is its `Pool` setting;
+the sessions opened toward it from then on. Every connection carries
+sessions both ways, so two peers need only one connection between them
+(the quick start). A Node that dials some peers and also opens sessions
+toward other peers behind NAT, over the connections they dialled in,
+uses two Nodes: one with `Dial`, one without. How many connections the dialler keeps is its `Pool` setting;
 the listener cannot ask for more.
 
 ## Implementations
@@ -133,7 +160,7 @@ the listener cannot ask for more.
 | carries sessions over | `link.Pool` per peer (dialling), `link.Mux` per accepted connection | one gRPC bidirectional stream per session, a `grpc.ClientConn` per peer | one QUIC stream per session, a QUIC connection per peer |
 | dependencies | standard library | google.golang.org/grpc (a module of its own) | github.com/quic-go/quic-go (a module of its own) |
 | who the opener is | the `Identity.Subject` of the caller's `link.Authenticator` | the caller's `Identify(ctx)` (metadata, credentials) | the caller's `ServedPeer(conn)`, else the client certificate's CommonName |
-| dead-peer bound (`DeadAfter`) | Interval + Timeout of the liveness (`LivenessFast`: 4.5 s) | max(Interval, 10 s) + Timeout + 5 s (`LivenessFast`: 18 s): gRPC clients ping no more often than every 10 s, and a client whose writes are stuck waits 5 s to send GOAWAY before closing | Interval + Timeout (`LivenessFast`: 4.5 s): keep-alive after Interval, QUIC's idle timeout of Timeout |
+| dead-peer bound (`DeadAfter`) | Interval + Timeout of the liveness (`LivenessFast`: 4.5 s) | max(Interval, 10 s) + Timeout + 5 s (`LivenessFast`: 18 s): gRPC clients ping no more often than every 10 s, and a client whose writes are stuck waits 5 s to send GOAWAY before closing | Interval + Timeout (`LivenessFast`: 4.5 s): keep-alive after Interval, QUIC's idle timeout of Timeout, and a check that closes a connection silent for Interval + Timeout/2 (QUIC's idle timer alone runs late on a side that cannot send) |
 | deadlines | read deadlines | none (`errors.ErrUnsupported`) | read and write deadlines |
 | reverse direction (`Open` on connections the peer dialled) | yes, without `Config.Dial` | no: a gRPC stream starts at the client (`TestReverseUnsupported`) | yes, without `Config.Dial` |
 | survives the dialler's address changing | no (TCP) | no (TCP) | yes (QUIC connection migration, `TestMigration`) |

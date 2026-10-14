@@ -14,8 +14,8 @@ const Magic = "NFDP"
 
 // Status bytes of the listener's reply to a hello (StatusVersion too).
 const (
-	StatusBound   = 0
-	StatusRefused = 1
+	statusBound   = 0
+	statusRefused = 1
 )
 
 // Window bounds: a side announces a window in [MinWindow, MaxWindow].

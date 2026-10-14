@@ -36,14 +36,14 @@ func (q *quicLib) liveness() link.Liveness {
 func (q *quicLib) dialUDP(addr string) client {
 	tc := tlsConfig(q.certs)
 	tc.NextProtos = []string{quiclink.ALPN}
-	n := quiclink.New(quiclink.Config{
+	n := must(quiclink.New(quiclink.Config{
 		Liveness: q.liveness(), Window: window,
 		Dial: func(ctx context.Context, _ string, qc *quic.Config) (*quic.Conn, error) {
 			ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 			defer cancel()
 			return quic.DialAddr(ctx, addr, tc, qc)
 		},
-	})
+	}))
 	return quicClient{n}
 }
 
@@ -65,10 +65,10 @@ func (q *quicLib) listenUDP(addr string, handle func([]byte, net.Conn)) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	n := quiclink.New(quiclink.Config{
+	n := must(quiclink.New(quiclink.Config{
 		PacketConn: pc, TLS: tlsConfig(q.certs), Liveness: q.liveness(), Window: window,
 		ServedPeer: func(*quic.Conn) (string, error) { return "a", nil },
-	})
+	}))
 	go func() { log.Fatal(n.Serve(func(_ string, h []byte, s net.Conn) { handle(h, s) })) }()
 }
 
