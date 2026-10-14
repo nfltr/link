@@ -440,7 +440,7 @@ func testStuckReader(t *testing.T, newPair func(*testing.T) Pair) {
 
 // Fairness: on a path throttled to 1 MiB/s, 8 sessions the accepter writes
 // to as fast as they take each get at least a quarter of a fair share and
-// none waits long for its turn.
+// none waits more than a second for its turn.
 func testFairness(t *testing.T, newPair func(*testing.T) Pair) {
 	const n, rate, warm, run = 8, 1 << 20, 2 * time.Second, 4 * time.Second
 	var accepted atomic.Int32
@@ -500,7 +500,10 @@ func testFairness(t *testing.T, newPair func(*testing.T) Pair) {
 		per = append(per, m>>10)
 	}
 	t.Logf("KiB per session in %v at %d KiB/s: %v; longest wait for a turn %v", run, rate>>10, per, worst.Round(time.Millisecond))
-	if total == 0 || least < total/(4*n) || worst > run/2 {
+	// A turn comes every few writes of the path (link: ~0.4 s here, its
+	// senders queue for room in order); 1 s leaves a margin for a loaded
+	// host, and fails a sender that loses races for seconds.
+	if total == 0 || least < total/(4*n) || worst > run/4 {
 		t.Fatalf("a session fell behind: KiB per session %v (fair share %d), longest wait %v", per, total/n>>10, worst.Round(time.Millisecond))
 	}
 }

@@ -138,7 +138,10 @@ type Conn struct {
 	waiting int             // senders waiting on wcond for room or their turn
 	inBuf   map[string]bool // sessions with a data frame in wbuf (turns)
 	pongEnd int             // len(*wbuf) when its last frame is a pong; 0: it is not
-	werr    error
+	// Senders waiting for room in wbuf take a ticket and go in its order:
+	// ticket is the next one to give, serving the one whose turn it is.
+	ticket, serving uint64
+	werr            error
 
 	dialer          bool // this side dialed: Mux picks odd session ids
 	peerMaxSessions int
@@ -380,15 +383,28 @@ func (c *Conn) frameLocked(typ byte, sid string, body []byte) error {
 		c.waiting--
 	}
 	// A full buffer goes out first, by this sender or the write in flight.
-	// Pings and pongs never wait: keepAlive must not block on a network
-	// that takes nothing more.
-	for typ != typePing && typ != typePong && c.werr == nil && c.wbuf != nil && len(*c.wbuf)+5+n > cap(*c.wbuf) {
-		if c.writing {
+	// Senders that wait for room take their turns in the order they came
+	// (a ticket each): woken together, they would race for the room, and
+	// on a slow link one could lose for seconds. Pings and pongs never
+	// wait: keepAlive must not block on a network that takes nothing more.
+	full := func() bool { return c.wbuf != nil && len(*c.wbuf)+5+n > cap(*c.wbuf) }
+	if typ != typePing && typ != typePong && c.werr == nil && (c.ticket != c.serving || full()) {
+		my := c.ticket
+		c.ticket++
+		for c.werr == nil && (my != c.serving || full()) {
+			if my == c.serving && !c.writing {
+				c.writeLocked(false)
+				continue
+			}
 			c.waiting++
 			c.wcond.Wait()
 			c.waiting--
-		} else {
-			c.writeLocked(false)
+		}
+		if my == c.serving {
+			c.serving++
+			if c.waiting > 0 {
+				c.wcond.Broadcast() // the next ticket's turn
+			}
 		}
 	}
 	if c.werr != nil {
