@@ -5,6 +5,20 @@ it (`peerlink/grpclink/vX.Y.Z`, `peerlink/quiclink/vX.Y.Z`). The wire
 format is [WIRE.md](WIRE.md); every release since v0.2.0 speaks the same
 version 2 unless an entry says otherwise.
 
+## peerlink/quiclink v0.2.1 (2026-10-14)
+
+- quic-go v0.63.1-0.20261014084224-4b404ee15e68 (its main branch; no
+  release has it yet): a reordered packet no longer counts as lost for
+  good. v0.63.0 took a packet overtaken by three later ones for a loss and
+  cut its congestion window, never restoring it when the packet's ACK
+  came: on a long path that reorders a few datagrams a session fell to
+  ~1 MB/s and kept falling (200 ms RTT, every 100th datagram 2 ms late:
+  1.2 MB/s, now ~54 MB/s). quic-go now disables packet-threshold loss
+  detection after a spurious loss, restores the congestion state and
+  widens the time threshold. Move to the first quic-go release with them.
+- `TestThroughputReorderedPath`: a throughput floor on that path.
+- No API or wire change.
+
 ## v0.8.0 (2026-10-14)
 
 Developer experience: a quick start, recipes, constructors that check
