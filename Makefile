@@ -62,3 +62,16 @@ compare-docker:
 
 compare-summary:
 	cd compare && python3 rig.py summarize $(OUT)
+
+# The soak (soak/, a module of its own; SOAK.md): link over TCP and
+# quiclink over UDP, both directions, under faults, for SOAKTIME (default
+# 1h); the JSON summary goes to SOAKOUT.
+SOAKTIME ?= 1h
+SOAKOUT ?= $(CURDIR)/soak/out/soak.json
+.PHONY: soak check-soak
+soak:
+	cd soak && GOWORK=off SOAKTIME=$(SOAKTIME) SOAKOUT=$(SOAKOUT) go test -run TestSoak -timeout 0 -count=1 -v .
+
+# The soak module builds and vets (its test runs only with SOAKTIME).
+check-soak:
+	cd soak && GOWORK=off go vet ./...

@@ -25,6 +25,9 @@ Fixes, docs and checks; no wire change, no API change.
   preamble; `make fuzz-long`; GitHub Actions CI; examples for `Mux`,
   `Conn`, `peerlink.Node` (both directions) and quiclink; the errors to
   test with `errors.Is` in the package docs.
+- `make soak` (the `soak/` module, SOAK.md): link over TCP and quiclink
+  over UDP, both directions, under cuts, throttling, black holes and
+  rebinds, with integrity, dead-peer and leak checks and a JSON summary.
 
 ## peerlink/quiclink v0.1.1 (2026-10-14)
 
