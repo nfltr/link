@@ -17,6 +17,9 @@
 //
 // # Wire format, version 2
 //
+// WIRE.md in the module is the full specification, with test vectors for
+// every message (testdata/wire_vectors.json); in short:
+//
 // Version 2 is the only version since v0.5.0 (version 1, the hello of a
 // bare token and opens and closes in the caller's messages, was removed;
 // a version-1 hello gets the version reply, below, and Server ErrV1).

@@ -8,9 +8,10 @@ every frame queued at the time.
 
 - Standard library only (`TestModuleBoundary`).
 - Apache-2.0 (`LICENSE`, `NOTICE`; every source file carries an SPDX header).
-- Wire format version 2 is specified in `doc.go`;
-  `testdata/v2_session.golden` holds a recorded session every release is
-  tested against, byte for byte. Version 1 was removed in v0.5.0.
+- Wire format version 2 is specified in [WIRE.md](WIRE.md), with test
+  vectors for every message (`testdata/wire_vectors.json`);
+  `testdata/v2_session.golden` holds a recorded session. Every release is
+  tested against both, byte for byte. Version 1 was removed in v0.5.0.
 
 ## Packages
 
