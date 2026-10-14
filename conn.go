@@ -90,7 +90,8 @@ func releaseData(b []byte) {
 
 var writeBufs = sync.Pool{New: func() any { b := make([]byte, 0, writeBuf); return &b }}
 
-// ErrFrame reports bytes that break the frame format.
+// ErrFrame reports bytes that break the wire format (WIRE.md): a frame, or
+// a hello or reply with a field out of its bounds.
 var ErrFrame = errors.New("link: malformed frame")
 
 var (

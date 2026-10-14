@@ -58,48 +58,47 @@ GitHub Actions (`.github/workflows/check.yml`) runs all three on every
 push and pull request, and every fuzz target for 5 minutes weekly.
 `make fuzz-long FUZZTIME=30m` is the long fuzz run ([FUZZING.md](FUZZING.md)).
 
-## Status
+## Status and compatibility
 
-v0.1.0: the version-1 wire, extracted unchanged from nfltr's TCP data
-plane. v0.2.0: wire version 2 (negotiated in the hello; version 1 served
-byte for byte), `Client`/`Server` with an `Authenticator`, ping liveness
-driven by the `Liveness` presets, GOAWAY, `Pool`, `Observer`, `Credit` for
-callers with a transport of their own. v0.3.0: `Session.Reset` (CLOSE
-code 2, announced by feature bit `FeatureReset`; sent as a plain close to
-v0.2 peers), a session cut with its connection reads the connection's
-error (never `io.EOF`), `Session.Done`, session read deadlines (net/http
-serves sessions). Write deadlines are not supported. v0.4.0:
-`Session.Pump` (a session's bytes go to a writer from a goroutine that
-runs only while bytes are queued: an idle session holds none),
-`Session.WriteTo` returns received buffers to the pool after a writev
-(it dropped them), a drained `bytequeue` reuses its array,
-`bytequeue.TryPopBatch` and `Ready`. No wire change.
+The latest release is v0.7.2; [CHANGELOG.md](CHANGELOG.md) lists every
+release. link is pre-1.0 and follows [semantic versioning](https://semver.org)
+as Go modules do for v0:
 
-**v0.5.0 (breaking): wire version 1 removed.** Version 2 is the only wire
-version: `Hello`, `ReadHello`, `Reply`, `Version`, `TokenLen`, `NewConn`,
-`Codec` and `Message` are gone, `NewMux` takes only the connection, and
-`Config.Version` is 0 or 2. A version-1 hello (a dialer of v0.4 or older)
-gets the version reply, which such a dialer reads as a refusal, and
-`Server` returns `ErrV1` (`errors.Is` `ErrVersion`). A v0.5 dialer to a
-listener that speaks only version 1 is refused after the listener read 37
-bytes. Version 2 on the wire is unchanged (`testdata/v2_session.golden`).
+- **The wire** is the stronger promise: version 2 ([WIRE.md](WIRE.md)) is
+  held byte for byte by its test vectors and golden recording. A change
+  to it is a new wire version, negotiated in the hello, and announced in
+  the changelog; feature bits add optional frames without one.
+- **The Go API** may change in a minor release (v0.x.0), with the change
+  and its migration in the changelog; a patch release (v0.x.y) never
+  removes or changes an exported name. Removals are announced a minor
+  release ahead where possible.
+- **Behaviour** that the docs state (bounds, errors to test with
+  `errors.Is`, the peerlink contract) changes only in a minor release,
+  except to fix a bug, which the changelog flags.
+- `peerlink/grpclink` and `peerlink/quiclink` are modules of their own,
+  versioned on their own (`peerlink/<name>/vX.Y.Z`).
 
-v0.6.0: `peerlink` (the `Link` API, its contract, `Node` over `Pool` and
-`Mux`), `peerlink/peerlinktest` (the conformance suite) and the
-`peerlink/grpclink` module. No wire change. v0.6.1: `peerlink.Config.ServedPeer` names an
-accepted connection's peer.
+v1.0.0 will freeze the API under Go's compatibility rules once the
+maturity criteria below hold.
 
-v0.7.0: the reverse direction. `peerlink.Node` without `Config.Dial`
-opens sessions on the connections its peers dialled in (peers behind
-NAT); `Open` toward a peer with none up waits until its context ends, then
-fails with `peerlink.ErrPeerUnreachable`. `Config.Connect` keeps a
-dialler's connections up so that its peers open sessions on them, and
-`Serve` takes sessions on dialled connections too (it no longer needs a
-`Listener`). `PoolConfig.Accept` takes the sessions a peer opens on a
-`Pool`'s connections (they were refused). `peerlinktest`: `Pair.Reverse`,
-cases `Reconnect` and `Unreachable`. `grpclink` does not support the
-reverse direction. No wire change.
+## Maturity
 
-v0.7.1: `peerlinktest.UDPProxy` (black hole, cut, throttle and rebind for
-implementations over UDP) and the `peerlink/quiclink` module
-(`peerlink/quiclink/v0.1.0`). No change to link or its wire.
+Evidence that link works, provable from this repository alone:
+
+| criterion | evidence | status |
+|---|---|---|
+| wire specified, with test vectors | WIRE.md, `testdata/wire_vectors.json` (`TestWireVectors`), `testdata/v2_session.golden` | met |
+| every decoder fuzzed, corpus checked in, 24 h cumulative without a crasher | FUZZING.md (hours per target, crashers), `testdata/fuzz/` | in progress |
+| security review of the hello and the Authenticator contract | SECURITY.md (threat model, review record) | met (2026-10-14) |
+| standard library only | `TestModuleBoundary` | met |
+| CI green on every change, with history | GitHub Actions (`check`) | since 2026-10-14 |
+| cumulative soak hours under faults, with leak and integrity checks | SOAK.md (`make soak`) | in progress |
+| benchmarks published in the repository | `compare/README.md` (link vs yamux), `peerlink/quiclink/README.md` | met |
+| API reviewed for v1.0 | the checklist below | open |
+
+v1.0 API checklist: every exported name documented with an example
+where it is not obvious; errors to test with `errors.Is` listed per call;
+no exported name that exists only for one caller; option structs instead
+of positional growth; the peerlink contract unchanged for two minor
+releases; deprecated names removed. Use in production by its first
+user (an HTTP and TCP relay) is supporting evidence, not a criterion.

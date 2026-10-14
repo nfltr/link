@@ -113,7 +113,7 @@ gRPC's credentials and `Config.Identify`.
 
 ## Review record
 
-2026-10-14, v0.8.0: review of hello parsing, the `Authenticator`
+2026-10-14, v0.7.2: review of hello parsing, the `Authenticator`
 contract and resource exhaustion. Fixed: a ping flood from a peer that
 does not read grew the write buffer without bound (pongs now coalesce);
 a `Pool` redialled a refusing listener in a tight loop (now with

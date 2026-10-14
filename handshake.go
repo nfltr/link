@@ -67,20 +67,20 @@ func readHelloV2(r io.Reader) (helloV2, error) {
 	}
 	n := int(binary.BigEndian.Uint16(b[22:]))
 	if n > MaxAuth {
-		return helloV2{}, fmt.Errorf("link: auth payload of %d bytes", n)
+		return helloV2{}, fmt.Errorf("%w: hello auth payload of %d bytes", ErrFrame, n)
 	}
 	h.auth = make([]byte, n)
 	if _, err := io.ReadFull(r, h.auth); err != nil {
 		return helloV2{}, err
 	}
 	if _, err := CheckWindow(h.window); err != nil {
-		return helloV2{}, err
+		return helloV2{}, fmt.Errorf("%w: hello: %w", ErrFrame, err)
 	}
 	if h.maxSessions < 1 || h.maxSessions > maxSessionsWire {
-		return helloV2{}, fmt.Errorf("link: max sessions %d out of range", h.maxSessions)
+		return helloV2{}, fmt.Errorf("%w: hello max sessions %d out of range", ErrFrame, h.maxSessions)
 	}
 	if err := h.liveness.Validate(); err != nil {
-		return helloV2{}, err
+		return helloV2{}, fmt.Errorf("%w: hello: %w", ErrFrame, err)
 	}
 	return h, nil
 }
@@ -121,7 +121,7 @@ func readReplyV2(r io.Reader) (replyV2, error) {
 		return replyV2{}, err
 	}
 	if b[1] != 2 {
-		return replyV2{}, fmt.Errorf("link: reply of version %d to a version-2 hello", b[1])
+		return replyV2{}, fmt.Errorf("%w: reply of version %d to a version-2 hello", ErrFrame, b[1])
 	}
 	rep := replyV2{
 		features:    binary.BigEndian.Uint32(b[2:]),
@@ -129,10 +129,10 @@ func readReplyV2(r io.Reader) (replyV2, error) {
 		maxSessions: binary.BigEndian.Uint32(b[10:]),
 	}
 	if _, err := CheckWindow(rep.window); err != nil {
-		return replyV2{}, err
+		return replyV2{}, fmt.Errorf("%w: reply: %w", ErrFrame, err)
 	}
 	if rep.maxSessions < 1 || rep.maxSessions > maxSessionsWire {
-		return replyV2{}, fmt.Errorf("link: max sessions %d out of range", rep.maxSessions)
+		return replyV2{}, fmt.Errorf("%w: reply max sessions %d out of range", ErrFrame, rep.maxSessions)
 	}
 	return rep, nil
 }

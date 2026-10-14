@@ -15,6 +15,26 @@
 // per-session flow control, also for a caller that carries its sessions
 // on a transport of its own.
 //
+// # Errors
+//
+// The errors to test with errors.Is, by where they come from:
+//
+//   - Client: ErrRefused (the listener refused the credential), ErrVersion
+//     (errors.As a *VersionError for the versions the listener speaks),
+//     ErrFrame (a malformed reply), ctx's error, the network's.
+//   - Server: ErrAuth (the Authenticator refused; it wraps Verify's
+//     error), ErrV1 and ErrVersion (a version it does not speak),
+//     ErrFrame (a malformed hello), ctx's error, the network's.
+//   - Conn.Recv, Mux.Serve: ErrFrame, ErrCredit, ErrFull (the peer broke
+//     the protocol), ErrDeadPeer (liveness ended the connection), the
+//     network's (io.EOF once the peer closed).
+//   - Conn.SendOpen, Mux.Open, Pool.Open: ErrFull (the peer's max
+//     sessions), ErrGoAway (the connection is going away); Mux.Open after
+//     Serve returned: net.ErrClosed.
+//   - Session reads: io.EOF (the peer ended its writes on purpose),
+//     ErrReset (the peer's Reset), ErrDeadPeer or ErrConnClosed (the
+//     connection ended under the session), os.ErrDeadlineExceeded.
+//
 // # Wire format, version 2
 //
 // WIRE.md in the module is the full specification, with test vectors for
