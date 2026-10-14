@@ -88,11 +88,11 @@ Evidence that link works, provable from this repository alone:
 | criterion | evidence | status |
 |---|---|---|
 | wire specified, with test vectors | WIRE.md, `testdata/wire_vectors.json` (`TestWireVectors`), `testdata/v2_session.golden` | met |
-| every decoder fuzzed, corpus checked in, 24 h cumulative without a crasher | FUZZING.md (hours per target, crashers), `testdata/fuzz/` | in progress |
+| every decoder fuzzed, corpus checked in, 24 h cumulative without a crasher | FUZZING.md (hours per target, crashers), `testdata/fuzz/` | 4.5 h, no crasher in the library (target: 24 h) |
 | security review of the hello and the Authenticator contract | SECURITY.md (threat model, review record) | met (2026-10-14) |
 | standard library only | `TestModuleBoundary` | met |
 | CI green on every change, with history | GitHub Actions (`check`) | since 2026-10-14 |
-| cumulative soak hours under faults, with leak and integrity checks | SOAK.md (`make soak`), summaries in `soak/results/` | 1.08 h, clean (target: 24 h) |
+| cumulative soak hours under faults, with leak and integrity checks | SOAK.md (`make soak`), summaries in `soak/results/` | 2.2 h (macOS, Linux CI), clean (target: 24 h) |
 | benchmarks published in the repository | `compare/README.md` (link vs yamux), `peerlink/quiclink/README.md` | met |
 | API reviewed for v1.0 | the checklist below | open |
 

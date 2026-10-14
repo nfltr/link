@@ -51,9 +51,9 @@ Each pair's path runs at `SOAKRATE` (default 8 MiB/s each way) with
 | date | where | hours | pairs | echoes | GiB echoed | unexpected errors | integrity | dead-peer max (bound 4.5 s) | leaks | result |
 |---|---|---:|---|---:|---:|---:|---:|---|---|---|
 | 2026-10-14 | macOS arm64, 10 CPUs, shared (load average 7-35 from other work) | 1.08 | all four, 12 epochs | 191882 | 77.7 | 0 | 0 failures | link 4.51 s, QUIC 5.22 s | none: 2 goroutines, 5 FDs after every epoch; heap 4-13 MiB in use | pass |
+| 2026-10-14 | GitHub Actions ubuntu, linux/amd64, 4 CPUs | 1.08 | all four, 12 epochs | 172626 | 69.9 | 0 | 0 failures | link 4.50 s, QUIC 4.99 s | none: 2 goroutines, 9 FDs after every epoch; heap 5-10 MiB in use | pass |
 
-Cumulative: 1.08 h. The run's summary is
-[`soak/results/2026-10-14-1h.json`](soak/results/2026-10-14-1h.json).
+Cumulative: 2.17 h. The summaries are in [`soak/results/`](soak/results/).
 
 Per pair (that run): link-forward 52547 echoes (21.3 GiB), link-reverse
 52377 (21.3 GiB), quic-forward 43482 (17.4 GiB), quic-reverse 43476
@@ -61,8 +61,10 @@ Per pair (that run): link-forward 52547 echoes (21.3 GiB), link-reverse
 cuts and black holes make them; 12 cuts, throttles, black holes and
 drains each, 12 rebinds for QUIC.
 
-Finding: QUIC's dead peer was detected at up to 5.22 s against
-`quiclink`'s stated bound of 4.5 s (link: 4.51 s), within the soak's 2 s
-allowance for a loaded host; the conformance suite's `DeadPeer` measured
-3.0-4.5 s on an idle host. Whether quic-go's idle timer runs late under
-load or the bound misses a term is open; the soak keeps measuring it.
+Finding: QUIC's dead peer was detected at up to 5.22 s (macOS, loaded)
+and 4.99 s (Linux CI, otherwise idle) against `quiclink`'s stated bound
+of 4.5 s (link: 4.50-4.51 s), within the soak's 2 s allowance; the
+conformance suite's `DeadPeer` measured 3.0-4.5 s with fewer sessions.
+Since it shows on an idle runner too, the stated bound likely misses a
+term of quic-go's idle timer (with sessions busy until the black hole);
+open, for quiclink.
