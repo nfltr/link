@@ -40,6 +40,12 @@ check-govulncheck:
 check-grpclink:
 	cd peerlink/grpclink && GOWORK=off go build ./... && GOWORK=off go vet ./... && GOWORK=off go test -count=1 -race ./...
 
+# peerlink over QUIC (peerlink/quiclink, a module of its own: quic-go never
+# enters link's dependencies): build, vet, the conformance suite with -race.
+.PHONY: check-quiclink
+check-quiclink:
+	cd peerlink/quiclink && GOWORK=off go build ./... && GOWORK=off go vet ./... && GOWORK=off go test -count=1 -race ./...
+
 # link vs yamux (compare/, a module of its own; its README). OUT holds the
 # JSON lines; compare-docker needs docker with NET_ADMIN (about an hour).
 OUT ?= $(CURDIR)/compare/out

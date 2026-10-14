@@ -75,7 +75,10 @@ func TestConformance(t *testing.T) {
 
 Your implementation needs only to accept a custom dialer: the suite's
 `Proxy` relays TCP and black-holes (nothing crosses, nothing closes),
-resets, or throttles the path. The suite calls `Serve` on B and `Drain` on
+resets, or throttles the path; `UDPProxy` does the same for UDP (a cut
+there drops the flows for good, as UDP has no reset to send) and also
+rebinds them (the dialler's address changes). A Pair's faults are its own
+functions: an implementation on another transport brings its own. The suite calls `Serve` on B and `Drain` on
 both. With `Pair.Reverse`, B dials A and A opens its sessions on B's
 connections (the reverse direction); the suite then calls `Serve` on A
 too, and runs every case that way, plus `Unreachable`. Every time bound comes from your `DeadAfter` or is a generous bound
@@ -125,15 +128,16 @@ the listener cannot ask for more.
 
 ## Implementations
 
-| | `peerlink.Node` (this package) | `grpclink.Node` (`peerlink/grpclink`) |
-|---|---|---|
-| carries sessions over | `link.Pool` per peer (dialling), `link.Mux` per accepted connection | one gRPC bidirectional stream per session, a `grpc.ClientConn` per peer |
-| dependencies | standard library | google.golang.org/grpc (a module of its own) |
-| who the opener is | the `Identity.Subject` of the caller's `link.Authenticator` | the caller's `Identify(ctx)` (metadata, credentials) |
-| dead-peer bound (`DeadAfter`) | Interval + Timeout of the liveness (`LivenessFast`: 4.5 s) | max(Interval, 10 s) + Timeout + 5 s (`LivenessFast`: 18 s): gRPC clients ping no more often than every 10 s, and a client whose writes are stuck waits 5 s to send GOAWAY before closing |
-| deadlines | read deadlines | none (`errors.ErrUnsupported`) |
-| reverse direction (`Open` on connections the peer dialled) | yes, without `Config.Dial` | no: a gRPC stream starts at the client (`TestReverseUnsupported`) |
-| suite | every case, both directions | every case (forward) |
+| | `peerlink.Node` (this package) | `grpclink.Node` (`peerlink/grpclink`) | `quiclink.Node` (`peerlink/quiclink`) |
+|---|---|---|---|
+| carries sessions over | `link.Pool` per peer (dialling), `link.Mux` per accepted connection | one gRPC bidirectional stream per session, a `grpc.ClientConn` per peer | one QUIC stream per session, a QUIC connection per peer |
+| dependencies | standard library | google.golang.org/grpc (a module of its own) | github.com/quic-go/quic-go (a module of its own) |
+| who the opener is | the `Identity.Subject` of the caller's `link.Authenticator` | the caller's `Identify(ctx)` (metadata, credentials) | the caller's `ServedPeer(conn)`, else the client certificate's CommonName |
+| dead-peer bound (`DeadAfter`) | Interval + Timeout of the liveness (`LivenessFast`: 4.5 s) | max(Interval, 10 s) + Timeout + 5 s (`LivenessFast`: 18 s): gRPC clients ping no more often than every 10 s, and a client whose writes are stuck waits 5 s to send GOAWAY before closing | Interval + Timeout (`LivenessFast`: 4.5 s): keep-alive after Interval, QUIC's idle timeout of Timeout |
+| deadlines | read deadlines | none (`errors.ErrUnsupported`) | read and write deadlines |
+| reverse direction (`Open` on connections the peer dialled) | yes, without `Config.Dial` | no: a gRPC stream starts at the client (`TestReverseUnsupported`) | yes, without `Config.Dial` |
+| survives the dialler's address changing | no (TCP) | no (TCP) | yes (QUIC connection migration, `TestMigration`) |
+| suite | every case, both directions | every case (forward) | every case, both directions (through `peerlinktest.UDPProxy`) |
 
 Suite results on loopback (an arm64 laptop, `-race`, three runs each): both pass
 every case; link in both directions (reverse: the same dead-peer and
@@ -143,9 +147,13 @@ dialler redialled). Dead peer: link surfaces it on all six sessions at 4.50 s
 writes were stuck (bound 18 s).
 Fairness at 1 MiB/s, 8 sessions: link 416-576 KiB each in 4 s (longest
 wait for a turn under 1 s), gRPC 480-512 KiB (under 0.3 s).
+QUIC (quiclink, both directions): dead peer at 3.0 s with a session
+busy, up to 4.5 s idle (bound 4.5 s); fairness 499-505 KiB each (under
+0.1 s); opens working again 3.0-5.0 s after a cut (on UDP a cut is a
+path gone silent: the old connection must time out first).
 
 `grpclink` runs with `make check-grpclink` (build, vet, the suite with
-`-race`).
+`-race`), `quiclink` with `make check-quiclink`.
 
 `grpclink/example_test.go` (`Example`) is application code written against
 `peerlink.Link` only (a service and a caller over `net.Conn` sessions),

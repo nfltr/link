@@ -19,11 +19,14 @@ every frame queued at the time.
 | `link` | `Client`/`Server` (the hello, an `Authenticator`'s credential, `Config`, `Observer`), `Conn` (frames, write coalescing, OPEN/CLOSE, ping liveness, GOAWAY), `Credit` (per-session flow control, also over a caller's own transport), `Mux` and `Session` (sessions as `net.Conn`s), `Pool` (several connections per peer, growth, backoff, make-before-break drain), `Liveness` and its presets |
 | `link/bytequeue` | a FIFO of byte slices bounded by total bytes; `PushWithin` for a pusher that serves other queues too |
 | `link/peerlink` | a transport-neutral API for sessions between peers (`Link`: `Open`, `Serve`, `Drain`), its contract, and `Node`, an implementation over `Pool` and `Mux` ([peerlink/README.md](peerlink/README.md)) |
-| `link/peerlink/peerlinktest` | the contract's conformance suite (`Run`) and the fault-injecting `Proxy`, for any implementation |
+| `link/peerlink/peerlinktest` | the contract's conformance suite (`Run`) and the fault-injecting `Proxy` (TCP) and `UDPProxy`, for any implementation |
 
 `peerlink/grpclink` (a module of its own, `make check-grpclink`) implements
 `peerlink.Link` over gRPC streams and passes the same suite (one
-direction: the dialer opens).
+direction: the dialer opens). `peerlink/quiclink` (a module of its own,
+`make check-quiclink`) implements it over QUIC streams and passes the
+suite in both directions; its connections survive the dialler's address
+changing ([peerlink/quiclink/README.md](peerlink/quiclink/README.md)).
 
 ## Use
 
@@ -48,7 +51,8 @@ s, err := p.Open(ctx, header)
 
 `make check`: build, vet, tests with `-race`, `fuzz-short` (every decoder,
 `FUZZTIME` each, default 10s), gosec, semgrep (docker), govulncheck.
-`make check-grpclink`: the gRPC implementation's module.
+`make check-grpclink`, `make check-quiclink`: the gRPC and QUIC
+implementations' modules.
 
 ## Status
 
@@ -91,3 +95,7 @@ dialler's connections up so that its peers open sessions on them, and
 `Pool`'s connections (they were refused). `peerlinktest`: `Pair.Reverse`,
 cases `Reconnect` and `Unreachable`. `grpclink` does not support the
 reverse direction. No wire change.
+
+v0.7.1: `peerlinktest.UDPProxy` (black hole, cut, throttle and rebind for
+implementations over UDP) and the `peerlink/quiclink` module
+(`peerlink/quiclink/v0.1.0`). No change to link or its wire.
