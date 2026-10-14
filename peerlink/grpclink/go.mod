@@ -5,7 +5,7 @@ go 1.27.0
 replace github.com/nfltr/link => ../../
 
 require (
-	github.com/nfltr/link v0.6.0
+	github.com/nfltr/link v0.8.0
 	google.golang.org/grpc v1.84.0
 )
 
