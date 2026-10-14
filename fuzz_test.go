@@ -53,8 +53,8 @@ func FuzzRecv(f *testing.F) {
 		accepted := 0
 		for {
 			m, err := c.Recv()
-			if credit := c.Credit.sessions["7"].n; credit > testWindow {
-				t.Fatalf("send credit %d past the peer's window %d", credit, testWindow)
+			if s := c.Credit.sessions["7"]; s != nil && s.n > testWindow { // a close frame forgets it
+				t.Fatalf("send credit %d past the peer's window %d", s.n, testWindow)
 			}
 			if err != nil {
 				return
