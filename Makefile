@@ -3,7 +3,7 @@
 
 GOVULNCHECK_VERSION := v1.8.0
 
-.PHONY: check build vet test test-race fuzz-short check-gosec check-semgrep check-govulncheck
+.PHONY: check build vet test test-race fuzz-short fuzz-long check-gosec check-semgrep check-govulncheck
 check: build vet test-race fuzz-short check-gosec check-semgrep check-govulncheck
 
 build:
@@ -18,9 +18,13 @@ test:
 test-race:
 	go test -count=1 -race ./...
 
-# FUZZTIME per target (default 10s).
+# FUZZTIME per target (default 10s); FUZZPARALLEL caps the workers.
 fuzz-short:
 	./scripts/fuzz-short.sh
+
+# Every target for FUZZTIME (default 30m) each; record the run in FUZZING.md.
+fuzz-long:
+	FUZZTIME=$(or $(FUZZTIME),30m) ./scripts/fuzz-short.sh
 
 # Pinned SAST gated by scripts/{gosec,semgrep}-baseline.txt (semgrep needs docker).
 check-gosec:

@@ -3,9 +3,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # fuzz-short.sh: every Go fuzz target (every decoder), FUZZTIME each
-# (default 10s; nightly FUZZTIME=10m). A crasher fails the run and go writes
+# (default 10s; make fuzz-long: 30m each). FUZZPARALLEL caps the workers
+# per target (default: GOMAXPROCS). A crasher fails the run and go writes
 # it to <package>/testdata/fuzz/<Target>/; commit it with the fix as a
-# regression seed (it then runs in every plain `go test`).
+# regression seed (it then runs in every plain `go test`). FUZZING.md
+# records the long runs.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 TARGETS=(
@@ -16,11 +18,16 @@ TARGETS=(
 	". FuzzClientReply"
 	". FuzzRecvV2"
 	". FuzzMuxServeV2"
+	". FuzzParseWindow"
+	"peerlink/quiclink FuzzPreamble"
 )
 failed=0
 for t in "${TARGETS[@]}"; do
-	read -r pkg name <<<"$t"
-	echo "── ${pkg} ${name} (${FUZZTIME:-10s})"
-	go test -run '^$' -fuzz "^${name}\$" -fuzztime "${FUZZTIME:-10s}" -fuzzminimizetime 100x "${pkg}" || failed=1
+	read -r dir name <<<"$t"
+	echo "── ${dir} ${name} (${FUZZTIME:-10s})"
+	start=$(date +%s)
+	(cd "${dir}" && GOWORK=off go test -run '^$' -fuzz "^${name}\$" -fuzztime "${FUZZTIME:-10s}" \
+		-fuzzminimizetime 100x ${FUZZPARALLEL:+-parallel "${FUZZPARALLEL}"} .) || failed=1
+	echo "── ${dir} ${name}: $(($(date +%s) - start))s"
 done
 exit "${failed}"

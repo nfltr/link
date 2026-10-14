@@ -8,8 +8,10 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"sync"
 	"testing"
 )
@@ -37,6 +39,7 @@ func FuzzServerHello(f *testing.F) {
 	f.Add([]byte("NFDP\x03"))
 	f.Add([]byte("NFDP\x00"))
 	f.Add([]byte("PRI * HTTP/2.0"))
+	addVectors(f, "hello", nil)
 	f.Fuzz(func(t *testing.T, wire []byte) {
 		cr := &countingReader{r: bytes.NewReader(wire)}
 		c, _, err := Server(context.Background(), closingConn{bufConn{r: cr, w: io.Discard}}, Config{Window: testWindow, Auth: anyAuth{}})
@@ -67,6 +70,7 @@ func FuzzClientReply(f *testing.F) {
 	f.Add([]byte{StatusVersion, 1})
 	f.Add([]byte{StatusBound, 1, 0, 0, 0, 0})
 	f.Add([]byte{9})
+	addVectors(f, "reply", nil)
 	f.Fuzz(func(t *testing.T, reply []byte) {
 		cr := &countingReader{r: bytes.NewReader(reply)}
 		c, err := Client(context.Background(), closingConn{bufConn{r: cr, w: io.Discard}}, Config{Window: testWindow, Auth: testToken})
@@ -111,6 +115,7 @@ func FuzzRecvV2(f *testing.F) {
 	} {
 		f.Add(seed)
 	}
+	addVectors(f, "frame", nil)
 	f.Fuzz(func(t *testing.T, wire []byte) {
 		c := v2Conn(bufConn{r: bytes.NewReader(wire)})
 		c.Open("7")
@@ -158,6 +163,7 @@ func FuzzMuxServeV2(f *testing.F) {
 		}
 	}
 	f.Add(sent.Bytes())
+	addVectors(f, "frame", nil)
 	f.Fuzz(func(t *testing.T, wire []byte) {
 		m := NewMux(v2Conn(closingConn{bufConn{r: bytes.NewReader(wire), w: io.Discard}}))
 		var mu sync.Mutex
@@ -178,4 +184,49 @@ func FuzzMuxServeV2(f *testing.F) {
 			t.Fatalf("sessions got %d bytes of %d", got, len(wire))
 		}
 	})
+}
+
+// FuzzParseWindow: the window update body a caller with a transport of its
+// own parses (ParseWindow) reads back what AppendWindow wrote, and nothing
+// else parses.
+func FuzzParseWindow(f *testing.F) {
+	addVectors(f, "frame", func(b []byte) []byte {
+		if len(b) > 5 && b[4] == typeWindow {
+			return b[5:]
+		}
+		return nil
+	})
+	f.Add([]byte{0, 0, 0, 0, 1})
+	f.Add([]byte{3, 'a', 0, 0, 0, 0})
+	f.Fuzz(func(t *testing.T, body []byte) {
+		sid, n, err := ParseWindow(body)
+		if err != nil {
+			return
+		}
+		if len(sid) > MaxSID || n < 0 || !bytes.Equal(AppendWindow(nil, sid, n), body) {
+			t.Fatalf("%x parsed to %q %d", body, sid, n)
+		}
+	})
+}
+
+// addVectors seeds f with the wire vectors of kind (testdata/wire_vectors.json),
+// each through pick (nil: as they are; a nil result skips one).
+func addVectors(f *testing.F, kind string, pick func([]byte) []byte) {
+	raw, err := os.ReadFile(vectorsFile)
+	if err != nil {
+		f.Fatal(err)
+	}
+	var vs []wireVector
+	if err := json.Unmarshal(raw, &vs); err != nil {
+		f.Fatal(err)
+	}
+	for _, v := range vs {
+		b := []byte(v.Hex)
+		if pick != nil {
+			b = pick(b)
+		}
+		if v.Kind == kind && b != nil {
+			f.Add(b)
+		}
+	}
 }

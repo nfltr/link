@@ -337,8 +337,7 @@ func (n *Node) Open(ctx context.Context, peer string, header []byte) (net.Conn, 
 		}
 		st, err := c.q.OpenStreamSync(ctx)
 		if err == nil {
-			pre := binary.BigEndian.AppendUint16(make([]byte, 0, 2+len(header)), uint16(len(header))) // #nosec G115 -- at most MaxHeader, checked above
-			_, err = st.Write(append(pre, header...))
+			_, err = st.Write(appendPreamble(make([]byte, 0, 2+len(header)), header))
 			if err == nil {
 				return &Session{Stream: st, c: c}, nil
 			}
@@ -431,6 +430,26 @@ func (n *Node) pickServed(ctx context.Context, peer string) (*conn, error) {
 	}
 }
 
+// appendPreamble appends a session stream's preamble for header (at most
+// MaxHeader bytes) to b: its length (2 bytes, big endian), then header.
+func appendPreamble(b, header []byte) []byte {
+	b = binary.BigEndian.AppendUint16(b, uint16(len(header))) // #nosec G115 -- at most MaxHeader, checked by Open
+	return append(b, header...)
+}
+
+// readPreamble reads a session stream's preamble and returns its header.
+func readPreamble(r io.Reader) ([]byte, error) {
+	var l [2]byte
+	if _, err := io.ReadFull(r, l[:]); err != nil {
+		return nil, err
+	}
+	h := make([]byte, binary.BigEndian.Uint16(l[:]))
+	if _, err := io.ReadFull(r, h); err != nil {
+		return nil, err
+	}
+	return h, nil
+}
+
 // acceptStream reads a stream's preamble and hands it to Serve's accept;
 // before Serve, while draining or on a bad preamble, it is reset.
 func (n *Node) acceptStream(c *conn, st *quic.Stream) {
@@ -439,13 +458,8 @@ func (n *Node) acceptStream(c *conn, st *quic.Stream) {
 		st.CancelWrite(CodeRefused)
 	}
 	_ = st.SetReadDeadline(time.Now().Add(n.DeadAfter()))
-	var l [2]byte
-	if _, err := io.ReadFull(st, l[:]); err != nil {
-		refuse()
-		return
-	}
-	h := make([]byte, binary.BigEndian.Uint16(l[:]))
-	if _, err := io.ReadFull(st, h); err != nil {
+	h, err := readPreamble(st)
+	if err != nil {
 		refuse()
 		return
 	}
