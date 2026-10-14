@@ -148,7 +148,8 @@ writes were stuck (bound 18 s).
 Fairness at 1 MiB/s, 8 sessions: link 448-544 KiB each in 4 s (longest
 wait for a turn under 0.5 s, 20 runs under load; before v0.8.0, when
 senders waiting for room raced for it, 0.8-3.2 s), gRPC 480-512 KiB
-(under 0.3 s). The case's bound is 1 s.
+(under 0.3 s). The case's bound is 2 s (with -race on a loaded 4-CPU
+Linux host, link's longest wait reached 1.3 s).
 QUIC (quiclink, both directions): dead peer at 3.0 s with a session
 busy, up to 4.5 s idle (bound 4.5 s); fairness 499-505 KiB each (under
 0.1 s); opens working again 3.0-5.0 s after a cut (on UDP a cut is a

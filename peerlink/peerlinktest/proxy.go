@@ -67,8 +67,10 @@ func (p *Proxy) Cut() {
 }
 
 // Throttle relays at most bytesPerSecond each way on every connection,
-// with small socket buffers, so a backlog waits in the endpoints, not in
-// the kernel.
+// with small send buffers, so a backlog waits in the endpoints rather
+// than in the kernel. (Receive buffers keep their size: on Linux, one
+// shrunk under an established connection stalls it on zero-window
+// probes, which relayed a seventh of the rate.)
 func (p *Proxy) Throttle(bytesPerSecond int) {
 	p.rate.Store(int64(bytesPerSecond))
 	p.mu.Lock()
@@ -79,7 +81,6 @@ func (p *Proxy) Throttle(bytesPerSecond int) {
 }
 
 func smallBuffers(c *net.TCPConn) {
-	_ = c.SetReadBuffer(16 << 10)
 	_ = c.SetWriteBuffer(16 << 10)
 }
 
@@ -112,6 +113,7 @@ func (p *Proxy) accept() {
 // closes anything.
 func (p *Proxy) pipe(dst, src *net.TCPConn, ended *atomic.Int32) {
 	buf := make([]byte, 16<<10)
+	var due time.Time // when the bytes relayed so far are due at the rate
 	for {
 		n, err := src.Read(buf)
 		select {
@@ -122,7 +124,16 @@ func (p *Proxy) pipe(dst, src *net.TCPConn, ended *atomic.Int32) {
 		}
 		if n > 0 {
 			if r := p.rate.Load(); r > 0 {
-				time.Sleep(time.Duration(n) * time.Second / time.Duration(r))
+				// Paced by schedule, not by a sleep per read: Linux hands
+				// a small read per segment and each sleep overshoots, so
+				// per-read sleeps relayed a fraction of the rate. A
+				// relay that fell behind catches up, by 50 ms at most.
+				now := time.Now()
+				if floor := now.Add(-time.Second / 20); due.Before(floor) {
+					due = floor
+				}
+				due = due.Add(time.Duration(n) * time.Second / time.Duration(r))
+				time.Sleep(due.Sub(now))
 			}
 			if _, werr := dst.Write(buf[:n]); werr != nil {
 				err = werr
