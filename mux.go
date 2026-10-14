@@ -362,6 +362,8 @@ func (s *Session) ended() {
 	s.endOnce.Do(func() { close(s.done) })
 }
 
+// Read reads the peer's bytes in order: io.EOF once the peer ended its
+// writes, or the error that cut the session (see Session).
 func (s *Session) Read(b []byte) (int, error) {
 	if len(s.rest) == 0 {
 		data, ok := s.q.PopUnless(&s.dlPast)

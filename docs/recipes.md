@@ -28,6 +28,15 @@ A link runs over whatever connection your `Dial` returns and your
 | peers need no names | anything | `link.NoAuth` | `""` for every peer |
 | a shared secret, tokens | anything | your own `Authenticator` ([SECURITY.md](../SECURITY.md)) | what its `Verify` returns |
 
+Authentication runs one way: the listener learns who dialled it. The
+name you give `Open` is only what your `Dial` resolves, and is not
+checked against the listener; to be sure whom you reached, dial with TLS
+and set `ServerName` to the peer (as `Example_mutualTLS` does). For
+`CertAuth`, each certificate names its peer (CommonName or DNS name), the
+listener's DNS name matches the dialer's `ServerName`, and a certificate
+used for both roles has both `ExtKeyUsage`s, ServerAuth and ClientAuth
+(`examplePKI` makes such certificates).
+
 A listening Node refuses to start without `Auth` (`peerlink.New` names
 the field). Plaintext, from [examples/quickstart](../examples/quickstart/main.go):
 
@@ -329,7 +338,7 @@ func Example_reconnect() {
 	fmt.Println(call(failFast, "server", "hello"))
 	// Output:
 	// client echo hello after 3 dials
-	// connection refused
+	// peerlink: open to "server": connection refused
 }
 ```
 

@@ -146,7 +146,7 @@ func (n *Node) Open(ctx context.Context, peer string, header []byte) (net.Conn, 
 	s, err := p.Open(ctx, header)
 	if err != nil {
 		n.opened.Done()
-		return nil, err
+		return nil, fmt.Errorf("peerlink: open to %q: %w", peer, err)
 	}
 	return &session{Session: s, done: n.opened.Done}, nil
 }

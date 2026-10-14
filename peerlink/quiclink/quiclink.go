@@ -755,5 +755,9 @@ func (s *Session) Reset() error {
 	return nil
 }
 
-func (s *Session) LocalAddr() net.Addr  { return s.c.q.LocalAddr() }
+// LocalAddr is the QUIC connection's local address.
+func (s *Session) LocalAddr() net.Addr { return s.c.q.LocalAddr() }
+
+// RemoteAddr is the QUIC connection's peer address (it changes as the
+// peer migrates).
 func (s *Session) RemoteAddr() net.Addr { return s.c.q.RemoteAddr() }

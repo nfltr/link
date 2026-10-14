@@ -152,8 +152,8 @@ func (noAuth) Verify(_ context.Context, _ tls.ConnectionState, method byte, payl
 // metrics. Calls come from the connection's goroutines and must not block.
 // Embed NopObserver to take only some.
 type Observer interface {
-	ConnUp(Identity)
-	ConnDown(Identity, error)
+	ConnUp(Identity)          // the handshake bound the connection
+	ConnDown(Identity, error) // it ended: ErrDeadPeer, the peer's or network's error, nil when this side closed it
 	SessionOpen()             // a session opened by an OPEN frame
 	SessionClose(error)       // one of those ended
 	CreditWait(time.Duration) // a sender waited this long for credit
@@ -164,13 +164,26 @@ type Observer interface {
 // NopObserver ignores every event.
 type NopObserver struct{}
 
-func (NopObserver) ConnUp(Identity)          {}
+// ConnUp ignores the event.
+func (NopObserver) ConnUp(Identity) {}
+
+// ConnDown ignores the event.
 func (NopObserver) ConnDown(Identity, error) {}
-func (NopObserver) SessionOpen()             {}
-func (NopObserver) SessionClose(error)       {}
+
+// SessionOpen ignores the event.
+func (NopObserver) SessionOpen() {}
+
+// SessionClose ignores the event.
+func (NopObserver) SessionClose(error) {}
+
+// CreditWait ignores the event.
 func (NopObserver) CreditWait(time.Duration) {}
-func (NopObserver) PingRTT(time.Duration)    {}
-func (NopObserver) GoAway(Identity)          {}
+
+// PingRTT ignores the event.
+func (NopObserver) PingRTT(time.Duration) {}
+
+// GoAway ignores the event.
+func (NopObserver) GoAway(Identity) {}
 
 var (
 	// ErrDeadPeer ends a connection on which nothing arrived for its
@@ -199,6 +212,7 @@ var (
 // versions up to Max.
 type VersionError struct{ Max int }
 
+// Error says which versions the peer speaks.
 func (e *VersionError) Error() string {
 	return fmt.Sprintf("link: peer speaks wire versions up to %d", e.Max)
 }

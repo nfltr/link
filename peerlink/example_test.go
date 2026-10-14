@@ -241,7 +241,7 @@ func Example_reconnect() {
 	fmt.Println(call(failFast, "server", "hello"))
 	// Output:
 	// client echo hello after 3 dials
-	// connection refused
+	// peerlink: open to "server": connection refused
 }
 
 // counter counts a peer's connections and the sessions it opened.

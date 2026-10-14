@@ -48,6 +48,8 @@ Added:
   whose handshake failed (they were closed silently).
 - `peerlink.ErrPeerUnreachable`'s message lists the peers that are
   connected, so a misspelt peer name shows.
+- `peerlink.Node.Open`'s errors toward a peer it dials name the peer
+  (`peerlink: open to "b": ...`, wrapping the dial's error).
 - The README's quick start (`examples/quickstart`, also
   `go run github.com/nfltr/link/examples/quickstart@latest`), a table of
   the errors with what to change, docs/recipes.md (plaintext and mutual
@@ -57,7 +59,8 @@ Added:
   verbatim excerpt of a Go file. `make check-api` (CI): the API against
   the latest release with apidiff must match what `api/` lists.
 - Package docs start with what the package is for, and say where to
-  start; lint markers no longer show in them.
+  start; lint markers no longer show in them; every exported name is
+  documented (`TestExportedNamesDocumented`).
 
 ## peerlink/quiclink v0.2.0 (2026-10-14)
 

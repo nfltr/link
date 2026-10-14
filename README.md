@@ -113,8 +113,10 @@ b got "hello" (greeting) from a
 a got "hello" (greeting) from b
 ```
 
-In two processes, each side does the same with the other's address in
-`Dial` and its own `net.Listen`. For mutual TLS, gRPC or HTTP over a
+In two processes, one runs `b`'s half (`net.Listen`, a Node with
+`Listener`, `Serve`) and the other `a`'s (a Node whose `Dial` reaches
+`b`'s address, with `Connect: []string{"b"}` so that `b` can open
+sessions back, and `Serve`); either then opens sessions to the other. For mutual TLS, gRPC or HTTP over a
 link, liveness, draining, reconnects and metrics, see the
 [recipes](docs/recipes.md).
 
@@ -235,7 +237,7 @@ Evidence that link works, provable from this repository alone:
 | CI green on every change, with history | GitHub Actions (`check`) | since 2026-10-14 |
 | cumulative soak hours under faults, with leak and integrity checks | SOAK.md (`make soak`), summaries in `soak/results/` | 2.2 h (macOS, Linux CI), clean (target: 24 h) |
 | benchmarks published in the repository | `compare/README.md` (link vs yamux), `peerlink/quiclink/README.md` | met |
-| API reviewed for v1.0 | the checklist below | open |
+| API reviewed for v1.0 | the checklist below; `make check-api` (apidiff against the latest release, in CI); `TestExportedNamesDocumented` | open (v0.8.0: API trimmed, constructors checked, every name documented) |
 
 v1.0 API checklist: every exported name documented with an example
 where it is not obvious; errors to test with `errors.Is` listed per call;
