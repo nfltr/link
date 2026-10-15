@@ -5,10 +5,12 @@ package link
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -271,5 +273,170 @@ func TestConnCombinesWrites(t *testing.T) {
 	}
 	if w := ca.writes.Load(); w >= sessions*frames {
 		t.Fatalf("%d writes for %d frames: none combined", w, sessions*frames)
+	}
+}
+
+// TestWriteDeadline: a Write waiting for credit (the peer reads nothing)
+// returns os.ErrDeadlineExceeded at its deadline with the bytes it sent;
+// a deadline set while a Write waits ends that Write too; once the
+// deadline is cleared and the peer reads, the rest goes through intact,
+// so no credit was lost.
+func TestWriteDeadline(t *testing.T) {
+	got := make(chan []byte, 1)
+	release := make(chan struct{})
+	accept := func(_ []byte, s *Session) {
+		<-release
+		b, _ := io.ReadAll(s)
+		got <- b
+		_ = s.Close()
+	}
+	dm, _ := v2muxPair(t, accept, v2cfg, v2cfg)
+	s, err := openV2(dm, "x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := pattern(3*testWindow, 1)
+	if err := s.SetWriteDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	n, err := s.Write(data)
+	if !errors.Is(err, os.ErrDeadlineExceeded) || n != testWindow {
+		t.Fatalf("Write past its deadline: %d, %v; want %d, os.ErrDeadlineExceeded", n, err, testWindow)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("Write returned %v after its deadline", d)
+	}
+	// A pending Write, its deadline set from another goroutine.
+	if err := s.SetWriteDeadline(time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		_ = s.SetWriteDeadline(time.Now())
+	}()
+	if m, err := s.Write(data[n:]); !errors.Is(err, os.ErrDeadlineExceeded) || m != 0 {
+		t.Fatalf("pending Write, deadline set meanwhile: %d, %v", m, err)
+	}
+	if err := s.SetWriteDeadline(time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	if m, err := s.Write(data[n:]); err != nil || m != len(data)-n {
+		t.Fatalf("Write after clearing the deadline: %d, %v", m, err)
+	}
+	_ = s.CloseWrite()
+	if b := <-got; !bytes.Equal(b, data) {
+		t.Fatalf("peer read %d bytes, want %d intact", len(b), len(data))
+	}
+}
+
+// gateConn is a net.Conn whose writes wait while its gate is shut.
+type gateConn struct {
+	net.Conn
+	mu sync.RWMutex // held for writing while shut
+}
+
+func (g *gateConn) Write(b []byte) (int, error) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.Conn.Write(b)
+}
+
+// TestWriteDeadlineStuckNetwork: with the network taking nothing, a Write
+// with a deadline waits for room in the write buffer only until its
+// deadline, never on the network itself, first in line for room or
+// behind another sender; the senders after it are not stalled for good, and nothing it gave up reaches the peer twice
+// or is lost.
+func TestWriteDeadlineStuckNetwork(t *testing.T) {
+	a, b := tcpPair(t)
+	g := &gateConn{Conn: a}
+	cfg := Config{Auth: testToken} // DefaultWindow: credit outlasts the write buffer
+	lcc := make(chan *Conn, 1)
+	go func() {
+		c, _, _ := Server(context.Background(), b, cfg)
+		lcc <- c
+	}()
+	cc, err := Client(context.Background(), g, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lc := <-lcc
+	t.Cleanup(func() { _ = cc.Close(); _ = lc.Close() })
+	got := make(chan map[string][]byte, 1)
+	var mu sync.Mutex
+	recv := map[string][]byte{}
+	var wg sync.WaitGroup
+	wg.Add(3)
+	go func() { wg.Wait(); got <- recv }()
+	dm, lm := NewMux(cc), NewMux(lc)
+	go func() { _ = dm.Serve(nil) }()
+	go func() {
+		_ = lm.Serve(func(h []byte, s *Session) {
+			defer wg.Done()
+			b, _ := io.ReadAll(s)
+			mu.Lock()
+			recv[string(h)] = b
+			mu.Unlock()
+			_ = s.Close()
+		})
+	}()
+	sa, err := dm.Open([]byte("a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sb, err := dm.Open([]byte("b"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sc, err := dm.Open([]byte("c"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.mu.Lock() // the network takes nothing from here
+	da, db := pattern(DefaultWindow/2, 1), pattern(DefaultWindow/2, 2)
+	_ = sa.SetWriteDeadline(time.Now().Add(200 * time.Millisecond))
+	start := time.Now()
+	n, err := sa.Write(da)
+	if !errors.Is(err, os.ErrDeadlineExceeded) || n >= len(da) {
+		t.Fatalf("Write on a stuck network: %d, %v; want os.ErrDeadlineExceeded", n, err)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("Write returned %v after its deadline", d)
+	}
+	bdone := make(chan error, 1)
+	go func() { _, err := sb.Write(db); bdone <- err }() // no deadline: first in line
+	time.Sleep(50 * time.Millisecond)
+	// sa's frames are in the buffer: it waits for its turn. sc's are
+	// not: it waits for room behind sb.
+	_ = sa.SetWriteDeadline(time.Now().Add(100 * time.Millisecond))
+	m, err := sa.Write(da[n:])
+	if !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("Write waiting for its turn on a stuck network: %d, %v", m, err)
+	}
+	n += m
+	dc := pattern(MaxChunk, 3)
+	_ = sc.SetWriteDeadline(time.Now().Add(100 * time.Millisecond))
+	if m, err := sc.Write(dc); !errors.Is(err, os.ErrDeadlineExceeded) || m != 0 {
+		t.Fatalf("Write behind another on a stuck network: %d, %v", m, err)
+	}
+	g.mu.Unlock()
+	if err := <-bdone; err != nil {
+		t.Fatalf("the other session's Write: %v", err)
+	}
+	_ = sa.SetWriteDeadline(time.Time{})
+	if _, err := sa.Write(da[n:]); err != nil {
+		t.Fatalf("Write after clearing the deadline: %v", err)
+	}
+	_ = sc.SetWriteDeadline(time.Time{})
+	if _, err := sc.Write(dc); err != nil {
+		t.Fatalf("Write after clearing the deadline: %v", err)
+	}
+	_ = sa.CloseWrite()
+	_ = sb.CloseWrite()
+	_ = sc.CloseWrite()
+	r := <-got
+	if !bytes.Equal(r["a"], da) || !bytes.Equal(r["b"], db) || !bytes.Equal(r["c"], dc) {
+		t.Fatalf("peer read %d, %d and %d bytes, want %d, %d and %d intact", len(r["a"]), len(r["b"]), len(r["c"]), len(da), len(db), len(dc))
 	}
 }

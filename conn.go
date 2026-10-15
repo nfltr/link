@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -143,6 +144,7 @@ type Conn struct {
 	// Senders waiting for room in wbuf take a ticket and go in its order:
 	// ticket is the next one to give, serving the one whose turn it is.
 	ticket, serving uint64
+	abandoned       map[uint64]bool // tickets whose sender gave up (a write deadline)
 	werr            error
 
 	dialer          bool // this side dialed: Mux picks odd session ids
@@ -223,12 +225,28 @@ func (c *Conn) SendMsg(b []byte) error {
 	}
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
-	return c.frameLocked(typeMsg, "", b)
+	return c.frameLocked(typeMsg, "", b, nil)
 }
 
 // SendData buffers sid's data as data frames, as SendMsg does. The caller
 // acquired credit for it (Credit().Acquire).
 func (c *Conn) SendData(sid string, data []byte) error {
+	return c.sendData(sid, data, nil)
+}
+
+// writeDeadline is a session's write deadline as its sends see it: set,
+// sends never write to the network inline (a goroutine does); past, a
+// send waiting for room in the write buffer gives up.
+type writeDeadline struct {
+	set, past atomic.Bool
+}
+
+// expired is whether wd (nil: none) passed.
+func (wd *writeDeadline) expired() bool { return wd != nil && wd.past.Load() }
+
+// sendData is SendData bounded by wd (nil: none): past it, it returns
+// os.ErrDeadlineExceeded with the frame not buffered.
+func (c *Conn) sendData(sid string, data []byte, wd *writeDeadline) error {
 	if len(sid) > MaxSID {
 		return errSID
 	}
@@ -236,7 +254,7 @@ func (c *Conn) SendData(sid string, data []byte) error {
 	defer c.wmu.Unlock()
 	for len(data) > 0 {
 		n := min(len(data), maxData)
-		if err := c.frameLocked(typeData, sid, data[:n]); err != nil {
+		if err := c.frameLocked(typeData, sid, data[:n], wd); err != nil {
 			return err
 		}
 		data = data[n:]
@@ -266,7 +284,7 @@ func (c *Conn) SendOpen(sid string, header []byte) error {
 		return ErrGoAway
 	}
 	c.credit.open(sid, byUs)
-	return c.frameLocked(typeOpen, sid, header)
+	return c.frameLocked(typeOpen, sid, header, nil)
 }
 
 // SendClose buffers a CLOSE frame for sid: half, the side
@@ -300,7 +318,7 @@ func (c *Conn) sendClose(sid string, code byte) error {
 	}
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
-	return c.frameLocked(typeClose, sid, []byte{code})
+	return c.frameLocked(typeClose, sid, []byte{code}, nil)
 }
 
 // GoAway tells the peer to open no more sessions on this
@@ -314,7 +332,7 @@ func (c *Conn) GoAway(drain time.Duration, reason string) error {
 	b := binary.BigEndian.AppendUint32(nil, uint32(max(drain, 0).Milliseconds())) // #nosec G115 -- a drain in ms fits
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
-	if err := c.frameLocked(typeGoAway, "", append(b, reason...)); err != nil {
+	if err := c.frameLocked(typeGoAway, "", append(b, reason...), nil); err != nil {
 		return err
 	}
 	c.goAwayAt.CompareAndSwap(0, int64(time.Since(c.t0)))
@@ -361,12 +379,15 @@ func (c *Conn) Err() error {
 func (c *Conn) sendWindow(sid string, n int) {
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
-	if c.frameLocked(typeWindow, "", AppendWindow(make([]byte, 0, 1+len(sid)+4), sid, n)) == nil {
+	if c.frameLocked(typeWindow, "", AppendWindow(make([]byte, 0, 1+len(sid)+4), sid, n), nil) == nil {
 		c.flushLocked()
 	}
 }
 
-func (c *Conn) frameLocked(typ byte, sid string, body []byte) error {
+// A data frame of a session with a write deadline (wd) waits for room or
+// its turn until the deadline, then returns os.ErrDeadlineExceeded; it
+// then leaves the network writes to a goroutine.
+func (c *Conn) frameLocked(typ byte, sid string, body []byte, wd *writeDeadline) error {
 	n := len(body)
 	withSID := typ == typeData || typ == typeOpen || typ == typeClose
 	if withSID {
@@ -378,8 +399,11 @@ func (c *Conn) frameLocked(typ byte, sid string, body []byte) error {
 	// (a waiter wakes only when a write takes the buffer, a running sender
 	// at once; on a slow link one of 8 sessions moved nothing for seconds).
 	for typ == typeData && c.werr == nil && c.waiting > 0 && c.wbuf != nil && c.inBuf[sid] {
+		if wd.expired() {
+			return os.ErrDeadlineExceeded
+		}
 		if !c.writing { // no write to wait for: this sender writes the buffer
-			c.writeLocked(false)
+			c.writeOrDrainLocked(wd)
 			continue
 		}
 		c.waiting++
@@ -396,8 +420,19 @@ func (c *Conn) frameLocked(typ byte, sid string, body []byte) error {
 		my := c.ticket
 		c.ticket++
 		for c.werr == nil && (my != c.serving || full()) {
+			if wd.expired() { // give up the ticket: the next waiting one takes its turn
+				if my == c.serving {
+					c.nextTurnLocked()
+				} else {
+					if c.abandoned == nil {
+						c.abandoned = map[uint64]bool{}
+					}
+					c.abandoned[my] = true
+				}
+				return os.ErrDeadlineExceeded
+			}
 			if my == c.serving && !c.writing {
-				c.writeLocked(false)
+				c.writeOrDrainLocked(wd)
 				continue
 			}
 			c.waiting++
@@ -405,10 +440,7 @@ func (c *Conn) frameLocked(typ byte, sid string, body []byte) error {
 			c.waiting--
 		}
 		if my == c.serving {
-			c.serving++
-			if c.waiting > 0 {
-				c.wcond.Broadcast() // the next ticket's turn
-			}
+			c.nextTurnLocked()
 		}
 	}
 	if c.werr != nil {
@@ -430,6 +462,50 @@ func (c *Conn) frameLocked(typ byte, sid string, body []byte) error {
 		c.inBuf[sid] = true
 	}
 	return nil
+}
+
+// nextTurnLocked passes the turn for room in the buffer to the next
+// ticket, past those whose sender gave up (a write deadline).
+func (c *Conn) nextTurnLocked() {
+	c.serving++
+	for c.abandoned[c.serving] {
+		delete(c.abandoned, c.serving)
+		c.serving++
+	}
+	if c.waiting > 0 {
+		c.wcond.Broadcast() // the next ticket's turn
+	}
+}
+
+// writeOrDrainLocked writes the buffer inline, or, for a sender with a
+// write deadline (which must not wait on the network), from a goroutine.
+func (c *Conn) writeOrDrainLocked(wd *writeDeadline) {
+	if wd != nil && wd.set.Load() {
+		c.writing = true
+		go c.drain()
+		return
+	}
+	c.writeLocked(false)
+}
+
+// wakeWriters wakes the senders waiting for room or their turn: a write
+// deadline passed.
+func (c *Conn) wakeWriters() {
+	c.wmu.Lock()
+	c.wcond.Broadcast()
+	c.wmu.Unlock()
+}
+
+// flushAsync is Flush with the write from a goroutine: the caller never
+// waits on the network.
+func (c *Conn) flushAsync() error {
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
+	if !c.writing && c.wbuf != nil {
+		c.writing = true
+		go c.drain()
+	}
+	return c.werr
 }
 
 // writeLocked writes the buffered frames, and those buffered while it
@@ -724,7 +800,7 @@ func (c *Conn) control(typ byte, b []byte) {
 		copy((*c.wbuf)[c.pongEnd-pingLen:], b)
 		return
 	}
-	if c.frameLocked(typ, "", b) != nil {
+	if c.frameLocked(typ, "", b, nil) != nil {
 		return
 	}
 	if typ == typePong {

@@ -317,9 +317,9 @@ func (m *Mux) Close() error { return m.c.Close() }
 // side), or the error that cut it: ErrReset (the peer's Reset), or
 // ErrConnClosed wrapping why the connection ended (ErrDeadPeer, the
 // network's error). Write sends on credit; past such an end it returns
-// io.ErrClosedPipe wrapping the same error. A read
-// deadline ends a pending Read with os.ErrDeadlineExceeded; write
-// deadlines are not supported (Close ends a session).
+// io.ErrClosedPipe wrapping the same error. A read deadline ends a
+// pending Read, and a write deadline a pending Write, with
+// os.ErrDeadlineExceeded.
 type Session struct {
 	m      *Mux
 	id     string
@@ -342,6 +342,12 @@ type Session struct {
 	dlTimer *time.Timer
 	dlGen   uint64      // the deadline's generation: a stale timer does nothing
 	dlPast  atomic.Bool // the read deadline passed
+
+	wdMu    sync.Mutex
+	wdTimer *time.Timer
+	wdGen   uint64        // the write deadline's generation: a stale timer does nothing
+	wdCh    chan struct{} // closed when the write deadline passes or changes; under wdMu
+	wd      writeDeadline
 
 	pump    atomic.Pointer[pump] // set by Pump
 	pumping atomic.Bool          // a pump goroutine runs, or the pump ended
@@ -579,19 +585,17 @@ func (s *Session) writeOwned(w OwnedWriter) (int64, error) {
 }
 
 // Write sends b to the peer in chunks it has credit for, waiting for
-// credit, then writes them to the network (Flush).
+// credit, then writes them to the network (Flush). With a write deadline
+// set, the frames go to the network from a goroutine, and Write returns
+// os.ErrDeadlineExceeded, with the bytes it sent, once the deadline passed
+// while it waited for credit or for room in the connection's write
+// buffer.
 func (s *Session) Write(b []byte) (int, error) {
-	for p := b; len(p) > 0; {
-		n := min(len(p), MaxChunk)
-		if s.closed.Load() || s.halfClosed.Load() || !s.m.c.credit.Acquire(s.id, n) {
-			return len(b) - len(p), s.closedPipe()
-		}
-		if err := s.m.c.SendData(s.id, p[:n]); err != nil {
-			return len(b) - len(p), err
-		}
-		p = p[n:]
+	n, err := s.send(b)
+	if err == nil {
+		err = s.flush()
 	}
-	return len(b), s.m.c.Flush()
+	return n, err
 }
 
 // WriteBuffers is Write of each of bufs in turn, with one flush at the
@@ -600,19 +604,69 @@ func (s *Session) Write(b []byte) (int, error) {
 func (s *Session) WriteBuffers(bufs [][]byte) (int64, error) {
 	var total int64
 	for _, b := range bufs {
-		for p := b; len(p) > 0; {
-			n := min(len(p), MaxChunk)
-			if s.closed.Load() || s.halfClosed.Load() || !s.m.c.credit.Acquire(s.id, n) {
-				return total, s.closedPipe()
-			}
-			if err := s.m.c.SendData(s.id, p[:n]); err != nil {
-				return total, err
-			}
-			p = p[n:]
-			total += int64(n)
+		n, err := s.send(b)
+		total += int64(n)
+		if err != nil {
+			return total, err
 		}
 	}
-	return total, s.m.c.Flush()
+	return total, s.flush()
+}
+
+// send buffers b as data frames, MaxChunk at a time, each once it has
+// credit; it returns how many bytes it buffered.
+func (s *Session) send(b []byte) (int, error) {
+	for p := b; len(p) > 0; {
+		n := min(len(p), MaxChunk)
+		if err := s.acquire(n); err != nil {
+			return len(b) - len(p), err
+		}
+		if err := s.m.c.sendData(s.id, p[:n], &s.wd); err != nil {
+			if errors.Is(err, os.ErrDeadlineExceeded) {
+				s.m.c.credit.refund(s.id, n) // nothing of it was sent
+			}
+			return len(b) - len(p), err
+		}
+		p = p[n:]
+	}
+	return len(b), nil
+}
+
+// acquire waits for n bytes of credit, until the write deadline.
+func (s *Session) acquire(n int) error {
+	for {
+		stop := s.writeWait() // before the check: a deadline passing after it closes stop
+		if s.closed.Load() || s.halfClosed.Load() {
+			return s.closedPipe()
+		}
+		if s.wd.past.Load() {
+			return os.ErrDeadlineExceeded
+		}
+		ok, stopped := s.m.c.credit.acquire(s.id, n, s.flush, stop)
+		if ok {
+			return nil
+		}
+		if !stopped {
+			return s.closedPipe()
+		}
+	}
+}
+
+// flush writes the buffered frames: from a goroutine while a write
+// deadline is set, so that no write waits on the network.
+func (s *Session) flush() error {
+	if s.wd.set.Load() {
+		return s.m.c.flushAsync()
+	}
+	return s.m.c.Flush()
+}
+
+// writeWait is closed once the write deadline passes or changes (nil while
+// none was ever set).
+func (s *Session) writeWait() <-chan struct{} {
+	s.wdMu.Lock()
+	defer s.wdMu.Unlock()
+	return s.wdCh
 }
 
 // CloseWrite ends the session's write side: the peer reads
@@ -674,8 +728,11 @@ func (s *Session) LocalAddr() net.Addr { return s.m.c.nc.LocalAddr() }
 // RemoteAddr is the connection's.
 func (s *Session) RemoteAddr() net.Addr { return s.m.c.nc.RemoteAddr() }
 
-// SetDeadline is SetReadDeadline: write deadlines are not supported.
-func (s *Session) SetDeadline(t time.Time) error { return s.SetReadDeadline(t) }
+// SetDeadline sets the read and the write deadline.
+func (s *Session) SetDeadline(t time.Time) error {
+	_ = s.SetReadDeadline(t)
+	return s.SetWriteDeadline(t)
+}
 
 // SetReadDeadline makes a pending or later Read return
 // os.ErrDeadlineExceeded once t passed; zero t clears it. WriteTo ignores
@@ -707,5 +764,40 @@ func (s *Session) SetReadDeadline(t time.Time) error {
 	return nil
 }
 
-// SetWriteDeadline is a no-op: Close ends a session whose writes wait.
-func (s *Session) SetWriteDeadline(time.Time) error { return nil }
+// SetWriteDeadline makes a pending or later Write (WriteBuffers) return
+// os.ErrDeadlineExceeded once t passed; zero t clears it. While one is
+// set, writes leave the network write to a goroutine (see Write).
+func (s *Session) SetWriteDeadline(t time.Time) error {
+	s.wdMu.Lock()
+	s.wdGen++
+	if s.wdTimer != nil {
+		s.wdTimer.Stop()
+		s.wdTimer = nil
+	}
+	if s.wdCh != nil {
+		close(s.wdCh) // a pending wait looks at the new deadline
+	}
+	s.wdCh = make(chan struct{})
+	d := time.Until(t)
+	past := !t.IsZero() && d <= 0
+	s.wd.set.Store(!t.IsZero())
+	s.wd.past.Store(past)
+	if !t.IsZero() && d > 0 {
+		gen := s.wdGen
+		s.wdTimer = time.AfterFunc(d, func() {
+			s.wdMu.Lock()
+			if s.wdGen == gen {
+				s.wd.past.Store(true)
+				close(s.wdCh)
+				s.wdCh = make(chan struct{})
+			}
+			s.wdMu.Unlock()
+			s.m.c.wakeWriters()
+		})
+	}
+	s.wdMu.Unlock()
+	if past {
+		s.m.c.wakeWriters()
+	}
+	return nil
+}

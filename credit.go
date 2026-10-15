@@ -140,13 +140,20 @@ func (c *Credit) count(by int) int {
 // received, so a sender waiting with its own frames still buffered (a
 // Session.Write of several chunks) would wait for good.
 func (c *Credit) Acquire(sid string, n int) bool {
+	ok, _ := c.acquire(sid, n, c.flush, nil)
+	return ok
+}
+
+// acquire is Acquire flushing with flush, and giving up (stopped) once
+// stop is closed.
+func (c *Credit) acquire(sid string, n int, flush func() error, stop <-chan struct{}) (ok, stopped bool) {
 	var waited time.Time
 	for {
 		c.mu.Lock()
 		s := c.sessions[sid]
 		if s == nil {
 			c.mu.Unlock()
-			return false
+			return false, false
 		}
 		if s.n >= n {
 			s.n -= n
@@ -154,20 +161,36 @@ func (c *Credit) Acquire(sid string, n int) bool {
 			if !waited.IsZero() && c.obs != nil {
 				c.obs.CreditWait(time.Since(waited))
 			}
-			return true
+			return true, false
 		}
 		wake := s.wake
 		c.mu.Unlock()
 		if waited.IsZero() {
 			waited = time.Now()
 		}
-		if c.flush != nil && c.flush() != nil { // a grant meanwhile is kept in wake
-			return false
+		if flush != nil && flush() != nil { // a grant meanwhile is kept in wake
+			return false, false
 		}
 		select {
 		case <-wake:
 		case <-c.closed:
-			return false
+			return false, false
+		case <-stop:
+			return false, true
+		}
+	}
+}
+
+// refund gives back n bytes of sid's credit that were acquired and not
+// sent.
+func (c *Credit) refund(sid string, n int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if s := c.sessions[sid]; s != nil {
+		s.n += n
+		select {
+		case s.wake <- struct{}{}:
+		default:
 		}
 	}
 }

@@ -190,7 +190,7 @@ func (v wireVector) encode(t *testing.T) hexBytes {
 	switch f.Type {
 	case "data":
 		c.wmu.Lock() // SendData sends nothing for no bytes; the wire allows an empty data frame
-		err = c.frameLocked(typeData, sid, f.Payload)
+		err = c.frameLocked(typeData, sid, f.Payload, nil)
 		c.wmu.Unlock()
 	case "message":
 		err = c.SendMsg(f.Payload)
@@ -212,7 +212,7 @@ func (v wireVector) encode(t *testing.T) hexBytes {
 			typ = typePong
 		}
 		c.wmu.Lock()
-		err = c.frameLocked(typ, "", f.Ping)
+		err = c.frameLocked(typ, "", f.Ping, nil)
 		c.wmu.Unlock()
 	case "goaway":
 		err = c.GoAway(time.Duration(f.DrainMS)*time.Millisecond, f.Reason)

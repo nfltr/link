@@ -73,7 +73,7 @@ func v2Record(t *testing.T) map[string][]byte {
 	c.sendWindow(v2Session, 0x8000)
 	for _, typ := range []byte{typePing, typePong} { // as control, written inline
 		c.wmu.Lock()
-		_ = c.frameLocked(typ, "", v2Ping[:])
+		_ = c.frameLocked(typ, "", v2Ping[:], nil)
 		c.flushLocked()
 		c.wmu.Unlock()
 	}
