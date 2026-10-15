@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nfltr/link/peerlink"
 	"github.com/nfltr/link/peerlink/quiclink"
 )
 
@@ -31,7 +32,7 @@ func TestThroughputReorderedPath(t *testing.T) {
 	a := mustNew(t, quiclink.Config{Dial: dialer("a", "b", addr), Connect: []string{"b"}, Window: window})
 	var got atomic.Int64
 	go func() {
-		_ = a.Serve(func(_ string, _ []byte, s net.Conn) {
+		_ = a.Serve(func(_ string, _ []byte, s peerlink.Session) {
 			buf := make([]byte, 64<<10)
 			for {
 				n, err := s.Read(buf)
@@ -42,7 +43,7 @@ func TestThroughputReorderedPath(t *testing.T) {
 			}
 		})
 	}()
-	go func() { _ = b.Serve(func(string, []byte, net.Conn) {}) }()
+	go func() { _ = b.Serve(func(string, []byte, peerlink.Session) {}) }()
 	t.Cleanup(func() {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()

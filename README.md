@@ -75,8 +75,8 @@ func main() {
 
 // reply serves each session a peer opens: it reads the request and
 // answers it.
-func reply(me string) func(peer string, header []byte, s net.Conn) {
-	return func(peer string, header []byte, s net.Conn) {
+func reply(me string) func(peer string, header []byte, s peerlink.Session) {
+	return func(peer string, header []byte, s peerlink.Session) {
 		defer s.Close()
 		req, _ := io.ReadAll(s) // until the opener's CloseWrite
 		fmt.Fprintf(s, "%s got %q (%s) from %s", me, req, header, peer)
@@ -96,7 +96,7 @@ func ask(l peerlink.Link, peer string) string {
 		log.Fatal(err)
 	}
 	// The peer reads io.EOF after "hello"; this side can still read.
-	if err := s.(peerlink.Session).CloseWrite(); err != nil {
+	if err := s.CloseWrite(); err != nil {
 		log.Fatal(err)
 	}
 	answer, err := io.ReadAll(s)

@@ -152,7 +152,7 @@ func (n *Node) DeadAfter() time.Duration {
 
 // Open opens a stream to peer, on its grpc.ClientConn. It does not wait
 // for the peer: a refusal surfaces as the session's first Read error.
-func (n *Node) Open(ctx context.Context, peer string, header []byte) (net.Conn, error) {
+func (n *Node) Open(ctx context.Context, peer string, header []byte) (peerlink.Session, error) {
 	if n.cfg.Dial == nil {
 		return nil, errors.New("grpclink: Open needs Config.Dial")
 	}
@@ -205,7 +205,7 @@ func (n *Node) dial(peer string) (*grpc.ClientConn, error) {
 }
 
 // Serve serves streams on Config.Listener until Drain.
-func (n *Node) Serve(accept func(peer string, header []byte, s net.Conn)) error {
+func (n *Node) Serve(accept func(peer string, header []byte, s peerlink.Session)) error {
 	if n.cfg.Listener == nil {
 		return errors.New("grpclink: Serve needs Config.Listener")
 	}
@@ -240,7 +240,7 @@ func (n *Node) Serve(accept func(peer string, header []byte, s net.Conn)) error 
 
 // handle serves one stream: it runs until the session is closed here, or
 // the stream ends (the opener's reset, a dead or closed connection).
-func (n *Node) handle(ss grpc.ServerStream, accept func(string, []byte, net.Conn)) error {
+func (n *Node) handle(ss grpc.ServerStream, accept func(string, []byte, peerlink.Session)) error {
 	ctx := ss.Context()
 	n.mu.Lock()
 	draining := n.draining

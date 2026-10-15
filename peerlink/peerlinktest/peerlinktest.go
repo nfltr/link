@@ -100,7 +100,7 @@ var cases = []struct {
 
 // --- helpers ---
 
-func pair(t *testing.T, newPair func(*testing.T) Pair, accept func(peer string, header []byte, s net.Conn)) Pair {
+func pair(t *testing.T, newPair func(*testing.T) Pair, accept func(peer string, header []byte, s peerlink.Session)) Pair {
 	t.Helper()
 	p := newPair(t)
 	if p.A == nil || p.B == nil || p.DeadAfter <= 0 || p.BlackHole == nil || p.Cut == nil || p.Throttle == nil {
@@ -112,7 +112,7 @@ func pair(t *testing.T, newPair func(*testing.T) Pair, accept func(peer string, 
 	if p.Reverse {
 		serving++
 		go func() {
-			served <- p.A.Serve(func(_ string, _ []byte, s net.Conn) {
+			served <- p.A.Serve(func(_ string, _ []byte, s peerlink.Session) {
 				t.Error("A accepted a session: in this suite only A opens")
 				_ = s.Close()
 			})
@@ -138,7 +138,7 @@ func pair(t *testing.T, newPair func(*testing.T) Pair, accept func(peer string, 
 }
 
 // open opens a session from A to B; the test's cleanup closes it.
-func open(t *testing.T, p Pair, header string) net.Conn {
+func open(t *testing.T, p Pair, header string) peerlink.Session {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), Within)
 	defer cancel()
@@ -150,28 +150,15 @@ func open(t *testing.T, p Pair, header string) net.Conn {
 	return s
 }
 
-func closeWrite(t *testing.T, s net.Conn) {
+func closeWrite(t *testing.T, s peerlink.Session) {
 	t.Helper()
-	cw, ok := s.(interface{ CloseWrite() error })
-	if !ok {
-		t.Fatalf("session %T has no CloseWrite", s)
-	}
-	if err := cw.CloseWrite(); err != nil {
+	if err := s.CloseWrite(); err != nil {
 		t.Errorf("CloseWrite: %v", err)
 	}
 }
 
-func reset(t *testing.T, s net.Conn) {
-	t.Helper()
-	r, ok := s.(interface{ Reset() error })
-	if !ok {
-		t.Fatalf("session %T has no Reset", s)
-	}
-	_ = r.Reset()
-}
-
 // echo copies what the session reads back to it, then closes it.
-func echo(_ string, _ []byte, s net.Conn) {
+func echo(_ string, _ []byte, s peerlink.Session) {
 	defer s.Close()
 	_, _ = io.Copy(s, s)
 }
@@ -192,13 +179,13 @@ func cutErr(t *testing.T, who string, err error) {
 
 // exchange writes n random bytes to s and closes its write side while it
 // reads the echo, and checks the echo is what was written.
-func exchange(s net.Conn, n int64) error {
+func exchange(s peerlink.Session, n int64) error {
 	sent := sha256.New()
 	werr := make(chan error, 1)
 	go func() {
 		_, err := io.Copy(s, io.TeeReader(io.LimitReader(rand.Reader, n), sent))
 		if err == nil {
-			err = s.(interface{ CloseWrite() error }).CloseWrite()
+			err = s.CloseWrite()
 		}
 		werr <- err
 	}()
@@ -246,7 +233,7 @@ func testEcho(t *testing.T, newPair func(*testing.T) Pair) {
 		peer, header string
 	}
 	got := make(chan seen, 1)
-	p := pair(t, newPair, func(peer string, h []byte, s net.Conn) {
+	p := pair(t, newPair, func(peer string, h []byte, s peerlink.Session) {
 		got <- seen{peer, string(h)}
 		echo(peer, h, s)
 	})
@@ -270,7 +257,7 @@ func testEcho(t *testing.T, newPair func(*testing.T) Pair) {
 // Header: empty, one zero byte and 4 KiB of random bytes arrive as sent.
 func testHeader(t *testing.T, newPair func(*testing.T) Pair) {
 	got := make(chan []byte, 1)
-	p := pair(t, newPair, func(_ string, h []byte, s net.Conn) {
+	p := pair(t, newPair, func(_ string, h []byte, s peerlink.Session) {
 		got <- bytes.Clone(h)
 		_ = s.Close()
 	})
@@ -294,7 +281,7 @@ func testHeader(t *testing.T, newPair func(*testing.T) Pair) {
 // still reads what the accepter writes after reading io.EOF.
 func testHalfCloseOpenerFirst(t *testing.T, newPair func(*testing.T) Pair) {
 	done := make(chan error, 1)
-	p := pair(t, newPair, func(_ string, _ []byte, s net.Conn) {
+	p := pair(t, newPair, func(_ string, _ []byte, s peerlink.Session) {
 		defer s.Close()
 		b, err := io.ReadAll(s)
 		if err == nil && string(b) != "ping" {
@@ -325,13 +312,13 @@ func testHalfCloseOpenerFirst(t *testing.T, newPair func(*testing.T) Pair) {
 // HalfCloseAccepterFirst: the same with the roles swapped.
 func testHalfCloseAccepterFirst(t *testing.T, newPair func(*testing.T) Pair) {
 	done := make(chan error, 1)
-	p := pair(t, newPair, func(_ string, _ []byte, s net.Conn) {
+	p := pair(t, newPair, func(_ string, _ []byte, s peerlink.Session) {
 		defer s.Close()
 		err := func() error {
 			if _, err := io.WriteString(s, "first"); err != nil {
 				return err
 			}
-			if err := s.(interface{ CloseWrite() error }).CloseWrite(); err != nil {
+			if err := s.CloseWrite(); err != nil {
 				return err
 			}
 			if _, err := s.Write([]byte("more")); err == nil {
@@ -388,7 +375,7 @@ func testConcurrent(t *testing.T, newPair func(*testing.T) Pair) {
 func testStuckReader(t *testing.T, newPair func(*testing.T) Pair) {
 	const n = 8
 	release := make(chan struct{})
-	p := pair(t, newPair, func(peer string, h []byte, s net.Conn) {
+	p := pair(t, newPair, func(peer string, h []byte, s peerlink.Session) {
 		if string(h) == "stall" {
 			<-release
 			_ = s.Close()
@@ -445,7 +432,7 @@ func testFairness(t *testing.T, newPair func(*testing.T) Pair) {
 	const n, rate, warm, run = 8, 1 << 20, 2 * time.Second, 4 * time.Second
 	var accepted atomic.Int32
 	start := make(chan struct{})
-	p := pair(t, newPair, func(_ string, _ []byte, s net.Conn) {
+	p := pair(t, newPair, func(_ string, _ []byte, s peerlink.Session) {
 		defer s.Close()
 		if accepted.Add(1) == n {
 			close(start)
@@ -520,7 +507,7 @@ func testDeadPeer(t *testing.T, newPair func(*testing.T) Pair) {
 	ends := make(chan end, 6)
 	var accepted sync.WaitGroup
 	accepted.Add(3)
-	p := pair(t, newPair, func(_ string, h []byte, s net.Conn) {
+	p := pair(t, newPair, func(_ string, h []byte, s peerlink.Session) {
 		defer s.Close()
 		accepted.Done()
 		err := readErr(s)
@@ -562,7 +549,7 @@ func testCut(t *testing.T, newPair func(*testing.T) Pair) {
 	errs := make(chan error, 4)
 	var accepted sync.WaitGroup
 	accepted.Add(2)
-	p := pair(t, newPair, func(_ string, _ []byte, s net.Conn) {
+	p := pair(t, newPair, func(_ string, _ []byte, s peerlink.Session) {
 		defer s.Close()
 		accepted.Done()
 		errs <- readErr(s)
@@ -585,11 +572,11 @@ func testCut(t *testing.T, newPair func(*testing.T) Pair) {
 // Reset: a session reset by either side reads an error on the other.
 func testReset(t *testing.T, newPair func(*testing.T) Pair) {
 	errs := make(chan error, 1)
-	p := pair(t, newPair, func(_ string, h []byte, s net.Conn) {
+	p := pair(t, newPair, func(_ string, h []byte, s peerlink.Session) {
 		defer s.Close()
 		_, _ = io.WriteString(s, "x") // accepted
 		if string(h) == "accepter resets" {
-			reset(t, s)
+			_ = s.Reset()
 			return
 		}
 		errs <- readErr(s)
@@ -598,7 +585,7 @@ func testReset(t *testing.T, newPair func(*testing.T) Pair) {
 	if _, err := io.ReadFull(s, make([]byte, 1)); err != nil {
 		t.Fatal(err)
 	}
-	reset(t, s)
+	_ = s.Reset()
 	cutErr(t, "accepter of a reset session", recvWithin(t, errs, 1, time.Now(), Within, "reset seen")[0])
 
 	s = open(t, p, "accepter resets")
@@ -635,7 +622,7 @@ func openRefused(t *testing.T, p Pair) error {
 }
 
 // half sends 1 MiB on s and reads its echo, to show s works.
-func half(t *testing.T, s net.Conn) {
+func half(t *testing.T, s peerlink.Session) {
 	t.Helper()
 	buf := make([]byte, 1<<20)
 	_, _ = rand.Read(buf)
@@ -708,7 +695,7 @@ func testDrainDeadline(t *testing.T, newPair func(*testing.T) Pair) {
 		t.Run(side, func(t *testing.T) {
 			errs := make(chan error, 2)
 			accepted := make(chan struct{})
-			p := pair(t, newPair, func(_ string, _ []byte, s net.Conn) {
+			p := pair(t, newPair, func(_ string, _ []byte, s peerlink.Session) {
 				defer s.Close()
 				close(accepted)
 				errs <- readErr(s)

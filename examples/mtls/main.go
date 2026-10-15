@@ -123,8 +123,8 @@ func pki(names ...string) (*x509.CertPool, map[string]tls.Certificate) {
 
 // reply serves each session a peer opens: it reads the request and
 // answers it.
-func reply(me string) func(peer string, header []byte, s net.Conn) {
-	return func(peer string, header []byte, s net.Conn) {
+func reply(me string) func(peer string, header []byte, s peerlink.Session) {
+	return func(peer string, header []byte, s peerlink.Session) {
 		defer s.Close()
 		req, _ := io.ReadAll(s) // until the opener's CloseWrite
 		fmt.Fprintf(s, "%s got %q from %s", me, req, peer)
@@ -143,7 +143,7 @@ func ask(l peerlink.Link, peer string) string {
 	if _, err := io.WriteString(s, "hello"); err != nil {
 		log.Fatal(err)
 	}
-	if err := s.(peerlink.Session).CloseWrite(); err != nil {
+	if err := s.CloseWrite(); err != nil {
 		log.Fatal(err)
 	}
 	answer, err := io.ReadAll(s)

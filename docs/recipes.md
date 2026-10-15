@@ -289,7 +289,7 @@ func ExampleNode_Drain() {
 	go func() { drained <- server.Drain(ctx) }()
 
 	_, _ = io.WriteString(s, "last request")
-	_ = s.(peerlink.Session).CloseWrite()
+	_ = s.CloseWrite()
 	reply, _ := io.ReadAll(s)
 	fmt.Println(string(reply))
 	fmt.Println("drained:", <-drained)

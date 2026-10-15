@@ -274,9 +274,9 @@ func runEpoch(t *testing.T, c config, d time.Duration, st *stats) {
 	p.throttle(rate)
 	probes := &probeQueue{}
 	served := make(chan error, 2)
-	go func() { served <- p.b.Serve(func(_ string, h []byte, s net.Conn) { accept(probes, h, s) }) }()
+	go func() { served <- p.b.Serve(func(_ string, h []byte, s peerlink.Session) { accept(probes, h, s) }) }()
 	if p.reverse {
-		go func() { served <- p.a.Serve(func(_ string, _ []byte, s net.Conn) { _ = s.Close() }) }()
+		go func() { served <- p.a.Serve(func(_ string, _ []byte, s peerlink.Session) { _ = s.Close() }) }()
 	}
 	start := time.Now()
 	stop := make(chan struct{})
@@ -434,7 +434,7 @@ func size(r *mrand.Rand) int {
 	}
 }
 
-func openTo(p pair, header string) (net.Conn, error) {
+func openTo(p pair, header string) (peerlink.Session, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	return p.a.Open(ctx, "b", []byte(header))
@@ -455,7 +455,7 @@ func echo(p pair, n int, st *stats) error {
 	go func() {
 		_, err := s.Write(payload)
 		if err == nil {
-			err = s.(interface{ CloseWrite() error }).CloseWrite()
+			err = s.CloseWrite()
 		}
 		werr <- err
 	}()

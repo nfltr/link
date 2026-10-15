@@ -41,7 +41,7 @@ func Example() {
 	if err != nil {
 		panic(err)
 	}
-	go b.Serve(func(peer string, header []byte, s net.Conn) {
+	go b.Serve(func(peer string, header []byte, s peerlink.Session) {
 		defer s.Close()
 		msg, _ := io.ReadAll(s)
 		fmt.Fprintf(s, "%s %s %s", peer, header, msg)
@@ -69,7 +69,7 @@ func Example() {
 		panic(err)
 	}
 	_, _ = io.WriteString(s, "hello")
-	_ = s.(peerlink.Session).CloseWrite()
+	_ = s.CloseWrite()
 	reply, _ := io.ReadAll(s)
 	_ = s.Close()
 	fmt.Println(string(reply))

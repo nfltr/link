@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/nfltr/link"
+	"github.com/nfltr/link/peerlink"
 	"github.com/nfltr/link/peerlink/quiclink"
 	"github.com/quic-go/quic-go"
 )
@@ -69,7 +70,7 @@ func (q *quicLib) listenUDP(addr string, handle func([]byte, net.Conn)) {
 		PacketConn: pc, TLS: tlsConfig(q.certs), Liveness: q.liveness(), Window: window,
 		ServedPeer: func(*quic.Conn) (string, error) { return "a", nil },
 	}))
-	go func() { log.Fatal(n.Serve(func(_ string, h []byte, s net.Conn) { handle(h, s) })) }()
+	go func() { log.Fatal(n.Serve(func(_ string, h []byte, s peerlink.Session) { handle(h, s) })) }()
 }
 
 // The TCP side of lib does not apply.

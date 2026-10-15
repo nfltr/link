@@ -107,9 +107,9 @@ func TestConformanceReverse(t *testing.T) {
 	})
 }
 
-func serveBoth(t *testing.T, a, b *peerlink.Node, accept func(string, []byte, net.Conn)) {
+func serveBoth(t *testing.T, a, b *peerlink.Node, accept func(string, []byte, peerlink.Session)) {
 	t.Helper()
-	go func() { _ = a.Serve(func(_ string, _ []byte, s net.Conn) { _ = s.Close() }) }()
+	go func() { _ = a.Serve(func(_ string, _ []byte, s peerlink.Session) { _ = s.Close() }) }()
 	go func() { _ = b.Serve(accept) }()
 	t.Cleanup(func() {
 		ctx, cancel := context.WithCancel(context.Background())
@@ -131,7 +131,7 @@ func echoOnce(t *testing.T, s net.Conn) {
 	}
 }
 
-func echoAccept(_ string, _ []byte, s net.Conn) { _, _ = io.Copy(s, s); _ = s.Close() }
+func echoAccept(_ string, _ []byte, s peerlink.Session) { _, _ = io.Copy(s, s); _ = s.Close() }
 
 // TestOpenWaitsForPeer: an Open toward a peer that has not dialled in yet
 // waits, and opens on its connection once it is up.
@@ -255,7 +255,9 @@ func TestObserverPerPeer(t *testing.T) {
 	up := make(chan string, 2)
 	a, b := nodes(t, link.LivenessFast, func(ln net.Listener) string { return ln.Addr().String() },
 		func(peer string) link.Observer { return upObserver{peer: peer, up: up} })
-	go func() { _ = b.Serve(func(_ string, _ []byte, s net.Conn) { _, _ = io.Copy(s, s); _ = s.Close() }) }()
+	go func() {
+		_ = b.Serve(func(_ string, _ []byte, s peerlink.Session) { _, _ = io.Copy(s, s); _ = s.Close() })
+	}()
 	t.Cleanup(func() {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
@@ -301,7 +303,9 @@ func TestServedPeer(t *testing.T) {
 		},
 	})
 	accepted := make(chan string, 1)
-	go func() { _ = b.Serve(func(peer string, _ []byte, s net.Conn) { accepted <- peer; _ = s.Close() }) }()
+	go func() {
+		_ = b.Serve(func(peer string, _ []byte, s peerlink.Session) { accepted <- peer; _ = s.Close() })
+	}()
 	t.Cleanup(func() {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()

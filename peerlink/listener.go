@@ -8,8 +8,8 @@ import (
 	"sync"
 )
 
-// Session is what every session of a Link is beyond a net.Conn (the
-// contract): s.(peerlink.Session).CloseWrite().
+// Session is a session of a Link (the contract): a net.Conn that also
+// ends its writes alone (CloseWrite) or ends as failed (Reset).
 type Session interface {
 	net.Conn
 	// CloseWrite ends this side's writes: the peer reads io.EOF after
@@ -38,7 +38,7 @@ func NewListener() *Listener {
 
 // Handle hands s to Accept, waiting for it; once the Listener is closed
 // it closes s.
-func (l *Listener) Handle(_ string, _ []byte, s net.Conn) {
+func (l *Listener) Handle(_ string, _ []byte, s Session) {
 	select {
 	case l.conns <- s:
 	case <-l.done:

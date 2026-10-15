@@ -26,7 +26,7 @@ import (
 
 // echo serves a session: it writes back what it reads, prefixed with who
 // opened it and the header.
-func echo(peer string, header []byte, s net.Conn) {
+func echo(peer string, header []byte, s peerlink.Session) {
 	defer s.Close()
 	b, _ := io.ReadAll(s)
 	fmt.Fprintf(s, "%s %s %s", peer, header, b)
@@ -42,7 +42,7 @@ func call(l peerlink.Link, peer, msg string) string {
 	}
 	defer s.Close()
 	_, _ = io.WriteString(s, msg)
-	_ = s.(peerlink.Session).CloseWrite()
+	_ = s.CloseWrite()
 	b, _ := io.ReadAll(s)
 	return string(b)
 }
@@ -196,7 +196,7 @@ func ExampleNode_Drain() {
 	go func() { drained <- server.Drain(ctx) }()
 
 	_, _ = io.WriteString(s, "last request")
-	_ = s.(peerlink.Session).CloseWrite()
+	_ = s.CloseWrite()
 	reply, _ := io.ReadAll(s)
 	fmt.Println(string(reply))
 	fmt.Println("drained:", <-drained)

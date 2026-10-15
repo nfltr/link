@@ -127,7 +127,7 @@ type Node struct {
 	dialled  map[string]*peerConns // the connections this Node dialled, by peer
 	served   map[*conn]bool        // the connections Serve accepted
 	changed  chan struct{}         // closed when served changes
-	accept   func(string, []byte, net.Conn)
+	accept   func(string, []byte, peerlink.Session)
 	draining bool
 	drained  chan struct{} // closed when Drain starts
 	sessions sync.WaitGroup
@@ -367,7 +367,7 @@ type peerConns struct {
 // connections peer dialled in (the one with the fewest sessions, not going
 // away); while peer has none, Open waits for one until ctx ends, then
 // fails with peerlink.ErrPeerUnreachable (and ctx's error).
-func (n *Node) Open(ctx context.Context, peer string, header []byte) (net.Conn, error) {
+func (n *Node) Open(ctx context.Context, peer string, header []byte) (peerlink.Session, error) {
 	if len(header) > MaxHeader {
 		return nil, fmt.Errorf("quiclink: header of %d bytes, at most %d", len(header), MaxHeader)
 	}
@@ -526,7 +526,7 @@ func (n *Node) acceptStream(c *conn, st *quic.Stream) {
 // accepts on Config.PacketConn (if any) and on the connections this Node
 // dialled, Config.Connect's among them, which it dials now. An error of
 // the listener other than Drain's ends Serve.
-func (n *Node) Serve(accept func(peer string, header []byte, s net.Conn)) error {
+func (n *Node) Serve(accept func(peer string, header []byte, s peerlink.Session)) error {
 	n.mu.Lock()
 	n.accept = accept
 	draining := n.draining

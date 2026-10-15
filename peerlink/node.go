@@ -75,7 +75,7 @@ type Node struct {
 	pools    map[string]*link.Pool
 	served   map[*link.Mux]string // accepted connections and their peer
 	changed  chan struct{}        // closed when served changes
-	accept   func(string, []byte, net.Conn)
+	accept   func(string, []byte, Session)
 	draining bool
 	drained  chan struct{}  // closed when Drain starts
 	opened   sync.WaitGroup // dialled sessions not yet closed
@@ -131,7 +131,7 @@ func (n *Node) DeadAfter() time.Duration {
 // with the fewest sessions, not going away); while peer has none, Open
 // waits for one until ctx ends, then fails with ErrPeerUnreachable (and
 // ctx's error).
-func (n *Node) Open(ctx context.Context, peer string, header []byte) (net.Conn, error) {
+func (n *Node) Open(ctx context.Context, peer string, header []byte) (Session, error) {
 	if n.cfg.Dial == nil {
 		return n.openServed(ctx, peer, header)
 	}
@@ -152,7 +152,7 @@ func (n *Node) Open(ctx context.Context, peer string, header []byte) (net.Conn, 
 }
 
 // openServed opens a session on a connection peer dialled in.
-func (n *Node) openServed(ctx context.Context, peer string, header []byte) (net.Conn, error) {
+func (n *Node) openServed(ctx context.Context, peer string, header []byte) (Session, error) {
 	refused := map[*link.Mux]bool{}
 	for {
 		n.mu.Lock()
@@ -262,7 +262,7 @@ func (s *session) Reset() error {
 // dialled, Config.Connect's among them, which it dials now. A failed
 // handshake closes that connection only (Config.HandshakeError hears of
 // it); an Accept error other than Drain's ends Serve.
-func (n *Node) Serve(accept func(peer string, header []byte, s net.Conn)) error {
+func (n *Node) Serve(accept func(peer string, header []byte, s Session)) error {
 	n.mu.Lock()
 	n.accept = accept
 	if !n.draining {
@@ -290,7 +290,7 @@ func (n *Node) Serve(accept func(peer string, header []byte, s net.Conn)) error 
 	}
 }
 
-func (n *Node) serveConn(nc net.Conn, accept func(string, []byte, net.Conn)) {
+func (n *Node) serveConn(nc net.Conn, accept func(string, []byte, Session)) {
 	cfg := n.cfg.Link
 	cfg.Observer = nil
 	if n.cfg.Observer != nil {

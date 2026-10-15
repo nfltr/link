@@ -23,7 +23,7 @@ import (
 // upperService is application code: it knows only peerlink.Link and the
 // net.Conn sessions it carries, never gRPC.
 func upperService(l peerlink.Link) error {
-	return l.Serve(func(peer string, header []byte, s net.Conn) {
+	return l.Serve(func(peer string, header []byte, s peerlink.Session) {
 		defer s.Close()
 		body, err := io.ReadAll(s) // until the opener's CloseWrite
 		if err != nil {
@@ -43,7 +43,7 @@ func callUpper(ctx context.Context, l peerlink.Link, peer, msg string) (string, 
 	if _, err := io.WriteString(s, msg); err != nil {
 		return "", err
 	}
-	if err := s.(peerlink.Session).CloseWrite(); err != nil { // the peer reads io.EOF after msg
+	if err := s.CloseWrite(); err != nil { // the peer reads io.EOF after msg
 		return "", err
 	}
 	reply, err := io.ReadAll(s)

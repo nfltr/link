@@ -12,10 +12,9 @@
 // to it (Serve). Every implementation keeps these rules; peerlinktest
 // checks each one.
 //
-//   - A session is a net.Conn: each direction a byte stream, in order and
-//     intact, independent of the other direction. Every session also has
-//     CloseWrite() error and Reset() error, reached by a type assertion
-//     (as with *net.TCPConn's CloseWrite).
+//   - A session is a Session: a net.Conn, each direction a byte stream, in
+//     order and intact, independent of the other direction, with
+//     CloseWrite() error and Reset() error.
 //   - Close ends the session both ways. CloseWrite ends this side's
 //     writes only: the peer reads every byte written, then io.EOF, and can
 //     still write back. Reset ends the session as failed.
@@ -52,7 +51,6 @@ package peerlink
 import (
 	"context"
 	"errors"
-	"net"
 )
 
 // Link carries byte-stream sessions between peers.
@@ -61,13 +59,13 @@ type Link interface {
 	// resolves, with header: the bytes the peer's accept receives. ctx
 	// bounds the open, not the session. A peer's refusal surfaces as
 	// Open's error or as the session's first Read error (never io.EOF).
-	Open(ctx context.Context, peer string, header []byte) (net.Conn, error)
+	Open(ctx context.Context, peer string, header []byte) (Session, error)
 	// Serve takes the sessions peers open until Drain. accept runs in a
 	// goroutine of its own for each, with the opener's name as the
 	// implementation authenticated it and the header; it owns the session
 	// and closes it (it may return first). Serve returns nil once Drain
 	// stopped it, else the error that did.
-	Serve(accept func(peer string, header []byte, s net.Conn)) error
+	Serve(accept func(peer string, header []byte, s Session)) error
 	// Drain stops the Link: no new sessions either way, open ones run to
 	// their end, then everything is released; at ctx's end the sessions
 	// still open are cut and Drain returns ctx's error. It is the only way

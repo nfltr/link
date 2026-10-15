@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/nfltr/link"
+	"github.com/nfltr/link/peerlink"
 	"github.com/nfltr/link/peerlink/peerlinktest"
 	"github.com/nfltr/link/peerlink/quiclink"
 	"github.com/quic-go/quic-go"
@@ -70,7 +71,9 @@ func TestDeadPeerSendStalled(t *testing.T) {
 		Dial: func(ctx context.Context, _ string, qc *quic.Config) (*quic.Conn, error) {
 			return tr.Dial(ctx, raddr, clientTLS("a", "b"), qc)
 		}})
-	go func() { _ = b.Serve(func(_ string, _ []byte, s net.Conn) { _, _ = io.Copy(s, s); _ = s.Close() }) }()
+	go func() {
+		_ = b.Serve(func(_ string, _ []byte, s peerlink.Session) { _, _ = io.Copy(s, s); _ = s.Close() })
+	}()
 	t.Cleanup(func() {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()

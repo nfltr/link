@@ -137,7 +137,7 @@ func TestMigration(t *testing.T) {
 				mu    sync.Mutex
 				addrs = map[string]bool{}
 			)
-			echo := func(_ string, _ []byte, s net.Conn) {
+			echo := func(_ string, _ []byte, s peerlink.Session) {
 				defer s.Close()
 				buf := make([]byte, 32<<10)
 				for {
@@ -151,7 +151,7 @@ func TestMigration(t *testing.T) {
 						}
 					}
 					if err != nil {
-						_ = s.(interface{ CloseWrite() error }).CloseWrite()
+						_ = s.CloseWrite()
 						return
 					}
 				}
@@ -165,7 +165,7 @@ func TestMigration(t *testing.T) {
 			dialling := mustNew(t, dcfg)
 			if reverse {
 				opener, peer = listener, "a"
-				go func() { _ = listener.Serve(func(_ string, _ []byte, s net.Conn) { _ = s.Close() }) }()
+				go func() { _ = listener.Serve(func(_ string, _ []byte, s peerlink.Session) { _ = s.Close() }) }()
 				go func() { _ = dialling.Serve(echo) }()
 			} else {
 				opener = dialling
@@ -195,7 +195,7 @@ func TestMigration(t *testing.T) {
 			}()
 			go func() {
 				_, _ = io.Copy(s, io.TeeReader(io.LimitReader(rand.Reader, n), sent))
-				_ = s.(interface{ CloseWrite() error }).CloseWrite()
+				_ = s.CloseWrite()
 			}()
 			start := time.Now()
 			m, err := io.Copy(got, s)
@@ -219,7 +219,7 @@ func TestListenerSettings(t *testing.T) {
 	b := mustNew(t, quiclink.Config{PacketConn: pc, TLS: serverTLS("b"), MaxSessions: 2})
 	a := mustNew(t, quiclink.Config{Dial: dialer("a", "b", pc.LocalAddr().String())})
 	go func() {
-		_ = b.Serve(func(_ string, _ []byte, s net.Conn) { _, _ = io.Copy(io.Discard, s); _ = s.Close() })
+		_ = b.Serve(func(_ string, _ []byte, s peerlink.Session) { _, _ = io.Copy(io.Discard, s); _ = s.Close() })
 	}()
 	t.Cleanup(func() {
 		ctx, cancel := context.WithCancel(context.Background())
