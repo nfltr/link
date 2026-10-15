@@ -5,6 +5,22 @@ it (`peerlink/grpclink/vX.Y.Z`, `peerlink/quiclink/vX.Y.Z`). The wire
 format is [WIRE.md](WIRE.md); every release since v0.2.0 speaks the same
 version 2 unless an entry says otherwise.
 
+## peerlink/quiclink v0.3.3 (2026-10-15)
+
+- Requires link v0.9.2. No change of its own.
+
+## v0.9.2 (2026-10-15)
+
+- Bug fix: `peerlink.Node.Open` without `Config.Dial`, when the
+  connection it picked fails the open because its writes failed (the
+  peer reset it and its reader has yet to see the end), passes on to
+  another connection, or waits for the peer's next one until ctx ends,
+  as for a connection going away. It returned the write error: a peer
+  that closed its connection and dialled again got the open on the old
+  one (relay client `TestLazyAgentLink`, 29 runs in 40 on Linux with 2
+  CPUs). Regression test: `TestOpenServedPassesABrokenConnection`.
+- No API or wire change.
+
 ## peerlink/quiclink v0.3.2 (2026-10-15)
 
 - Requires link v0.9.1 (its v0.3.1 fix is unchanged), so a build that

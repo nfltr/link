@@ -213,7 +213,7 @@ is the long fuzz run ([FUZZING.md](FUZZING.md)).
 
 ## Status and compatibility
 
-The latest release is v0.9.1; [CHANGELOG.md](CHANGELOG.md) lists every
+The latest release is v0.9.2; [CHANGELOG.md](CHANGELOG.md) lists every
 release. link is pre-1.0 and follows [semantic versioning](https://semver.org)
 as Go modules do for v0:
 
