@@ -5,6 +5,11 @@ it (`peerlink/grpclink/vX.Y.Z`, `peerlink/quiclink/vX.Y.Z`). The wire
 format is [WIRE.md](WIRE.md); every release since v0.2.0 speaks the same
 version 2 unless an entry says otherwise.
 
+## peerlink/quiclink v0.4.1 (2026-10-16)
+
+- Requires link v0.10.2. No change of its own (its tests ran on v0.10.2:
+  `make check-quiclink` replaces link with this tree).
+
 ## v0.10.2 (2026-10-16)
 
 - Bug fix: a caller of `Conn` (not `Mux`) on a `FeatureChain` connection
