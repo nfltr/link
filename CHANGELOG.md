@@ -5,6 +5,10 @@ it (`peerlink/grpclink/vX.Y.Z`, `peerlink/quiclink/vX.Y.Z`). The wire
 format is [WIRE.md](WIRE.md); every release since v0.2.0 speaks the same
 version 2 unless an entry says otherwise.
 
+## peerlink/quiclink v0.3.5 (2026-10-15)
+
+- Requires link v0.9.4. No change of its own.
+
 ## v0.9.4 (2026-10-15)
 
 - Bug fix: `Observer.SessionClose` now comes for each session still open
