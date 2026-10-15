@@ -11,6 +11,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -159,7 +160,7 @@ func TestHandshakeRefusals(t *testing.T) {
 		_, _, err := Server(context.Background(), b, Config{Auth: testToken})
 		errc <- err
 	}()
-	if _, err := Client(context.Background(), a, Config{Auth: tokenAuth("x")}); !errors.Is(err, ErrRefused) {
+	if _, err := Client(context.Background(), a, Config{Auth: tokenAuth("x")}); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "Config.Auth") {
 		t.Fatalf("client: %v", err)
 	}
 	if err := <-errc; !errors.Is(err, ErrAuth) {

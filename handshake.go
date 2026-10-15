@@ -6,6 +6,7 @@ package link
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -197,14 +198,14 @@ func Client(ctx context.Context, nc net.Conn, cfg Config) (*Conn, error) {
 		liveness: cfg.Liveness, method: method, auth: auth,
 	})
 	if _, err := nc.Write(h); err != nil {
-		return nil, fmt.Errorf("%w: sending the hello: %w (is it a link listener, and do both ends agree on TLS: both or neither?)", ErrHandshake, err)
+		return nil, fmt.Errorf("%w: sending the hello: %w (%s)", ErrHandshake, err, hint(err, dialerHint))
 	}
 	rep, err := readReplyV2(nc)
 	if err != nil {
 		if errors.Is(err, ErrRefused) || errors.Is(err, ErrVersion) {
 			return nil, err
 		}
-		return nil, fmt.Errorf("%w: reading the listener's reply: %w (is it a link listener, and do both ends agree on TLS: both or neither?)", ErrHandshake, err)
+		return nil, fmt.Errorf("%w: reading the listener's reply: %w (%s)", ErrHandshake, err, hint(err, dialerHint))
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -238,7 +239,7 @@ func Server(ctx context.Context, nc net.Conn, cfg Config) (*Conn, Identity, erro
 	defer handshake(ctx, nc)()
 	var head [len(Magic) + 1]byte
 	if _, err := io.ReadFull(nc, head[:]); err != nil {
-		return nil, Identity{}, fmt.Errorf("%w: reading the dialer's hello: %w (a dialer speaking TLS to a plaintext listener, or the other way round, or one that is not link's?)", ErrHandshake, err)
+		return nil, Identity{}, fmt.Errorf("%w: reading the dialer's hello: %w (%s)", ErrHandshake, err, hint(err, "a dialer speaking TLS to a plaintext listener, or the other way round, or one that is not link's?"))
 	}
 	if !IsHello(head[:]) {
 		return nil, Identity{}, fmt.Errorf("%w: %w: the dialer's first bytes %q are not a link hello (a TLS dialer on a plaintext listener, or not a link dialer?)", ErrHandshake, ErrFrame, head[:])
@@ -278,4 +279,25 @@ func Server(ctx context.Context, nc net.Conn, cfg Config) (*Conn, Identity, erro
 	default:
 		return nil, Identity{}, ErrFrame
 	}
+}
+
+// dialerHint is what to check when a dialer's hello fails for no TLS
+// reason: the address, or TLS on one end only.
+const dialerHint = "is it a link listener, and do both ends agree on TLS: both or neither?"
+
+// hint is what to check after a handshake failed with err: the
+// certificates when TLS refused them (this end's verification, or the
+// peer's alert), else plain.
+func hint(err error, plain string) string {
+	var verify *tls.CertificateVerificationError
+	var authority x509.UnknownAuthorityError
+	var invalid x509.CertificateInvalidError
+	var host x509.HostnameError
+	var alert tls.AlertError
+	var op *net.OpError
+	if errors.As(err, &verify) || errors.As(err, &authority) || errors.As(err, &invalid) ||
+		errors.As(err, &host) || errors.As(err, &alert) || (errors.As(err, &op) && op.Op == "remote error") {
+		return "TLS refused a certificate: does each end trust the other's CA, does the certificate name the peer (ServerName, its DNS names), has it expired?"
+	}
+	return plain
 }

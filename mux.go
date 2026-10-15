@@ -6,6 +6,7 @@ package link
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -237,9 +238,14 @@ func (m *Mux) close() {
 	m.sess = nil
 	m.mu.Unlock()
 	_ = m.c.Close() // senders waiting for credit give up
-	err := m.c.Err()
-	if err == nil {
-		err = ErrConnClosed
+	var err error
+	switch why := m.c.why(); {
+	case why == nil:
+		err = fmt.Errorf("%w; open a new session", ErrConnClosed)
+	case errors.Is(why, io.EOF): // never a session's clean end
+		err = fmt.Errorf("%w: the peer closed it (%v); open a new session", ErrConnClosed, why)
+	default:
+		err = fmt.Errorf("%w: %w; open a new session", ErrConnClosed, why)
 	}
 	for _, s := range sess {
 		s.fail(err) // a session cut with its connection never reads a clean end
@@ -288,8 +294,10 @@ func (m *Mux) Close() error { return m.c.Close() }
 
 // Session is one session of a Mux. Read and WriteTo take the peer's bytes
 // in order, then io.EOF once the peer closed the session (or its write
-// side), or the error that cut it: ErrReset (the peer's Reset), the
-// connection's (ErrDeadPeer, ErrConnClosed). Write sends on credit. A read
+// side), or the error that cut it: ErrReset (the peer's Reset), or
+// ErrConnClosed wrapping why the connection ended (ErrDeadPeer, the
+// network's error). Write sends on credit; past such an end it returns
+// io.ErrClosedPipe wrapping the same error. A read
 // deadline ends a pending Read with os.ErrDeadlineExceeded; write
 // deadlines are not supported (Close ends a session).
 type Session struct {
@@ -331,9 +339,20 @@ type pump struct {
 // ErrReset is what a session reads once the peer reset it (Reset).
 var ErrReset = errors.New("link: session reset by the peer")
 
-// ErrConnClosed is what a session reads once its connection closed with
-// no error of the link's (the network's, or Close).
+// ErrConnClosed is what a session reads once its connection closed:
+// the error wraps it and why (ErrDeadPeer, the network's error; the
+// peer's close in its text only, never as io.EOF; nothing when this side
+// closed it), and says to open a new session.
 var ErrConnClosed = errors.New("link: connection closed")
+
+// closedPipe is what a write past the session's end returns:
+// io.ErrClosedPipe, wrapping why the session was cut when it was.
+func (s *Session) closedPipe() error {
+	if e := s.err.Load(); e != nil {
+		return fmt.Errorf("%w: %w", io.ErrClosedPipe, *e)
+	}
+	return io.ErrClosedPipe
+}
 
 // fail records why the session was cut (the first reason wins).
 func (s *Session) fail(err error) { s.err.CompareAndSwap(nil, &err) }
@@ -545,7 +564,7 @@ func (s *Session) Write(b []byte) (int, error) {
 	for p := b; len(p) > 0; {
 		n := min(len(p), MaxChunk)
 		if s.closed.Load() || s.halfClosed.Load() || !s.m.c.Acquire(s.id, n) {
-			return len(b) - len(p), io.ErrClosedPipe
+			return len(b) - len(p), s.closedPipe()
 		}
 		if err := s.m.c.SendData(s.id, p[:n]); err != nil {
 			return len(b) - len(p), err
@@ -564,7 +583,7 @@ func (s *Session) WriteBuffers(bufs [][]byte) (int64, error) {
 		for p := b; len(p) > 0; {
 			n := min(len(p), MaxChunk)
 			if s.closed.Load() || s.halfClosed.Load() || !s.m.c.Acquire(s.id, n) {
-				return total, io.ErrClosedPipe
+				return total, s.closedPipe()
 			}
 			if err := s.m.c.SendData(s.id, p[:n]); err != nil {
 				return total, err

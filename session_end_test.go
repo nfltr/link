@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -181,5 +182,41 @@ func TestServerTakesAHelloWithoutFeatures(t *testing.T) {
 	}
 	if !bytes.HasPrefix(old, []byte(Magic)) {
 		t.Fatal("hello")
+	}
+}
+
+// A session cut with its connection reads ErrConnClosed saying why and
+// what to do, never io.EOF (a clean end); a write past it returns
+// io.ErrClosedPipe wrapping the same error.
+func TestSessionConnClosed(t *testing.T) {
+	for _, c := range []struct {
+		name, why string
+		closer    func(dm, lm *Mux) error
+	}{
+		{"the peer closed it", "the peer closed it", func(_, lm *Mux) error { return lm.Close() }},
+		{"this side closed it", "", func(dm, _ *Mux) error { return dm.Close() }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got := make(chan *Session, 1)
+			dm, lm := v2muxPair(t, func(_ []byte, s *Session) { got <- s }, v2cfg, v2cfg)
+			s, err := openV2(dm, "h")
+			if err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-got:
+			case <-time.After(5 * time.Second):
+				t.Fatal("no session accepted")
+			}
+			_ = c.closer(dm, lm)
+			_, err = io.ReadAll(s)
+			if !errors.Is(err, ErrConnClosed) || errors.Is(err, io.EOF) || !strings.Contains(err.Error(), c.why) || !strings.Contains(err.Error(), "open a new session") {
+				t.Fatalf("read: %v; want ErrConnClosed saying %q and to open a new session", err, c.why)
+			}
+			<-s.Done()
+			if _, err := s.Write([]byte("x")); !errors.Is(err, io.ErrClosedPipe) || !errors.Is(err, ErrConnClosed) {
+				t.Fatalf("write: %v; want io.ErrClosedPipe wrapping ErrConnClosed", err)
+			}
+		})
 	}
 }

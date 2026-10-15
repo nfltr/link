@@ -766,16 +766,21 @@ func (c *Conn) Close() error {
 	err := c.nc.Close()
 	c.downOne.Do(func() {
 		if c.obs != nil {
-			c.errMu.Lock()
-			why := c.err
-			if why == nil {
-				why = c.cause
-			}
-			c.errMu.Unlock()
-			c.obs.ConnDown(c.id, why)
+			c.obs.ConnDown(c.id, c.why())
 		}
 	})
 	return err
+}
+
+// why is what ended the connection: ErrDeadPeer, what the peer or the
+// network did (lost), or nil when this side closed it.
+func (c *Conn) why() error {
+	c.errMu.Lock()
+	defer c.errMu.Unlock()
+	if c.err != nil {
+		return c.err
+	}
+	return c.cause
 }
 
 // closeFlushed closes the connection once the frames buffered so far are

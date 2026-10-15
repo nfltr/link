@@ -28,7 +28,7 @@ const (
 
 // ErrRefused is the listener's refusal of a hello: an unknown token, or one
 // that binds no more connections.
-var ErrRefused = errors.New("link: peer refused the connection")
+var ErrRefused = errors.New("link: peer refused the connection (check the dialer's Config.Auth against what the listener accepts: its token, CertAuth's client certificate)")
 
 // CheckWindow returns w as a window, or an error when it is out of range.
 func CheckWindow(w uint32) (int, error) {

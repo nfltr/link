@@ -65,11 +65,36 @@ func TestHandshakeErrorsSayWhatToChange(t *testing.T) {
 			_ = a.Close()
 			serr := <-errc
 			for side, err := range map[string]error{"dialer": err, "listener": serr} {
-				if !errors.Is(err, ErrHandshake) || !strings.Contains(err.Error(), "TLS") {
-					t.Errorf("%s: %v, want ErrHandshake saying to check TLS", side, err)
+				if !errors.Is(err, ErrHandshake) || !strings.Contains(err.Error(), "TLS") || strings.Contains(err.Error(), "refused a certificate") {
+					t.Errorf("%s: %v, want ErrHandshake saying to check TLS on both ends", side, err)
 				}
 			}
 		})
+	}
+}
+
+// TestHandshakeCertErrorsSayCheckCertificates: when TLS refuses a
+// certificate (here the dialer does not trust the listener's CA), both
+// ends fail with ErrHandshake pointing at the certificates, not at TLS on
+// one end only.
+func TestHandshakeCertErrorsSayCheckCertificates(t *testing.T) {
+	stls, _ := selfSigned(t)
+	_, ctls := selfSigned(t) // trusts another CA
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	a, b := tcpPair(t)
+	errc := make(chan error, 1)
+	go func() {
+		_, _, err := Server(ctx, tls.Server(b, stls), Config{Auth: NoAuth})
+		_ = b.Close()
+		errc <- err
+	}()
+	_, err := Client(ctx, tls.Client(a, ctls), Config{})
+	_ = a.Close()
+	for side, err := range map[string]error{"dialer": err, "listener": <-errc} {
+		if !errors.Is(err, ErrHandshake) || !strings.Contains(err.Error(), "trust the other's CA") || strings.Contains(err.Error(), "both or neither") {
+			t.Errorf("%s: %v, want ErrHandshake saying to check the certificates", side, err)
+		}
 	}
 }
 

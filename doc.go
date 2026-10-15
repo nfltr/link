@@ -70,8 +70,10 @@
 //     sessions), [ErrGoAway] (the connection is going away); Mux.Open after
 //     Serve returned: net.ErrClosed.
 //   - Session reads: io.EOF (the peer ended its writes on purpose),
-//     [ErrReset] (the peer's Reset), [ErrDeadPeer] or [ErrConnClosed] (the
-//     connection ended under the session), os.ErrDeadlineExceeded.
+//     [ErrReset] (the peer's Reset), [ErrConnClosed] (the connection ended
+//     under the session; it wraps why, [ErrDeadPeer] among them),
+//     os.ErrDeadlineExceeded. Writes past such an end: io.ErrClosedPipe,
+//     wrapping the same error.
 //   - Config.Validate, PoolConfig.Validate, NewPool, Client, Server: a
 //     message naming the field and what to set.
 //
