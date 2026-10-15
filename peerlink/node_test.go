@@ -11,6 +11,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -390,4 +391,89 @@ func drainNow(n *peerlink.Node) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	_ = n.Drain(ctx)
+}
+
+// brokenWrites fails its writes once broken, its reads unchanged: a
+// connection the peer reset, before its reader saw the end.
+type brokenWrites struct {
+	net.Conn
+	broken *atomic.Bool
+}
+
+func (c brokenWrites) Write(b []byte) (int, error) {
+	if c.broken.Load() {
+		return 0, errors.New("write: connection reset by peer")
+	}
+	return c.Conn.Write(b)
+}
+
+// brokenListener's first connection is the one broken can break.
+type brokenListener struct {
+	net.Listener
+	broken *atomic.Bool
+	n      *atomic.Int32
+}
+
+func (l brokenListener) Accept() (net.Conn, error) {
+	nc, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	if l.n.Add(1) > 1 {
+		return brokenWrites{nc, new(atomic.Bool)}, nil
+	}
+	return brokenWrites{nc, l.broken}, nil
+}
+
+// TestOpenServedPassesABrokenConnection: Open toward a peer whose only
+// connection broke (its writes fail, its reader has not seen the end yet)
+// waits for the peer's next connection and opens there, instead of
+// failing with the broken one's error (a peer that closed its connection
+// and dials again: the agent link's lazy redial).
+func TestOpenServedPassesABrokenConnection(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var first atomic.Bool
+	a := mustNew(t, peerlink.Config{Listener: brokenListener{ln, &first, new(atomic.Int32)}, Link: link.Config{Auth: link.NameAuth("a")}})
+	go func() { _ = a.Serve(func(_ string, _ []byte, s peerlink.Session) { _ = s.Close() }) }()
+	t.Cleanup(func() { _ = a.Drain(context.Background()) })
+	dialB := func() *link.Mux {
+		nc, err := net.Dial("tcp", ln.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, err := link.Client(context.Background(), nc, link.Config{Auth: link.NameAuth("b")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := link.NewMux(c)
+		go func() {
+			_ = m.Serve(func(_ []byte, s *link.Session) { defer s.Close(); _, _ = io.Copy(s, s) })
+		}()
+		t.Cleanup(func() { _ = m.Close() })
+		return m
+	}
+	dialB()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	s, err := a.Open(ctx, "b", nil) // the first connection is up
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = s.Close()
+	first.Store(true) // its writes fail from now on; it stays served
+	opened := make(chan error, 1)
+	go func() {
+		s, err := a.Open(ctx, "b", []byte("x"))
+		if err == nil {
+			err = s.Close()
+		}
+		opened <- err
+	}()
+	dialB() // the peer's next connection
+	if err := <-opened; err != nil {
+		t.Fatalf("Open with the peer's first connection broken and a second up: %v", err)
+	}
 }

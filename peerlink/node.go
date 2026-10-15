@@ -182,10 +182,13 @@ func (n *Node) openServed(ctx context.Context, peer string, header []byte) (Sess
 		if err == nil {
 			return s, nil
 		}
-		if !errors.Is(err, link.ErrGoAway) && !errors.Is(err, link.ErrFull) && !errors.Is(err, net.ErrClosed) {
+		// It stopped taking sessions meanwhile, or its writes failed (the
+		// peer reset it; its Serve has yet to see it end): another, or the
+		// peer's next, connection may take the session.
+		if !errors.Is(err, link.ErrGoAway) && !errors.Is(err, link.ErrFull) && !errors.Is(err, net.ErrClosed) && best.Conn().Flush() == nil {
 			return nil, err
 		}
-		refused[best] = true // it stopped taking sessions meanwhile
+		refused[best] = true
 	}
 }
 
