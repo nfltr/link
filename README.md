@@ -180,7 +180,6 @@ sessions read); grpclink's are gRPC statuses.
 | package | what |
 |---|---|
 | `link` | `Client`/`Server` (the hello, an `Authenticator`'s credential, `Config`, `Observer`), `Conn` (frames, write coalescing, OPEN/CLOSE, ping liveness, GOAWAY), `Credit` (per-session flow control, also over a caller's own transport), `Mux` and `Session` (sessions as `net.Conn`s), `Pool` (several connections per peer, growth, backoff, make-before-break drain), `Liveness` and its presets |
-| `link/bytequeue` | a FIFO of byte slices bounded by total bytes; `PushWithin` for a pusher that serves other queues too |
 | `link/peerlink` | a transport-neutral API for sessions between peers (`Link`: `Open`, `Serve`, `Drain`), its contract, `Node` (an implementation over `Pool` and `Mux`) and `Listener` ([peerlink/README.md](peerlink/README.md)) |
 | `link/peerlink/peerlinktest` | the contract's conformance suite (`Run`) and the fault-injecting `Proxy` (TCP) and `UDPProxy`, for any implementation |
 | `link/examples/quickstart` | the quick start above |

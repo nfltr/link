@@ -78,7 +78,7 @@ func containsAny(sources []string, s string) bool {
 // (the nested modules' too) has a doc comment, or a line comment in its
 // group, so pkg.go.dev shows no bare name.
 func TestExportedNamesDocumented(t *testing.T) {
-	for _, dir := range []string{".", "bytequeue", "peerlink", "peerlink/peerlinktest", "peerlink/quiclink", "peerlink/grpclink"} {
+	for _, dir := range []string{".", "internal/bytequeue", "peerlink", "peerlink/peerlinktest", "peerlink/quiclink", "peerlink/grpclink"} {
 		fset := token.NewFileSet()
 		pkgs, err := parser.ParseDir(fset, dir, func(fi fs.FileInfo) bool { return !strings.HasSuffix(fi.Name(), "_test.go") }, parser.ParseComments)
 		if err != nil {

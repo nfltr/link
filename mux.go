@@ -14,7 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/nfltr/link/bytequeue"
+	"github.com/nfltr/link/internal/bytequeue"
 )
 
 // MaxSessions is the most sessions one Mux carries at once by default:
