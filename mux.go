@@ -312,6 +312,23 @@ func (m *Mux) goAway(deadline time.Time) error {
 // Close closes the connection: Serve returns and every session ends.
 func (m *Mux) Close() error { return m.c.Close() }
 
+// closeIdle closes m: once its buffered frames are written when it carries
+// no session (Close would cut the frames of sessions that ended), else at
+// once.
+func (m *Mux) closeIdle() {
+	m.mu.Lock()
+	idle, closing := len(m.sess) == 0, m.left
+	m.left = true
+	m.mu.Unlock()
+	switch {
+	case closing: // leave closes it
+	case idle:
+		go m.c.closeFlushed(m.c.live.Timeout)
+	default:
+		_ = m.Close()
+	}
+}
+
 // Session is one session of a Mux. Read and WriteTo take the peer's bytes
 // in order, then io.EOF once the peer closed the session (or its write
 // side), or the error that cut it: ErrReset (the peer's Reset), or

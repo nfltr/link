@@ -173,6 +173,12 @@ func handshake(ctx context.Context, nc net.Conn) func() {
 // it speaks; a listener of link v0.4 or older that speaks only version 1
 // closes the connection after it read 37 bytes. A refusal is ErrRefused.
 // On error the caller closes nc.
+//
+// nc should have CloseWrite() error, as *net.TCPConn and *tls.Conn have
+// (a wrapper of one passes it on): a graceful close (a drain, a Pool's
+// Close) ends nc's write side and waits for the peer's close. Without
+// it, it closes nc, and a TCP connection closed with bytes still
+// arriving resets, losing the bytes in flight to the peer.
 func Client(ctx context.Context, nc net.Conn, cfg Config) (*Conn, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -224,7 +230,8 @@ func Client(ctx context.Context, nc net.Conn, cfg Config) (*Conn, error) {
 // older) gets the version reply (status 2 and MaxVersion), which such a
 // dialer reads as a refusal, and Server returns an error that is
 // ErrVersion. A refused dialer
-// gets the refusal and Server ErrAuth. On error the caller closes nc.
+// gets the refusal and Server ErrAuth. On error the caller closes nc. nc
+// should have CloseWrite, as for Client.
 //
 // ctx bounds the handshake: give it a deadline. Without one, a dialer
 // that sends its hello slowly, or not at all, holds nc and this goroutine

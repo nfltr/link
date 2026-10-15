@@ -258,3 +258,81 @@ func TestPoolGrowsInTheBackground(t *testing.T) {
 		t.Fatalf("stats %+v", st)
 	}
 }
+
+// gatedConn holds its writes once armed, until released: the frames
+// written meanwhile wait in the link's buffer.
+type gatedConn struct {
+	*net.TCPConn
+	armed   atomic.Bool
+	entered chan struct{} // a write is held
+	release chan struct{}
+	once    sync.Once
+}
+
+func (c *gatedConn) Write(b []byte) (int, error) {
+	if c.armed.Load() {
+		c.once.Do(func() { close(c.entered) })
+		<-c.release
+	}
+	return c.TCPConn.Write(b)
+}
+
+// TestPoolCloseKeepsEndedSessionsTails: Pool.Close after a session's
+// Write and Close returned, its bytes still in the link's buffer, does
+// not cut them: the peer reads every byte, then io.EOF.
+func TestPoolCloseKeepsEndedSessionsTails(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	type result struct {
+		b   []byte
+		err error
+	}
+	got := make(chan result, 1)
+	go func() {
+		nc, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		c, _, err := Server(context.Background(), nc, v2cfg)
+		if err != nil {
+			return
+		}
+		m := NewMux(c)
+		defer m.Close()
+		_ = m.Serve(func(_ []byte, s *Session) {
+			b, err := io.ReadAll(s)
+			got <- result{b, err}
+		})
+	}()
+	gc := &gatedConn{entered: make(chan struct{}), release: make(chan struct{})}
+	p := mustPool(t, PoolConfig{Link: v2cfg, Dial: func(ctx context.Context) (net.Conn, error) {
+		nc, err := (&net.Dialer{}).DialContext(ctx, "tcp", ln.Addr().String())
+		if err != nil {
+			return nil, err
+		}
+		gc.TCPConn = nc.(*net.TCPConn)
+		return gc, nil
+	}})
+	s, err := p.Open(context.Background(), []byte("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, tail := pattern(1000, 1), pattern(1000, 2)
+	gc.armed.Store(true)
+	go func() { _, _ = s.Write(head) }() // writes inline: held
+	<-gc.entered
+	if _, err := s.Write(tail); err != nil { // buffered behind the held write
+		t.Fatal(err)
+	}
+	_ = s.Close()
+	_ = p.Close()
+	close(gc.release)
+	r := <-got
+	if r.err != nil || !bytes.Equal(r.b, append(head, tail...)) {
+		t.Fatalf("peer read %d of %d bytes (intact: %v), then %v; want every byte, then io.EOF",
+			len(r.b), len(head)+len(tail), bytes.Equal(r.b, append(head, tail...)), r.err)
+	}
+}

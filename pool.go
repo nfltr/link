@@ -389,14 +389,17 @@ func (p *Pool) Drain(ctx context.Context) error {
 	return nil
 }
 
-// Close closes every connection; Open fails from then on.
+// Close closes every connection; Open fails from then on. A connection
+// that carries no session closes once the frames already written on it
+// went out (the tails and closes of the sessions that ended there reach
+// the peer), the others at once.
 func (p *Pool) Close() error {
 	p.cancel()
 	p.mu.Lock()
 	conns := slices.Clone(p.conns)
 	p.mu.Unlock()
 	for _, m := range conns {
-		_ = m.Close()
+		m.closeIdle()
 	}
 	return nil
 }
