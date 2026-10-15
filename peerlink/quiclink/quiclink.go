@@ -366,7 +366,9 @@ type peerConns struct {
 // peer sent GOAWAY). Without Config.Dial it opens on one of the
 // connections peer dialled in (the one with the fewest sessions, not going
 // away); while peer has none, Open waits for one until ctx ends, then
-// fails with peerlink.ErrPeerUnreachable (and ctx's error).
+// fails with peerlink.ErrPeerUnreachable (and ctx's error). Toward a peer
+// whose every connection is going away (it is draining) Open fails at
+// once, with link.ErrGoAway.
 func (n *Node) Open(ctx context.Context, peer string, header []byte) (peerlink.Session, error) {
 	if len(header) > MaxHeader {
 		return nil, fmt.Errorf("quiclink: header of %d bytes, at most %d", len(header), MaxHeader)
@@ -450,7 +452,8 @@ func (n *Node) dial(ctx context.Context, peer string, p *peerConns) (*conn, erro
 }
 
 // pickServed returns the least-loaded usable connection peer dialled in,
-// waiting for one until ctx ends.
+// waiting for one until ctx ends; it refuses at once while peer's every
+// connection is going away.
 func (n *Node) pickServed(ctx context.Context, peer string) (*conn, error) {
 	for {
 		n.mu.Lock()
@@ -459,8 +462,13 @@ func (n *Node) pickServed(ctx context.Context, peer string) (*conn, error) {
 			return nil, peerlink.ErrDraining
 		}
 		var best *conn
+		leaving := false
 		for c := range n.served {
-			if c.peer == peer && c.usable() && (best == nil || c.active < best.active) {
+			if c.peer != peer || c.q.Context().Err() != nil {
+				continue
+			}
+			leaving = leaving || c.gone.Load()
+			if !c.gone.Load() && (best == nil || c.active < best.active) {
 				best = c
 			}
 		}
@@ -468,6 +476,9 @@ func (n *Node) pickServed(ctx context.Context, peer string) (*conn, error) {
 		n.mu.Unlock()
 		if best != nil {
 			return best, nil
+		}
+		if leaving {
+			return nil, fmt.Errorf("quiclink: %q is draining: %w", peer, link.ErrGoAway)
 		}
 		select {
 		case <-changed:

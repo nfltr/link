@@ -5,6 +5,35 @@ it (`peerlink/grpclink/vX.Y.Z`, `peerlink/quiclink/vX.Y.Z`). The wire
 format is [WIRE.md](WIRE.md); every release since v0.2.0 speaks the same
 version 2 unless an entry says otherwise.
 
+## peerlink/quiclink v0.3.1 (2026-10-15)
+
+- Bug fix: `Node.Open` on a Node without `Config.Dial`, toward a peer
+  whose every connection is going away (the peer drains: it sent GOAWAY
+  on the connections it dialled in), fails at once with an error that is
+  `link.ErrGoAway`. It waited for another connection until its ctx ended,
+  and a session the caller had open toward the draining peer could reach
+  the peer's drain deadline meanwhile (peerlinktest `DrainAccepter`, about
+  1 run in 130 under load). Regression test: `TestOpenTowardDrainingPeer`.
+- No API or wire change.
+
+## v0.9.1 (2026-10-15)
+
+- Bug fix: `Pool.Close` closes a connection that carries no session once
+  the frames already written on it went out (`CloseWrite`, then the
+  peer's close, as a drained connection closes); the others still close
+  at once. It closed every connection at once, cutting the tails and
+  closes of sessions that had ended: their `Write` and `Close` had
+  returned, the bytes still in the link's buffer. `peerlink.Node.Drain`
+  closes its pools so once its sessions ended: a peer read the last
+  sessions' bytes cut short (peerlinktest `DrainAccepter` on a Node that
+  dials, about 1 run in 60 under load). Regression test:
+  `TestPoolCloseKeepsEndedSessionsTails`.
+- Docs: `Client` and `Server` state that nc should have `CloseWrite`
+  (a wrapper of a `*net.TCPConn` or `*tls.Conn` passes it on): without
+  it a graceful close closes nc, and a TCP connection closed with bytes
+  still arriving resets, losing the bytes in flight to the peer.
+- No API or wire change.
+
 ## peerlink/quiclink v0.3.0 (2026-10-15)
 
 - Requires link v0.9.0. `Node.Open` returns `peerlink.Session`, and

@@ -12,6 +12,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -252,4 +253,37 @@ func mustNew(t testing.TB, cfg quiclink.Config) *quiclink.Node {
 		t.Fatal(err)
 	}
 	return n
+}
+
+// TestOpenTowardDrainingPeer: once the peer that dialled in sent GOAWAY
+// on its only connection (it drains, a session still open), Open toward
+// it fails at once with link.ErrGoAway instead of waiting for another
+// connection until its ctx ends.
+func TestOpenTowardDrainingPeer(t *testing.T) {
+	pc := listenUDP(t)
+	a := mustNew(t, quiclink.Config{PacketConn: pc, TLS: serverTLS("a"), Liveness: link.LivenessFast})
+	b := mustNew(t, quiclink.Config{Dial: dialer("b", "a", pc.LocalAddr().String()), Connect: []string{"a"}, Liveness: link.LivenessFast})
+	go func() { _ = a.Serve(func(_ string, _ []byte, s peerlink.Session) { _ = s.Close() }) }()
+	go func() {
+		_ = b.Serve(func(_ string, _ []byte, s peerlink.Session) { defer s.Close(); _, _ = io.Copy(s, s) })
+	}()
+	t.Cleanup(func() { _ = a.Drain(context.Background()) })
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	s, err := a.Open(ctx, "b", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drained := make(chan error, 1)
+	go func() { drained <- b.Drain(ctx) }()
+	for !quiclink.PeerGone(a, "b") {
+		time.Sleep(time.Millisecond)
+	}
+	if _, err := a.Open(ctx, "b", nil); !errors.Is(err, link.ErrGoAway) || ctx.Err() != nil {
+		t.Errorf("Open toward a draining peer: %v (ctx: %v), want link.ErrGoAway at once", err, ctx.Err())
+	}
+	_ = s.Close()
+	if err := <-drained; err != nil {
+		t.Errorf("Drain: %v", err)
+	}
 }
