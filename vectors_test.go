@@ -311,7 +311,7 @@ func decodeFrame(t *testing.T, name string, b []byte, inc uint32) (*vecFrame, er
 }
 
 var vectorErrs = map[string]error{
-	"ErrFrame": ErrFrame, "ErrCredit": ErrCredit, "ErrV1": ErrV1, "ErrVersion": ErrVersion, "ErrRefused": ErrRefused,
+	"ErrFrame": ErrFrame, "ErrCredit": ErrCredit, "ErrV1": errV1, "ErrVersion": ErrVersion, "ErrRefused": ErrRefused,
 }
 
 func TestWireVectors(t *testing.T) {

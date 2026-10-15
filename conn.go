@@ -53,12 +53,12 @@ const (
 const (
 	closeFull  = 0 // the sender neither sends nor takes more of the session
 	closeHalf  = 1 // the sender sends no more; it still takes the peer's
-	closeReset = 2 // as closeFull, and the session failed (FeatureReset)
+	closeReset = 2 // as closeFull, and the session failed (feature bit 0)
 )
 
 // Feature bits a side announces in its hello or reply.
 const (
-	// FeatureReset: the side reads CLOSE code 2 (a reset). A side sends
+	// featureReset: the side reads CLOSE code 2 (a reset). A side sends
 	// code 2 only to a peer that announced it, else code 0.
 	featureReset uint32 = 1 << 0
 
@@ -281,7 +281,8 @@ func (c *Conn) SendClose(sid string, half bool) error {
 }
 
 // SendReset is SendClose of the whole session saying it failed: a peer
-// that announced FeatureReset reads it as a reset, another as a close.
+// that reads CLOSE code 2 (link v0.3.0 and later) reads it as a reset,
+// an older one as a close.
 func (c *Conn) SendReset(sid string) error {
 	code := byte(closeFull)
 	if c.peerFeatures&featureReset != 0 {

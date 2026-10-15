@@ -61,7 +61,7 @@
 //     did not arrive: not a link listener, or a TLS mismatch; it wraps the
 //     network's error), [ErrFrame], ctx's error.
 //   - Server: [ErrAuth] (the Authenticator refused; it wraps Verify's
-//     error), [ErrV1] and [ErrVersion], [ErrHandshake] (with [ErrFrame] when
+//     error), [ErrVersion] (a version-1 hello among them), [ErrHandshake] (with [ErrFrame] when
 //     the first bytes are not a hello), ctx's error.
 //   - Conn.Recv, Mux.Serve: [ErrFrame], [ErrCredit], [ErrFull] (the peer
 //     broke the protocol), [ErrDeadPeer] (liveness ended the connection),
@@ -84,7 +84,7 @@
 //
 // Version 2 is the only version since v0.5.0 (version 1, the hello of a
 // bare token and opens and closes in the caller's messages, was removed;
-// a version-1 hello gets the version reply, below, and Server ErrV1).
+// a version-1 hello gets the version reply, below, and Server [ErrVersion]).
 //
 //	hello  "NFDP" version(1)=2 max_version(1) features(4) window(4)
 //	       max_sessions(4) interval_ms(4) timeout_ms(4)
@@ -102,7 +102,7 @@
 //	  type 4, close:   sid_len(1) sid code(1): 0 the sender neither sends
 //	                   nor takes more; 1 it sends no more (half-close);
 //	                   2 as 0, and the session failed (reset; only to a
-//	                   peer that announced FeatureReset)
+//	                   peer that announced feature bit 0)
 //	  type 5, ping:    8 opaque bytes
 //	  type 6, pong:    the ping's 8 bytes
 //	  type 7, goaway:  drain_ms(4, 0 = none) reason (UTF-8, at most 1024)

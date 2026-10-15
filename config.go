@@ -187,8 +187,9 @@ func (NopObserver) GoAway(Identity) {}
 
 var (
 	// ErrDeadPeer ends a connection on which nothing arrived for its
-	// liveness's interval plus timeout, a ping included.
-	ErrDeadPeer = errors.New("link: peer silent past the liveness timeout")
+	// liveness's interval plus timeout, a ping included. It is a net.Error
+	// whose Timeout() is true.
+	ErrDeadPeer error = deadPeerError{}
 	// ErrGoAway is Open's refusal on a connection that is going away
 	// (either side sent GOAWAY).
 	ErrGoAway = errors.New("link: connection going away")
@@ -200,13 +201,22 @@ var (
 	// ErrAuth is a listener's refusal of a dialer its Authenticator did
 	// not verify.
 	ErrAuth = errors.New("link: peer not authenticated")
-	// ErrV1 is a listener's refusal of a version-1 hello: a dialer of
-	// link v0.4 or older (version 1 was removed in v0.5.0).
-	ErrV1 = fmt.Errorf("link: a version-1 hello: the peer is older than link v0.5.0, which speaks only version 2: %w", ErrVersion)
 	// ErrVersion is a peer that does not speak the version asked for
 	// (VersionError says which it speaks).
 	ErrVersion = errors.New("link: wire version not supported")
 )
+
+// errV1 is a listener's refusal of a version-1 hello: a dialer of link
+// v0.4 or older (version 1 was removed in v0.5.0).
+var errV1 = fmt.Errorf("link: a version-1 hello: the peer is older than link v0.5.0, which speaks only version 2: %w", ErrVersion)
+
+// deadPeerError is ErrDeadPeer: a timeout to code that classifies errors
+// by net.Error (net/http, gRPC, retry libraries).
+type deadPeerError struct{}
+
+func (deadPeerError) Error() string   { return "link: peer silent past the liveness timeout" }
+func (deadPeerError) Timeout() bool   { return true }
+func (deadPeerError) Temporary() bool { return false }
 
 // VersionError is a listener's refusal of a hello's version: it speaks
 // versions up to Max.

@@ -651,8 +651,9 @@ func (s *Session) Close() error {
 	return nil
 }
 
-// Reset ends the session as failed: the peer reads ErrReset (a peer that
-// announced FeatureReset; else it reads a close).
+// Reset ends the session as failed: the peer reads ErrReset (a peer of
+// link v0.3.0 or later, which reads CLOSE code 2; an older one reads a
+// close).
 // Reads here end as after Close.
 func (s *Session) Reset() error {
 	s.once.Do(func() {

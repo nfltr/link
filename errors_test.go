@@ -11,6 +11,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"fmt"
 	"math/big"
 	"net"
 	"strings"
@@ -145,5 +146,18 @@ func TestNameAuthAndCertAuth(t *testing.T) {
 	id, err = CertAuth.Verify(context.Background(), tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{cert}}}, MethodNone, nil)
 	if err != nil || id.Subject != "node-2" {
 		t.Fatalf("CertAuth: %v %v", id, err)
+	}
+}
+
+// TestDeadPeerIsATimeout: ErrDeadPeer is a net.Error whose Timeout() is
+// true, also wrapped as a session reads it, and errors.Is still matches it.
+func TestDeadPeerIsATimeout(t *testing.T) {
+	wrapped := fmt.Errorf("%w: %w; open a new session", ErrConnClosed, ErrDeadPeer)
+	var ne net.Error
+	if !errors.As(wrapped, &ne) || !ne.Timeout() {
+		t.Fatalf("%v: not a net.Error with Timeout() true", wrapped)
+	}
+	if !errors.Is(wrapped, ErrDeadPeer) || !errors.Is(wrapped, ErrConnClosed) {
+		t.Fatalf("%v: errors.Is lost ErrDeadPeer or ErrConnClosed", wrapped)
 	}
 }

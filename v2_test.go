@@ -130,12 +130,12 @@ func TestHandshakeV2(t *testing.T) {
 func TestHandshakeVersionNegotiation(t *testing.T) {
 	// A version-1 hello (a dialer of link v0.4 or older) gets the version
 	// reply, which such a dialer reads as a refusal (its status is not
-	// bound), and Server returns ErrV1.
+	// bound), and Server returns ErrVersion.
 	v1 := append([]byte(Magic+"\x01"), bytes.Repeat([]byte("ab"), 16)...)
 	v1 = append(v1, 0, 4, 0, 0)
 	var out bytes.Buffer
-	if _, _, err := Server(context.Background(), bufConn{r: bytes.NewReader(v1), w: &out}, v2cfg); !errors.Is(err, ErrV1) || !errors.Is(err, ErrVersion) {
-		t.Fatalf("v1 hello: %v, want ErrV1", err)
+	if _, _, err := Server(context.Background(), bufConn{r: bytes.NewReader(v1), w: &out}, v2cfg); !errors.Is(err, ErrVersion) {
+		t.Fatalf("v1 hello: %v, want ErrVersion", err)
 	}
 	if !bytes.Equal(out.Bytes(), []byte{statusVersion, MaxVersion}) {
 		t.Fatalf("v1 hello: reply %x, want the version reply", out.Bytes())

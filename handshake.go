@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-// StatusVersion is a listener's reply to a hello whose version
+// statusVersion is a listener's reply to a hello whose version
 // it does not speak; its highest version follows.
 const statusVersion = 2
 
@@ -221,8 +221,9 @@ func Client(ctx context.Context, nc net.Conn, cfg Config) (*Conn, error) {
 // sniffed it replays it), verifies its credential with cfg.Auth, replies,
 // and returns the connection and who the dialer is. It speaks version 2
 // (MaxVersion). A version-1 hello (a dialer of link v0.4 or
-// older) gets the version reply (StatusVersion, MaxVersion), which such a
-// dialer reads as a refusal, and Server returns ErrV1. A refused dialer
+// older) gets the version reply (status 2 and MaxVersion), which such a
+// dialer reads as a refusal, and Server returns an error that is
+// ErrVersion. A refused dialer
 // gets the refusal and Server ErrAuth. On error the caller closes nc.
 //
 // ctx bounds the handshake: give it a deadline. Without one, a dialer
@@ -248,7 +249,7 @@ func Server(ctx context.Context, nc net.Conn, cfg Config) (*Conn, Identity, erro
 	switch v := int(head[len(Magic)]); {
 	case v == 1:
 		_, _ = nc.Write([]byte{statusVersion, MaxVersion})
-		return nil, Identity{}, ErrV1
+		return nil, Identity{}, errV1
 	case v == MaxVersion:
 		h, err := readHelloV2(nc)
 		if err != nil {

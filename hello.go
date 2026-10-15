@@ -12,7 +12,7 @@ import (
 // a listener that shares its port can tell the two apart.
 const Magic = "NFDP"
 
-// Status bytes of the listener's reply to a hello (StatusVersion too).
+// Status bytes of the listener's reply to a hello (statusVersion too).
 const (
 	statusBound   = 0
 	statusRefused = 1
