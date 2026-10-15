@@ -113,8 +113,8 @@ func (m *Mux) add(sid string, header []byte) (*Session, error) {
 	if len(m.sess) >= MaxSessions {
 		return nil, ErrFull
 	}
-	s := &Session{m: m, id: sid, q: bytequeue.New(m.c.window), header: header, done: make(chan struct{})}
-	s.q.OnPop(func(n int) { m.c.Consumed(sid, n) })
+	s := &Session{m: m, id: sid, q: bytequeue.New(m.c.credit.window), header: header, done: make(chan struct{})}
+	s.q.OnPop(func(n int) { m.c.credit.Consumed(sid, n) })
 	if old := m.sess[sid]; old != nil { // a peer reusing an id ends the old session
 		old.ended()
 	}
@@ -129,7 +129,7 @@ func (m *Mux) drop(s *Session) {
 	m.mu.Lock()
 	if m.sess[s.id] == s {
 		delete(m.sess, s.id)
-		m.c.Forget(s.id)
+		m.c.credit.Forget(s.id)
 	}
 	m.mu.Unlock()
 	s.ended()
@@ -563,7 +563,7 @@ func (s *Session) writeOwned(w OwnedWriter) (int64, error) {
 func (s *Session) Write(b []byte) (int, error) {
 	for p := b; len(p) > 0; {
 		n := min(len(p), MaxChunk)
-		if s.closed.Load() || s.halfClosed.Load() || !s.m.c.Acquire(s.id, n) {
+		if s.closed.Load() || s.halfClosed.Load() || !s.m.c.credit.Acquire(s.id, n) {
 			return len(b) - len(p), s.closedPipe()
 		}
 		if err := s.m.c.SendData(s.id, p[:n]); err != nil {
@@ -582,7 +582,7 @@ func (s *Session) WriteBuffers(bufs [][]byte) (int64, error) {
 	for _, b := range bufs {
 		for p := b; len(p) > 0; {
 			n := min(len(p), MaxChunk)
-			if s.closed.Load() || s.halfClosed.Load() || !s.m.c.Acquire(s.id, n) {
+			if s.closed.Load() || s.halfClosed.Load() || !s.m.c.credit.Acquire(s.id, n) {
 				return total, s.closedPipe()
 			}
 			if err := s.m.c.SendData(s.id, p[:n]); err != nil {

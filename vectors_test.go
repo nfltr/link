@@ -268,8 +268,8 @@ func decodeReply(b []byte) (*vecReply, error) {
 // their effect. Every byte must be consumed.
 func decodeFrame(t *testing.T, name string, b []byte, inc uint32) (*vecFrame, error) {
 	c := v2Conn(bufConn{r: bytes.NewReader(b), w: io.Discard})
-	c.Open(string(vecSID))
-	if inc > 0 && !c.Acquire(string(vecSID), int(inc)) { // room for the window frame's grant
+	c.Credit().Open(string(vecSID))
+	if inc > 0 && !c.Credit().Acquire(string(vecSID), int(inc)) { // room for the window frame's grant
 		t.Fatalf("%s: acquire", name)
 	}
 	f, err := c.Recv()
@@ -297,7 +297,7 @@ func decodeFrame(t *testing.T, name string, b []byte, inc uint32) (*vecFrame, er
 	case len(c.pong) == 1:
 		p := <-c.pong
 		got = &vecFrame{Type: "ping", Ping: p[:]}
-	case inc > 0 && c.Credit.sessions[string(vecSID)].n == testWindow:
+	case inc > 0 && c.credit.sessions[string(vecSID)].n == testWindow:
 		got = &vecFrame{Type: "window", SID: vecSID, Increment: inc}
 	default:
 		got = &vecFrame{Type: "pong"} // applied with no effect: no GOAWAY of this side's waits on it

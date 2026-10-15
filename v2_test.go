@@ -116,8 +116,8 @@ func TestHandshakeV2(t *testing.T) {
 	if id != (Identity{Method: "token", Subject: "agent-1"}) || c.Identity() != id {
 		t.Fatalf("identity %+v", id)
 	}
-	if c.Version() != 2 || c.Window() != 2*testWindow || c.PeerWindow() != testWindow || c.PeerMaxSessions() != 7 {
-		t.Fatalf("version %d window %d peer window %d peer max %d", c.Version(), c.Window(), c.PeerWindow(), c.PeerMaxSessions())
+	if c.Version() != 2 || c.Credit().Window() != 2*testWindow || c.Credit().PeerWindow() != testWindow || c.PeerMaxSessions() != 7 {
+		t.Fatalf("version %d window %d peer window %d peer max %d", c.Version(), c.Credit().Window(), c.Credit().PeerWindow(), c.PeerMaxSessions())
 	}
 	if c.live != LivenessFast {
 		t.Fatalf("listener liveness %v, want the dialer's", c.live)

@@ -186,7 +186,7 @@ func TestV2Golden(t *testing.T) {
 			t.Fatalf("Recv after %d frames: %v", len(surfaced), err)
 		}
 		if f.Open { // the window frame below returns credit sent meanwhile
-			dec.Acquire(f.SID, 0x8000)
+			dec.Credit().Acquire(f.SID, 0x8000)
 		}
 		surfaced = append(surfaced, f)
 	}
@@ -210,7 +210,7 @@ func TestV2Golden(t *testing.T) {
 	default:
 		t.Fatal("GOAWAY not applied")
 	}
-	if !dec.Acquire(v2Session, testWindow) {
+	if !dec.Credit().Acquire(v2Session, testWindow) {
 		t.Fatal("window frame not applied")
 	}
 }

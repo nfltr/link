@@ -49,11 +49,11 @@ func FuzzRecv(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, wire []byte) {
 		c := newTestConn(bufConn{r: bytes.NewReader(wire)}, testWindow, testWindow)
-		c.Open("7") // window frames for "7" reach the credit path
+		c.Credit().Open("7") // window frames for "7" reach the credit path
 		accepted := 0
 		for {
 			m, err := c.Recv()
-			if s := c.Credit.sessions["7"]; s != nil && s.n > testWindow { // a close frame forgets it
+			if s := c.credit.sessions["7"]; s != nil && s.n > testWindow { // a close frame forgets it
 				t.Fatalf("send credit %d past the peer's window %d", s.n, testWindow)
 			}
 			if err != nil {

@@ -134,8 +134,8 @@ func TestRecvRejectsMalformedFrames(t *testing.T) {
 func TestCreditBoundsUnacknowledgedData(t *testing.T) {
 	ca, cb := pair(t)
 	for _, sid := range []string{"slow", "other"} {
-		ca.Open(sid)
-		cb.Open(sid)
+		ca.Credit().Open(sid)
+		cb.Credit().Open(sid)
 	}
 	go func() { // cb's receive loop: frames out, window frames applied
 		for {
@@ -145,18 +145,18 @@ func TestCreditBoundsUnacknowledgedData(t *testing.T) {
 		}
 	}()
 	for range testWindow / MaxChunk {
-		if !ca.Acquire("slow", MaxChunk) {
+		if !ca.Credit().Acquire("slow", MaxChunk) {
 			t.Fatal("credit within the window refused")
 		}
 	}
 	got := make(chan bool, 1)
-	go func() { got <- ca.Acquire("slow", MaxChunk) }()
+	go func() { got <- ca.Credit().Acquire("slow", MaxChunk) }()
 	select {
 	case <-got:
 		t.Fatal("sent past the peer's window")
 	case <-time.After(50 * time.Millisecond):
 	}
-	if !ca.Acquire("other", MaxChunk) {
+	if !ca.Credit().Acquire("other", MaxChunk) {
 		t.Fatal("a full session held up another")
 	}
 
@@ -169,13 +169,13 @@ func TestCreditBoundsUnacknowledgedData(t *testing.T) {
 			}
 		}
 	}()
-	cb.Consumed("slow", testWindow/4-1)
+	cb.Credit().Consumed("slow", testWindow/4-1)
 	select {
 	case <-got:
 		t.Fatal("credit returned before a quarter window was consumed")
 	case <-time.After(50 * time.Millisecond):
 	}
-	cb.Consumed("slow", 1)
+	cb.Credit().Consumed("slow", 1)
 	select {
 	case ok := <-got:
 		if !ok {
@@ -185,16 +185,16 @@ func TestCreditBoundsUnacknowledgedData(t *testing.T) {
 		t.Fatal("consumed data returned no credit")
 	}
 
-	go func() { got <- ca.Acquire("slow", testWindow) }() // more than is left
-	ca.Forget("slow")
-	if ok := <-got; ok || ca.Acquire("slow", 1) {
+	go func() { got <- ca.Credit().Acquire("slow", testWindow) }() // more than is left
+	ca.Credit().Forget("slow")
+	if ok := <-got; ok || ca.Credit().Acquire("slow", 1) {
 		t.Fatal("a forgotten session still sends")
 	}
-	ca.Open("late")
-	if !ca.Acquire("late", testWindow) {
+	ca.Credit().Open("late")
+	if !ca.Credit().Acquire("late", testWindow) {
 		t.Fatal("a new session has no credit")
 	}
-	go func() { got <- ca.Acquire("late", 1) }()
+	go func() { got <- ca.Credit().Acquire("late", 1) }()
 	_ = ca.Close()
 	select {
 	case ok := <-got:
@@ -221,7 +221,7 @@ func TestCreditCapsMaliciousPeer(t *testing.T) {
 	}
 	recvAll := func(wire []byte, setup func(*Conn)) error {
 		c := newTestConn(bufConn{r: bytes.NewReader(wire)}, testWindow, testWindow)
-		c.Open("s")
+		c.Credit().Open("s")
 		if setup != nil {
 			setup(c)
 		}
@@ -242,7 +242,7 @@ func TestCreditCapsMaliciousPeer(t *testing.T) {
 	}{
 		"huge grant":             {wire: frameOf(typeWindow, window("s", 1<<32-1)), wantErr: true},
 		"grant on full credit":   {wire: frameOf(typeWindow, window("s", 1)), wantErr: true},
-		"grant of what was sent": {wire: frameOf(typeWindow, window("s", MaxChunk)), setup: func(c *Conn) { c.Acquire("s", MaxChunk) }},
+		"grant of what was sent": {wire: frameOf(typeWindow, window("s", MaxChunk)), setup: func(c *Conn) { c.Credit().Acquire("s", MaxChunk) }},
 		"grant for unknown sid":  {wire: frameOf(typeWindow, window("x", 1<<32-1))},
 		"data up to the window":  {wire: append(data("s", testWindow/2), data("s", testWindow/2)...)},
 		"data past the window":   {wire: append(data("s", testWindow), data("s", 1)...), wantErr: true},
@@ -258,11 +258,11 @@ func TestCreditCapsMaliciousPeer(t *testing.T) {
 	}
 	// Data a message carries is charged by the caller (Received).
 	c := newTestConn(bufConn{r: bytes.NewReader(nil)}, testWindow, testWindow)
-	c.Open("s")
-	if err := c.Received("s", testWindow); err != nil {
+	c.Credit().Open("s")
+	if err := c.Credit().Received("s", testWindow); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.Received("s", 1); !errors.Is(err, ErrCredit) {
+	if err := c.Credit().Received("s", 1); !errors.Is(err, ErrCredit) {
 		t.Fatalf("message data past the window: %v, want ErrCredit", err)
 	}
 }
@@ -281,13 +281,13 @@ func TestCreditReturnedDataIsAcceptedAgain(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := newTestConn(bufConn{r: &wire, w: io.Discard}, testWindow, testWindow)
-	c.Open("s")
+	c.Credit().Open("s")
 	for i := range 3 {
 		if _, err := c.Recv(); err != nil {
 			t.Fatalf("frame %d: %v", i, err)
 		}
 		if i == 1 {
-			c.Consumed("s", testWindow/2) // returns half a window
+			c.Credit().Consumed("s", testWindow/2) // returns half a window
 		}
 	}
 }

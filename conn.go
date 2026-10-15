@@ -129,7 +129,7 @@ type Frame struct {
 // where one carries heavy traffic, give Client or Server a net.Conn whose
 // Read goes through a bufio.Reader.
 type Conn struct {
-	*Credit
+	credit *Credit
 	nc   net.Conn
 	rhdr [5 + 1 + MaxSID + 4]byte // a header, and a window or close frame or a data frame's sid
 
@@ -175,8 +175,8 @@ type Conn struct {
 // up starts its liveness.
 func newConnV2(nc net.Conn, cfg Config, peerWindow, peerMaxSessions int, dialer bool) *Conn {
 	c := &Conn{nc: nc}
-	c.Credit = NewCredit(cfg.Window, peerWindow, c.sendWindow)
-	c.Credit.flush = c.Flush
+	c.credit = NewCredit(cfg.Window, peerWindow, c.sendWindow)
+	c.credit.flush = c.Flush
 	c.wcond.L = &c.wmu
 	c.dialer, c.peerMaxSessions, c.live = dialer, peerMaxSessions, cfg.Liveness
 	c.maxSessions = cfg.MaxSessions
@@ -190,12 +190,17 @@ func newConnV2(nc net.Conn, cfg Config, peerWindow, peerMaxSessions int, dialer 
 // up records the connection's peer and observer and reports it up.
 // The connection's liveness starts here, once they are set.
 func (c *Conn) up(obs Observer, id Identity) {
-	c.id, c.obs = id, obs
+	c.id, c.credit.obs = id, obs
 	if obs != nil {
 		obs.ConnUp(id)
 	}
 	go c.keepAlive()
 }
+
+// Credit is the connection's per-session flow control: a caller with its
+// own receive loop acquires credit before SendData (Credit.Acquire) and
+// acknowledges what it consumed (Credit.Consumed).
+func (c *Conn) Credit() *Credit { return c.credit }
 
 // Version is the connection's wire version: 2, the only one since v0.5.0.
 func (c *Conn) Version() int { return MaxVersion }
@@ -222,7 +227,7 @@ func (c *Conn) SendMsg(b []byte) error {
 }
 
 // SendData buffers sid's data as data frames, as SendMsg does. The caller
-// acquired credit for it (Acquire).
+// acquired credit for it (Credit().Acquire).
 func (c *Conn) SendData(sid string, data []byte) error {
 	if len(sid) > MaxSID {
 		return errSID
@@ -249,7 +254,7 @@ func (c *Conn) SendOpen(sid string, header []byte) error {
 		return errSID
 	case len(header) > maxHeader:
 		return errHeader
-	case c.count(byUs) >= c.peerMaxSessions:
+	case c.credit.count(byUs) >= c.peerMaxSessions:
 		return ErrFull
 	}
 	c.wmu.Lock()
@@ -260,7 +265,7 @@ func (c *Conn) SendOpen(sid string, header []byte) error {
 	if c.goingAway.Load() {
 		return ErrGoAway
 	}
-	c.open(sid, byUs)
+	c.credit.open(sid, byUs)
 	return c.frameLocked(typeOpen, sid, header)
 }
 
@@ -290,7 +295,7 @@ func (c *Conn) sendClose(sid string, code byte) error {
 		return errSID
 	}
 	if code != closeHalf {
-		c.Forget(sid)
+		c.credit.Forget(sid)
 	}
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
@@ -341,7 +346,7 @@ func (c *Conn) PeerGoAway() <-chan struct{} { return c.peerGoAway }
 func (c *Conn) GoingAway() bool { return c.goingAway.Load() }
 
 // Done is closed once the connection is closed.
-func (c *Conn) Done() <-chan struct{} { return c.closed }
+func (c *Conn) Done() <-chan struct{} { return c.credit.closed }
 
 // Err is why the connection ended when the link ended it (ErrDeadPeer),
 // else nil.
@@ -521,7 +526,7 @@ func (c *Conn) Recv() (Frame, error) {
 		}
 		if ok {
 			if n := len(f.Data); n > 0 {
-				if err := c.Received(f.SID, n); err != nil {
+				if err := c.credit.Received(f.SID, n); err != nil {
 					c.lost(err)
 					return Frame{}, err
 				}
@@ -574,7 +579,7 @@ func (c *Conn) recv() (Frame, bool, error) {
 		if err != nil {
 			return Frame{}, false, err
 		}
-		return Frame{}, false, c.Grant(sid, inc)
+		return Frame{}, false, c.credit.Grant(sid, inc)
 	case typeOpen:
 		l := int(c.rhdr[5])
 		if l > n-1 || n-1-l > maxHeader {
@@ -584,11 +589,11 @@ func (c *Conn) recv() (Frame, bool, error) {
 		if _, err := io.ReadFull(c.nc, b); err != nil {
 			return Frame{}, false, err
 		}
-		if c.count(byPeer) >= c.maxSessions {
+		if c.credit.count(byPeer) >= c.maxSessions {
 			return Frame{}, false, ErrFull // the peer ignored this side's max sessions
 		}
 		sid := string(b[:l])
-		c.open(sid, byPeer)
+		c.credit.open(sid, byPeer)
 		return Frame{SID: sid, Open: true, Header: b[l:]}, true, nil
 	case typeClose:
 		b, err := c.small(n, 2, 2+MaxSID)
@@ -601,7 +606,7 @@ func (c *Conn) recv() (Frame, bool, error) {
 		}
 		sid, half := string(b[1:1+l]), b[n-1] == closeHalf
 		if !half {
-			c.Forget(sid)
+			c.credit.Forget(sid)
 		}
 		return Frame{SID: sid, Close: true, Half: half, Reset: b[n-1] == closeReset}, true, nil
 	case typePing, typePong:
@@ -623,8 +628,8 @@ func (c *Conn) recv() (Frame, bool, error) {
 			if at := c.goAwayAt.Load(); at > 0 && int64(sent) >= at {
 				c.drainedOnce.Do(func() { close(c.drained) })
 			}
-			if rtt := time.Since(c.t0) - sent; c.obs != nil && rtt >= 0 && sent > 0 {
-				c.obs.PingRTT(rtt)
+			if rtt := time.Since(c.t0) - sent; c.credit.obs != nil && rtt >= 0 && sent > 0 {
+				c.credit.obs.PingRTT(rtt)
 			}
 		}
 		return Frame{}, false, nil
@@ -639,8 +644,8 @@ func (c *Conn) recv() (Frame, bool, error) {
 		c.goingAway.Store(true)
 		c.peerGoAwayOnce.Do(func() {
 			close(c.peerGoAway)
-			if c.obs != nil {
-				c.obs.GoAway(c.id)
+			if c.credit.obs != nil {
+				c.credit.obs.GoAway(c.id)
 			}
 		})
 		return Frame{}, false, nil
@@ -672,7 +677,7 @@ func (c *Conn) keepAlive() {
 	pingAt := time.Duration(-1)
 	for {
 		select {
-		case <-c.closed:
+		case <-c.credit.closed:
 			return
 		case b := <-c.pong:
 			c.control(typePong, b[:])
@@ -744,7 +749,7 @@ func (c *Conn) fail(err error) {
 // (ConnDown's error): the peer's close (io.EOF), a reset, a broken frame.
 func (c *Conn) lost(err error) {
 	select {
-	case <-c.closed:
+	case <-c.credit.closed:
 		return
 	default:
 	}
@@ -762,11 +767,11 @@ func (c *Conn) lost(err error) {
 // ConnDown gets why it ended: ErrDeadPeer, what the peer or the network
 // did (lost), or nil when this side closed it.
 func (c *Conn) Close() error {
-	c.Credit.Close()
+	c.credit.Close()
 	err := c.nc.Close()
 	c.downOne.Do(func() {
-		if c.obs != nil {
-			c.obs.ConnDown(c.id, c.why())
+		if c.credit.obs != nil {
+			c.credit.obs.ConnDown(c.id, c.why())
 		}
 	})
 	return err
@@ -802,7 +807,7 @@ func (c *Conn) closeFlushed(wait time.Duration) {
 	c.wmu.Unlock()
 	if cw, ok := c.nc.(interface{ CloseWrite() error }); ok && cw.CloseWrite() == nil {
 		t := time.AfterFunc(wait, func() { _ = c.Close() })
-		<-c.closed
+		<-c.credit.closed
 		t.Stop()
 		return
 	}

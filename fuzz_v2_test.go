@@ -50,8 +50,8 @@ func FuzzServerHello(f *testing.F) {
 			return
 		}
 		defer c.Close() //nolint:errcheck
-		if c.PeerWindow() < MinWindow || c.PeerWindow() > MaxWindow {
-			t.Fatalf("bound a peer window of %d", c.PeerWindow())
+		if c.Credit().PeerWindow() < MinWindow || c.Credit().PeerWindow() > MaxWindow {
+			t.Fatalf("bound a peer window of %d", c.Credit().PeerWindow())
 		}
 		if c.Version() == 2 {
 			if c.PeerMaxSessions() < 1 || c.PeerMaxSessions() > maxSessionsWire || c.live.Validate() != nil {
@@ -89,8 +89,8 @@ func FuzzClientReply(f *testing.F) {
 			}
 		case err == nil:
 			defer c.Close() //nolint:errcheck
-			if reply[0] != statusBound || reply[1] != 2 || c.PeerWindow() != int(binary.BigEndian.Uint32(reply[6:])) ||
-				c.PeerWindow() < MinWindow || c.PeerWindow() > MaxWindow {
+			if reply[0] != statusBound || reply[1] != 2 || c.Credit().PeerWindow() != int(binary.BigEndian.Uint32(reply[6:])) ||
+				c.Credit().PeerWindow() < MinWindow || c.Credit().PeerWindow() > MaxWindow {
 				t.Fatalf("bound on %x", reply)
 			}
 		}
@@ -118,15 +118,15 @@ func FuzzRecvV2(f *testing.F) {
 	addVectors(f, "frame", nil)
 	f.Fuzz(func(t *testing.T, wire []byte) {
 		c := v2Conn(bufConn{r: bytes.NewReader(wire)})
-		c.Open("7")
+		c.Credit().Open("7")
 		accepted := 0
 		for {
 			m, err := c.Recv()
-			if s := c.Credit.sessions["7"]; s != nil && s.n > testWindow {
+			if s := c.credit.sessions["7"]; s != nil && s.n > testWindow {
 				t.Fatalf("send credit %d past the peer's window", s.n)
 			}
-			if c.count(byPeer) > c.maxSessions {
-				t.Fatalf("%d sessions open by the peer, max %d", c.count(byPeer), c.maxSessions)
+			if c.Credit().count(byPeer) > c.maxSessions {
+				t.Fatalf("%d sessions open by the peer, max %d", c.Credit().count(byPeer), c.maxSessions)
 			}
 			if err != nil {
 				return
