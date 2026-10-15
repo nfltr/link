@@ -64,23 +64,70 @@ TestChainSoakShort`).
 ### Across machines: `cmd/linkhop`
 
 The same roles as separate processes, for a path whose hops are pods or
-hosts (plaintext TCP with `link.NameAuth`: a trusted network such as a
-cluster's pod network):
+hosts. By default plaintext TCP with `link.NameAuth` (a trusted network
+such as a cluster's pod network):
 
     go build -o linkhop ./soak/cmd/linkhop        # in soak/
     linkhop -role echo   -listen :7000
     linkhop -role hop    -listen :7000 -next echo:7000
     linkhop -role hop    -listen :7000 -next hop-2:7000
-    linkhop -role origin -next hop-1:7000 -duration 1h -bound 3670016 -out chain.json
+    linkhop -role origin -next hop-1:7000 -hops 2 -duration 1h -bound 3670016 -out chain.json
 
 The origin runs `-workers` echo loops of mixed sizes and measures a
 stalled far reader's in-flight bytes every `-inflight`; its JSON summary
 counts echoes, bytes, integrity failures, errors by `*link.Abort` code,
-hop and kind, and the largest in-flight measure. It exits 1 on an
-integrity failure, on no echo completed, or on an in-flight measure over
-`-bound` (links x window + hops x 256 KiB). Faults are yours (delete or
-drain a hop's pod, a NetworkPolicy): errors during them are counted,
-never fatal. `hop` and `echo` drain on SIGTERM (`-drain`, 30 s).
+hop and kind, and the largest in-flight measure, and states the path's
+`hops` (`-hops`), `transport`, `throughput_bytes_per_s` (bytes echoed
+over the run) and `echo_p50_ms` / `echo_p99_ms` (open to the echo's
+last byte, interpolated within the latency histogram's buckets). It
+exits 1 on an integrity failure, on no echo completed, or on an
+in-flight measure over `-bound` (links x window + hops x 256 KiB).
+Faults are yours (delete or drain a hop's pod, a NetworkPolicy): errors
+during them are counted, never fatal. `hop` and `echo` drain on SIGTERM
+(`-drain`, 30 s).
+
+On an untrusted network, or to soak what production runs:
+
+- `-tls-dir <dir>`: mutual TLS (`link.CertAuth`) from `ca.crt`,
+  `tls.crt` and `tls.key` in the directory, the keys of a Kubernetes
+  TLS Secret mounted there (cert-manager writes all three). One
+  certificate for every role is enough: each verifies its peer against
+  `ca.crt`, the dialer for `-tls-name` (default `-next`'s host), so the
+  certificate needs that name (a wildcard such as `*.hop.ns.svc`, say)
+  and a CommonName or DNS name.
+- `-transport quic`: the same roles over `quiclink` (UDP, the Service's
+  port with `protocol: UDP`); needs `-tls-dir`.
+
+`-metrics :9090` serves each role's Prometheus text on `/metrics`.
+Every series carries `role` (origin, hop, echo) and `hop` (`-hop-index`:
+the origin 0, hops 1..N from the origin, the echo N+1; in a StatefulSet
+pass the ordinal, e.g. from the `apps.kubernetes.io/pod-index` label
+through the downward API). `peer` is `next` (the connection this role
+dialled) or `prev` (one it accepted). A series appears at its first
+event.
+
+| metric | type | labels | what |
+|---|---|---|---|
+| `linkhop_conn_up_total` | counter | peer | connections up (handshake done) |
+| `linkhop_conn_down_total` | counter | peer, reason | connections ended: `dead_peer`, `goaway` (QUIC drained), `local`, `eof`, `error` |
+| `linkhop_goaways_total` | counter | peer | GOAWAYs received (TCP) |
+| `linkhop_sessions_opened_total`, `_closed_total` | counter | | sessions (TCP) |
+| `linkhop_sessions_open` | gauge | | sessions open now (TCP) |
+| `linkhop_credit_waits_total`, `linkhop_credit_wait_seconds_total` | counter | | senders' waits for credit (TCP) |
+| `linkhop_ping_rtt_seconds` | histogram | | pings' round trips (TCP) |
+| `linkhop_forward_events_total` | counter | event, code | hop: opened, answered, ended; `code` the `*link.Abort` code ("" clean) |
+| `linkhop_forward_bytes_total` | counter | dir | hop: bytes `in` (origin -> far) and `out` of ended joins |
+| `linkhop_goroutines`, `linkhop_open_fds`, `linkhop_heap_inuse_bytes` | gauge | | the process (FDs from /proc/self/fd or /dev/fd) |
+| `linkhop_chain_hops` | gauge | | origin: `-hops` |
+| `linkhop_echoes_total`, `linkhop_echo_bytes_total` | counter | | origin: echoes completed intact, their bytes |
+| `linkhop_integrity_failures_total` | counter | | origin: echoes that came back different |
+| `linkhop_echo_errors_total` | counter | code, hops, refused | origin: failed echoes by `*link.Abort` (`code="other"`: not an abort) |
+| `linkhop_inflight_bytes` | gauge | | origin: the last in-flight measure |
+| `linkhop_echo_seconds` | histogram | | origin: echo latency |
+
+`quiclink` has no Observer: over QUIC only the connection, forward,
+process and origin series move (connections counted from its dial and
+accept).
 
 ## What fails it
 
