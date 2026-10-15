@@ -1,0 +1,13 @@
+Incompatible changes:
+- Session: old is comparable, new is not
+Compatible changes:
+- (*Session).Abort: added
+- (*Session).AbortWith: added
+- (*Session).Accept: added
+- (*Session).AcceptPath: added
+- (*Session).Answered: added
+- (*Session).Answers: added
+- (*Session).Chain: added
+- (*Session).PathLen: added
+- (*Session).Refuse: added
+- ALPNChain: added

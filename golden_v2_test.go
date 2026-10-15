@@ -46,7 +46,7 @@ func v2Record(t *testing.T) map[string][]byte {
 	var out bytes.Buffer
 	reply := appendReplyV2(nil, replyV2{features: featureReset, window: 0x00040000, maxSessions: 512})
 	hc, err := Client(context.Background(), closingConn{bufConn{r: bytes.NewReader(reply), w: &out}},
-		Config{Window: 0x00050000, Liveness: LivenessFast, Auth: tokenAuth(v2Token)})
+		Config{Window: 0x00050000, Liveness: LivenessFast, Auth: tokenAuth(v2Token), noChain: true})
 	if err != nil {
 		t.Fatal(err)
 	}

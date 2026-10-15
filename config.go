@@ -34,6 +34,16 @@ type Config struct {
 	Auth Authenticator
 	// Observer receives the connection's events; nil is none.
 	Observer Observer
+
+	noChain bool // tests: announce what v0.9.4 did (no FeatureChain)
+}
+
+// announce is the feature bits this side announces.
+func (cfg Config) announce() uint32 {
+	if cfg.noChain {
+		return features &^ FeatureChain
+	}
+	return features
 }
 
 // MaxVersion is the highest wire version this package speaks.
@@ -161,6 +171,7 @@ type Observer interface {
 	CreditWait(time.Duration) // a sender waited this long for credit
 	PingRTT(time.Duration)    // a ping's round trip
 	GoAway(Identity)          // the peer sent GOAWAY
+	Hop(HopEvent)             // a hop of a path of joined sessions: Forward, Join (since v0.10.0)
 	nopObserver()             // NopObserver's: implementations embed it
 }
 
@@ -187,6 +198,9 @@ func (NopObserver) PingRTT(time.Duration) {}
 
 // GoAway ignores the event.
 func (NopObserver) GoAway(Identity) {}
+
+// Hop ignores the event.
+func (NopObserver) Hop(HopEvent) {}
 
 func (NopObserver) nopObserver() {}
 

@@ -36,7 +36,7 @@ func Example() {
 				Certificates: []tls.Certificate{certs["a"]},
 				RootCAs:      pool,
 				ServerName:   peer,
-				NextProtos:   []string{quiclink.ALPN},
+				NextProtos:   []string{quiclink.ALPNChain, quiclink.ALPN},
 				MinVersion:   tls.VersionTLS13,
 			}, qc)
 		},
@@ -109,7 +109,8 @@ What it costs, and when not to use it:
   big endian) and the header (up to 65535 bytes). `CloseWrite` sends FIN;
   `Close` sends FIN and stops reading (the peer's writes fail); `Reset`
   cancels both directions with code 2, so the peer reads an error, never
-  `io.EOF`. Read and write deadlines.
+  `io.EOF` (on an `ALPNChain` connection a `*link.Abort`, below). Read
+  and write deadlines.
 - Peers: a dialled connection's peer is the name `Open` was given; an
   accepted one's is `Config.ServedPeer`, else the verified client
   certificate's Subject CommonName (none: the connection is closed).
@@ -134,7 +135,21 @@ What it costs, and when not to use it:
   peer in `Config.Connect` keeps a connection to it up.
 - Settings: window per session `Config.Window` (default 1 MiB, link's),
   16 windows per connection, `Config.MaxSessions` streams per connection
-  (default 1024, link's). TLS 1.3 only, ALPN `peerlink` by default.
+  (default 1024, link's). TLS 1.3 only; a listener without NextProtos
+  offers ALPN `peerlink-chain` (`ALPNChain`), then `peerlink` (`ALPN`).
+- Chaining (v0.4.0): on a connection that negotiated `ALPNChain`
+  sessions are `peerlink.ChainSession`s (`Answers()` true) and work with
+  `peerlink.Forward` and `peerlink.Join` as link's do: an open carries
+  its `link.Chain` (hops and trace, 17 bytes before the header
+  preamble); the accepter's stream starts with its answer (accept with
+  the path's length, or a refusal with code, hops and a message of at
+  most 1024 bytes, then FIN); `Abort` resets with its code and hops
+  packed in the stream error code (QUIC carries no message), after
+  delivering what was written before it where both ends support
+  RESET_STREAM_AT (on in a Node's QUIC config). A dialler offering only
+  `ALPN`, or a v0.3 listener, gets plain sessions (`Answers()` false).
+  `TestChainQUIC*` run paths of 2 to 5 links over QUIC, and over QUIC
+  and TCP in turn.
 
 ## Checks
 

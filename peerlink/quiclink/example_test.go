@@ -53,7 +53,7 @@ func Example() {
 				Certificates: []tls.Certificate{certs["a"]},
 				RootCAs:      pool,
 				ServerName:   peer,
-				NextProtos:   []string{quiclink.ALPN},
+				NextProtos:   []string{quiclink.ALPNChain, quiclink.ALPN},
 				MinVersion:   tls.VersionTLS13,
 			}, qc)
 		},

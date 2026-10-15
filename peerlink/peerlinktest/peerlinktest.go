@@ -71,7 +71,7 @@ const Within = time.Minute
 // Pair) and Drain on both (when a case ends: with a done context); newPair
 // must not.
 func Run(t *testing.T, newPair func(t *testing.T) Pair) {
-	for _, c := range cases {
+	for _, c := range append(cases, chainCases...) {
 		t.Run(c.name, func(t *testing.T) { c.run(t, newPair) })
 	}
 	t.Run("Unreachable", func(t *testing.T) { testUnreachable(t, newPair) })

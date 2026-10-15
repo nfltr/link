@@ -153,6 +153,20 @@ toward other peers behind NAT, over the connections they dialled in,
 uses two Nodes: one with `Dial`, one without. How many connections the dialler keeps is its `Pool` setting;
 the listener cannot ask for more.
 
+## Chaining
+
+Sessions join end to end over any mix of Links (link v0.10.0,
+[README](../README.md#chaining)): `peerlink.Forward(route, cfg)` is an
+accept function that makes a Link a hop (your `Route` opens the next
+leg, on any Link), `peerlink.Join(a, b)` splices any two conns (a
+session and the TCP connection to its target, say), and
+`peerlink.ChainSession` (an optional interface: a Node's sessions over
+link v0.10.0, quiclink v0.4.0's over `ALPNChain`) answers opens and
+carries typed aborts (`*link.Abort`: code, message, which hop). The
+suite's `Chain*` cases run a path of two Pairs through a Forward hop
+(`peerlinktest.NewChainPath`) and check the typed outcomes where the
+sessions answer, the plain contract where they do not.
+
 ## Implementations
 
 | | `peerlink.Node` (this package) | `grpclink.Node` (`peerlink/grpclink`) | `quiclink.Node` (`peerlink/quiclink`) |

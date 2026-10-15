@@ -32,6 +32,10 @@ const (
 	typePing   = 5
 	typePong   = 6
 	typeGoAway = 7
+	// FeatureChain only.
+	typeAccept    = 8
+	typeAbort     = 9
+	typeChainOpen = 10
 
 	// maxData is the largest payload of one data frame; SendData splits
 	// larger.
@@ -63,8 +67,11 @@ const (
 	// code 2 only to a peer that announced it, else code 0.
 	featureReset uint32 = 1 << 0
 
-	features = featureReset // what this package announces
+	features = featureReset | FeatureChain // what this package announces
 )
+
+// traceLen is a CHAIN-OPEN's trace.
+const traceLen = 16
 
 // dataBufs holds data frames' buffers of MaxChunk bytes: a Mux session
 // returns one once its bytes were read or written on (Read, WriteTo), so a
@@ -117,7 +124,13 @@ type Frame struct {
 	Header []byte
 	Close  bool
 	Half   bool
-	Reset  bool // a close that says the session failed (code 2)
+	Reset  bool // a close that says the session failed (code 2, or an ABORT)
+	// FeatureChain connections only. Chain: an open's (CHAIN-OPEN); an
+	// accept's hops in Hops. Accept: the accepter's answer (ACCEPT).
+	// Abort: an ABORT, which also sets Close and Reset.
+	Chain  Chain
+	Accept bool
+	Abort  *Abort
 }
 
 // Conn sends and receives frames on a bound connection. One goroutine
@@ -150,7 +163,8 @@ type Conn struct {
 	dialer          bool // this side dialed: Mux picks odd session ids
 	peerMaxSessions int
 	peerFeatures    uint32
-	maxSessions     int // the peer may have this many open toward this side
+	features        uint32 // what this side announced
+	maxSessions     int    // the peer may have this many open toward this side
 	live            Liveness
 	id              Identity
 	t0              time.Time
@@ -198,6 +212,9 @@ func (c *Conn) up(obs Observer, id Identity) {
 	}
 	go c.keepAlive()
 }
+
+// chain reports whether both sides announced FeatureChain.
+func (c *Conn) chain() bool { return c.features&c.peerFeatures&FeatureChain != 0 }
 
 // Credit is the connection's per-session flow control: a caller with its
 // own receive loop acquires credit before SendData (Credit.Acquire) and
@@ -265,8 +282,14 @@ func (c *Conn) sendData(sid string, data []byte, wd *writeDeadline) error {
 // SendOpen buffers an OPEN frame for session sid, with header
 // (the opener's bytes, at most 64 KiB), and starts the session's credit.
 // It refuses a session past the peer's max sessions (ErrFull) and any on a
-// connection that is going away (ErrGoAway).
+// connection that is going away (ErrGoAway). On a FeatureChain
+// connection the frame is a CHAIN-OPEN with a zero Chain.
 func (c *Conn) SendOpen(sid string, header []byte) error {
+	return c.sendOpen(sid, header, Chain{})
+}
+
+// sendOpen is SendOpen with ch for a CHAIN-OPEN.
+func (c *Conn) sendOpen(sid string, header []byte, ch Chain) error {
 	switch {
 	case len(sid) > MaxSID:
 		return errSID
@@ -284,7 +307,35 @@ func (c *Conn) SendOpen(sid string, header []byte) error {
 		return ErrGoAway
 	}
 	c.credit.open(sid, byUs)
+	if c.chain() {
+		b := make([]byte, 0, 1+traceLen+len(header))
+		b = append(append(append(b, ch.Hops), ch.Trace[:]...), header...)
+		return c.frameLocked(typeChainOpen, sid, b, nil)
+	}
 	return c.frameLocked(typeOpen, sid, header, nil)
+}
+
+// sendAccept buffers an ACCEPT frame for sid (FeatureChain): the path
+// beyond this side is hops long.
+func (c *Conn) sendAccept(sid string, hops uint8) error {
+	if len(sid) > MaxSID {
+		return errSID
+	}
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
+	return c.frameLocked(typeAccept, sid, []byte{hops}, nil)
+}
+
+// sendAbort buffers an ABORT frame for sid (FeatureChain) and ends its
+// credit, as a reset does.
+func (c *Conn) sendAbort(sid string, a *Abort) error {
+	if len(sid) > MaxSID {
+		return errSID
+	}
+	c.credit.Forget(sid)
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
+	return c.frameLocked(typeAbort, sid, appendAbort(nil, a), nil)
 }
 
 // SendClose buffers a CLOSE frame for sid: half, the side
@@ -389,7 +440,7 @@ func (c *Conn) sendWindow(sid string, n int) {
 // then leaves the network writes to a goroutine.
 func (c *Conn) frameLocked(typ byte, sid string, body []byte, wd *writeDeadline) error {
 	n := len(body)
-	withSID := typ == typeData || typ == typeOpen || typ == typeClose
+	withSID := typ == typeData || typ == typeOpen || typ == typeClose || typ >= typeAccept
 	if withSID {
 		n += 1 + len(sid)
 	}
@@ -610,7 +661,7 @@ func (c *Conn) Recv() (Frame, error) {
 		}
 		if ok {
 			if n := len(f.Data); n > 0 {
-				if err := c.credit.Received(f.SID, n); err != nil {
+				if err := c.credit.received(f.SID, n, c.chain()); err != nil {
 					c.lost(err)
 					return Frame{}, err
 				}
@@ -664,9 +715,13 @@ func (c *Conn) recv() (Frame, bool, error) {
 			return Frame{}, false, err
 		}
 		return Frame{}, false, c.credit.Grant(sid, inc)
-	case typeOpen:
+	case typeOpen, typeChainOpen:
 		l := int(c.rhdr[5])
-		if l > n-1 || n-1-l > maxHeader {
+		fixed := 0
+		if typ == typeChainOpen {
+			fixed = 1 + traceLen
+		}
+		if (typ == typeChainOpen) != c.chain() || l > n-1-fixed || n-1-l-fixed > maxHeader {
 			return Frame{}, false, ErrFrame
 		}
 		b := make([]byte, n-1)
@@ -678,7 +733,51 @@ func (c *Conn) recv() (Frame, bool, error) {
 		}
 		sid := string(b[:l])
 		c.credit.open(sid, byPeer)
-		return Frame{SID: sid, Open: true, Header: b[l:]}, true, nil
+		f := Frame{SID: sid, Open: true, Header: b[l+fixed:]}
+		if fixed > 0 {
+			f.Chain.Hops = b[l]
+			copy(f.Chain.Trace[:], b[l+1:])
+		}
+		return f, true, nil
+	case typeAccept:
+		if !c.chain() {
+			return Frame{}, false, ErrFrame
+		}
+		b, err := c.small(n, 2, 2+MaxSID)
+		if err != nil {
+			return Frame{}, false, err
+		}
+		l := int(b[0])
+		if l != n-2 {
+			return Frame{}, false, ErrFrame
+		}
+		sid := string(b[1 : 1+l])
+		known, err := c.credit.answered(sid)
+		if err != nil || !known {
+			return Frame{}, false, err // an unknown session's: ignored
+		}
+		return Frame{SID: sid, Accept: true, Chain: Chain{Hops: b[n-1]}}, true, nil
+	case typeAbort:
+		l := int(c.rhdr[5])
+		if !c.chain() || n < 9+l || n > 9+l+MaxAbortMsg {
+			return Frame{}, false, ErrFrame
+		}
+		b := make([]byte, n-1)
+		if _, err := io.ReadFull(c.nc, b); err != nil {
+			return Frame{}, false, err
+		}
+		a, err := parseAbort(b[l:])
+		if err != nil {
+			return Frame{}, false, err
+		}
+		sid := string(b[:l])
+		if a.Refused {
+			if known, err := c.credit.answered(sid); err != nil || !known {
+				return Frame{}, false, err
+			}
+		}
+		c.credit.Forget(sid)
+		return Frame{SID: sid, Close: true, Reset: true, Abort: a}, true, nil
 	case typeClose:
 		b, err := c.small(n, 2, 2+MaxSID)
 		if err != nil {

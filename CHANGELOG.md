@@ -5,6 +5,108 @@ it (`peerlink/grpclink/vX.Y.Z`, `peerlink/quiclink/vX.Y.Z`). The wire
 format is [WIRE.md](WIRE.md); every release since v0.2.0 speaks the same
 version 2 unless an entry says otherwise.
 
+## peerlink/grpclink v0.3.1 (2026-10-16)
+
+- Requires link v0.10.0. No change of its own: its sessions do not answer
+  opens (no `peerlink.ChainSession`); `peerlink.Join` and
+  `peerlink.Forward` splice them as plain conns, and the conformance
+  suite's chain cases pass on them.
+
+## peerlink/quiclink v0.4.0 (2026-10-16)
+
+- Chaining (`peerlink.ChainSession`), negotiated per connection by ALPN:
+  a v0.4.0 listener offers `ALPNChain` (`peerlink-chain`) before `ALPN`
+  (`peerlink`) when its TLS names no protocols; a dialler offers
+  `NextProtos: []string{quiclink.ALPNChain, quiclink.ALPN}`. On such a
+  connection an open carries its `link.Chain` (hops and trace, before
+  the header preamble), the accepter answers with a reverse preamble
+  (accept with the path's length, or a refusal with code, hops and
+  message, then FIN), and a reset carries its code and hops in the stream
+  error code (QUIC carries no message). A connection that negotiated
+  `ALPN` (a v0.3 peer, or a dialler offering only it) is unchanged:
+  `Answers()` is false.
+- Resets deliver the bytes written before them where both ends support
+  RESET_STREAM_AT (`quic.Config.EnableStreamResetPartialDelivery`, now on
+  in a Node's QUIC config).
+- A write after the peer's `Close` returns an error matching
+  `io.ErrClosedPipe` (still wrapping the `*quic.StreamError`).
+- `Open` reads the `link.Chain` its ctx carries (`link.ContextWithChain`).
+- New: `FuzzAnswer` (the answer's decoder); tests: paths of 2 to 5 links
+  over QUIC and over QUIC and TCP in turn, with refusals at each hop, a
+  killed middle hop and aborts (`TestChainQUIC*`), the conformance suite
+  with and without `ALPNChain`.
+- API: `ALPNChain`; `Session` gains the `peerlink.ChainSession` methods
+  (`Answers`, `Accept`, `AcceptPath`, `Refuse`, `Abort`, `AbortWith`,
+  `Answered`, `Chain`, `PathLen`) and its own `Read` and `Write`. The
+  `Session` struct is no longer comparable (apidiff's one incompatible
+  change: sessions are used as pointers, never compared by value).
+- Requires link v0.10.0.
+
+## v0.10.0 (2026-10-16)
+
+Chaining ([docs/design/chaining.md](docs/design/chaining.md), README
+"Chaining"): sessions joined end to end, with answers and typed aborts.
+
+- Wire: feature bit 1, `FeatureChain`, in version 2 (WIRE.md section
+  12): frames accept (8), abort (9: refuse or reset, code, hops,
+  message of at most 1024 bytes) and chain-open (10: hops, a 16-byte
+  trace, the header). Every v0.10.0 side announces it; a connection
+  where either side lacks it is byte for byte v0.9.4's
+  (`testdata/v2_session.golden` unchanged). New:
+  `testdata/v2_chain_session.golden`, 25 wire vectors.
+- New API: `Join(a, b *Session)`; `Forward(Route, ForwardConfig)`,
+  `Route`, `ForwardConfig` (`MaxHops`, `AnswerTimeout`, `Observer`),
+  `DefaultMaxHops`; `Mux.OpenChain`; `Session.Answered`, `Answers`,
+  `Chain`, `PathLen`, `Accept`, `AcceptPath`, `Refuse`, `Abort`,
+  `AbortWith`; `Abort` (the error type), `ErrOpenRefused`,
+  `ErrNoAnswers`, the `Code*` constants, `MaxAbortMsg`; `Trace`, `Chain`,
+  `ContextWithChain`, `ChainFromContext`; `FeatureChain`; `HopEvent`,
+  `HopKind` (`HopOpened`, `HopAnswered`, `HopEnded`); `Frame.Chain`,
+  `Frame.Accept`, `Frame.Abort`. `Observer` gains `Hop(HopEvent)`
+  (implementations embed `NopObserver` and compile unchanged).
+- Behaviour on a `FeatureChain` connection: every open is a chain-open
+  (`Mux.Open` picks a random trace); the accepter answers before its
+  first frame (`Accept`, or its first `Write`, `WriteBuffers`,
+  `CloseWrite` or `Close`): an accepter that only reads and never
+  answers leaves the opener's `Answered` waiting (call `Accept`). A `Mux`
+  refuses an open it does not take with an abort refuse
+  (`CodeRefused`; `CodeDraining` after a GOAWAY), which the opener reads
+  as an `*Abort` matching both `ErrOpenRefused` and `ErrReset` (v0.9
+  callers testing `ErrReset` keep working). A drain's deadline aborts
+  the sessions still open with `CodeDrainDeadline` before it closes the
+  connection. `Pool.Open` and `peerlink.Node.Open` open with the
+  `Chain` their ctx carries.
+- `Session.WriteTo` and `Pump` into a writer with `WriteBuffers` (a
+  `Session`) write each batch with one flush.
+- peerlink: `ChainSession` (an optional interface: `link.Session` and a
+  Node's sessions implement it), `Join(a, b net.Conn)` (any two conns:
+  `link.Join` for two native sessions, else copies with `Pump` where it
+  can, half closes passed on, an error passed on as `AbortWith`, `Reset`
+  or a TCP RST), `Route`, `Forward`. `Node` refuses sessions peers open
+  on its dialled connections while draining with `CodeDraining` (before
+  `Serve`: `CodeRefused`), and passes its `Drain` ctx's deadline to its
+  accepted connections, which abort their sessions with
+  `CodeDrainDeadline` at it.
+- peerlinktest: the chain cases (`ChainAccept`, `ChainRefuse`,
+  `ChainAbortFar`, `ChainAbortOrigin`, `ChainHalfClose`,
+  `ChainDrainMiddle`) run by `Run` on a path of two Pairs and a
+  `peerlink.Forward` hop (`NewChainPath`, `ChainPath`); typed outcomes
+  are checked where the sessions answer.
+- Tests: N-hop paths (1 to 5 links) over TCP, TLS and both with a
+  killed hop, a black-holed link, a stalled far reader (the in-flight
+  bound), half closes both ways, refusals at each hop (Route, MaxHops
+  loop, drain), resets with codes, a drain at a middle hop, legs without
+  `FeatureChain`, a random property test (`TestChain*`); against a
+  v0.9.4 peer built from the module cache, both directions
+  (`TestChainAgainstV094`); fuzz: `FuzzRecvV2` and `FuzzMuxServeV2`
+  also on `FeatureChain` connections, new `FuzzForward`; benchmarks
+  `BenchmarkChainThroughput`, `BenchmarkChainLatency`,
+  `BenchmarkChainOpen`, `TestChainIdleCost` (README "Chaining").
+- soak: the `chain-3hop` config (origin, two Forward hops, an echo;
+  cut, in-flight bound, then a hop killed, drained or black-holed in
+  rotation) and `cmd/linkhop`, the same roles as separate processes for
+  a run across machines or pods (SOAK.md, "Chains").
+
 ## peerlink/quiclink v0.3.5 (2026-10-15)
 
 - Requires link v0.9.4. No change of its own.

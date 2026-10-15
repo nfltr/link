@@ -63,6 +63,7 @@ type sessionCredit struct {
 	held     int           // received and not yet acknowledged: at most the window
 	consumed int           // left the buffer, not yet acknowledged
 	by       int           // byCaller, byUs or byPeer
+	answered bool          // byUs on a FeatureChain connection: the peer's ACCEPT or refusal came
 }
 
 // NewCredit returns the credit of a connection whose side buffers window
@@ -244,18 +245,42 @@ func (c *Credit) Consumed(sid string, n int) {
 // a Conn does for data frames, a caller for data it carries otherwise.
 // Data of a session this side does not know is not buffered by anyone and
 // is not charged.
-func (c *Credit) Received(sid string, n int) error {
+func (c *Credit) Received(sid string, n int) error { return c.received(sid, n, false) }
+
+// received is Received; answers: data on a session this side opened is
+// ErrFrame before the peer's answer (FeatureChain).
+func (c *Credit) received(sid string, n int, answers bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	s := c.sessions[sid]
 	if s == nil {
 		return nil
 	}
+	if answers && s.by == byUs && !s.answered {
+		return ErrFrame
+	}
 	if n > c.window-s.held {
 		return ErrCredit
 	}
 	s.held += n
 	return nil
+}
+
+// answered records the peer's answer (ACCEPT, or ABORT refuse) to sid:
+// known is false for a session this side does not know (the frame is
+// ignored); ErrFrame for one it did not open, or a second answer.
+func (c *Credit) answered(sid string) (known bool, err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	s := c.sessions[sid]
+	switch {
+	case s == nil:
+		return false, nil
+	case s.by != byUs || s.answered:
+		return true, ErrFrame
+	}
+	s.answered = true
+	return true, nil
 }
 
 // Grant adds a window update's bytes to sid's credit, which never exceeds

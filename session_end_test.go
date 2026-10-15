@@ -177,7 +177,7 @@ func TestServerTakesAHelloWithoutFeatures(t *testing.T) {
 		t.Fatalf("features %x", c.peerFeatures)
 	}
 	rep, err := readReplyV2(a)
-	if err != nil || rep.features != featureReset {
+	if err != nil || rep.features != features {
 		t.Fatalf("reply %+v, %v", rep, err)
 	}
 	if !bytes.HasPrefix(old, []byte(Magic)) {

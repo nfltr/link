@@ -1,7 +1,8 @@
 # Chaining links (design, 2026-10-16)
 
-Status: design, decided; not implemented. Target: link v0.10.0,
-peerlink/quiclink v0.4.0.
+Status: implemented in link v0.10.0 and peerlink/quiclink v0.4.0
+(2026-10-16); section 12 lists where the implementation differs from
+this design and the measured numbers.
 
 A link connects two points. A longer path is links joined end to end:
 `origin -> hop 1 -> hop 2 -> ... -> far end`, each arrow its own
@@ -497,3 +498,73 @@ the in-process N-hop builder in root `_test.go` files.
 - **v1.0:** the peerlink contract is unchanged (an optional interface,
   ctx values), so chaining does not restart the "contract unchanged for
   two minor releases" clock in the README's maturity table.
+
+## 12. Implemented in v0.10.0
+
+Everything above, with these differences (each found while implementing
+it, none a change of direction):
+
+- **Hop-aware answers in the API.** `Forward` passes answers back with
+  the path's hop counts, so `*link.Session` exports the forms it uses:
+  `AcceptPath(pathLen)` (Accept is `AcceptPath(0)`) and
+  `AbortWith(*Abort)` (Refuse and Abort set Refused, Code and Msg; a hop
+  sets Hops). `peerlink.ChainSession` includes them, and `Answers()` and
+  `PathLen()`, so that `peerlink.Forward` works over any implementation
+  (quiclink's sessions implement it).
+- **`ForwardConfig.Observer`**: `peerlink.Forward` has no connection
+  whose Observer it could use; `link.Forward` falls back to the inbound
+  session's connection's.
+- **A refusal matches `ErrReset` too** (`errors.Is`), so that callers of
+  v0.9 that tested a refused open with `ErrReset` keep working; it also
+  matches `ErrOpenRefused`.
+- **A Route's `ErrGoAway` (or `peerlink.ErrDraining`) is refused
+  `CodeDraining`**: a hop's next leg that is going away is a drain, not
+  a missing route.
+- **`Join` answers** a session the peer opened that is not answered
+  yet; `Forward` does not (it answers with the onward answer), and the
+  accepter's reads never answer: a far end that only reads calls
+  `Accept`.
+- **Drain deadline**: `Mux.Drain` (its deadline or its ctx's end) aborts
+  the sessions still open with `CodeDrainDeadline` before it closes,
+  writing the aborts for at most a second. `peerlink.Node.Drain` passes
+  its ctx's deadline to its accepted connections, which do so; the
+  sessions on connections it dialled end with the connection
+  (`CodeConnLost` beside them).
+- **quiclink**: the accept is two bytes (kind 0 and the path's length);
+  a reset sets a reliable boundary first (RESET_STREAM_AT, enabled in a
+  Node's QUIC config) so the bytes written before an Abort arrive, as on
+  link; a write refused by the peer's Close matches `io.ErrClosedPipe`
+  (a clean full close for `peerlink.Join`). A listener without
+  NextProtos offers `peerlink-chain`, then `peerlink`.
+- **peerlinktest**: the chain cases run inside `Run` on two Pairs
+  (`NewChainPath`, `ChainPath`: origin -> Forward hop -> far end),
+  checking the typed outcomes where the sessions answer and the plain
+  contract where they do not (grpclink). QUIC carries no reset message,
+  and a QUIC reset may discard undelivered bytes on a peer without
+  RESET_STREAM_AT, so those two checks allow it.
+- **The in-flight bound** holds as designed: a stalled far reader holds
+  at most the links' windows plus one 256 KiB batch per hop
+  (`TestChainStalledFarReader`, 1-4 links; the chain soak, 3 links, 3.3-3.5
+  MiB of a 3.5 MiB bound).
+- **Benchmarks** are recorded in the README ("Chaining") rather than
+  compare/README.md, which compares link with yamux.
+- **Soak**: the `chain-3hop` config and `soak/cmd/linkhop` (the same
+  roles as processes, for a run across pods) are in the soak module
+  (SOAK.md, "Chains").
+
+### Measured (Apple M5, 10 CPUs, a shared host under load; TCP loopback, in process)
+
+| Forward hops | links | MB/s, 1 session | MB/s, 32 sessions | 64 B echo round trip, µs | OpenChain -> Answered, µs |
+|---:|---:|---:|---:|---:|---:|
+| 0 | 1 | 1,812 | 1,922 | 55 | 27 |
+| 1 | 2 | 2,433 | 1,708 | 205 | 55 |
+| 2 | 3 | 1,256 | 2,434 | 321 | 112 |
+| 4 | 5 | 1,725 | 1,173 | 505 | 220 |
+
+Medians of three runs (`go test -run '^$' -bench BenchmarkChain -benchmem -count 3`;
+8 MiB per session; a shared host, load average 14-26 on 10 CPUs, so the
+spread between runs is wide). A joined session at rest holds
+0 goroutines and about 7.0 KiB of heap for its three
+sessions and joint (origin, one Forward hop, far end; `TestChainIdleCost`,
+200 sessions). In-flight bytes for a stalled far reader stay within the
+links' windows plus 256 KiB per hop (`TestChainStalledFarReader`).

@@ -67,11 +67,19 @@ type vecFrame struct {
 	Ping      hexBytes `json:"ping,omitempty"`     // ping, pong
 	DrainMS   uint32   `json:"drain_ms,omitempty"` // goaway
 	Reason    string   `json:"reason,omitempty"`   // goaway
+	Hops      uint8    `json:"hops,omitempty"`     // accept, abort, chain-open
+	Trace     hexBytes `json:"trace,omitempty"`    // chain-open
+	Kind      string   `json:"kind,omitempty"`     // abort: refuse or reset
+	AbortCode uint32   `json:"abort_code,omitempty"`
+	Msg       string   `json:"msg,omitempty"` // abort
 }
 
 type wireVector struct {
-	Name  string    `json:"name"`
-	Kind  string    `json:"kind"` // hello, reply, frame
+	Name string `json:"name"`
+	Kind string `json:"kind"` // hello, reply, frame
+	// Chain: a frame decoded on a FeatureChain connection where this side
+	// opened session 01 and has no answer yet.
+	Chain bool      `json:"chain,omitempty"`
 	Hello *vecHello `json:"hello,omitempty"`
 	Reply *vecReply `json:"reply,omitempty"`
 	Frame *vecFrame `json:"frame,omitempty"`
@@ -83,6 +91,17 @@ type wireVector struct {
 
 // vecSID is the session the frame decoder knows (open, full credit).
 var vecSID = hexBytes{0x01}
+
+// traceVec is the vectors' trace.
+var traceVec = Trace{0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff}
+
+// chainConn makes c a FeatureChain connection on which this side opened
+// vecSID (no answer yet).
+func chainConn(c *Conn) *Conn {
+	c.features, c.peerFeatures = features, features
+	c.credit.open(string(vecSID), byUs)
+	return c
+}
 
 func h2(f func(*vecHello)) *vecHello {
 	h := &vecHello{MaxVersion: 2, Features: featureReset, Window: 1 << 20, MaxSessions: 1024, IntervalMS: 5000, TimeoutMS: 10000, AuthMethod: MethodToken, Auth: hexBytes("token")}
@@ -155,6 +174,29 @@ func wireVectors() []wireVector {
 		{Name: "pong-long", Kind: "frame", Invalid: "ErrFrame", Hex: cat(be(9), []byte{typePong, 1, 2, 3, 4, 5, 6, 7, 8, 9})},
 		{Name: "goaway-short", Kind: "frame", Invalid: "ErrFrame", Hex: cat(be(3), []byte{typeGoAway, 0, 0, 0})},
 		{Name: "goaway-reason-too-long", Kind: "frame", Invalid: "ErrFrame", Hex: cat(be(4+maxReason+1), []byte{typeGoAway, 0})},
+
+		// FeatureChain (bit 1): frames 8-10.
+		{Name: "accept", Kind: "frame", Chain: true, Frame: &vecFrame{Type: "accept", SID: vecSID, Hops: 2}},
+		{Name: "abort-refuse", Kind: "frame", Chain: true, Frame: &vecFrame{Type: "abort", SID: vecSID, Kind: "refuse", AbortCode: CodeHopLimit, Hops: 1, Msg: "hop limit"}},
+		{Name: "abort-reset", Kind: "frame", Chain: true, Frame: &vecFrame{Type: "abort", SID: vecSID, Kind: "reset", AbortCode: CodeApp + 7}},
+		{Name: "chain-open", Kind: "frame", Chain: true, Frame: &vecFrame{Type: "chain-open", SID: hexBytes("\x02"), Hops: 3, Trace: hexBytes(traceVec[:]), Header: hexBytes("agent\x00localhost:22")}},
+		{Name: "chain-open-no-header", Kind: "frame", Chain: true, Frame: &vecFrame{Type: "chain-open", SID: hexBytes("\x04"), Trace: hexBytes(traceVec[:])}},
+
+		{Name: "accept-without-feature", Kind: "frame", Invalid: "ErrFrame", Hex: cat(be(3), []byte{typeAccept, 1, 1, 0})},
+		{Name: "abort-without-feature", Kind: "frame", Invalid: "ErrFrame", Hex: cat(be(10), []byte{typeAbort, 1, 1, 1}, be(0), []byte{0, 0, 0})},
+		{Name: "chain-open-without-feature", Kind: "frame", Invalid: "ErrFrame", Hex: cat(be(19), []byte{typeChainOpen, 1, 3, 0}, traceVec[:])},
+		{Name: "open-on-chain-connection", Kind: "frame", Chain: true, Invalid: "ErrFrame", Hex: cat(be(2), []byte{typeOpen, 1, 3})},
+		{Name: "accept-short", Kind: "frame", Chain: true, Invalid: "ErrFrame", Hex: cat(be(2), []byte{typeAccept, 1, 1})},
+		{Name: "accept-long", Kind: "frame", Chain: true, Invalid: "ErrFrame", Hex: cat(be(4), []byte{typeAccept, 1, 1, 0, 0})},
+		{Name: "accept-twice", Kind: "frame", Chain: true, Invalid: "ErrFrame", Hex: cat(be(3), []byte{typeAccept, 1, 1, 0}, be(3), []byte{typeAccept, 1, 1, 0})},
+		{Name: "data-before-accept", Kind: "frame", Chain: true, Invalid: "ErrFrame", Hex: cat(be(3), []byte{typeData, 1, 1, 'x'})},
+		{Name: "refuse-after-accept", Kind: "frame", Chain: true, Invalid: "ErrFrame", Hex: cat(be(3), []byte{typeAccept, 1, 1, 0}, be(10), []byte{typeAbort, 1, 1, 0}, be(0), []byte{0, 0, 0})},
+		{Name: "abort-kind-2", Kind: "frame", Chain: true, Invalid: "ErrFrame", Hex: cat(be(10), []byte{typeAbort, 1, 1, 2}, be(0), []byte{0, 0, 0})},
+		{Name: "abort-msg-length-mismatch", Kind: "frame", Chain: true, Invalid: "ErrFrame", Hex: cat(be(11), []byte{typeAbort, 1, 1, 1}, be(0), []byte{0, 0, 2, 'x'})},
+		{Name: "abort-msg-too-long", Kind: "frame", Chain: true, Invalid: "ErrFrame", Hex: cat(be(10+MaxAbortMsg+1), []byte{typeAbort, 1, 1, 1}, be(0), []byte{0, 0x04, 0x01}, bytes.Repeat([]byte{'x'}, MaxAbortMsg+1))},
+		{Name: "abort-msg-not-utf8", Kind: "frame", Chain: true, Invalid: "ErrFrame", Hex: cat(be(11), []byte{typeAbort, 1, 1, 1}, be(0), []byte{0, 0, 1, 0xff})},
+		{Name: "chain-open-short", Kind: "frame", Chain: true, Invalid: "ErrFrame", Hex: cat(be(10), []byte{typeChainOpen, 1, 3, 0}, traceVec[:7])},
+		{Name: "chain-open-header-too-long", Kind: "frame", Chain: true, Invalid: "ErrFrame", Hex: cat(be(2+1+traceLen+maxHeader+1), []byte{typeChainOpen, 0})},
 	}
 }
 
@@ -185,9 +227,18 @@ func (v wireVector) encode(t *testing.T) hexBytes {
 	}
 	var out bytes.Buffer
 	c := v2Conn(bufConn{w: &out})
+	if v.Chain {
+		chainConn(c)
+	}
 	f, sid := v.Frame, string(v.Frame.SID)
 	var err error
 	switch f.Type {
+	case "accept":
+		err = c.sendAccept(sid, f.Hops)
+	case "abort":
+		err = c.sendAbort(sid, &Abort{Refused: f.Kind == "refuse", Code: f.AbortCode, Hops: f.Hops, Msg: f.Msg})
+	case "chain-open":
+		err = c.sendOpen(sid, f.Header, Chain{Hops: f.Hops, Trace: Trace(f.Trace)})
 	case "data":
 		c.wmu.Lock() // SendData sends nothing for no bytes; the wire allows an empty data frame
 		err = c.frameLocked(typeData, sid, f.Payload, nil)
@@ -266,9 +317,13 @@ func decodeReply(b []byte) (*vecReply, error) {
 // decodeFrame reads one frame on a connection where session vecSID is
 // open with its full credit; the frames Recv applies are read back from
 // their effect. Every byte must be consumed.
-func decodeFrame(t *testing.T, name string, b []byte, inc uint32) (*vecFrame, error) {
+func decodeFrame(t *testing.T, name string, b []byte, inc uint32, chain bool) (*vecFrame, error) {
 	c := v2Conn(bufConn{r: bytes.NewReader(b), w: io.Discard})
-	c.Credit().Open(string(vecSID))
+	if chain {
+		chainConn(c)
+	} else {
+		c.Credit().Open(string(vecSID))
+	}
 	if inc > 0 && !c.Credit().Acquire(string(vecSID), int(inc)) { // room for the window frame's grant
 		t.Fatalf("%s: acquire", name)
 	}
@@ -278,6 +333,16 @@ func decodeFrame(t *testing.T, name string, b []byte, inc uint32) (*vecFrame, er
 	}
 	var got *vecFrame
 	switch {
+	case err == nil && f.Accept:
+		got = &vecFrame{Type: "accept", SID: hexBytes(f.SID), Hops: f.Chain.Hops}
+	case err == nil && f.Abort != nil:
+		kind := "reset"
+		if f.Abort.Refused {
+			kind = "refuse"
+		}
+		got = &vecFrame{Type: "abort", SID: hexBytes(f.SID), Kind: kind, AbortCode: f.Abort.Code, Hops: f.Abort.Hops, Msg: f.Abort.Msg}
+	case err == nil && f.Open && chain:
+		got = &vecFrame{Type: "chain-open", SID: hexBytes(f.SID), Hops: f.Chain.Hops, Trace: f.Chain.Trace[:], Header: f.Header}
 	case err == nil && f.Open:
 		got = &vecFrame{Type: "open", SID: hexBytes(f.SID), Header: f.Header}
 	case err == nil && f.Close:
@@ -303,8 +368,10 @@ func decodeFrame(t *testing.T, name string, b []byte, inc uint32) (*vecFrame, er
 		got = &vecFrame{Type: "pong"} // applied with no effect: no GOAWAY of this side's waits on it
 	}
 	if err == nil {
-		if _, err := c.Recv(); !errors.Is(err, io.EOF) {
-			t.Fatalf("%s: bytes left after the frame: %v", name, err)
+		if _, err := c.Recv(); err == nil {
+			t.Fatalf("%s: bytes left after the frame", name)
+		} else if !errors.Is(err, io.EOF) {
+			return nil, err // a second frame the first makes invalid
 		}
 	}
 	return got, nil
@@ -362,7 +429,7 @@ func TestWireVectors(t *testing.T) {
 				if v.Frame != nil {
 					inc = v.Frame.Increment
 				}
-				got, err = decodeFrame(t, v.Name, v.Hex, inc)
+				got, err = decodeFrame(t, v.Name, v.Hex, inc, v.Chain)
 			default:
 				t.Fatalf("kind %q", v.Kind)
 			}

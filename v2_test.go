@@ -79,7 +79,7 @@ func v2pair(t *testing.T, dialer, listener Config) (*Conn, *Conn) {
 	return cc, s.c
 }
 
-func tcpPair(t *testing.T) (net.Conn, net.Conn) {
+func tcpPair(t testing.TB) (net.Conn, net.Conn) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -283,7 +283,7 @@ func TestObserverSessionsClosedWithConn(t *testing.T) {
 	}
 }
 
-func waitUntil(t *testing.T, cond func() bool) {
+func waitUntil(t testing.TB, cond func() bool) {
 	t.Helper()
 	for deadline := time.Now().Add(5 * time.Second); !cond(); time.Sleep(5 * time.Millisecond) {
 		if time.Now().After(deadline) {

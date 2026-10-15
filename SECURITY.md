@@ -102,16 +102,55 @@ within the liveness interval, before any session): a listener that is
 shutting down does not cause a reconnect storm
 (`TestPoolBacksOffRefusingPeer`).
 
+## Chaining (`FeatureChain`, v0.10.0)
+
+Sessions joined end to end (`Join`, `Forward`; WIRE.md section 12) pass
+through hops, each of which is a transport, not a party the ends can
+trust:
+
+- **Authentication stays per link.** Each connection keeps its own
+  `Authenticator` and TLS; a hop knows its neighbours, never the origin
+  unless the header says so (sign it in the application if that
+  matters). The 16-byte trace id is for correlating logs: not a secret,
+  not an authenticator.
+- **A hop sees and can change everything it carries**: the header, the
+  trace and hop count, sizes and timing, the bytes (unless the ends
+  encrypt), and the answers. It can refuse, delay, reset with any code,
+  forge an accept or an abort, rewrite the header or the bytes. A forged
+  refusal or abort is a denial of service; a forged accept is caught by
+  end-to-end TLS inside the session (a pinned certificate), which is
+  the way to make a path confidential and authentic. link does no
+  end-to-end encryption.
+- **Bounded per hop.** A chain-open's path data is 17 fixed bytes (a
+  counter, not a list); an abort's message at most 1024 bytes of UTF-8
+  (`FuzzRecvV2`, `FuzzAnswer` check the decoders); a forwarded session
+  holds at most its two windows and two 256 KiB write batches at a hop,
+  and each side counts against its own connection's `MaxSessions`
+  (`TestChainStalledFarReader`). A routing loop costs at most
+  `ForwardConfig.MaxHops` joins (default 8, `TestChainMaxHops`); an open
+  that is never answered holds its hop until `AnswerTimeout` (set one
+  where the next leg is not trusted to answer) or until the origin gives
+  up. `FuzzForward` drives a Forward hop with arbitrary frames.
+- **A peer's answers are checked**: a second accept, an accept from the
+  opener, a refusal after an accept, or data before the accept ends the
+  connection (`ErrFrame`).
+
 ## peerlink, grpclink, quiclink
 
 `peerlink.Node` inherits link's guarantees and bounds each accepted
 connection's handshake by its dead-peer bound. `quiclink` uses QUIC's
 TLS 1.3 (0-RTT off: its data can be replayed); a stream's header preamble
 is read under the dead-peer bound and is at most 64 KiB
-(`FuzzPreamble`). `grpclink` leaves transport security and peer naming to
+(`FuzzPreamble`); an ALPNChain answer is at most 1032 bytes and its
+message valid UTF-8 (`FuzzAnswer`). `grpclink` leaves transport security and peer naming to
 gRPC's credentials and `Config.Identify`.
 
 ## Review record
+
+2026-10-16, v0.10.0: the chaining threat model above (hops as
+transports, answers forgeable by a hop, bounds on path data, abort
+messages, in-flight bytes per hop and routing loops), with fuzz targets
+for the new decoders and the Forward hop.
 
 2026-10-14, v0.7.2: review of hello parsing, the `Authenticator`
 contract and resource exhaustion. Fixed: a ping flood from a peer that

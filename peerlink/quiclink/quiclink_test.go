@@ -69,11 +69,15 @@ func serverTLS(name string) *tls.Config {
 		ClientAuth: tls.RequireAndVerifyClientCert, MinVersion: tls.VersionTLS13}
 }
 
-// clientTLS is name's TLS dialling peer.
-func clientTLS(name, peer string) *tls.Config {
+// clientTLS is name's TLS dialling peer, offering chaining (ALPNChain)
+// unless protos names the protocols.
+func clientTLS(name, peer string, protos ...string) *tls.Config {
 	p := testPKI()
+	if protos == nil {
+		protos = []string{quiclink.ALPNChain, quiclink.ALPN}
+	}
 	return &tls.Config{Certificates: []tls.Certificate{p.certs[name]}, RootCAs: p.pool, ServerName: peer,
-		NextProtos: []string{quiclink.ALPN}, MinVersion: tls.VersionTLS13}
+		NextProtos: protos, MinVersion: tls.VersionTLS13}
 }
 
 func listenUDP(t *testing.T) net.PacketConn {
@@ -86,14 +90,31 @@ func listenUDP(t *testing.T) net.PacketConn {
 	return pc
 }
 
-// dialer dials peer (the only one it knows) as name at addr.
-func dialer(name, peer, addr string) func(context.Context, string, *quic.Config) (*quic.Conn, error) {
+// dialer dials peer (the only one it knows) as name at addr (offering
+// protos: clientTLS).
+func dialer(name, peer, addr string, protos ...string) func(context.Context, string, *quic.Config) (*quic.Conn, error) {
 	return func(ctx context.Context, p string, qc *quic.Config) (*quic.Conn, error) {
 		if p != peer {
 			return nil, fmt.Errorf("no peer %q", p)
 		}
-		return quic.DialAddr(ctx, addr, clientTLS(name, peer), qc)
+		return quic.DialAddr(ctx, addr, clientTLS(name, peer, protos...), qc)
 	}
+}
+
+// TestConformanceWithoutChain: a dialler offering only ALPN (quiclink
+// before v0.4.0) gets plain sessions, which keep the contract.
+func TestConformanceWithoutChain(t *testing.T) {
+	peerlinktest.Run(t, func(t *testing.T) peerlinktest.Pair {
+		pc := listenUDP(t)
+		px := peerlinktest.NewUDPProxy(t, pc.LocalAddr().String())
+		b := mustNew(t, quiclink.Config{PacketConn: pc, TLS: serverTLS("b"), Liveness: link.LivenessFast})
+		a := mustNew(t, quiclink.Config{Dial: dialer("a", "b", px.Addr(), quiclink.ALPN), Liveness: link.LivenessFast})
+		return peerlinktest.Pair{
+			A: a, B: b, AName: "a", BName: "b",
+			DeadAfter: a.DeadAfter(),
+			BlackHole: px.BlackHole, Cut: px.Cut, Throttle: px.Throttle,
+		}
+	})
 }
 
 func TestConformance(t *testing.T) {

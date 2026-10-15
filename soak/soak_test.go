@@ -75,6 +75,9 @@ type pair struct {
 type config struct {
 	name    string
 	newPair func(t *testing.T) pair
+	// epoch, when set, runs the config's epoch instead of runEpoch (the
+	// chain: chain_test.go).
+	epoch func(t *testing.T, d time.Duration, st *stats)
 }
 
 // stats is one config's tally over the run.
@@ -94,6 +97,9 @@ type stats struct {
 	DeadDetectMax     float64  `json:"dead_detect_max_s"`
 	DeadDetectMisses  int      `json:"dead_detect_misses"`
 	StalledMinutes    int      `json:"stalled_minutes"`
+	InFlightMax       int64    `json:"in_flight_max,omitempty"`   // chain: a stalled far reader's bytes in flight
+	InFlightBound     int64    `json:"in_flight_bound,omitempty"` // and its bound
+	Aborts            []string `json:"first_aborts,omitempty"`    // chain: the first typed aborts the origin read in fault windows
 	FirstErrors       []string `json:"first_unexpected_errors,omitempty"`
 	mu                sync.Mutex
 }
@@ -135,10 +141,11 @@ func TestSoak(t *testing.T) {
 	}
 	epoch := env("SOAKEPOCH", 5*time.Minute)
 	configs := []config{
-		{"link-forward", func(t *testing.T) pair { return linkPair(t, false) }},
-		{"link-reverse", func(t *testing.T) pair { return linkPair(t, true) }},
-		{"quic-forward", func(t *testing.T) pair { return quicPair(t, false) }},
-		{"quic-reverse", func(t *testing.T) pair { return quicPair(t, true) }},
+		{"link-forward", func(t *testing.T) pair { return linkPair(t, false) }, nil},
+		{"link-reverse", func(t *testing.T) pair { return linkPair(t, true) }, nil},
+		{"quic-forward", func(t *testing.T) pair { return quicPair(t, false) }, nil},
+		{"quic-reverse", func(t *testing.T) pair { return quicPair(t, true) }, nil},
+		{"chain-3hop", nil, runChainEpoch},
 	}
 	sum := &summary{Start: time.Now(), Epoch: epoch.Seconds(), GoVersion: runtime.Version(),
 		OS: runtime.GOOS + "/" + runtime.GOARCH, CPUs: runtime.NumCPU(), Configs: map[string]*stats{}}
@@ -150,7 +157,13 @@ func TestSoak(t *testing.T) {
 		t.Run(fmt.Sprintf("epoch%d", e), func(t *testing.T) {
 			var wg sync.WaitGroup
 			for _, c := range configs {
-				wg.Go(func() { runEpoch(t, c, epoch, sum.Configs[c.name]) })
+				wg.Go(func() {
+					if c.epoch != nil {
+						c.epoch(t, epoch, sum.Configs[c.name])
+						return
+					}
+					runEpoch(t, c, epoch, sum.Configs[c.name])
+				})
 			}
 			wg.Wait()
 		})
@@ -190,6 +203,9 @@ func judge(sum *summary) {
 		}
 		if s.StalledMinutes > 0 {
 			sum.Failures = append(sum.Failures, fmt.Sprintf("%s: %d minutes outside faults with no echo completed", name, s.StalledMinutes))
+		}
+		if s.InFlightMax > s.InFlightBound && s.InFlightBound > 0 {
+			sum.Failures = append(sum.Failures, fmt.Sprintf("%s: %d bytes in flight for a stalled far reader, bound %d", name, s.InFlightMax, s.InFlightBound))
 		}
 		if s.DrainErrors > 0 {
 			sum.Failures = append(sum.Failures, fmt.Sprintf("%s: %d drains did not finish", name, s.DrainErrors))

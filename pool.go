@@ -171,7 +171,9 @@ func (p *Pool) pick() (best *Mux, grow, growBG bool, err error) {
 	return best, false, growBG, nil
 }
 
-// Open opens a session with header on one of the Pool's connections.
+// Open opens a session with header on one of the Pool's connections,
+// with the Chain ctx carries (ContextWithChain; Mux.OpenChain) when it
+// carries one.
 func (p *Pool) Open(ctx context.Context, header []byte) (*Session, error) {
 	for attempt := 0; ; {
 		m, grow, growBG, err := p.pick()
@@ -214,7 +216,8 @@ func (p *Pool) Open(ctx context.Context, header []byte) (*Session, error) {
 			}
 			continue
 		}
-		s, err := m.Open(header)
+		ch, _ := ChainFromContext(ctx)
+		s, err := m.OpenChain(header, ch)
 		if err == nil {
 			return s, nil
 		}

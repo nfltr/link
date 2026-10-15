@@ -130,7 +130,8 @@ func (n *Node) DeadAfter() time.Duration {
 // Config.Dial it opens on one of the connections peer dialled in (the one
 // with the fewest sessions, not going away); while peer has none, Open
 // waits for one until ctx ends, then fails with ErrPeerUnreachable (and
-// ctx's error).
+// ctx's error). The link.Chain ctx carries (link.ContextWithChain) goes in
+// the open (link.Mux.OpenChain).
 func (n *Node) Open(ctx context.Context, peer string, header []byte) (Session, error) {
 	if n.cfg.Dial == nil {
 		return n.openServed(ctx, peer, header)
@@ -178,7 +179,8 @@ func (n *Node) openServed(ctx context.Context, peer string, header []byte) (Sess
 				return nil, fmt.Errorf("%w %q (no connection from it; connected: %q): %w", ErrPeerUnreachable, peer, slices.Sorted(maps.Keys(names)), ctx.Err())
 			}
 		}
-		s, err := best.Open(header)
+		ch, _ := link.ChainFromContext(ctx)
+		s, err := best.OpenChain(header, ch)
 		if err == nil {
 			return s, nil
 		}
@@ -224,17 +226,22 @@ func (n *Node) newPool(peer string) *link.Pool {
 }
 
 // acceptDialled hands a session peer opened on a connection this Node
-// dialled to Serve's accept; before Serve or once draining, it is reset.
+// dialled to Serve's accept; before Serve or once draining, it is refused
+// (link.CodeRefused, link.CodeDraining; a reset without FeatureChain).
 func (n *Node) acceptDialled(peer string, h []byte, s *link.Session) {
 	n.mu.Lock()
-	accept := n.accept
-	ok := accept != nil && !n.draining
+	accept, draining := n.accept, n.draining
+	ok := accept != nil && !draining
 	if ok {
 		n.accepted.Add(1) // before Drain's Wait: both under mu
 	}
 	n.mu.Unlock()
-	if !ok {
-		_ = s.Reset()
+	switch {
+	case draining:
+		_ = s.Refuse(link.CodeDraining, "draining")
+		return
+	case !ok:
+		_ = s.Refuse(link.CodeRefused, "not serving")
 		return
 	}
 	accept(peer, h, &session{Session: s, done: n.accepted.Done})
@@ -257,6 +264,22 @@ func (s *session) Close() error {
 func (s *session) Reset() error {
 	err := s.Session.Reset()
 	s.once.Do(s.done)
+	return err
+}
+
+func (s *session) Refuse(code uint32, msg string) error {
+	return s.AbortWith(&link.Abort{Refused: true, Code: code, Msg: msg})
+}
+
+func (s *session) Abort(code uint32, msg string) error {
+	return s.AbortWith(&link.Abort{Code: code, Msg: msg})
+}
+
+func (s *session) AbortWith(a *link.Abort) error {
+	err := s.Session.AbortWith(a)
+	if err == nil {
+		s.once.Do(s.done)
+	}
 	return err
 }
 
@@ -357,8 +380,18 @@ func (n *Node) Drain(ctx context.Context) error {
 	if first && n.cfg.Listener != nil {
 		_ = n.cfg.Listener.Close()
 	}
+	// ctx's end is this Drain's to act on (below); its deadline is each
+	// connection's too, which then aborts the sessions it still carries
+	// (link.CodeDrainDeadline) before it closes.
+	mctx := context.WithoutCancel(ctx)
+	deadline, hasDeadline := ctx.Deadline()
+	if hasDeadline {
+		var stop context.CancelFunc
+		mctx, stop = context.WithDeadline(mctx, deadline)
+		defer stop()
+	}
 	for _, m := range served {
-		go func() { _ = m.Drain(context.WithoutCancel(ctx)) }() // ctx's end is this Drain's to act on (below)
+		go func() { _ = m.Drain(mctx) }()
 	}
 	idle := make(chan struct{})
 	go func() {
@@ -374,6 +407,16 @@ func (n *Node) Drain(ctx context.Context) error {
 	case <-idle:
 	case <-ctx.Done():
 		err = ctx.Err()
+		if hasDeadline { // each connection's own cut: its aborts first
+			t := time.NewTimer(2 * time.Second)
+			for _, m := range served {
+				select {
+				case <-m.Conn().Done():
+				case <-t.C:
+				}
+			}
+			t.Stop()
+		}
 	}
 	n.mu.Lock()
 	pools := slices.Collect(maps.Values(n.pools))
@@ -417,3 +460,4 @@ func (s *servedObserver) SessionClose(err error)               { s.get().Session
 func (s *servedObserver) CreditWait(d time.Duration)           { s.get().CreditWait(d) }
 func (s *servedObserver) PingRTT(d time.Duration)              { s.get().PingRTT(d) }
 func (s *servedObserver) GoAway(id link.Identity)              { s.get().GoAway(id) }
+func (s *servedObserver) Hop(e link.HopEvent)                  { s.get().Hop(e) }

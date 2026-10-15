@@ -19,7 +19,9 @@ TARGETS=(
 	". FuzzRecvV2"
 	". FuzzMuxServeV2"
 	". FuzzParseWindow"
+	". FuzzForward"
 	"peerlink/quiclink FuzzPreamble"
+	"peerlink/quiclink FuzzAnswer"
 )
 failed=0
 for t in "${TARGETS[@]}"; do

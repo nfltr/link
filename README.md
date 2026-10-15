@@ -131,6 +131,116 @@ For mutual TLS ([examples/mtls](examples/mtls/main.go)), gRPC or HTTP
 over a link, liveness, draining, reconnects and metrics, see the
 [recipes](docs/recipes.md).
 
+## Chaining
+
+Since v0.10.0 sessions join end to end: a path `origin -> hop -> ... ->
+far end`, each arrow a connection of its own (its own TLS, liveness and
+credit). `link.Forward(route, cfg)` is an accept function that makes a
+`Mux` (or `Pool`) a hop: your `Route` opens the next leg (on any `Mux`,
+`Pool` or peer you choose), Forward passes the far end's answer back and
+splices the two sessions with `link.Join`, holding no goroutine while
+they are idle. Where both ends of a connection announce `FeatureChain`
+(every v0.10.0 side does; WIRE.md section 12), each open is answered:
+`Session.Answered` returns nil only once the far end accepted
+(`Accept`, or its first write), or the `*link.Abort` of a refusal
+(`Refuse(code, msg)`) or reset (`Abort(code, msg)`): its `Code` (link's
+below `CodeApp`, yours from it), its `Msg`, and `Hops`, which hop it came
+from (0: your peer). A dead hop reaches the origin as `CodeConnLost` from
+the hop before it; a draining hop refuses new opens (`CodeDraining`)
+while what it joined finishes, and cuts the rest at its deadline
+(`CodeDrainDeadline`); a routing loop stops at `ForwardConfig.MaxHops`
+(`CodeHopLimit`). A connection to a v0.9 peer is unchanged: its sessions
+do not answer (`Answers()` false, `Answered` returns `ErrNoAnswers`),
+and a hop in front of one accepts once its Route returned.
+
+```go
+// ExampleForward joins two links end to end: the origin opens through a
+// forwarding hop to a far end, which answers each open; the origin reads
+// the answer (accepted, with the path's length, or a typed refusal
+// saying which hop and why) before it trusts the session.
+func ExampleForward() {
+	o, h1 := bind(link.NoAuth) // origin -> hop
+	h2, f := bind(link.NoAuth) // hop -> far end
+
+	// The far end: an echo, or a refusal with the application's code.
+	go link.NewMux(f).Serve(func(header []byte, s *link.Session) {
+		if string(header) != "echo" {
+			_ = s.Refuse(link.CodeApp+1, "no such service")
+			return
+		}
+		_ = s.Accept()
+		_, _ = io.Copy(s, s)
+		_ = s.CloseWrite()
+	})
+
+	// The hop: every session goes on to the far end (the Route decides
+	// where; Forward answers, joins and holds no goroutine while idle).
+	onward := link.NewMux(h2)
+	go onward.Serve(nil)
+	go link.NewMux(h1).Serve(link.Forward(func(ctx context.Context, in *link.Session) (*link.Session, error) {
+		c, _ := link.ChainFromContext(ctx)
+		return onward.OpenChain(in.Header(), c)
+	}, link.ForwardConfig{}))
+
+	// The origin.
+	m := link.NewMux(o)
+	go m.Serve(nil)
+	defer m.Close()
+	s, _ := m.Open([]byte("echo"))
+	_, _ = io.WriteString(s, "hello") // before the answer: no round trip per hop
+	_ = s.CloseWrite()
+	if err := s.Answered(context.Background()); err != nil {
+		panic(err)
+	}
+	reply, _ := io.ReadAll(s)
+	fmt.Printf("%s, %d hop(s) beyond the peer\n", reply, s.PathLen())
+
+	r, _ := m.Open([]byte("ftp"))
+	var a *link.Abort
+	if errors.As(r.Answered(context.Background()), &a) {
+		fmt.Printf("refused %d hop(s) beyond the peer: code %d, %s\n", a.Hops, a.Code-link.CodeApp, a.Msg)
+	}
+	// Output:
+	// hello, 1 hop(s) beyond the peer
+	// refused 1 hop(s) beyond the peer: code 1, no such service
+}
+```
+
+Over any `peerlink.Link` (a `Node`, quiclink, a mix):
+`node.Serve(peerlink.Forward(route, cfg))` for a hop, `peerlink.Join(a,
+b)` to splice any two conns (a session and the TCP connection to its
+target at the far end, or a client's local connection), and the
+`peerlink.ChainSession` interface for the answers (quiclink v0.4.0
+negotiates them with ALPN `peerlink-chain`). Every hop's `Observer`
+gets `Hop` events (opened, answered with its latency, ended with bytes
+each way) carrying the origin's trace id.
+
+Bytes in flight per session and direction are bounded by the windows
+of the links plus one 256 KiB write batch per hop (3.5 MiB over three
+links with the default 1 MiB windows), so a stuck far reader stalls only
+its own session. Hops are transports: a hop sees the header, the bytes
+and the answers and can forge them; encrypt end to end inside the
+session (TLS with a pinned certificate) where that matters
+([SECURITY.md](SECURITY.md)). The design is
+[docs/design/chaining.md](docs/design/chaining.md).
+
+Measured (Apple M5, TCP loopback, in process):
+
+| Forward hops | links | MB/s, 1 session | MB/s, 32 sessions | 64 B echo round trip, µs | OpenChain -> Answered, µs |
+|---:|---:|---:|---:|---:|---:|
+| 0 | 1 | 1,812 | 1,922 | 55 | 27 |
+| 1 | 2 | 2,433 | 1,708 | 205 | 55 |
+| 2 | 3 | 1,256 | 2,434 | 321 | 112 |
+| 4 | 5 | 1,725 | 1,173 | 505 | 220 |
+
+Medians of three runs (`go test -run '^$' -bench BenchmarkChain -benchmem -count 3`;
+8 MiB per session; a shared host, load average 14-26 on 10 CPUs, so the
+spread between runs is wide). A joined session at rest holds
+0 goroutines and about 7.0 KiB of heap for its three
+sessions and joint (origin, one Forward hop, far end; `TestChainIdleCost`,
+200 sessions). In-flight bytes for a stalled far reader stay within the
+links' windows plus 256 KiB per hop (`TestChainStalledFarReader`).
+
 ## Which API
 
 | you want | use |
@@ -166,6 +276,8 @@ the messages name what to change.
 | `peerlink.ErrDraining` | `Node.Open` | this Node is draining | nothing: it is shutting down |
 | `peerlink.ErrPeerUnreachable` (and the context's error) | `Node.Open` without `Dial` | no connection from that peer before the context ended | the peer's name (the error lists the connected ones); that peer's `Connect` and `Dial`; a longer context |
 | `link.ErrReset` | session reads | the peer reset the session | the peer's reason |
+| `*link.Abort` (`errors.As`), `link.ErrOpenRefused`, `link.ErrReset` | `Session.Answered`, session reads (`FeatureChain`) | the far end (or the hop `Hops` says) refused the open or reset the session, with a `Code` and a `Msg` | what the code says: `CodeDraining` open elsewhere, `CodeHopLimit` a routing loop, `CodeConnLost` a hop's connection died, `CodeApp`+ the application's own |
+| `link.ErrNoAnswers` | `Session.Answered` | the connection's peer does not answer opens (link before v0.10.0, or no `FeatureChain`) | nothing: use the session without an answer, or refuse such a leg in your Route |
 | `link.ErrConnClosed` (wraps why: `ErrDeadPeer`, the network's error) | session reads; writes return `io.ErrClosedPipe` wrapping it | the connection closed under the session | open a new session (`Pool` and `Node` redial) |
 | `link.ErrFrame`, `link.ErrCredit` | `Conn.Recv`, `Mux.Serve` | the peer broke the wire protocol | a peer that is not link, or a bug: please report it |
 | a message naming a field | `peerlink.New`, `link.NewPool`, `Validate`, `Client`, `Server` | a configuration that cannot work | the field it names, as it says |
@@ -193,8 +305,9 @@ changing ([peerlink/quiclink/README.md](peerlink/quiclink/README.md)).
 
 Wire format version 2 is specified in [WIRE.md](WIRE.md), with test
 vectors for every message (`testdata/wire_vectors.json`);
-`testdata/v2_session.golden` holds a recorded session. Every release is
-tested against both, byte for byte.
+`testdata/v2_session.golden` holds a recorded session (and
+`testdata/v2_chain_session.golden` one with `FeatureChain`). Every release is
+tested against them, byte for byte.
 
 ## Checks
 
@@ -213,7 +326,7 @@ is the long fuzz run ([FUZZING.md](FUZZING.md)).
 
 ## Status and compatibility
 
-The latest release is v0.9.4; [CHANGELOG.md](CHANGELOG.md) lists every
+The latest release is v0.10.0; [CHANGELOG.md](CHANGELOG.md) lists every
 release. link is pre-1.0 and follows [semantic versioning](https://semver.org)
 as Go modules do for v0:
 
@@ -249,11 +362,11 @@ Evidence that link works, provable from this repository alone:
 | criterion | evidence | status |
 |---|---|---|
 | wire specified, with test vectors | WIRE.md, `testdata/wire_vectors.json` (`TestWireVectors`), `testdata/v2_session.golden` | met |
-| every decoder fuzzed, corpus checked in, 24 h cumulative without a crasher | FUZZING.md (hours per target, crashers), `testdata/fuzz/` | 4.5 h, no crasher in the library (target: 24 h) |
+| every decoder fuzzed, corpus checked in, 24 h cumulative without a crasher | FUZZING.md (hours per target, crashers), `testdata/fuzz/` | 4.85 h, no crasher in the library (target: 24 h) |
 | security review of the hello and the Authenticator contract | SECURITY.md (threat model, review record) | met (2026-10-14) |
 | standard library only | `TestModuleBoundary` | met |
 | CI green on every change, with history | GitHub Actions (`check`) | since 2026-10-14 |
-| cumulative soak hours under faults, with leak and integrity checks | SOAK.md (`make soak`), summaries in `soak/results/` | 2.35 h (macOS, Linux CI), clean (target: 24 h) |
+| cumulative soak hours under faults, with leak and integrity checks | SOAK.md (`make soak`), summaries in `soak/results/` | 2.62 h (macOS, Linux CI; chain-3hop since v0.10.0), clean (target: 24 h) |
 | benchmarks published in the repository | `compare/README.md` (link vs yamux), `peerlink/quiclink/README.md` | met |
 | API reviewed for v1.0 | the checklist below; `make check-api` (apidiff against the latest release, in CI); `TestExportedNamesDocumented` | open (v0.9.0: the review against yamux, smux, quic-go and libp2p applied; the peerlink contract changed in v0.9.0) |
 

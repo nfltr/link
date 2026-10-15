@@ -21,6 +21,12 @@
 // flight then. A draining Node refuses new connections (CONNECTION_REFUSED)
 // and resets the streams peers open (code 1).
 //
+// Chaining (since v0.4.0): a connection that negotiated ALPNChain
+// carries sessions that answer opens (peerlink.ChainSession): an open's
+// link.Chain precedes its preamble, the accepter's answer precedes its
+// bytes, and an Abort's code and hops travel in the stream error code
+// (chain.go). One that negotiated ALPN is as before.
+//
 // TLS 1.3 is QUIC's own and the caller's: Config.TLS (the listener's
 // certificate, its ClientAuth) and the tls.Config the caller dials with.
 // Handshakes are 1-RTT: 0-RTT is off (its data can be replayed).
@@ -42,6 +48,7 @@ package quiclink
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"encoding/binary"
 	"errors"
@@ -59,9 +66,17 @@ import (
 	"github.com/quic-go/quic-go"
 )
 
-// ALPN is the application protocol a Node sets on its TLS configs that
-// name none.
+// ALPN is the application protocol of a connection whose sessions do not
+// answer opens (quiclink before v0.4.0).
 const ALPN = "peerlink"
+
+// ALPNChain is the application protocol of a connection whose sessions
+// answer opens and carry typed aborts (peerlink.ChainSession, since
+// v0.4.0). A listener's TLS without NextProtos offers both, ALPNChain
+// first; a dialler offers NextProtos{ALPNChain, ALPN} (Config.Dial's TLS
+// is the caller's) and gets chaining from a v0.4.0 listener, plain
+// sessions from an older one.
+const ALPNChain = "peerlink-chain"
 
 // Stream error codes: the peer reads a *quic.StreamError with one.
 const (
@@ -169,6 +184,9 @@ func New(cfg Config) (*Node, error) {
 		MaxConnectionReceiveWindow:     16 * window,
 		MaxIncomingStreams:             int64(cmpOr(cfg.MaxSessions, link.MaxSessions)),
 		MaxIncomingUniStreams:          1, // the control stream
+		// A reset delivers what was written before it (RESET_STREAM_AT)
+		// where both ends support it: an Abort after bytes, as link's.
+		EnableStreamResetPartialDelivery: true,
 	}
 	return n, nil
 }
@@ -207,6 +225,8 @@ type conn struct {
 	done  chan struct{} // the peer sent DONE
 	dOnce sync.Once
 
+	chain bool // ALPNChain negotiated
+
 	// under n.mu
 	active int
 	idle   chan struct{} // closed when active drops to 0
@@ -214,7 +234,8 @@ type conn struct {
 }
 
 func (n *Node) newConn(q *quic.Conn, peer string) *conn {
-	return &conn{q: q, peer: peer, n: n, done: make(chan struct{}), idle: make(chan struct{})}
+	return &conn{q: q, peer: peer, n: n, done: make(chan struct{}), idle: make(chan struct{}),
+		chain: q.ConnectionState().TLS.NegotiatedProtocol == ALPNChain}
 }
 
 // addLocked counts a session on c; false once draining.
@@ -386,9 +407,19 @@ func (n *Node) Open(ctx context.Context, peer string, header []byte) (peerlink.S
 		}
 		st, err := c.q.OpenStreamSync(ctx)
 		if err == nil {
-			_, err = st.Write(appendPreamble(make([]byte, 0, 2+len(header)), header))
+			s := &Session{Stream: st, c: c}
+			var pre []byte
+			if c.chain {
+				ch, _ := link.ChainFromContext(ctx)
+				if ch.Trace == (link.Trace{}) {
+					_, _ = rand.Read(ch.Trace[:])
+				}
+				s.chain = ch
+				pre = append(append(pre, ch.Hops), ch.Trace[:]...)
+			}
+			_, err = st.Write(appendPreamble(pre, header))
 			if err == nil {
-				return &Session{Stream: st, c: c}, nil
+				return s, nil
 			}
 			st.CancelWrite(CodeReset)
 			st.CancelRead(CodeReset)
@@ -516,21 +547,39 @@ func (n *Node) acceptStream(c *conn, st *quic.Stream) {
 		st.CancelWrite(CodeRefused)
 	}
 	_ = st.SetReadDeadline(time.Now().Add(n.DeadAfter()))
-	h, err := readPreamble(st)
+	var ch link.Chain
+	var err error
+	if c.chain {
+		err = readChain(st, &ch)
+	}
+	var h []byte
+	if err == nil {
+		h, err = readPreamble(st)
+	}
 	if err != nil {
 		refuse()
 		return
 	}
 	_ = st.SetReadDeadline(time.Time{})
 	n.mu.Lock()
-	accept := n.accept
+	accept, draining := n.accept, n.draining
 	ok := accept != nil && c.addLocked()
 	n.mu.Unlock()
 	if !ok {
-		refuse()
+		if !c.chain {
+			refuse()
+			return
+		}
+		code, msg := link.CodeRefused, "not serving"
+		if draining {
+			code, msg = link.CodeDraining, "draining"
+		}
+		_, _ = st.Write(appendAnswer(nil, &link.Abort{Refused: true, Code: code, Msg: msg}))
+		_ = st.Close()
+		st.CancelRead(CodeRefused)
 		return
 	}
-	accept(c.peer, h, &Session{Stream: st, c: c})
+	accept(c.peer, h, &Session{Stream: st, c: c, accepter: true, chain: ch})
 }
 
 // Serve takes the sessions peers open until Drain: on the connections it
@@ -588,7 +637,8 @@ func (n *Node) Serve(accept func(peer string, header []byte, s peerlink.Session)
 	}
 }
 
-// withALPN returns tc with NextProtos ALPN when it names none.
+// withALPN returns tc with NextProtos ALPNChain and ALPN when it names
+// none.
 func withALPN(tc *tls.Config) *tls.Config {
 	if tc == nil {
 		tc = &tls.Config{MinVersion: tls.VersionTLS13}
@@ -597,7 +647,7 @@ func withALPN(tc *tls.Config) *tls.Config {
 		return tc
 	}
 	tc = tc.Clone()
-	tc.NextProtos = []string{ALPN}
+	tc.NextProtos = []string{ALPNChain, ALPN}
 	return tc
 }
 
@@ -725,12 +775,24 @@ func (n *Node) Drain(ctx context.Context) error {
 }
 
 // Session is a session: a QUIC stream with the net.Conn methods and
-// CloseWrite and Reset.
+// CloseWrite and Reset; on a connection that negotiated ALPNChain, a
+// peerlink.ChainSession (Answers).
 type Session struct {
 	*quic.Stream
 	c     *conn
 	once  sync.Once
 	reset atomic.Bool
+
+	// Answers (ALPNChain).
+	accepter bool
+	chain    link.Chain
+	ansOnce  sync.Once // the accepter's answer, sent once
+	ans      atomic.Bool
+	amu      sync.Mutex // the opener's answer, read once
+	abuf     []byte     // its bytes read so far
+	aDone    bool
+	aErr     error
+	pathLen  uint8
 }
 
 var _ net.Conn = (*Session)(nil)
@@ -742,12 +804,14 @@ func (s *Session) CloseWrite() error {
 	if s.reset.Load() {
 		return net.ErrClosed
 	}
+	s.autoAccept()
 	return s.Stream.Close()
 }
 
 // Close ends the session: the peer reads what was written, then io.EOF;
 // its writes fail.
 func (s *Session) Close() error {
+	s.autoAccept()
 	var err error
 	if !s.reset.Load() {
 		err = s.Stream.Close()
@@ -757,8 +821,12 @@ func (s *Session) Close() error {
 	return err
 }
 
-// Reset ends the session as failed: the peer's reads and writes fail.
+// Reset ends the session as failed: the peer's reads and writes fail
+// (on an ALPNChain connection with a *link.Abort, CodeUnspecified).
 func (s *Session) Reset() error {
+	if s.c.chain {
+		return s.Abort(link.CodeUnspecified, "")
+	}
 	s.reset.Store(true)
 	s.Stream.CancelWrite(CodeReset)
 	s.Stream.CancelRead(CodeReset)

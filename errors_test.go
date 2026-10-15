@@ -19,7 +19,7 @@ import (
 	"time"
 )
 
-func selfSigned(t *testing.T) (server, client *tls.Config) {
+func selfSigned(t testing.TB) (server, client *tls.Config) {
 	t.Helper()
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), IPAddresses: []net.IP{net.ParseIP("127.0.0.1")},

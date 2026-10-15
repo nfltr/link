@@ -5,6 +5,7 @@ package link
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -51,6 +52,7 @@ type Mux struct {
 	// session ended and the peer read the GOAWAY (Conn.Drained).
 	leaving bool
 	left    bool // the close began
+	cutting bool // a drain's deadline cut the sessions
 }
 
 // NewMux returns a Mux over c. Call Serve on it: Serve is the receive
@@ -83,16 +85,30 @@ func (m *Mux) nextSID() string {
 // receives (the OPEN frame's header, at most 64 KiB). Open sends it at
 // once and does not wait for the peer, so a peer that speaks first is
 // reached without the caller's bytes.
-func (m *Mux) Open(header []byte) (*Session, error) {
+//
+// On a connection that negotiated FeatureChain the open is a CHAIN-OPEN
+// from the origin (OpenChain with a zero Chain) and the peer answers it
+// (Answered).
+func (m *Mux) Open(header []byte) (*Session, error) { return m.OpenChain(header, Chain{}) }
+
+// OpenChain is Open of a session on a path (Forward's Route opens the
+// next leg with the Chain its ctx carries): a zero Trace is a new path,
+// for which link picks a random one. On a connection without
+// FeatureChain it is Open (the Chain is kept locally only) and the
+// session does not answer (Answers is false).
+func (m *Mux) OpenChain(header []byte, c Chain) (*Session, error) {
 	if m.c.GoingAway() {
 		return nil, ErrGoAway
 	}
+	if c.Trace == (Trace{}) && m.c.chain() {
+		_, _ = rand.Read(c.Trace[:])
+	}
 	sid := m.nextSID()
-	s, err := m.add(sid, header)
+	s, err := m.add(sid, header, c, false)
 	if err != nil {
 		return nil, err
 	}
-	err = m.c.SendOpen(sid, header)
+	err = m.c.sendOpen(sid, header, c)
 	if err == nil {
 		err = m.c.Flush()
 	}
@@ -104,7 +120,7 @@ func (m *Mux) Open(header []byte) (*Session, error) {
 	return s, nil
 }
 
-func (m *Mux) add(sid string, header []byte) (*Session, error) {
+func (m *Mux) add(sid string, header []byte, c Chain, accepter bool) (*Session, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.done {
@@ -113,7 +129,11 @@ func (m *Mux) add(sid string, header []byte) (*Session, error) {
 	if len(m.sess) >= MaxSessions {
 		return nil, ErrFull
 	}
-	s := &Session{m: m, id: sid, q: bytequeue.New(m.c.credit.window), header: header, done: make(chan struct{})}
+	s := &Session{m: m, id: sid, q: bytequeue.New(m.c.credit.window), header: header, done: make(chan struct{}),
+		chain: c, answers: m.c.chain(), accepter: accepter}
+	if s.answers && !accepter {
+		s.answered = make(chan struct{})
+	}
 	s.q.OnPop(func(n int) { m.c.credit.Consumed(sid, n) })
 	if old := m.sess[sid]; old != nil { // a peer reusing an id ends the old session
 		old.ended()
@@ -193,23 +213,42 @@ func (m *Mux) serve(f Frame, accept func([]byte, *Session)) {
 		// An OPEN that crossed this side's GOAWAY runs like any other;
 		// one after the peer's GOAWAY, or after it read ours (Drained),
 		// breaks the protocol.
-		if accept != nil && !closed(m.c.peerGoAway) && !closed(m.c.drained) {
-			s, _ = m.add(f.SID, f.Header)
+		refusal := &Abort{Refused: true, Code: CodeRefused, Msg: "not taking sessions"}
+		switch {
+		case accept == nil:
+		case closed(m.c.peerGoAway) || closed(m.c.drained):
+			refusal.Code, refusal.Msg = CodeDraining, "draining"
+		default:
+			s, _ = m.add(f.SID, f.Header, f.Chain, true)
 		}
-		if s == nil { // refused: the opener reads a reset, never a clean end
-			if m.c.SendReset(f.SID) == nil {
+		if s == nil { // refused: the opener reads a refusal or a reset, never a clean end
+			var err error
+			if m.c.chain() {
+				err = m.c.sendAbort(f.SID, refusal)
+			} else {
+				err = m.c.SendReset(f.SID)
+			}
+			if err == nil {
 				_ = m.c.Flush()
 			}
 			return
 		}
 		go accept(f.Header, s)
+	case f.Accept:
+		if s := m.get(f.SID); s != nil && s.answered != nil && !closed(s.answered) {
+			s.pathLen = f.Chain.Hops
+			close(s.answered)
+		}
 	case f.Close:
 		s := m.get(f.SID)
 		if s == nil {
 			return
 		}
 		if !f.Half {
-			if f.Reset {
+			switch {
+			case f.Abort != nil:
+				s.fail(f.Abort)
+			case f.Reset:
 				s.fail(ErrReset)
 			}
 			s.peerClosed.Store(true)
@@ -235,11 +274,14 @@ func (m *Mux) close() {
 	m.mu.Lock()
 	m.done = true
 	sess := m.sess
+	cutting := m.cutting
 	m.sess = nil
 	m.mu.Unlock()
 	_ = m.c.Close() // senders waiting for credit give up
 	var err error
 	switch why := m.c.why(); {
+	case cutting:
+		err = fmt.Errorf("%w: %w", ErrConnClosed, errDrainDeadline)
 	case why == nil:
 		err = fmt.Errorf("%w; open a new session", ErrConnClosed)
 	case errors.Is(why, io.EOF): // never a session's clean end
@@ -271,9 +313,46 @@ func (m *Mux) Drain(ctx context.Context) error {
 	case <-m.c.Done():
 		return nil
 	case <-ctx.Done():
-		_ = m.Close()
+		m.cut()
 		return ctx.Err()
 	}
+}
+
+// cut ends a drain at its deadline: on a FeatureChain connection each
+// session still open gets an ABORT (CodeDrainDeadline) first, written
+// within a second, and reads here end with errDrainDeadline; then the
+// connection closes.
+func (m *Mux) cut() {
+	m.mu.Lock()
+	if m.cutting { // the drain's timer and Drain's ctx: one cut
+		m.mu.Unlock()
+		return
+	}
+	m.cutting = true
+	ids := make([]string, 0, len(m.sess))
+	for id := range m.sess {
+		ids = append(ids, id)
+	}
+	m.mu.Unlock()
+	if m.c.chain() && len(ids) > 0 {
+		written := make(chan struct{})
+		go func() {
+			defer close(written)
+			for _, id := range ids {
+				if m.c.sendAbort(id, &Abort{Code: CodeDrainDeadline, Msg: "drain deadline"}) != nil {
+					return
+				}
+			}
+			_ = m.c.Flush()
+		}()
+		t := time.NewTimer(time.Second)
+		select {
+		case <-written:
+		case <-t.C:
+		}
+		t.Stop()
+	}
+	_ = m.Close()
 }
 
 // goAway is Drain without the wait: the connection closes once its last
@@ -293,7 +372,7 @@ func (m *Mux) goAway(deadline time.Time) error {
 	m.mu.Unlock()
 	var t *time.Timer
 	if drain > 0 {
-		t = time.AfterFunc(drain, func() { _ = m.Close() })
+		t = time.AfterFunc(drain, m.cut)
 	}
 	go func() {
 		select {
@@ -368,6 +447,15 @@ type Session struct {
 
 	pump    atomic.Pointer[pump] // set by Pump
 	pumping atomic.Bool          // a pump goroutine runs, or the pump ended
+
+	// Answers (FeatureChain connections).
+	chain    Chain
+	answers  bool          // the connection negotiated FeatureChain
+	accepter bool          // the peer opened the session
+	answered chan struct{} // the opener's, with answers: closed at the peer's ACCEPT
+	pathLen  uint8         // the ACCEPT's hops, set before answered closes
+	ans      atomic.Bool   // the accepter's: it answered (accept or refusal)
+	ansOnce  sync.Once
 }
 
 // pump is a Session's Pump: where its bytes go.
@@ -492,12 +580,23 @@ type batchWriter struct {
 	nb net.Buffers
 }
 
+// buffersWriter writes a batch at once and keeps none of it (Session).
+type buffersWriter interface {
+	WriteBuffers(bufs [][]byte) (int64, error)
+}
+
 func (bw *batchWriter) write(w io.Writer, bufs [][]byte) (int64, error) {
 	// net.Buffers clears the slices it wrote (writev): it gets a copy,
 	// bufs keeps them for the release.
-	bw.wb = append(bw.wb[:0], bufs...)
-	bw.nb = bw.wb
-	n, err := bw.nb.WriteTo(w)
+	var n int64
+	var err error
+	if b, ok := w.(buffersWriter); ok { // a Session: one flush for the batch
+		n, err = b.WriteBuffers(bufs)
+	} else {
+		bw.wb = append(bw.wb[:0], bufs...)
+		bw.nb = bw.wb
+		n, err = bw.nb.WriteTo(w)
+	}
 	for _, b := range bufs {
 		releaseData(b)
 	}
@@ -608,6 +707,7 @@ func (s *Session) writeOwned(w OwnedWriter) (int64, error) {
 // while it waited for credit or for room in the connection's write
 // buffer.
 func (s *Session) Write(b []byte) (int, error) {
+	s.autoAccept()
 	n, err := s.send(b)
 	if err == nil {
 		err = s.flush()
@@ -619,6 +719,7 @@ func (s *Session) Write(b []byte) (int, error) {
 // end (and before any wait for credit): a backlog goes to the network in
 // one write.
 func (s *Session) WriteBuffers(bufs [][]byte) (int64, error) {
+	s.autoAccept()
 	var total int64
 	for _, b := range bufs {
 		n, err := s.send(b)
@@ -690,6 +791,7 @@ func (s *Session) writeWait() <-chan struct{} {
 // io.EOF after what was written; this side still reads the peer's bytes.
 // The session ends once both sides closed their write side.
 func (s *Session) CloseWrite() error {
+	s.autoAccept()
 	if s.closed.Load() || s.halfClosed.Swap(true) {
 		return nil
 	}
@@ -713,6 +815,7 @@ func (s *Session) endErr() error {
 // Close ends the session: the peer gets a close unless it closed it; a
 // pending Read returns.
 func (s *Session) Close() error {
+	s.autoAccept()
 	s.once.Do(func() {
 		if !s.peerClosed.Load() {
 			s.m.sendClose(s.id, false) // before drop: a leaving connection closes after it

@@ -11,9 +11,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"os"
 	"sync"
 	"testing"
+	"time"
+	"unicode/utf8"
 )
 
 // anyAuth accepts every credential.
@@ -97,9 +100,11 @@ func FuzzClientReply(f *testing.F) {
 	})
 }
 
-// FuzzRecvV2 feeds a peer's arbitrary frames to a version-2 Conn: no
-// panic, the credit caps hold for session "7", and the peer never has
-// more sessions open than this side's max.
+// FuzzRecvV2 feeds a peer's arbitrary frames to a version-2 Conn, without
+// and with FeatureChain: no panic, the credit caps hold for session "7",
+// the peer never has more sessions open than this side's max, and on a
+// FeatureChain connection session "7" (opened by this side) gets at most
+// one answer and no data before it, and aborts are within their bounds.
 // Seeds: testdata/fuzz/FuzzRecvV2 (the recorded version-2 frames).
 func FuzzRecvV2(f *testing.F) {
 	for _, seed := range [][]byte{
@@ -115,10 +120,52 @@ func FuzzRecvV2(f *testing.F) {
 	} {
 		f.Add(seed)
 	}
+	for _, seed := range chainSeeds(f) {
+		f.Add(seed)
+	}
 	addVectors(f, "frame", nil)
 	f.Fuzz(func(t *testing.T, wire []byte) {
-		c := v2Conn(bufConn{r: bytes.NewReader(wire)})
+		recvV2(t, wire, false)
+		recvV2(t, wire, true)
+	})
+}
+
+// chainSeeds are frames a FeatureChain peer sends: an accept of "7",
+// data, a refusal, a reset, a chain-open.
+func chainSeeds(f *testing.F) [][]byte {
+	var out bytes.Buffer
+	c := v2Conn(bufConn{w: &out})
+	c.features, c.peerFeatures = features, features
+	var seeds [][]byte
+	for _, send := range []func() error{
+		func() error { return c.sendAccept("7", 2) },
+		func() error { return c.SendData("7", []byte("after the accept")) },
+		func() error { return c.sendAbort("7", &Abort{Refused: true, Code: CodeHopLimit, Hops: 3, Msg: "loop"}) },
+		func() error { return c.sendAbort("7", &Abort{Code: CodeApp + 1, Msg: "reset"}) },
+		func() error { return c.sendOpen("9", []byte("hdr"), Chain{Hops: 4, Trace: Trace{1, 2, 3}}) },
+	} {
+		out.Reset()
+		if err := send(); err != nil {
+			f.Fatal(err)
+		}
+		if err := c.Flush(); err != nil {
+			f.Fatal(err)
+		}
+		seeds = append(seeds, bytes.Clone(out.Bytes()))
+	}
+	return append(seeds, bytes.Join(seeds, nil))
+}
+
+func recvV2(t *testing.T, wire []byte, chain bool) {
+	c := v2Conn(bufConn{r: bytes.NewReader(wire)})
+	if chain {
+		c.features, c.peerFeatures = features, features
+		c.credit.open("7", byUs)
+	} else {
 		c.Credit().Open("7")
+	}
+	answers := 0
+	{
 		accepted := 0
 		for {
 			m, err := c.Recv()
@@ -139,8 +186,22 @@ func FuzzRecvV2(f *testing.F) {
 					t.Fatalf("accepted %d bytes for a session, window %d", accepted, testWindow)
 				}
 			}
+			if !chain && (m.Accept || m.Abort != nil || m.Chain != (Chain{})) {
+				t.Fatalf("a FeatureChain frame %+v on a connection without it", m)
+			}
+			if a := m.Abort; a != nil && (len(a.Msg) > MaxAbortMsg || !utf8.ValidString(a.Msg)) {
+				t.Fatalf("abort %+v past its bounds", a)
+			}
+			if chain && m.SID == "7" && (m.Accept || m.Abort != nil && m.Abort.Refused) {
+				if answers++; answers > 1 {
+					t.Fatal("two answers to one open")
+				}
+			}
+			if s := c.credit.sessions["7"]; chain && m.SID == "7" && len(m.Data) > 0 && s != nil && s.by == byUs && !s.answered {
+				t.Fatal("data before the answer")
+			}
 		}
-	})
+	}
 }
 
 // FuzzMuxServeV2 feeds a peer's arbitrary frames to a version-2 Mux that
@@ -163,12 +224,31 @@ func FuzzMuxServeV2(f *testing.F) {
 		}
 	}
 	f.Add(sent.Bytes())
+	for _, seed := range chainSeeds(f) {
+		f.Add(seed)
+	}
 	addVectors(f, "frame", nil)
 	f.Fuzz(func(t *testing.T, wire []byte) {
-		m := NewMux(v2Conn(closingConn{bufConn{r: bytes.NewReader(wire), w: io.Discard}}))
+		muxServeV2(t, wire, false)
+		muxServeV2(t, wire, true)
+	})
+}
+
+func muxServeV2(t *testing.T, wire []byte, chain bool) {
+	c := v2Conn(closingConn{bufConn{r: bytes.NewReader(wire), w: io.Discard}})
+	if chain {
+		c.features, c.peerFeatures = features, features
+	}
+	m := NewMux(c)
+	{
 		var mu sync.Mutex
 		var got int
-		err := m.Serve(func(_ []byte, s *Session) {
+		err := m.Serve(func(h []byte, s *Session) {
+			if len(h) > 0 && h[0]&1 == 1 {
+				_ = s.Refuse(CodeApp, "odd")
+				return
+			}
+			_ = s.Accept()
 			n, _ := io.Copy(io.Discard, s)
 			mu.Lock()
 			got += int(n)
@@ -182,6 +262,73 @@ func FuzzMuxServeV2(f *testing.F) {
 		defer mu.Unlock()
 		if got > len(wire) {
 			t.Fatalf("sessions got %d bytes of %d", got, len(wire))
+		}
+	}
+}
+
+// FuzzForward feeds a peer's arbitrary frames, on a FeatureChain
+// connection, to a Forward hop whose Route opens onward to an echo: no
+// panic, Serve returns when the bytes run out, and every onward session
+// it opened ends (no leak).
+func FuzzForward(f *testing.F) {
+	var sent bytes.Buffer
+	s := v2Conn(bufConn{w: &sent})
+	s.features, s.peerFeatures = features, features
+	for _, err := range []error{
+		s.sendOpen("1", []byte("echo"), Chain{Trace: Trace{7}}),
+		s.SendData("1", []byte("hello")),
+		s.SendClose("1", true),
+		s.sendOpen("3", []byte("refuse"), Chain{Hops: 7}),
+		s.sendOpen("5", []byte("echo"), Chain{Hops: 200}),
+		s.sendAbort("1", &Abort{Code: CodeApp}),
+		s.Flush(),
+	} {
+		if err != nil {
+			f.Fatal(err)
+		}
+	}
+	f.Add(sent.Bytes())
+	for _, seed := range chainSeeds(f) {
+		f.Add(seed)
+	}
+	var once sync.Once
+	var onward *Mux
+	f.Fuzz(func(t *testing.T, wire []byte) {
+		once.Do(func() { // one echo per fuzz process
+			a, b := net.Pipe()
+			go func() {
+				c, _, err := Server(context.Background(), b, Config{Window: testWindow, Auth: NoAuth})
+				if err == nil {
+					_ = NewMux(c).Serve(func(h []byte, s *Session) {
+						if string(h) == "refuse" {
+							_ = s.Refuse(CodeApp, "no")
+							return
+						}
+						farEcho(h, s)
+					})
+				}
+			}()
+			c, err := Client(context.Background(), a, Config{Window: testWindow})
+			if err != nil {
+				t.Fatal(err)
+			}
+			onward = NewMux(c)
+			go func() { _ = onward.Serve(nil) }()
+		})
+		c := v2Conn(closingConn{bufConn{r: bytes.NewReader(wire), w: io.Discard}})
+		c.features, c.peerFeatures = features, features
+		m := NewMux(c)
+		route := func(ctx context.Context, in *Session) (*Session, error) {
+			ch, _ := ChainFromContext(ctx)
+			return onward.OpenChain(in.Header(), ch)
+		}
+		if err := m.Serve(Forward(route, ForwardConfig{AnswerTimeout: time.Second})); err == nil {
+			t.Fatal("Serve returned nil")
+		}
+		for deadline := time.Now().Add(10 * time.Second); onward.Sessions() > 0; time.Sleep(time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("%d onward sessions left", onward.Sessions())
+			}
 		}
 	})
 }
