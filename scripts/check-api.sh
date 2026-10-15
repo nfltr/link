@@ -4,7 +4,8 @@
 
 # check-api.sh DIR TAGPREFIX NAME: the exported API of the module in DIR
 # against its latest release before HEAD (the newest tag TAGPREFIXv*),
-# with apidiff. The report must equal api/NAME-<that tag>.txt, the API
+# with apidiff. The report must equal (line for line, in any order)
+# api/NAME-<that tag>.txt, the API
 # changes this release makes on purpose (no file: none). UPDATE=1 writes
 # the file from the report instead.
 set -eu
@@ -31,7 +32,11 @@ if [ "${UPDATE:-}" = 1 ]; then
 fi
 : >"$tmp/want"
 [ ! -f "$want" ] || cp "$want" "$tmp/want"
-if ! diff -u "$tmp/want" "$tmp/report"; then
+# apidiff orders the packages of a module as it finds them, which differs
+# between hosts: compare the lines sorted.
+LC_ALL=C sort "$tmp/want" >"$tmp/want.sorted"
+LC_ALL=C sort "$tmp/report" >"$tmp/report.sorted"
+if ! diff -u "$tmp/want.sorted" "$tmp/report.sorted"; then
 	echo "check-api: $name: the API changed since $base other than $want lists (- listed, + found)." >&2
 	echo "  On purpose? Record it in CHANGELOG.md with the migration, then: UPDATE=1 make check-api" >&2
 	exit 1
