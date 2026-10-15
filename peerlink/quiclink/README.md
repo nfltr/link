@@ -88,6 +88,18 @@ What it costs, and when not to use it:
   TCP + TLS cost (see the results). It suits the internet hop, where the
   path is the limit; between replicas in one datacenter, link over TCP
   moves more bytes per core.
+- **A slow direction after a burst the other way (quic-go, not fixed
+  upstream yet).** On a long path (measured at ~200 ms RTT), once one side
+  has sent a burst (16 MB), the other side's sender can leave slow start at
+  its initial window: its RTT samples ride behind the burst, and quic-go's
+  slow-start exit reads the inflated RTT as congestion even when the sender
+  is not using its window. quic-go then grows the window by one packet per
+  round trip (Reno), so transfers in that direction can run at 0.2-0.5 MB/s
+  for the connection's life where a fresh connection moves 2-7 MB/s. A
+  fresh connection is not affected, and link over TCP did not show it in the
+  same measurement.
+  quiclink passes quic-go's settings through and has no knob for it;
+  quiclink will require the quic-go release that fixes it.
 - **No 0-RTT.** 0-RTT data can be replayed by an attacker; quiclink turns
   it off and every connection pays the 1-RTT handshake.
 
