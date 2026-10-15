@@ -150,7 +150,9 @@ func (noAuth) Verify(_ context.Context, _ tls.ConnectionState, method byte, payl
 
 // Observer receives a connection's events, to map onto the caller's
 // metrics. Calls come from the connection's goroutines and must not block.
-// Embed NopObserver to take only some.
+// An implementation embeds NopObserver (an unexported method makes it),
+// so Observer may gain methods in minor releases: an implementation then
+// ignores the new events until it defines them.
 type Observer interface {
 	ConnUp(Identity)          // the handshake bound the connection
 	ConnDown(Identity, error) // it ended: ErrDeadPeer, the peer's or network's error, nil when this side closed it
@@ -159,6 +161,7 @@ type Observer interface {
 	CreditWait(time.Duration) // a sender waited this long for credit
 	PingRTT(time.Duration)    // a ping's round trip
 	GoAway(Identity)          // the peer sent GOAWAY
+	nopObserver()             // NopObserver's: implementations embed it
 }
 
 // NopObserver ignores every event.
@@ -184,6 +187,8 @@ func (NopObserver) PingRTT(time.Duration) {}
 
 // GoAway ignores the event.
 func (NopObserver) GoAway(Identity) {}
+
+func (NopObserver) nopObserver() {}
 
 var (
 	// ErrDeadPeer ends a connection on which nothing arrived for its

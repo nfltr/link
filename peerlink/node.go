@@ -387,8 +387,9 @@ func (n *Node) Drain(ctx context.Context) error {
 // servedObserver hands an accepted connection's events to the observer
 // Config.Observer returns for its peer, once ConnUp names the peer.
 type servedObserver struct {
-	of func(link.Identity) link.Observer
-	o  atomic.Pointer[link.Observer]
+	link.NopObserver // Observer requires it; every event is forwarded below
+	of               func(link.Identity) link.Observer
+	o                atomic.Pointer[link.Observer]
 }
 
 func (s *servedObserver) get() link.Observer {
