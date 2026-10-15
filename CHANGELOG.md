@@ -5,7 +5,7 @@ it (`peerlink/grpclink/vX.Y.Z`, `peerlink/quiclink/vX.Y.Z`). The wire
 format is [WIRE.md](WIRE.md); every release since v0.2.0 speaks the same
 version 2 unless an entry says otherwise.
 
-## Unreleased
+## v0.8.1 (2026-10-15)
 
 - Errors say more; `errors.Is` matches what it matched before. A
   handshake TLS refused for a certificate (an unknown CA, a name, expiry,
