@@ -63,7 +63,7 @@ type sessionCredit struct {
 	held     int           // received and not yet acknowledged: at most the window
 	consumed int           // left the buffer, not yet acknowledged
 	by       int           // byCaller, byUs or byPeer
-	answered bool          // byUs on a FeatureChain connection: the peer's ACCEPT or refusal came
+	answered bool          // FeatureChain connections: byUs, the peer's ACCEPT or refusal came; byPeer, this side's went
 }
 
 // NewCredit returns the credit of a connection whose side buffers window
@@ -281,6 +281,19 @@ func (c *Credit) answered(sid string) (known bool, err error) {
 	}
 	s.answered = true
 	return true, nil
+}
+
+// answering reports whether sid is a session the peer opened that this
+// side has not answered yet, and records that it now is (FeatureChain).
+func (c *Credit) answering(sid string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	s := c.sessions[sid]
+	if s == nil || s.by != byPeer || s.answered {
+		return false
+	}
+	s.answered = true
+	return true
 }
 
 // Grant adds a window update's bytes to sid's credit, which never exceeds

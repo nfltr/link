@@ -5,6 +5,21 @@ it (`peerlink/grpclink/vX.Y.Z`, `peerlink/quiclink/vX.Y.Z`). The wire
 format is [WIRE.md](WIRE.md); every release since v0.2.0 speaks the same
 version 2 unless an entry says otherwise.
 
+## v0.10.2 (2026-10-16)
+
+- Bug fix: a caller of `Conn` (not `Mux`) on a `FeatureChain` connection
+  had no way to answer a session the peer opened, so its first data
+  frame on it was `ErrFrame` at the opener, which ended the connection:
+  since v0.10.0 every side announces `FeatureChain`, which broke
+  frame protocols built on `Conn` between two v0.10 sides (nfltr's relay
+  and agents' data connections). The first data or close (`SendData`,
+  `SendClose`, `SendReset`) a side sends on a session the peer opened and
+  nothing answered now follows an ACCEPT link sends itself, as a
+  `Session`'s first `Write` answers; an explicit answer (a `Mux`
+  session's `Accept`, `Refuse`) is never repeated. No wire change.
+  Regression test: `TestConnSendsAnswerPeerOpens` (`ErrFrame` at the
+  opener before the fix).
+
 ## peerlink/grpclink v0.3.1 (2026-10-16)
 
 - Requires link v0.10.0. No change of its own: its sessions do not answer

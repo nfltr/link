@@ -246,7 +246,9 @@ func (c *Conn) SendMsg(b []byte) error {
 }
 
 // SendData buffers sid's data as data frames, as SendMsg does. The caller
-// acquired credit for it (Credit().Acquire).
+// acquired credit for it (Credit().Acquire). On a FeatureChain connection
+// the first data or close of a session the peer opened is preceded by an
+// ACCEPT when nothing answered it yet (a Mux's Session answers itself).
 func (c *Conn) SendData(sid string, data []byte) error {
 	return c.sendData(sid, data, nil)
 }
@@ -269,6 +271,9 @@ func (c *Conn) sendData(sid string, data []byte, wd *writeDeadline) error {
 	}
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
+	if err := c.acceptLocked(sid, wd); err != nil {
+		return err
+	}
 	for len(data) > 0 {
 		n := min(len(data), maxData)
 		if err := c.frameLocked(typeData, sid, data[:n], wd); err != nil {
@@ -323,7 +328,18 @@ func (c *Conn) sendAccept(sid string, hops uint8) error {
 	}
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
+	c.credit.answering(sid)
 	return c.frameLocked(typeAccept, sid, []byte{hops}, nil)
+}
+
+// acceptLocked buffers an ACCEPT for sid before this side's first frame
+// on a session the peer opened and nothing answered (FeatureChain): a
+// caller of Conn sends no answers of its own. wmu is held.
+func (c *Conn) acceptLocked(sid string, wd *writeDeadline) error {
+	if !c.chain() || !c.credit.answering(sid) {
+		return nil
+	}
+	return c.frameLocked(typeAccept, sid, []byte{0}, wd)
 }
 
 // sendAbort buffers an ABORT frame for sid (FeatureChain) and ends its
@@ -364,11 +380,14 @@ func (c *Conn) sendClose(sid string, code byte) error {
 	if len(sid) > MaxSID {
 		return errSID
 	}
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
+	if err := c.acceptLocked(sid, nil); err != nil {
+		return err
+	}
 	if code != closeHalf {
 		c.credit.Forget(sid)
 	}
-	c.wmu.Lock()
-	defer c.wmu.Unlock()
 	return c.frameLocked(typeClose, sid, []byte{code}, nil)
 }
 
