@@ -15,8 +15,8 @@ import (
 	"github.com/nfltr/link/peerlink/quiclink"
 )
 
-// TestThroughputReorderedPath: a session keeps its throughput on a long
-// path that reorders a few datagrams, as internet paths do. quic-go before
+// TestThroughputReorderedPath: a session keeps its throughput on a path
+// that reorders a few datagrams, as internet paths do. quic-go before
 // its spurious-loss handling (v0.63.0) took each reordered packet for a
 // loss and cut its congestion window for good: on this path a session
 // fell to about 1 MB/s and kept falling, where TCP kept its rate.
@@ -25,7 +25,7 @@ func TestThroughputReorderedPath(t *testing.T) {
 		t.Skip("moves data for seconds")
 	}
 	pc := listenUDP(t)
-	addr := reorderingPath(t, pc.LocalAddr().String(), 100*time.Millisecond, 100, 2*time.Millisecond)
+	addr := reorderingPath(t, pc.LocalAddr().String(), 10*time.Millisecond, 100, 2*time.Millisecond)
 	const window = 16 << 20
 	b := mustNew(t, quiclink.Config{PacketConn: pc, TLS: serverTLS("b"), Window: window})
 	a := mustNew(t, quiclink.Config{Dial: dialer("a", "b", addr), Connect: []string{"b"}, Window: window})
@@ -73,18 +73,20 @@ func TestThroughputReorderedPath(t *testing.T) {
 		}
 	}()
 	defer close(stop)
-	time.Sleep(2 * time.Second) // slow start: ~10 round trips here, more on a loaded CI runner
+	time.Sleep(2 * time.Second) // slow start: a few round trips here, more on a loaded CI runner
 	from := got.Load()
 	const secs = 4
 	time.Sleep(secs * time.Second)
 	rate := float64(got.Load()-from) / secs / 1e6
-	t.Logf("%.1f MB/s at 200 ms RTT, every 100th datagram 2 ms late", rate)
-	// quic-go v0.63.0 moved ~1.2 MB/s here and kept falling (0.4 measured from 2 s on),
-	// v0.63.1-0.20261014084224 ~54 (also under -race) and 3.7 on a loaded
-	// GitHub runner: the floor sits twice above the old behaviour, not near
-	// the new one, so a slow runner does not fail it.
-	if rate < 2.5 {
-		t.Fatalf("%.2f MB/s, want at least 2.5", rate)
+	t.Logf("%.1f MB/s at 20 ms RTT, every 100th datagram 2 ms late", rate)
+	// quic-go v0.63.0 moves 1.2-1.4 MB/s here, v0.63.1-0.20261014084224
+	// 23-25 under -race on 2 CPUs. The path is 20 ms, not the 200 ms of an
+	// agent's: a shared CI runner sometimes stalls the relay goroutines long
+	// enough for a real loss, and at 200 ms Reno regrows one packet per
+	// 200 ms, which read as 0.2 MB/s over this window (CI, 2026-10-15) with
+	// the fix in place. The reordering bug cuts the window at any RTT.
+	if rate < 4 {
+		t.Fatalf("%.2f MB/s, want at least 4", rate)
 	}
 }
 
