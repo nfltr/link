@@ -73,16 +73,18 @@ func TestThroughputReorderedPath(t *testing.T) {
 		}
 	}()
 	defer close(stop)
-	time.Sleep(time.Second) // slow start
+	time.Sleep(2 * time.Second) // slow start: ~10 round trips here, more on a loaded CI runner
 	from := got.Load()
 	const secs = 4
 	time.Sleep(secs * time.Second)
 	rate := float64(got.Load()-from) / secs / 1e6
 	t.Logf("%.1f MB/s at 200 ms RTT, every 100th datagram 2 ms late", rate)
-	// quic-go v0.63.0 moved ~1.2 MB/s here, v0.63.1-0.20261014084224 ~54
-	// (also under -race).
-	if rate < 4 {
-		t.Fatalf("%.2f MB/s, want at least 4", rate)
+	// quic-go v0.63.0 moved ~1.2 MB/s here and kept falling (0.4 measured from 2 s on),
+	// v0.63.1-0.20261014084224 ~54 (also under -race) and 3.7 on a loaded
+	// GitHub runner: the floor sits twice above the old behaviour, not near
+	// the new one, so a slow runner does not fail it.
+	if rate < 2.5 {
+		t.Fatalf("%.2f MB/s, want at least 2.5", rate)
 	}
 }
 
