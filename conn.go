@@ -570,6 +570,13 @@ func (c *Conn) writeOneLocked() {
 	}
 }
 
+// writeFailed reports whether a write on c failed.
+func (c *Conn) writeFailed() bool {
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
+	return c.werr != nil
+}
+
 // Flush writes the buffered frames: inline when no write is in flight,
 // else the write in flight takes them next. The buffer goes back to the
 // pool once written, so an idle connection holds none.

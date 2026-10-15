@@ -5,6 +5,21 @@ it (`peerlink/grpclink/vX.Y.Z`, `peerlink/quiclink/vX.Y.Z`). The wire
 format is [WIRE.md](WIRE.md); every release since v0.2.0 speaks the same
 version 2 unless an entry says otherwise.
 
+## peerlink/quiclink v0.3.4 (2026-10-15)
+
+- Requires link v0.9.3. No change of its own.
+
+## v0.9.3 (2026-10-15)
+
+- Bug fix: `Pool.Open`, when the connection it picked fails the open
+  because its writes failed (the peer reset it and its reader has yet to
+  see the end), picks again: another connection, or a new one, since a
+  connection whose writes failed takes no session and does not count
+  against `Max`. It returned the write error (the same defect as v0.9.2's
+  in `peerlink.Node.Open`). Regression test:
+  `TestPoolOpenPassesABrokenConnection`.
+- No API or wire change.
+
 ## peerlink/quiclink v0.3.3 (2026-10-15)
 
 - Requires link v0.9.2. No change of its own.

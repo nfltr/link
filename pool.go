@@ -105,12 +105,7 @@ func (cfg PoolConfig) Validate() error {
 
 // takes reports whether m takes a new session.
 func takes(m *Mux) bool {
-	select {
-	case <-m.c.Done():
-		return false
-	default:
-	}
-	return !m.c.GoingAway() && m.Sessions() < min(MaxSessions, m.c.PeerMaxSessions())
+	return !ended(m) && !m.c.GoingAway() && m.Sessions() < min(MaxSessions, m.c.PeerMaxSessions())
 }
 
 // Stats is the Pool's load.
@@ -131,12 +126,18 @@ func (p *Pool) statsLocked() PoolStats {
 	return st
 }
 
+// ended reports whether m closed, or its writes failed (the peer reset
+// it; its reader has yet to see the end).
+func ended(m *Mux) bool {
+	return closed(m.c.Done()) || m.c.writeFailed()
+}
+
 // staying is how many connections count against Max: those open and not
 // going away, and the dials in flight.
 func (p *Pool) stayingLocked() int {
 	n := p.dials
 	for _, m := range p.conns {
-		if !m.c.GoingAway() && !closed(m.c.Done()) {
+		if !m.c.GoingAway() && !ended(m) {
 			n++
 		}
 	}
@@ -217,10 +218,11 @@ func (p *Pool) Open(ctx context.Context, header []byte) (*Session, error) {
 		if err == nil {
 			return s, nil
 		}
-		if !errors.Is(err, ErrGoAway) && !errors.Is(err, ErrFull) && !errors.Is(err, net.ErrClosed) {
+		if !errors.Is(err, ErrGoAway) && !errors.Is(err, ErrFull) && !errors.Is(err, net.ErrClosed) && !m.c.writeFailed() {
 			return nil, err
 		}
-		// m stopped taking sessions meanwhile: pick again.
+		// m stopped taking sessions meanwhile, or its writes failed: pick
+		// again (pick passes it).
 	}
 }
 
