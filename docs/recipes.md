@@ -1,10 +1,11 @@
 # Recipes
 
-Each recipe is a runnable Example in this repository (`go test` runs it;
-`go doc` shows it); the code below is copied from it verbatim, and a test
-(`TestDocCodeBlocksAreCompiled`) fails if it drifts. The helpers they
-use (`echo`, `call`, `drain`, `must`, `dialTCP`, `examplePKI`) are at the
-top and bottom of [peerlink/example_test.go](../peerlink/example_test.go).
+Each recipe is a runnable Example or program in this repository (`go
+test` runs it; `go doc` shows it); the code below is copied from it
+verbatim, and a test (`TestDocCodeBlocksAreCompiled`) fails if it drifts.
+The helpers the Examples use (`echo`, `call`, `drain`, `must`, `dialTCP`)
+are at the top of [peerlink/example_test.go](../peerlink/example_test.go);
+the programs under [examples](../examples) need nothing else.
 
 - [Plaintext inside a cluster, or mutual TLS](#plaintext-inside-a-cluster-or-mutual-tls)
 - [Choosing a liveness preset](#choosing-a-liveness-preset)
@@ -31,11 +32,11 @@ A link runs over whatever connection your `Dial` returns and your
 Authentication runs one way: the listener learns who dialled it. The
 name you give `Open` is only what your `Dial` resolves, and is not
 checked against the listener; to be sure whom you reached, dial with TLS
-and set `ServerName` to the peer (as `Example_mutualTLS` does). For
+and set `ServerName` to the peer (as [examples/mtls](../examples/mtls/main.go) does). For
 `CertAuth`, each certificate names its peer (CommonName or DNS name), the
 listener's DNS name matches the dialer's `ServerName`, and a certificate
 used for both roles has both `ExtKeyUsage`s, ServerAuth and ClientAuth
-(`examplePKI` makes such certificates).
+(its `pki` makes such certificates).
 
 A listening Node refuses to start without `Auth` (`peerlink.New` names
 the field). Plaintext, from [examples/quickstart](../examples/quickstart/main.go):
@@ -68,39 +69,51 @@ the field). Plaintext, from [examples/quickstart](../examples/quickstart/main.go
 	go a.Serve(reply("a"))
 ```
 
-Mutual TLS (`Example_mutualTLS`): only the connections change, and
-`CertAuth` names peers by their certificates.
+Mutual TLS, from [examples/mtls](../examples/mtls/main.go), a program
+of its own (it makes a throwaway CA and a certificate for each peer):
+`go run github.com/nfltr/link/examples/mtls@latest`. Only the connections
+change, and `CertAuth` names peers by their certificates:
 
 ```go
-func Example_mutualTLS() {
-	pool, certs := examplePKI("server", "client")
-	ln := must(tls.Listen("tcp", "127.0.0.1:0", &tls.Config{
-		Certificates: []tls.Certificate{certs["server"]},
-		ClientCAs:    pool,
+	// b listens: TLS verifies the dialer's certificate, CertAuth names the
+	// dialer by it (its CommonName, here "a").
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{
+		Certificates: []tls.Certificate{certs["b"]},
+		ClientCAs:    ca,
 		ClientAuth:   tls.RequireAndVerifyClientCert,
 		MinVersion:   tls.VersionTLS13,
-	}))
-	server := must(peerlink.New(peerlink.Config{Listener: ln, Link: link.Config{Auth: link.CertAuth}}))
-	go server.Serve(echo)
-	defer drain(server)
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	b, err := peerlink.New(peerlink.Config{
+		Listener: ln,
+		Link:     link.Config{Auth: link.CertAuth},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	go b.Serve(reply("b"))
 
-	client := must(peerlink.New(peerlink.Config{
-		Link: link.Config{Auth: link.CertAuth},
+	// a dials b with its own certificate and checks b's: ServerName is the
+	// peer's name, which b's certificate must carry.
+	a, err := peerlink.New(peerlink.Config{
+		Link:    link.Config{Auth: link.CertAuth},
+		Connect: []string{"b"},
 		Dial: func(ctx context.Context, peer string) (net.Conn, error) {
 			d := tls.Dialer{Config: &tls.Config{
-				Certificates: []tls.Certificate{certs["client"]},
-				RootCAs:      pool,
-				ServerName:   peer, // the server's certificate names it
+				Certificates: []tls.Certificate{certs["a"]},
+				RootCAs:      ca,
+				ServerName:   peer,
 				MinVersion:   tls.VersionTLS13,
 			}}
 			return d.DialContext(ctx, "tcp", ln.Addr().String())
 		},
-	}))
-	defer drain(client)
-
-	fmt.Println(call(client, "server", "hello"))
-	// Output: client echo hello
-}
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	go a.Serve(reply("a"))
 ```
 
 ## Choosing a liveness preset
@@ -395,5 +408,5 @@ The dialer's `Open` returns the reason (test it with `errors.Is`: the
 [README's table](../README.md#errors)). The listener closes such a
 connection and goes on; to hear of it, set
 `peerlink.Config.HandshakeError`: a wrong credential is `link.ErrAuth`
-(wrapping your `Verify`'s error), a TLS mismatch or a dialer that is not
-link's is `link.ErrHandshake`; each says what to check.
+(wrapping your `Verify`'s error); a TLS mismatch, a certificate TLS refused or a
+dialer that is not link's is `link.ErrHandshake`; each says what to check.

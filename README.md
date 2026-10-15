@@ -9,7 +9,8 @@ imports only the Go standard library (Apache-2.0).
 ## Quick start
 
 Two peers in one program: `a` dials `b` over plaintext TCP, then each
-opens a session to the other on that one connection. Run it with
+opens a session to the other on that one connection. It needs Go 1.27 or
+later (`go.mod`). Run it with
 `go run github.com/nfltr/link/examples/quickstart@latest`, or save it as
 `main.go` in a module of your own (`go get github.com/nfltr/link@latest`):
 
@@ -115,9 +116,19 @@ a got "hello" (greeting) from b
 
 In two processes, one runs `b`'s half (`net.Listen`, a Node with
 `Listener`, `Serve`) and the other `a`'s (a Node whose `Dial` reaches
-`b`'s address, with `Connect: []string{"b"}` so that `b` can open
-sessions back, and `Serve`); either then opens sessions to the other. For mutual TLS, gRPC or HTTP over a
-link, liveness, draining, reconnects and metrics, see the
+`b`'s address, with `Connect: []string{"b"}`, and `Serve`: `b` opens
+sessions to `a` only on the connection `Connect` keeps up, and only
+`Serve` takes them); either then opens sessions to the other.
+[examples/twoproc](examples/twoproc/main.go) does that:
+
+```
+go run github.com/nfltr/link/examples/twoproc@latest -role b &   # listens on -addr (127.0.0.1:7000)
+go run github.com/nfltr/link/examples/twoproc@latest -role a     # dials it; exits once both sessions ran
+kill %1
+```
+
+For mutual TLS ([examples/mtls](examples/mtls/main.go)), gRPC or HTTP
+over a link, liveness, draining, reconnects and metrics, see the
 [recipes](docs/recipes.md).
 
 ## Which API
@@ -134,7 +145,7 @@ link, liveness, draining, reconnects and metrics, see the
 
 Constructors check their configuration and name the field to fix
 (`peerlink.New`, `link.NewPool`, `link.Config.Validate`); a zero
-`link.Config` is valid. Each package's documentation (`go doc`, or
+`link.Config` is valid for a dialer, and a listener needs `Auth`. Each package's documentation (`go doc`, or
 [pkg.go.dev](https://pkg.go.dev/github.com/nfltr/link)) has an Example for
 each common use.
 
@@ -145,9 +156,9 @@ the messages name what to change.
 
 | error | where you see it | what it means | what to change |
 |---|---|---|---|
-| `link.ErrHandshake` (wraps the network's error) | `Open` (dialing), `Client`, `Server`, `peerlink.Config.HandshakeError` | the hello or its reply did not arrive whole: the other end closed or timed out, is not link, or speaks TLS where this end does not | TLS on both ends or neither; the address of a link listener |
+| `link.ErrHandshake` (wraps the network's error) | `Open` (dialing), `Client`, `Server`, `peerlink.Config.HandshakeError` (`func(net.Conn, error)`) | the hello or its reply did not arrive whole: the other end closed or timed out, is not link, speaks TLS where this end does not, or TLS refused a certificate | TLS on both ends or neither; the address of a link listener; the certificates (the CA each end trusts, the names, expiry), as the message says |
 | `link.ErrRefused` | `Open` (dialing), `Client` | the listener's Authenticator refused the dialer's credential | the dialer's `Config.Auth`: what the listener accepts (`CertAuth`'s certificate, the token) |
-| `link.ErrAuth` (wraps `Verify`'s error) | `Server`, `peerlink.Config.HandshakeError` | this listener refused a dialer | the reason it wraps; the dialer's credential or this `Config.Auth` |
+| `link.ErrAuth` (wraps `Verify`'s error) | `Server`, `peerlink.Config.HandshakeError` (`func(net.Conn, error)`) | this listener refused a dialer | the reason it wraps; the dialer's credential or this `Config.Auth` |
 | `link.ErrVersion`, `*link.VersionError`, `link.ErrV1` | `Client`, `Server` | the peer speaks another wire version | upgrade the older end (every release since v0.5.0 speaks version 2) |
 | `link.ErrDeadPeer` | session reads, `Mux.Serve`, `Observer.ConnDown` | nothing arrived for the liveness bound: the peer or the path died | nothing, if it did; else a preset with a longer bound for a path that goes silent (`LivenessNAT`, `LivenessMobile`) |
 | `link.ErrGoAway` | `Mux.Open`, `Conn.SendOpen` | the connection is going away (a drain) | open on another connection (`Pool` and `Node` do) |
@@ -155,7 +166,7 @@ the messages name what to change.
 | `peerlink.ErrDraining` | `Node.Open` | this Node is draining | nothing: it is shutting down |
 | `peerlink.ErrPeerUnreachable` (and the context's error) | `Node.Open` without `Dial` | no connection from that peer before the context ended | the peer's name (the error lists the connected ones); that peer's `Connect` and `Dial`; a longer context |
 | `link.ErrReset` | session reads | the peer reset the session | the peer's reason |
-| `link.ErrConnClosed` | session reads | the connection closed under the session | open a new session (`Pool` and `Node` redial) |
+| `link.ErrConnClosed` (wraps why: `ErrDeadPeer`, the network's error) | session reads; writes return `io.ErrClosedPipe` wrapping it | the connection closed under the session | open a new session (`Pool` and `Node` redial) |
 | `link.ErrFrame`, `link.ErrCredit` | `Conn.Recv`, `Mux.Serve` | the peer broke the wire protocol | a peer that is not link, or a bug: please report it |
 | a message naming a field | `peerlink.New`, `link.NewPool`, `Validate`, `Client`, `Server` | a configuration that cannot work | the field it names, as it says |
 | `io.EOF` | session reads | the peer ended its writes on purpose (`CloseWrite`, `Close`) | nothing: the normal end |

@@ -87,3 +87,73 @@ func ExampleConn() {
 	// one
 	// two
 }
+
+// ExampleClient binds the dialer's end of a connection and Server the
+// listener's (here an in-memory pipe; TLS, when wanted, is the caller's:
+// wrap the connection first). The listener learns who dialled it from its
+// Authenticator.
+func ExampleClient() {
+	a, b := net.Pipe()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	who := make(chan string, 1)
+	go func() {
+		c, id, err := link.Server(ctx, b, link.Config{Auth: link.NameAuth("listener")})
+		if err != nil {
+			b.Close()
+			who <- err.Error()
+			return
+		}
+		defer c.Close()
+		who <- id.Subject
+	}()
+	c, err := link.Client(ctx, a, link.Config{Auth: link.NameAuth("dialer")})
+	if err != nil {
+		panic(err)
+	}
+	defer c.Close()
+	fmt.Println("the listener knows the dialer as", <-who)
+	// Output: the listener knows the dialer as dialer
+}
+
+// ExampleNewPool: a Pool dials connections to one peer as its sessions
+// need them, binds each (Client) and opens sessions on them. Here each
+// dial is an in-memory pipe whose other end a listener binds (Server) and
+// serves, echoing each session.
+func ExampleNewPool() {
+	p, err := link.NewPool(link.PoolConfig{
+		Link: link.Config{Auth: link.NameAuth("dialer")},
+		Dial: func(context.Context) (net.Conn, error) {
+			a, b := net.Pipe()
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				c, _, err := link.Server(ctx, b, link.Config{Auth: link.NameAuth("listener")})
+				cancel()
+				if err != nil {
+					b.Close()
+					return
+				}
+				_ = link.NewMux(c).Serve(func(header []byte, s *link.Session) {
+					defer s.Close()
+					_, _ = io.Copy(s, s) // until the opener's CloseWrite
+				})
+			}()
+			return a, nil
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
+	defer p.Close()
+
+	s, err := p.Open(context.Background(), []byte("echo"))
+	if err != nil {
+		panic(err)
+	}
+	_, _ = io.WriteString(s, "hello")
+	_ = s.CloseWrite()
+	reply, _ := io.ReadAll(s)
+	_ = s.Close()
+	fmt.Println(string(reply))
+	// Output: hello
+}

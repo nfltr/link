@@ -5,6 +5,21 @@ it (`peerlink/grpclink/vX.Y.Z`, `peerlink/quiclink/vX.Y.Z`). The wire
 format is [WIRE.md](WIRE.md); every release since v0.2.0 speaks the same
 version 2 unless an entry says otherwise.
 
+## Unreleased
+
+- Errors say more; `errors.Is` matches what it matched before. A
+  handshake TLS refused for a certificate (an unknown CA, a name, expiry,
+  the peer's alert) points at the certificates, not at TLS on one end
+  only. `ErrRefused` names the dialer's `Config.Auth`. A session cut with
+  its connection reads `ErrConnClosed` wrapping why (`ErrDeadPeer`, the
+  network's error; the peer's close in its text, never as `io.EOF`) and
+  saying to open a new session; a write past that end returns
+  `io.ErrClosedPipe` wrapping the same error.
+- `examples/mtls` (mutual TLS, a throwaway CA) and `examples/twoproc`
+  (the quick start in two processes); `ExampleClient`, `ExampleNewPool`.
+- No change to the existing API (the examples are new packages); no wire
+  change.
+
 ## peerlink/quiclink v0.2.1 (2026-10-14)
 
 - quic-go v0.63.1-0.20261014084224-4b404ee15e68 (its main branch; no
