@@ -77,6 +77,17 @@
 //   - Config.Validate, PoolConfig.Validate, NewPool, Client, Server: a
 //     message naming the field and what to set.
 //
+// # Stability
+//
+// The wire (version 2, WIRE.md) is held byte for byte by its test vectors;
+// a change to it is a new version negotiated in the hello. Before v1.0.0
+// the Go API may change in a minor release, with the migration in the
+// changelog; from v1.0.0 it follows the Go 1 compatibility rules, and a
+// breaking change is a /v2 module. [Observer] may gain methods in minor
+// releases (implementations embed [NopObserver]); interfaces that callers
+// call ([Authenticator], peerlink.Link, peerlink.Session) never change,
+// and new capabilities arrive as optional interfaces.
+//
 // # Wire format, version 2
 //
 // WIRE.md in the module is the full specification, with test vectors for

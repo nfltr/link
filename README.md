@@ -229,10 +229,18 @@ as Go modules do for v0:
   `errors.Is`, the peerlink contract) changes only in a minor release,
   except to fix a bug, which the changelog flags.
 - `peerlink/grpclink` and `peerlink/quiclink` are modules of their own,
-  versioned on their own (`peerlink/<name>/vX.Y.Z`).
+  versioned on their own (`peerlink/<name>/vX.Y.Z`). They stay v0 until
+  their transport's module is v1: quiclink's API exposes quic-go's types.
+- **Interfaces** that link calls (`Observer`) may gain methods in minor
+  releases; implementations embed `NopObserver`, which the compiler
+  requires. Interfaces that callers call (`peerlink.Link`,
+  `peerlink.Session`, `Authenticator`) never change: new capabilities
+  arrive as optional interfaces.
+- `peerlinktest` may add checks in minor releases.
 
-v1.0.0 will freeze the API under Go's compatibility rules once the
-maturity criteria below hold.
+v1.0.0 will freeze the API once the maturity criteria below hold: from
+then on the Go API follows the Go 1 compatibility rules, and a breaking
+change is a `/v2` module.
 
 ## Maturity
 
