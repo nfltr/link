@@ -361,7 +361,8 @@ func Example_reconnect() {
 are called from the connection's goroutines and must not block. Embed
 `link.NopObserver` and count what you need: `ConnUp`, `ConnDown(id, err)`
 (why it ended: `ErrDeadPeer`, the network's error, nil when closed on
-purpose), `SessionOpen`, `SessionClose`, `CreditWait` (a sender waited
+purpose), `SessionOpen`, `SessionClose` (also for each session its
+connection's end cut, before `ConnDown`), `CreditWait` (a sender waited
 for its reader: backpressure), `PingRTT`, `GoAway` (`Example_observer`):
 
 ```go

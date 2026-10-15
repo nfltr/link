@@ -44,6 +44,7 @@ type Credit struct {
 	mu       sync.Mutex
 	sessions map[string]*sessionCredit
 	opened   [2]int // sessions open by side: [0] this side's, [1] the peer's
+	cut      bool   // the connection ended: sessions are no longer observed (cutSessions)
 	closed   chan struct{}
 	once     sync.Once
 }
@@ -98,6 +99,9 @@ func (c *Credit) open(sid string, by int) {
 			c.opened[old.by-1]--
 		}
 	}
+	if c.cut {
+		by = byCaller // the connection ended: SessionClose was reported for its sessions
+	}
 	c.sessions[sid] = &sessionCredit{n: c.peerWindow, wake: make(chan struct{}, 1), by: by}
 	if by != byCaller {
 		c.opened[by-1]++
@@ -105,6 +109,26 @@ func (c *Credit) open(sid string, by int) {
 	c.mu.Unlock()
 	if old == nil && by != byCaller && c.obs != nil {
 		c.obs.SessionOpen()
+	}
+}
+
+// cutSessions reports SessionClose(err) for each link-managed session
+// still open: the connection ended under them. A later Forget of one
+// reports nothing more, nor a session opened after.
+func (c *Credit) cutSessions(err error) {
+	c.mu.Lock()
+	c.cut = true
+	n := 0
+	for _, s := range c.sessions {
+		if s.by != byCaller {
+			c.opened[s.by-1]--
+			s.by = byCaller
+			n++
+		}
+	}
+	c.mu.Unlock()
+	for range n {
+		c.obs.SessionClose(err)
 	}
 }
 

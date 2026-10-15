@@ -5,6 +5,16 @@ it (`peerlink/grpclink/vX.Y.Z`, `peerlink/quiclink/vX.Y.Z`). The wire
 format is [WIRE.md](WIRE.md); every release since v0.2.0 speaks the same
 version 2 unless an entry says otherwise.
 
+## v0.9.4 (2026-10-15)
+
+- Bug fix: `Observer.SessionClose` now comes for each session still open
+  when its connection ends (with ConnDown's error, before `ConnDown`); it
+  came only for a session's own end, so an observer's open-session count
+  (`SessionOpen` minus `SessionClose`) kept the sessions of every
+  connection that died. Regression test:
+  `TestObserverSessionsClosedWithConn`.
+- No API or wire change.
+
 ## peerlink/quiclink v0.3.4 (2026-10-15)
 
 - Requires link v0.9.3. No change of its own.

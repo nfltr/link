@@ -849,13 +849,16 @@ func (c *Conn) lost(err error) {
 
 // Close closes the connection; senders waiting for credit give up.
 // ConnDown gets why it ended: ErrDeadPeer, what the peer or the network
-// did (lost), or nil when this side closed it.
+// did (lost), or nil when this side closed it; SessionClose, the same
+// error, for each session still open, before it.
 func (c *Conn) Close() error {
 	c.credit.Close()
 	err := c.nc.Close()
 	c.downOne.Do(func() {
 		if c.credit.obs != nil {
-			c.credit.obs.ConnDown(c.id, c.why())
+			why := c.why()
+			c.credit.cutSessions(why)
+			c.credit.obs.ConnDown(c.id, why)
 		}
 	})
 	return err

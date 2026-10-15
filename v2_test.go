@@ -257,6 +257,32 @@ func TestMuxV2Sessions(t *testing.T) {
 	}
 }
 
+// Sessions open when their connection ends are reported closed, with
+// ConnDown's error, before ConnDown: an observer's open sessions return to
+// zero (v0.9.4; before, SessionClose came only for a session's own end).
+func TestObserverSessionsClosedWithConn(t *testing.T) {
+	obs := &countObserver{}
+	lcfg := v2cfg
+	lcfg.Observer = obs
+	hold := make(chan struct{})
+	defer close(hold)
+	dm, lm := v2muxPair(t, func(_ []byte, s *Session) { <-hold; _ = s.Close() }, v2cfg, lcfg)
+	for _, m := range []*Mux{dm, lm, dm} { // both sides open
+		if _, err := openV2(m, "target"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitUntil(t, func() bool { return obs.open.Load() == 3 })
+	if obs.closed.Load() != 0 {
+		t.Fatalf("%d sessions closed while open", obs.closed.Load())
+	}
+	_ = dm.Conn().nc.Close() // the network cuts the connection
+	waitUntil(t, func() bool { return obs.down.Load() == 1 })
+	if o, c := obs.open.Load(), obs.closed.Load(); o != 3 || c != 3 {
+		t.Fatalf("after the connection died: %d opened, %d closed; want 3, 3", o, c)
+	}
+}
+
 func waitUntil(t *testing.T, cond func() bool) {
 	t.Helper()
 	for deadline := time.Now().Add(5 * time.Second); !cond(); time.Sleep(5 * time.Millisecond) {

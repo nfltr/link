@@ -157,7 +157,7 @@ type Observer interface {
 	ConnUp(Identity)          // the handshake bound the connection
 	ConnDown(Identity, error) // it ended: ErrDeadPeer, the peer's or network's error, nil when this side closed it
 	SessionOpen()             // a session opened by an OPEN frame
-	SessionClose(error)       // one of those ended
+	SessionClose(error)       // one of those ended, or its connection did (the ConnDown error, before ConnDown)
 	CreditWait(time.Duration) // a sender waited this long for credit
 	PingRTT(time.Duration)    // a ping's round trip
 	GoAway(Identity)          // the peer sent GOAWAY
