@@ -82,7 +82,7 @@ func TestSessionsTakeTurnsOnASlowConn(t *testing.T) {
 	start := time.Now()
 	var wg sync.WaitGroup
 	for i := range n {
-		s, err := dm.Open(func(string) ([]byte, error) { return []byte{byte(i)}, nil })
+		s, err := dm.Open([]byte{byte(i)})
 		if err != nil {
 			t.Fatal(err)
 		}

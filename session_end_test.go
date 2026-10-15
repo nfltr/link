@@ -20,7 +20,7 @@ func openPair(t *testing.T, dialer, listener Config) (*Session, *Session) {
 	t.Helper()
 	got := make(chan *Session, 1)
 	dm, _ := v2muxPair(t, func(_ []byte, s *Session) { got <- s }, dialer, listener)
-	s, err := dm.Open(func(string) ([]byte, error) { return []byte("h"), nil })
+	s, err := dm.Open([]byte("h"))
 	if err != nil {
 		t.Fatal(err)
 	}

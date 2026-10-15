@@ -51,7 +51,7 @@ func ExampleMux() {
 	m := link.NewMux(dc)
 	go m.Serve(nil) // the dialer takes no sessions
 	defer m.Close()
-	s, err := m.Open(func(sid string) ([]byte, error) { return []byte("count"), nil })
+	s, err := m.Open([]byte("count"))
 	if err != nil {
 		panic(err)
 	}

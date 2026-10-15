@@ -178,7 +178,7 @@ func (n *Node) openServed(ctx context.Context, peer string, header []byte) (net.
 				return nil, fmt.Errorf("%w %q (no connection from it; connected: %q): %w", ErrPeerUnreachable, peer, slices.Sorted(maps.Keys(names)), ctx.Err())
 			}
 		}
-		s, err := best.Open(func(string) ([]byte, error) { return header, nil })
+		s, err := best.Open(header)
 		if err == nil {
 			return s, nil
 		}
@@ -355,7 +355,7 @@ func (n *Node) Drain(ctx context.Context) error {
 		_ = n.cfg.Listener.Close()
 	}
 	for _, m := range served {
-		_ = m.GoAway(time.Time{}) // ctx's end is Drain's to act on
+		go func() { _ = m.Drain(context.WithoutCancel(ctx)) }() // ctx's end is this Drain's to act on (below)
 	}
 	idle := make(chan struct{})
 	go func() {

@@ -15,11 +15,6 @@ import (
 	"time"
 )
 
-// opening returns Mux.Open's argument for a session with header.
-func opening(header string) func(sid string) ([]byte, error) {
-	return func(string) ([]byte, error) { return []byte(header), nil }
-}
-
 // header is an open's header.
 func header(open []byte) string { return string(open) }
 
@@ -51,7 +46,7 @@ func TestMuxSessions(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := range 8 {
 		wg.Go(func() {
-			s, err := client.Open(opening("echo"))
+			s, err := client.Open([]byte("echo"))
 			if err != nil {
 				t.Error(err)
 				return
@@ -68,7 +63,7 @@ func TestMuxSessions(t *testing.T) {
 	wg.Wait()
 
 	// A refused open is a close: the opener reads io.EOF, its writes fail.
-	s, err := client.Open(opening("nope"))
+	s, err := client.Open([]byte("nope"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +108,7 @@ func TestMuxSlowSessionIsolated(t *testing.T) {
 		t.Error("hung: closing the mux")
 		_ = client.Close()
 	}).Stop()
-	slow, err := client.Open(opening("slow"))
+	slow, err := client.Open([]byte("slow"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +116,7 @@ func TestMuxSlowSessionIsolated(t *testing.T) {
 	big := bytes.Repeat([]byte("s"), 3*testWindow)
 	go func() { _, err := slow.Write(big); wrote <- err }()
 
-	fast, err := client.Open(opening("fast"))
+	fast, err := client.Open([]byte("fast"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +156,7 @@ func TestMuxWriteFlushesBeforeWaitingForCredit(t *testing.T) {
 			got <- n
 		})
 	}()
-	s, err := client.Open(opening("sink"))
+	s, err := client.Open([]byte("sink"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +188,7 @@ func TestMuxMaxSessions(t *testing.T) {
 	})
 	var first *Session
 	for i := range MaxSessions {
-		s, err := client.Open(opening("a"))
+		s, err := client.Open([]byte("a"))
 		if err != nil {
 			t.Fatalf("session %d: %v", i, err)
 		}
@@ -201,11 +196,11 @@ func TestMuxMaxSessions(t *testing.T) {
 			first = s
 		}
 	}
-	if _, err := client.Open(opening("a")); !errors.Is(err, ErrFull) {
+	if _, err := client.Open([]byte("a")); !errors.Is(err, ErrFull) {
 		t.Fatalf("session past MaxSessions: %v, want ErrFull", err)
 	}
 	_ = first.Close()
-	if _, err := client.Open(opening("a")); err != nil {
+	if _, err := client.Open([]byte("a")); err != nil {
 		t.Fatalf("after one closed: %v", err)
 	}
 	// An open past the accepting side's limit: TestMuxV2MaxSessions.

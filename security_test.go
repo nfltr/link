@@ -95,7 +95,7 @@ func TestPoolBacksOffRefusingPeer(t *testing.T) {
 					return
 				}
 				m := NewMux(c)
-				_ = m.GoAway(time.Time{}) // a listener that is going away
+				_ = m.goAway(time.Time{}) // a listener that is going away
 				_ = m.Serve(nil)
 			}()
 		}

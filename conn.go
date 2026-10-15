@@ -130,8 +130,8 @@ type Frame struct {
 // Read goes through a bufio.Reader.
 type Conn struct {
 	credit *Credit
-	nc   net.Conn
-	rhdr [5 + 1 + MaxSID + 4]byte // a header, and a window or close frame or a data frame's sid
+	nc     net.Conn
+	rhdr   [5 + 1 + MaxSID + 4]byte // a header, and a window or close frame or a data frame's sid
 
 	wmu     sync.Mutex
 	wcond   sync.Cond       // on wmu: a write finished or took the buffer
@@ -330,7 +330,7 @@ func (c *Conn) ping() {
 }
 
 // Drained is closed once the peer answered a ping this side
-// sent after its GOAWAY (Mux.GoAway sends one at once): the peer has read
+// sent after its GOAWAY (Mux.Drain sends one at once): the peer has read
 // the GOAWAY, so it opens nothing more here, and every OPEN it sent
 // before has arrived (frames keep their order). An OPEN that crossed the
 // GOAWAY is a session like any other; one after Drained breaks the

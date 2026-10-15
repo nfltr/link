@@ -44,9 +44,11 @@ func TestGoAwayDrainKeepsTails(t *testing.T) {
 		ss = append(ss, s)
 	}
 	waitUntil(t, func() bool { return lm.Sessions() == sessions })
-	if err := lm.GoAway(time.Now().Add(30 * time.Second)); err != nil {
-		t.Fatal(err)
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	drained := make(chan error, 1)
+	go func() { drained <- lm.Drain(ctx) }()
+	waitUntil(t, lm.c.GoingAway)
 	close(release)
 	var wg sync.WaitGroup
 	var intact atomic.Int32
@@ -65,7 +67,10 @@ func TestGoAwayDrainKeepsTails(t *testing.T) {
 		t.Fatalf("%d of %d sessions intact", intact.Load(), sessions)
 	}
 	select {
-	case <-lm.c.Done():
+	case err := <-drained:
+		if err != nil {
+			t.Fatalf("Drain: %v", err)
+		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the leaving connection did not close")
 	}
@@ -82,7 +87,7 @@ func TestCrossedOpenRunsOnTheLeavingConnection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := lm.GoAway(time.Now().Add(30 * time.Second)); err != nil {
+	if err := lm.goAway(time.Now().Add(30 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	go func() { _ = lm.Serve(v2echo) }()
@@ -179,7 +184,7 @@ func TestPoolReplacesConnectionsGoingAway(t *testing.T) {
 	}
 	waitUntil(t, func() bool { return accepted.Load() == 2 })
 	for _, m := range muxes() {
-		_ = m.GoAway(time.Now().Add(30 * time.Second))
+		_ = m.goAway(time.Now().Add(30 * time.Second))
 	}
 	waitUntil(t, func() bool { return p.Stats().Conns == 0 })
 	for range 4 {

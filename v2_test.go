@@ -207,7 +207,7 @@ func v2echo(header []byte, s *Session) {
 }
 
 func openV2(m *Mux, header string) (*Session, error) {
-	return m.Open(func(string) ([]byte, error) { return []byte(header), nil })
+	return m.Open([]byte(header))
 }
 
 func TestMuxV2Sessions(t *testing.T) {
@@ -339,7 +339,7 @@ func TestMuxV2GoAway(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitUntil(t, func() bool { return lm.Sessions() == 1 })
-	if err := lm.GoAway(time.Now().Add(5 * time.Second)); err != nil {
+	if err := lm.goAway(time.Now().Add(5 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -527,7 +527,7 @@ func TestPool(t *testing.T) {
 		select {
 		case <-m.c.Done():
 		default:
-			_ = m.GoAway(time.Now().Add(5 * time.Second))
+			_ = m.goAway(time.Now().Add(5 * time.Second))
 		}
 		return true
 	})
@@ -624,7 +624,7 @@ func TestPoolAccept(t *testing.T) {
 		}
 		p := mustPool(t, pc)
 		m := <-served
-		s, err := m.Open(func(string) ([]byte, error) { return []byte("x"), nil })
+		s, err := m.Open([]byte("x"))
 		if err != nil {
 			t.Fatal(err)
 		}

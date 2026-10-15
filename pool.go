@@ -213,7 +213,7 @@ func (p *Pool) Open(ctx context.Context, header []byte) (*Session, error) {
 			}
 			continue
 		}
-		s, err := m.Open(func(string) ([]byte, error) { return header, nil })
+		s, err := m.Open(header)
 		if err == nil {
 			return s, nil
 		}
@@ -374,7 +374,7 @@ func (p *Pool) Drain(ctx context.Context) error {
 	}
 	deadline, _ := ctx.Deadline()
 	for _, m := range old {
-		_ = m.GoAway(deadline)
+		_ = m.goAway(deadline)
 	}
 	for _, m := range old {
 		select {

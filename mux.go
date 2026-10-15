@@ -4,6 +4,7 @@
 package link
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -52,7 +53,9 @@ type Mux struct {
 	left    bool // the close began
 }
 
-// NewMux returns a Mux over c.
+// NewMux returns a Mux over c. Call Serve on it: Serve is the receive
+// loop, which a side that takes no sessions runs too (Serve(nil)), or
+// no credit returns and its writes stall.
 func NewMux(c *Conn) *Mux {
 	return &Mux{c: c, sess: map[string]*Session{}}
 }
@@ -76,23 +79,20 @@ func (m *Mux) nextSID() string {
 	return string(binary.AppendUvarint(nil, n))
 }
 
-// Open starts a session: open returns the bytes that open it for the
-// session id the Mux chose (the OPEN frame's header). Open sends it at once, so a peer
-// that speaks first is reached without the caller's bytes.
-func (m *Mux) Open(open func(sid string) ([]byte, error)) (*Session, error) {
+// Open starts a session with header, the bytes the peer's accept
+// receives (the OPEN frame's header, at most 64 KiB). Open sends it at
+// once and does not wait for the peer, so a peer that speaks first is
+// reached without the caller's bytes.
+func (m *Mux) Open(header []byte) (*Session, error) {
 	if m.c.GoingAway() {
 		return nil, ErrGoAway
 	}
 	sid := m.nextSID()
-	s, err := m.add(sid, nil)
+	s, err := m.add(sid, header)
 	if err != nil {
 		return nil, err
 	}
-	msg, err := open(sid)
-	if err == nil {
-		s.header = msg
-		err = m.c.SendOpen(sid, msg)
-	}
+	err = m.c.SendOpen(sid, header)
 	if err == nil {
 		err = m.c.Flush()
 	}
@@ -254,12 +254,32 @@ func (m *Mux) close() {
 	}
 }
 
-// GoAway tells the peer to open no more sessions here and
-// stops this side opening more; the connection closes once its last
-// session ended and the peer read the GOAWAY (an OPEN it sent before
-// that runs like the others), with every frame written; at deadline at
-// the latest (zero: no deadline).
-func (m *Mux) GoAway(deadline time.Time) error {
+// Drain closes the connection gracefully: it tells the peer to open no
+// more sessions here (GOAWAY) and stops this side opening more (Open:
+// ErrGoAway); the open sessions run to their end (an OPEN the peer sent
+// before it read the GOAWAY runs like the others), then the connection
+// closes with every frame written. Drain returns once it closed, nil; at
+// ctx's end it closes the connection at once and returns ctx's error.
+// Serve must run (it is the receive loop).
+func (m *Mux) Drain(ctx context.Context) error {
+	deadline, _ := ctx.Deadline()
+	if err := m.goAway(deadline); err != nil {
+		_ = m.Close()
+		return err
+	}
+	select {
+	case <-m.c.Done():
+		return nil
+	case <-ctx.Done():
+		_ = m.Close()
+		return ctx.Err()
+	}
+}
+
+// goAway is Drain without the wait: the connection closes once its last
+// session ended and the peer read the GOAWAY, at deadline at the latest
+// (zero: none).
+func (m *Mux) goAway(deadline time.Time) error {
 	var drain time.Duration
 	if !deadline.IsZero() {
 		drain = max(time.Until(deadline), time.Millisecond)
@@ -273,7 +293,7 @@ func (m *Mux) GoAway(deadline time.Time) error {
 	m.mu.Unlock()
 	var t *time.Timer
 	if drain > 0 {
-		t = time.AfterFunc(drain, func() { _ = m.c.Close() })
+		t = time.AfterFunc(drain, func() { _ = m.Close() })
 	}
 	go func() {
 		select {
