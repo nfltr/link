@@ -129,3 +129,34 @@ func TestJoinTCPAborts(t *testing.T) {
 		t.Fatal("the target read a clean end after the origin's abort")
 	}
 }
+
+// sizeConn records the size of each Write.
+type sizeConn struct {
+	net.Conn
+	sizes chan int
+}
+
+func (c sizeConn) Write(p []byte) (int, error) {
+	c.sizes <- len(p)
+	return c.Conn.Write(p)
+}
+
+// Join copies a conn without Pump in link data chunks (link.MaxChunk): a
+// read fills one data frame. io.Copy's 32 KiB took twice the frames and
+// cost relay-server's replica link a tenth of its upload throughput.
+func TestJoinCopiesInChunks(t *testing.T) {
+	src, srcPeer := net.Pipe()
+	dst, dstPeer := net.Pipe()
+	sizes := make(chan int, 64)
+	go func() { _ = peerlink.Join(src, sizeConn{dst, sizes}) }()
+	go func() { _, _ = io.Copy(io.Discard, dstPeer) }()
+	go func() { _, _ = srcPeer.Write(make([]byte, 4*link.MaxChunk)); _ = srcPeer.Close() }()
+	biggest := 0
+	for range 4 {
+		biggest = max(biggest, <-sizes)
+	}
+	if biggest != link.MaxChunk {
+		t.Fatalf("largest write %d bytes, want link.MaxChunk (%d)", biggest, link.MaxChunk)
+	}
+	_ = dstPeer.Close()
+}

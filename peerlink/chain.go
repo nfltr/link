@@ -318,10 +318,18 @@ func (j *joint) dir(i int) {
 		return
 	}
 	go func() {
-		n, err := io.Copy(w, struct{ io.Reader }{src}) // no WriterTo: write errors stay w's
+		buf := copyBufs.Get().(*[]byte)
+		n, err := io.CopyBuffer(w, struct{ io.Reader }{src}, *buf) // no WriterTo: write errors stay w's
+		copyBufs.Put(buf)
 		end(n, err)
 	}()
 }
+
+// copyBufs are the copy buffers of conns spliced without Pump: a link
+// data chunk each (link.MaxChunk), so a read fills one data frame;
+// io.Copy's 32 KiB took twice the frames, and its buffer per direction
+// was garbage at each session's end.
+var copyBufs = sync.Pool{New: func() any { b := make([]byte, link.MaxChunk); return &b }}
 
 func (j *joint) answered(ok bool) {
 	j.mu.Lock()

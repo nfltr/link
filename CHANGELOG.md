@@ -5,6 +5,21 @@ it (`peerlink/grpclink/vX.Y.Z`, `peerlink/quiclink/vX.Y.Z`). The wire
 format is [WIRE.md](WIRE.md); every release since v0.2.0 speaks the same
 version 2 unless an entry says otherwise.
 
+## v0.10.3 (2026-10-16)
+
+- Performance fix: `peerlink.Join` copies a conn without `Pump` (a TCP
+  conn, a quiclink stream) in link data chunks (`MaxChunk`, 64 KiB, from
+  a pool) instead of `io.Copy`'s fresh 32 KiB buffer, which took twice
+  the data frames and a buffer of garbage per direction: relay-server's
+  visitor-to-replica-link upload, 8 sessions, lost 10 % throughput and
+  gained 45 % peak heap moving from its own 64 KiB copy to `Join`
+  (2 310-2 440 MB/s, 66-86 MiB; with this fix 2 430-2 760 MB/s, 45-51 MiB,
+  its numbers before). Regression test: `TestJoinCopiesInChunks`.
+
+## peerlink/quiclink v0.4.2 (2026-10-16)
+
+- Requires link v0.10.3. No change of its own.
+
 ## peerlink/quiclink v0.4.1 (2026-10-16)
 
 - Requires link v0.10.2. No change of its own (its tests ran on v0.10.2:
