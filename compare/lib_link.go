@@ -84,7 +84,11 @@ func (l *linkLib) goAwayAll(deadline time.Time) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	for m := range l.muxs {
-		_ = m.GoAway(deadline)
+		go func() {
+			ctx, cancel := context.WithDeadline(context.Background(), deadline)
+			defer cancel()
+			_ = m.Drain(ctx)
+		}()
 	}
 }
 
