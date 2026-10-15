@@ -5,6 +5,11 @@ it (`peerlink/grpclink/vX.Y.Z`, `peerlink/quiclink/vX.Y.Z`). The wire
 format is [WIRE.md](WIRE.md); every release since v0.2.0 speaks the same
 version 2 unless an entry says otherwise.
 
+## peerlink/quiclink v0.3.2 (2026-10-15)
+
+- Requires link v0.9.1 (its v0.3.1 fix is unchanged), so a build that
+  selects link v0.9.1 has no module requiring an older link.
+
 ## peerlink/quiclink v0.3.1 (2026-10-15)
 
 - Bug fix: `Node.Open` on a Node without `Config.Dial`, toward a peer
