@@ -5,6 +5,94 @@ it (`peerlink/grpclink/vX.Y.Z`, `peerlink/quiclink/vX.Y.Z`). The wire
 format is [WIRE.md](WIRE.md); every release since v0.2.0 speaks the same
 version 2 unless an entry says otherwise.
 
+## peerlink/quiclink v0.3.0 (2026-10-15)
+
+- Requires link v0.9.0. `Node.Open` returns `peerlink.Session`, and
+  `Node.Serve`'s accept takes one (link v0.9.0's peerlink contract).
+  Migration: as for link v0.9.0, below.
+- No wire change.
+
+## peerlink/grpclink v0.3.0 (2026-10-15)
+
+- Requires link v0.9.0. `Node.Open` returns `peerlink.Session`, and
+  `Node.Serve`'s accept takes one (link v0.9.0's peerlink contract).
+  Migration: as for link v0.9.0, below.
+- No wire change.
+
+## v0.9.0 (2026-10-15)
+
+The API cleanup ahead of v1.0, from a review against yamux, smux,
+quic-go, libp2p, x/net/http2 and net. No wire change: the test vectors
+and the golden recording are byte for byte those of v0.8.1.
+
+Breaking changes:
+
+- peerlink: `Link.Open` returns `peerlink.Session`, and `Serve`'s accept
+  and `Listener.Handle` take one, so `CloseWrite` and `Reset` need no
+  type assertion; a `Session` is still a `net.Conn`.
+- `Mux.Open(header []byte)`: the header itself; no caller used the
+  session id the callback form passed.
+- `Mux.GoAway(deadline time.Time)` is `Mux.Drain(ctx) error`, as
+  `Pool.Drain` and `Node.Drain`: it blocks until the connection closed,
+  and at ctx's end closes it and returns ctx's error (ctx's deadline goes
+  in the GOAWAY).
+- `Conn.Credit() *Credit` in place of the embedded `*Credit`: `Conn`'s
+  method set no longer carries every `Credit` method (and `Credit.Close`
+  no longer hides behind `Conn.Close`).
+- `ErrV1` deleted: a version-1 hello reads as `ErrVersion` (not a
+  `*VersionError`, which is a hello of a later version).
+- `Observer` has an unexported method, which `NopObserver` provides:
+  implementations embed `NopObserver`, and `Observer` may gain events in
+  minor releases.
+- `bytequeue` moved to `internal/bytequeue`: it is the receive path's
+  internals.
+
+Fixed and added:
+
+- `Session.SetWriteDeadline` bounds writes (it was a no-op, and
+  `SetDeadline` set only the read deadline): a Write returns
+  `os.ErrDeadlineExceeded`, with the bytes it sent, once the deadline
+  passed while it waited for credit or for room in the connection's
+  write buffer; while a deadline is set, the network write runs from a
+  goroutine, so no Write waits on the network itself.
+- `ErrDeadPeer` is a `net.Error` with `Timeout()` true; `errors.Is` still
+  matches it.
+- The stability policy (README, package doc): `Observer` may gain
+  methods, the interfaces callers call never change, `peerlinktest` may
+  add checks, the submodules stay v0 until their transport is v1.
+- Godoc no longer names the unexported `FeatureReset` and
+  `StatusVersion`; `NewMux` says to run `Serve`.
+
+### Migration
+
+```
+// peerlink accept: the session is a peerlink.Session
+before: node.Serve(func(peer string, h []byte, s net.Conn) { s.(peerlink.Session).CloseWrite() })
+after:  node.Serve(func(peer string, h []byte, s peerlink.Session) { s.CloseWrite() })
+// Link.Open: (peerlink.Session, error); a net.Conn variable still takes it
+before: var s net.Conn; s, err = node.Open(ctx, peer, h); s.(peerlink.Session).Reset()
+after:  s, err := node.Open(ctx, peer, h); s.Reset()
+// Listener.Handle has the accept's signature: no change where it is passed to Serve
+// Mux.Open
+before: s, err := m.Open(func(string) ([]byte, error) { return header, nil })
+after:  s, err := m.Open(header)
+// Mux.GoAway
+before: err := m.GoAway(time.Now().Add(30 * time.Second))
+after:  ctx, cancel := context.WithTimeout(ctx, 30*time.Second); defer cancel(); err := m.Drain(ctx) // blocks: go it for the old behaviour
+// Conn's credit
+before: c.Received(sid, n); cr := c.Credit
+after:  c.Credit().Received(sid, n); cr := c.Credit()
+// ErrV1
+before: errors.Is(err, link.ErrV1)
+after:  var ve *link.VersionError; errors.Is(err, link.ErrVersion) && !errors.As(err, &ve)
+// Observer
+before: type obs struct{}; func (obs) ConnUp(link.Identity) {} // ... all seven
+after:  type obs struct{ link.NopObserver }; func (obs) ConnUp(link.Identity) {}
+// bytequeue
+before: import "github.com/nfltr/link/bytequeue"
+after:  keep a copy of the package (it is internal now)
+```
+
 ## v0.8.1 (2026-10-15)
 
 - Errors say more; `errors.Is` matches what it matched before. A

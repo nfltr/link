@@ -213,7 +213,7 @@ is the long fuzz run ([FUZZING.md](FUZZING.md)).
 
 ## Status and compatibility
 
-The latest release is v0.8.0; [CHANGELOG.md](CHANGELOG.md) lists every
+The latest release is v0.9.0; [CHANGELOG.md](CHANGELOG.md) lists every
 release. link is pre-1.0 and follows [semantic versioning](https://semver.org)
 as Go modules do for v0:
 
@@ -255,7 +255,7 @@ Evidence that link works, provable from this repository alone:
 | CI green on every change, with history | GitHub Actions (`check`) | since 2026-10-14 |
 | cumulative soak hours under faults, with leak and integrity checks | SOAK.md (`make soak`), summaries in `soak/results/` | 2.35 h (macOS, Linux CI), clean (target: 24 h) |
 | benchmarks published in the repository | `compare/README.md` (link vs yamux), `peerlink/quiclink/README.md` | met |
-| API reviewed for v1.0 | the checklist below; `make check-api` (apidiff against the latest release, in CI); `TestExportedNamesDocumented` | open (v0.8.0: API trimmed, constructors checked, every name documented) |
+| API reviewed for v1.0 | the checklist below; `make check-api` (apidiff against the latest release, in CI); `TestExportedNamesDocumented` | open (v0.9.0: the review against yamux, smux, quic-go and libp2p applied; the peerlink contract changed in v0.9.0) |
 
 v1.0 API checklist: every exported name documented with an example
 where it is not obvious; errors to test with `errors.Is` listed per call;
