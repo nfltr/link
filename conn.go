@@ -172,7 +172,13 @@ type Conn struct {
 	writing bool            // a write is in flight, wmu released
 	waiting int             // senders waiting on wcond for room or their turn
 	inBuf   map[string]bool // sessions with a data frame in wbuf (turns)
-	pongEnd int             // len(*wbuf) when its last frame is a pong; 0: it is not
+	// lastData is the session of the last data frame buffered; mixed, how
+	// many more flushes yield (writeLocked) since data of two sessions
+	// last followed each other: a connection that one session writes on
+	// writes at once.
+	lastData string
+	mixed    int
+	pongEnd  int // len(*wbuf) when its last frame is a pong; 0: it is not
 	// Senders waiting for room in wbuf take a ticket and go in its order:
 	// ticket is the next one to give, serving the one whose turn it is.
 	ticket, serving uint64
@@ -549,9 +555,16 @@ func (c *Conn) frameLocked(typ byte, sid string, body []byte, wd *writeDeadline)
 			c.inBuf = map[string]bool{}
 		}
 		c.inBuf[sid] = true
+		if sid != c.lastData {
+			c.lastData, c.mixed = sid, mixedFlushes
+		}
 	}
 	return nil
 }
+
+// mixedFlushes is how many flushes yield once data of two sessions
+// followed each other.
+const mixedFlushes = 64
 
 // nextTurnLocked passes the turn for room in the buffer to the next
 // ticket, past those whose sender gave up (a write deadline).
@@ -603,7 +616,9 @@ func (c *Conn) flushAsync() error {
 // Writes stay in order because only one runs at a time (writing). With
 // yield the writer first lets other runnable goroutines run: on a busy
 // CPU they buffer their frames for this write instead of each writing
-// its own; on an idle one it returns at once.
+// its own; on an idle one it returns at once. Flush yields only while
+// more than one session sends (mixed): one that sends alone would wait
+// for nobody, a scheduler round trip per write.
 //
 // The sender that starts writing writes once: what was buffered meanwhile
 // goes out from a drain goroutine, so that sender gets back to its own
@@ -678,7 +693,11 @@ func (c *Conn) Flush() error {
 
 func (c *Conn) flushLocked() {
 	if !c.writing && c.wbuf != nil {
-		c.writeLocked(true)
+		yield := c.mixed > 0
+		if yield {
+			c.mixed--
+		}
+		c.writeLocked(yield)
 	}
 }
 
