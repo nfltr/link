@@ -336,6 +336,73 @@ user-space copies 1 %.
 - **Guarantee at risk**: as P3 (the same tests).
 - **Don't undo**: keep the boundary read short after a long frame.
 
+## Latency (2026-10-17, after v0.10.9)
+
+Latency is a target of its own; a change for it is accepted only when
+the median improves in interleaved A/B runs with throughput, fairness,
+isolation and every guarantee intact.
+
+**Where the time goes.** `BenchmarkLatency` (TCP loopback, 64-byte
+echo, one held session) against `raw`, the same echo on the bare
+connection:
+
+| | p50 | wakeups per round trip |
+|---|---:|---:|
+| bare TCP connection | 13.3-14.5 µs | 2 |
+| link, held session | 19.7-20.7 µs | 4 |
+| link, two sessions in turn (`held-mixed`) | ~20.4 µs | 6 |
+| link, fresh session (open, echo, close) | ~28 µs | 12 |
+| link, fresh session waiting for the answer | ~44 µs | 16 |
+
+Wakeups are goroutines scheduled to run per round trip
+(`runtime/metrics` `/sched/latencies`, sampled 1 in 8, so an estimate).
+On the bare connection each side's reader is woken by the network
+poller. Through link the network poller wakes the receive loop, and the
+receive loop then wakes the session's reader (`Mux.data` ->
+`bytequeue.Push` -> `sync.Cond.Broadcast`): two handoffs more per round
+trip. A scheduler trace of 20,000 held echoes
+(`go tool trace -pprof=sched`) puts 85 % of all scheduling delay on that
+`Broadcast`, about 2 µs per handoff: the reader waits while the receive
+loop finishes its next read of the connection and parks. That is the
+~6 µs link adds. Evidence: `~/nfltr-evidence/profiles/2026-10-17-link-perf/link@f2796a7/latency-trace-held/`.
+`held-mixed` adds the writer's yield (P4) on each side: +2 wakeups, and
+no significant change in p50.
+
+**Tried and rejected** (each measured, interleaved):
+
+- *Yield the receive loop after delivering data when nothing more is
+  read ahead* (`runtime.Gosched` in `Mux.Serve`), so the woken reader
+  runs on that thread at once: p50 unchanged (held 20.3 -> 19.7 µs, ~),
+  +2 wakeups per round trip, 4 KiB on 8 sessions -32 % throughput.
+  Evidence: `~/nfltr-evidence/profiles/2026-10-17-link-perf/link@f2796a7/latency-gosched-after-delivery/`.
+- *Let a reader spin (up to 50 µs, yielding) before it parks*, so data
+  that arrives meanwhile needs no wakeup: p50 20 -> 34-50 µs (the
+  spinners take the CPU the receive loops need). Evidence:
+  `~/nfltr-evidence/profiles/2026-10-17-link-perf/link@f2796a7/latency-reader-spin/`.
+- *Hand the connection's read to the waiting session reader* (a
+  leader/follower receive: the reader that waits reads the connection
+  itself and is woken by the network poller): the only design that
+  removes the handoff. Not built: the receive loop waits in a read of the
+  connection whenever it is idle, so taking that role over needs an
+  interrupted read (a read deadline in the past, which a caller's
+  `net.Conn` need not support), and every receive-loop duty (opens,
+  credit, liveness, other sessions' data, isolation of a stalled reader)
+  would move into whichever reader holds the role. The risk to the
+  guarantees is out of proportion to ~4 µs per round trip.
+
+**Per-open cost (P8, not merged).** Branch `perf/latency-open-allocs`
+(commit 7df91b4): the session's queue becomes a field of the Session
+(`bytequeue.Init`), the queue's pop hook an interface the Session
+satisfies through an unexported type instead of a closure, and the
+session id is formatted on the stack: a fresh session's open, echo and
+close takes 22 -> 18 allocations. Median latency did not move (8
+interleaved runs: TCP fresh p50 28.1 -> 28.5 µs, answered 44.3 -> 44.1
+µs, both ~; evidence `~/nfltr-evidence/profiles/2026-10-17-link-perf/link@7df91b4/ab-P8-latency/`), so under
+the latency rule it waits for a decision. The rest of an open's cost is
+syscalls: the OPEN is written at once (`Open`'s contract: a peer that
+speaks first is reached), the accepter's explicit ACCEPT is a write of
+its own, and the close is a third.
+
 ## What was looked at and left
 
 - **TLS writes**: link writes a coalesced batch with one `Write` on the
