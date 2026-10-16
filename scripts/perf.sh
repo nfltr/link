@@ -11,7 +11,7 @@
 #     (default 6), old and new alternating so that the machine's load hits
 #     both alike; OUT gets old.txt, new.txt, benchstat.txt (benchstat of
 #     the two), load.txt (the load average before each run) and
-#     manifest.json.
+#     manifest.json. PERF_CPU (e.g. 1,10) runs each at those GOMAXPROCS.
 #   scripts/perf.sh profile REF OUT [BENCH] [BENCHTIME]
 #     runs each benchmark BENCH names (default: the profiled set below) at
 #     REF alone with cpu, heap (alloc and inuse), mutex and block profiles,
@@ -83,11 +83,12 @@ ab)
 	for i in $(seq 1 "$count"); do
 		for side in old new; do
 			echo "run $i $side: load $(loadavg)" | tee -a "$out/load.txt"
-			"$tmp/$side.test" -test.run '^$' -test.bench "$bench" -test.benchtime "$bt" -test.count 1 -test.timeout 0 >>"$out/$side.txt"
+			"$tmp/$side.test" -test.run '^$' -test.bench "$bench" -test.benchtime "$bt" -test.count 1 -test.timeout 0 \
+				${PERF_CPU:+-test.cpu "$PERF_CPU"} >>"$out/$side.txt"
 		done
 	done
 	GOWORK=off go run "golang.org/x/perf/cmd/benchstat@$BENCHSTAT_VERSION" "$out/old.txt" "$out/new.txt" >"$out/benchstat.txt"
-	manifest "$out" "scripts/perf.sh $*" "$bench" "old=$osha new=$nsha"
+	manifest "$out" "PERF_CPU=${PERF_CPU:-} scripts/perf.sh $*" "$bench" "old=$osha new=$nsha"
 	cat "$out/benchstat.txt"
 	;;
 profile)
