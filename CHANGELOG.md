@@ -35,6 +35,10 @@ has each change, its measurements and its guard):
   benchmarks `BenchmarkThroughput`, `BenchmarkLatency`,
   `BenchmarkIdleSessions`; `scripts/perf.sh` (A/B and profiles).
 
+## peerlink/quiclink v0.4.8 (2026-10-17)
+
+- Requires link v0.10.9.
+
 ## peerlink/quiclink v0.4.7 (2026-10-16)
 
 - Requires link v0.10.8.
