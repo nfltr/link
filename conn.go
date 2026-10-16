@@ -78,21 +78,22 @@ const traceLen = 16
 // busy session reuses them instead of allocating and zeroing one per
 // frame. A buffer handed elsewhere (Recv's caller, an OwnedWriter) is
 // never returned: it is the garbage collector's.
-var dataBufs = sync.Pool{New: func() any { b := make([]byte, MaxChunk); return &b }}
+// The pool holds array pointers: a slice's own (b[:MaxChunk]) goes back
+// without the allocation that a pointer to a slice header costs.
+var dataBufs = sync.Pool{New: func() any { return new([MaxChunk]byte) }}
 
 func newData(n int) []byte {
 	if n > MaxChunk || n < MaxChunk/16 {
 		return make([]byte, n)
 	}
-	return (*dataBufs.Get().(*[]byte))[:n]
+	return dataBufs.Get().(*[MaxChunk]byte)[:n]
 }
 
 // releaseData returns b, a data frame's buffer nothing references any
 // more, to dataBufs.
 func releaseData(b []byte) {
 	if cap(b) == MaxChunk {
-		b = b[:MaxChunk]
-		dataBufs.Put(&b)
+		dataBufs.Put((*[MaxChunk]byte)(b[:MaxChunk]))
 	}
 }
 
