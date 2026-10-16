@@ -197,15 +197,53 @@ func (m *Mux) sendClose(sid string, half bool) {
 func (m *Mux) Serve(accept func(open []byte, s *Session)) error {
 	defer m.close()
 	for {
-		f, err := m.c.Recv()
-		if err != nil {
+		f, err := m.c.next()
+		switch {
+		case err != nil:
 			return err
+		case len(f.Data) > 0:
+			m.data(f)
+		case f.sid == nil: // not an empty data frame
+			m.serve(f.Frame, accept)
 		}
-		m.serve(f, accept)
 	}
 }
 
-// serve applies a frame. Messages have no meaning to a Mux.
+// data queues a data frame's payload on its session (within its credit:
+// no wait), onto the newest queued buffer when that has room: a session
+// whose reader is behind holds its bytes packed, not a buffer per frame.
+// A view of the read buffer is copied; data of a session this side does
+// not know is dropped.
+func (m *Mux) data(f rframe) {
+	m.mu.Lock()
+	s := m.sess[string(f.sid)]
+	m.mu.Unlock()
+	switch {
+	case s == nil:
+	case s.q.Append(f.Data):
+	case f.view:
+		b := newChunk(len(f.Data))
+		copy(b, f.Data)
+		if !s.q.Push(b) {
+			releaseData(b)
+		}
+	default:
+		if !s.q.Push(f.Data) {
+			releaseData(f.Data)
+		}
+		s.kick()
+		return // the queue owns f.Data
+	}
+	if !f.view {
+		releaseData(f.Data)
+	}
+	if s != nil {
+		s.kick()
+	}
+}
+
+// serve applies a frame other than data. Messages have no meaning to a
+// Mux.
 func (m *Mux) serve(f Frame, accept func([]byte, *Session)) {
 	switch {
 	case f.Open:
@@ -261,11 +299,6 @@ func (m *Mux) serve(f Frame, accept func([]byte, *Session)) {
 		if s.halfClosed.Load() {
 			s.peerClosed.Store(true)
 			m.drop(s) // both sides stopped sending
-		}
-	case len(f.Data) > 0:
-		if s := m.get(f.SID); s != nil {
-			s.q.Push(f.Data) // within its credit: does not wait
-			s.kick()
 		}
 	}
 }

@@ -6,7 +6,6 @@ package link
 import (
 	"encoding/binary"
 	"errors"
-	"io"
 	"net"
 	"os"
 	"runtime"
@@ -89,11 +88,25 @@ func newData(n int) []byte {
 	return dataBufs.Get().(*[MaxChunk]byte)[:n]
 }
 
+// smallBufs holds the buffers that short payloads, read ahead (read.go),
+// are copied into: a session's queue appends the next ones onto it
+// (bytequeue.Append), so a session whose reader is behind holds them
+// packed, at most twice their bytes.
+const smallChunk = MaxChunk / 16
+
+var smallBufs = sync.Pool{New: func() any { return new([smallChunk]byte) }}
+
+// newChunk is a buffer for n (< smallChunk) bytes of short payloads.
+func newChunk(n int) []byte { return smallBufs.Get().(*[smallChunk]byte)[:n] }
+
 // releaseData returns b, a data frame's buffer nothing references any
-// more, to dataBufs.
+// more, to its pool.
 func releaseData(b []byte) {
-	if cap(b) == MaxChunk {
+	switch cap(b) {
+	case MaxChunk:
 		dataBufs.Put((*[MaxChunk]byte)(b[:MaxChunk]))
+	case smallChunk:
+		smallBufs.Put((*[smallChunk]byte)(b[:smallChunk]))
 	}
 }
 
@@ -138,15 +151,20 @@ type Frame struct {
 // Receives; the sends, Flush and the credit calls (its Credit's) are safe
 // from any.
 //
-// Reads go straight to the connection: over TLS, tls.Conn's record buffer
-// serves the small header reads, and an idle connection pins no buffer.
-// On a plaintext connection each frame header is a read of the socket:
-// where one carries heavy traffic, give Client or Server a net.Conn whose
-// Read goes through a bufio.Reader.
+// Reads go through a read-ahead buffer (read.go): a burst of small frames
+// is one read of the connection, and an idle connection holds no pooled
+// buffer (only rsmall, its own).
 type Conn struct {
 	credit *Credit
 	nc     net.Conn
 	rhdr   [5 + 1 + MaxSID + 4]byte // a header, and a window or close frame or a data frame's sid
+
+	// The read-ahead (read.go), the receiving goroutine's only.
+	rsmall [rsmallLen]byte
+	rbig   *[MaxChunk]byte // from dataBufs while bytes are buffered in it, else nil
+	rbuf   []byte          // read ahead and not yet taken: a tail of rsmall or *rbig
+	rfull  bool            // the last read filled its buffer: more is likely waiting
+	rerr   error           // a read's error that came with enough bytes: the next read's
 
 	wmu     sync.Mutex
 	wcond   sync.Cond       // on wmu: a write finished or took the buffer
@@ -670,20 +688,38 @@ func (c *Conn) flushLocked() {
 // the caller closes the connection on any error. A connection the link
 // ended returns why (ErrDeadPeer).
 func (c *Conn) Recv() (Frame, error) {
+	f, err := c.next()
+	if err != nil {
+		return Frame{}, err
+	}
+	if f.sid != nil { // a data frame: the caller's own sid and payload
+		f.SID = string(f.sid)
+		if f.view {
+			d := make([]byte, len(f.Data))
+			copy(d, f.Data)
+			f.Data = d
+		}
+	}
+	return f.Frame, nil
+}
+
+// next is Recv for a receive loop that takes a data frame's sid and short
+// payload as views (Mux.Serve).
+func (c *Conn) next() (rframe, error) {
 	for {
 		f, ok, err := c.recv()
 		if err != nil {
 			if e := c.Err(); e != nil {
-				return Frame{}, e
+				return rframe{}, e
 			}
 			c.lost(err)
-			return Frame{}, err
+			return rframe{}, err
 		}
 		if ok {
 			if n := len(f.Data); n > 0 {
-				if err := c.credit.received(f.SID, n, c.chain()); err != nil {
+				if err := c.credit.receivedSID(f.sid, n, c.chain()); err != nil {
 					c.lost(err)
-					return Frame{}, err
+					return rframe{}, err
 				}
 			}
 			return f, nil
@@ -692,14 +728,15 @@ func (c *Conn) Recv() (Frame, error) {
 }
 
 // recv reads one frame; ok is false for a frame it applied.
-func (c *Conn) recv() (Frame, bool, error) {
-	if _, err := io.ReadFull(c.nc, c.rhdr[:6]); err != nil {
-		return Frame{}, false, err
+func (c *Conn) recv() (rframe, bool, error) {
+	c.recvIdle()
+	if err := c.readFull(c.rhdr[:6]); err != nil {
+		return rframe{}, false, err
 	}
 	c.rxAt.Store(int64(time.Since(c.t0)))
 	n := int(binary.BigEndian.Uint32(c.rhdr[:4]))
 	if n > maxFrame || n < 1 {
-		return Frame{}, false, ErrFrame
+		return rframe{}, false, ErrFrame
 	}
 	typ := c.rhdr[4]
 	// rhdr[5] is the body's first byte: a data, open or close frame's sid_len.
@@ -707,34 +744,40 @@ func (c *Conn) recv() (Frame, bool, error) {
 	case typeData:
 		l := int(c.rhdr[5])
 		if l > n-1 {
-			return Frame{}, false, ErrFrame
+			return rframe{}, false, ErrFrame
 		}
-		sid := c.rhdr[6 : 6+l]
-		if _, err := io.ReadFull(c.nc, sid); err != nil {
-			return Frame{}, false, err
+		if m := n - 1 - l; m < viewMax {
+			b, err := c.view(l + m)
+			if err != nil {
+				return rframe{}, false, err
+			}
+			return rframe{sid: b[:l], Frame: Frame{Data: b[l:]}, view: true}, true, nil
 		}
-		f := Frame{SID: string(sid), Data: newData(n - 1 - l)}
-		if _, err := io.ReadFull(c.nc, f.Data); err != nil {
-			return Frame{}, false, err
+		f := rframe{sid: c.rhdr[6 : 6+l], Frame: Frame{Data: newData(n - 1 - l)}}
+		if err := c.readFull(f.sid); err != nil {
+			return rframe{}, false, err
+		}
+		if err := c.readFull(f.Data); err != nil {
+			return rframe{}, false, err
 		}
 		return f, true, nil
 	case typeMsg:
 		b := make([]byte, n)
 		b[0] = c.rhdr[5]
-		if _, err := io.ReadFull(c.nc, b[1:]); err != nil {
-			return Frame{}, false, err
+		if err := c.readFull(b[1:]); err != nil {
+			return rframe{}, false, err
 		}
-		return Frame{Msg: b}, true, nil
+		return rframe{Frame: Frame{Msg: b}}, true, nil
 	case typeWindow:
 		b, err := c.small(n, 5, 5+MaxSID)
 		if err != nil {
-			return Frame{}, false, err
+			return rframe{}, false, err
 		}
 		sid, inc, err := ParseWindow(b)
 		if err != nil {
-			return Frame{}, false, err
+			return rframe{}, false, err
 		}
-		return Frame{}, false, c.credit.Grant(sid, inc)
+		return rframe{}, false, c.credit.Grant(sid, inc)
 	case typeOpen, typeChainOpen:
 		l := int(c.rhdr[5])
 		fixed := 0
@@ -742,14 +785,14 @@ func (c *Conn) recv() (Frame, bool, error) {
 			fixed = 1 + traceLen
 		}
 		if (typ == typeChainOpen) != c.chain() || l > n-1-fixed || n-1-l-fixed > maxHeader {
-			return Frame{}, false, ErrFrame
+			return rframe{}, false, ErrFrame
 		}
 		b := make([]byte, n-1)
-		if _, err := io.ReadFull(c.nc, b); err != nil {
-			return Frame{}, false, err
+		if err := c.readFull(b); err != nil {
+			return rframe{}, false, err
 		}
 		if c.credit.count(byPeer) >= c.maxSessions {
-			return Frame{}, false, ErrFull // the peer ignored this side's max sessions
+			return rframe{}, false, ErrFull // the peer ignored this side's max sessions
 		}
 		sid := string(b[:l])
 		c.credit.open(sid, byPeer)
@@ -758,64 +801,64 @@ func (c *Conn) recv() (Frame, bool, error) {
 			f.Chain.Hops = b[l]
 			copy(f.Chain.Trace[:], b[l+1:])
 		}
-		return f, true, nil
+		return rframe{Frame: f}, true, nil
 	case typeAccept:
 		if !c.chain() {
-			return Frame{}, false, ErrFrame
+			return rframe{}, false, ErrFrame
 		}
 		b, err := c.small(n, 2, 2+MaxSID)
 		if err != nil {
-			return Frame{}, false, err
+			return rframe{}, false, err
 		}
 		l := int(b[0])
 		if l != n-2 {
-			return Frame{}, false, ErrFrame
+			return rframe{}, false, ErrFrame
 		}
 		sid := string(b[1 : 1+l])
 		known, err := c.credit.answered(sid)
 		if err != nil || !known {
-			return Frame{}, false, err // an unknown session's: ignored
+			return rframe{}, false, err // an unknown session's: ignored
 		}
-		return Frame{SID: sid, Accept: true, Chain: Chain{Hops: b[n-1]}}, true, nil
+		return rframe{Frame: Frame{SID: sid, Accept: true, Chain: Chain{Hops: b[n-1]}}}, true, nil
 	case typeAbort:
 		l := int(c.rhdr[5])
 		if !c.chain() || n < 9+l || n > 9+l+MaxAbortMsg {
-			return Frame{}, false, ErrFrame
+			return rframe{}, false, ErrFrame
 		}
 		b := make([]byte, n-1)
-		if _, err := io.ReadFull(c.nc, b); err != nil {
-			return Frame{}, false, err
+		if err := c.readFull(b); err != nil {
+			return rframe{}, false, err
 		}
 		a, err := parseAbort(b[l:])
 		if err != nil {
-			return Frame{}, false, err
+			return rframe{}, false, err
 		}
 		sid := string(b[:l])
 		if a.Refused {
 			if known, err := c.credit.answered(sid); err != nil || !known {
-				return Frame{}, false, err
+				return rframe{}, false, err
 			}
 		}
 		c.credit.Forget(sid)
-		return Frame{SID: sid, Close: true, Reset: true, Abort: a}, true, nil
+		return rframe{Frame: Frame{SID: sid, Close: true, Reset: true, Abort: a}}, true, nil
 	case typeClose:
 		b, err := c.small(n, 2, 2+MaxSID)
 		if err != nil {
-			return Frame{}, false, err
+			return rframe{}, false, err
 		}
 		l := int(b[0])
 		if l != n-2 || b[n-1] > closeReset {
-			return Frame{}, false, ErrFrame
+			return rframe{}, false, ErrFrame
 		}
 		sid, half := string(b[1:1+l]), b[n-1] == closeHalf
 		if !half {
 			c.credit.Forget(sid)
 		}
-		return Frame{SID: sid, Close: true, Half: half, Reset: b[n-1] == closeReset}, true, nil
+		return rframe{Frame: Frame{SID: sid, Close: true, Half: half, Reset: b[n-1] == closeReset}}, true, nil
 	case typePing, typePong:
 		b, err := c.small(n, pingLen, pingLen)
 		if err != nil {
-			return Frame{}, false, err
+			return rframe{}, false, err
 		}
 		if typ == typePing {
 			// keepAlive answers, never this loop; only the latest ping
@@ -835,14 +878,14 @@ func (c *Conn) recv() (Frame, bool, error) {
 				c.credit.obs.PingRTT(rtt)
 			}
 		}
-		return Frame{}, false, nil
+		return rframe{}, false, nil
 	case typeGoAway:
 		if n < 4 || n > 4+maxReason {
-			return Frame{}, false, ErrFrame
+			return rframe{}, false, ErrFrame
 		}
 		b := make([]byte, n-1)
-		if _, err := io.ReadFull(c.nc, b); err != nil {
-			return Frame{}, false, err
+		if err := c.readFull(b); err != nil {
+			return rframe{}, false, err
 		}
 		c.goingAway.Store(true)
 		c.peerGoAwayOnce.Do(func() {
@@ -851,9 +894,9 @@ func (c *Conn) recv() (Frame, bool, error) {
 				c.credit.obs.GoAway(c.id)
 			}
 		})
-		return Frame{}, false, nil
+		return rframe{}, false, nil
 	default:
-		return Frame{}, false, ErrFrame
+		return rframe{}, false, ErrFrame
 	}
 }
 
@@ -864,7 +907,7 @@ func (c *Conn) small(n, lo, hi int) ([]byte, error) {
 		return nil, ErrFrame
 	}
 	b := c.rhdr[5 : 5+n]
-	if _, err := io.ReadFull(c.nc, b[1:]); err != nil {
+	if err := c.readFull(b[1:]); err != nil {
 		return nil, err
 	}
 	return b, nil

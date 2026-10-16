@@ -85,6 +85,26 @@ func (q *Queue) pushLocked(b []byte) {
 // queued is how many slices are queued.
 func (q *Queue) queued() int { return len(q.bufs) - q.head }
 
+// Append copies b onto the newest queued slice when its spare capacity
+// takes all of b, and reports whether it did; else nothing changes. Within
+// the limit, as Push. The queue's slices are its own once pushed: a
+// caller that keeps one pushes it with no spare capacity (b[:n:n]).
+func (q *Queue) Append(b []byte) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.closed || q.queued() == 0 || q.size >= q.limit {
+		return false
+	}
+	last := &q.bufs[len(q.bufs)-1]
+	if cap(*last)-len(*last) < len(b) {
+		return false
+	}
+	*last = append(*last, b...)
+	q.size += len(b)
+	q.cond.Broadcast()
+	return true
+}
+
 // ErrStalled is PushWithin's report of a queue that took nothing for the
 // stall bound.
 var ErrStalled = errors.New("bytequeue: reader took nothing for the stall bound")

@@ -245,14 +245,24 @@ func (c *Credit) Consumed(sid string, n int) {
 // a Conn does for data frames, a caller for data it carries otherwise.
 // Data of a session this side does not know is not buffered by anyone and
 // is not charged.
-func (c *Credit) Received(sid string, n int) error { return c.received(sid, n, false) }
-
-// received is Received; answers: data on a session this side opened is
-// ErrFrame before the peer's answer (FeatureChain).
-func (c *Credit) received(sid string, n int, answers bool) error {
+func (c *Credit) Received(sid string, n int) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	s := c.sessions[sid]
+	return c.chargeLocked(c.sessions[sid], n, false)
+}
+
+// receivedSID is Received of a received frame's sid (no copy of it);
+// answers: data on a session this side opened is ErrFrame before the
+// peer's answer (FeatureChain).
+func (c *Credit) receivedSID(sid []byte, n int, answers bool) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.chargeLocked(c.sessions[string(sid)], n, answers)
+}
+
+// chargeLocked charges n bytes of data to s (nil: a session this side
+// does not know).
+func (c *Credit) chargeLocked(s *sessionCredit, n int, answers bool) error {
 	if s == nil {
 		return nil
 	}
