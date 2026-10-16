@@ -6,6 +6,11 @@ GOVULNCHECK_VERSION := v1.8.0
 .PHONY: check build vet test test-race fuzz-short fuzz-long check-gosec check-semgrep check-govulncheck
 check: build vet test-race fuzz-short check-gosec check-semgrep check-govulncheck
 
+# Everything CI runs: check plus every module of its own (the soak module's
+# go.mod goes stale on each link or quiclink bump unless it is checked too).
+.PHONY: check-all
+check-all: check check-api check-grpclink check-quiclink check-soak
+
 build:
 	go build ./...
 

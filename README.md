@@ -319,7 +319,8 @@ govulncheck. `make check-api`: the exported API against the latest
 release, with [apidiff](https://pkg.go.dev/golang.org/x/exp/cmd/apidiff);
 the changes must be the ones listed in `api/` (an API change is never
 an accident). `make check-grpclink`, `make check-quiclink`: the gRPC and
-QUIC implementations' modules. GitHub Actions
+QUIC implementations' modules; `make check-soak`: the soak module builds
+and vets. `make check-all` runs every one of them, as CI does. GitHub Actions
 (`.github/workflows/check.yml`) runs them on every push and pull request,
 and every fuzz target for 5 minutes weekly. `make fuzz-long FUZZTIME=30m`
 is the long fuzz run ([FUZZING.md](FUZZING.md)).
