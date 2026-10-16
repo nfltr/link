@@ -95,7 +95,7 @@ func TestCloseWakesBlockedPushAndPop(t *testing.T) {
 func TestOnPopReportsBytesTaken(t *testing.T) {
 	q := New(1 << 10)
 	var got []int
-	q.OnPop(func(n int) { got = append(got, n) })
+	q.OnPop(popFunc(func(n int) { got = append(got, n) }))
 	q.Push([]byte("abc"))
 	q.Push([]byte("de"))
 	q.Push([]byte("f"))
@@ -184,3 +184,8 @@ func TestQueueAppend(t *testing.T) {
 		t.Fatal("Append to a closed queue")
 	}
 }
+
+// popFunc is a Popper from a func.
+type popFunc func(n int)
+
+func (f popFunc) Popped(n int) { f(n) }

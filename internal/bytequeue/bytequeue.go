@@ -24,21 +24,25 @@ type Queue struct {
 	size   int
 	limit  int
 	closed bool
-	onPop  func(n int)
+	onPop  Popper
 	pops   uint64 // pops so far: PushWithin's progress
 }
 
 // SetLimit changes the limit; set it before the first push.
 func (q *Queue) SetLimit(limit int) { q.limit = limit }
 
+// Popper is told how many bytes each pop took.
+type Popper interface{ Popped(n int) }
+
 // OnPop makes every pop report how many bytes it took, after the queue is
 // unlocked (a data connection returns credit with it). Set it before the
-// first push.
-func (q *Queue) OnPop(fn func(n int)) { q.onPop = fn }
+// first push. An interface, not a func: the owner (a session) is the
+// Popper itself, so a queue costs no closure allocation.
+func (q *Queue) OnPop(p Popper) { q.onPop = p }
 
 func (q *Queue) popped(n int) {
 	if q.onPop != nil && n > 0 {
-		q.onPop(n)
+		q.onPop.Popped(n)
 	}
 }
 
@@ -46,12 +50,19 @@ func (q *Queue) popped(n int) {
 // bytes (so it holds at most limit-1 plus one slice). It panics on a limit
 // under 1, a queue that would take nothing.
 func New(limit int) *Queue {
+	q := new(Queue)
+	q.Init(limit)
+	return q
+}
+
+// Init makes a zero Queue (a field of its owner: no allocation of its
+// own) one New(limit) would return. Call it before any other method.
+func (q *Queue) Init(limit int) {
 	if limit < 1 {
 		panic(fmt.Sprintf("bytequeue: New(%d): the limit is at least 1 byte", limit))
 	}
-	q := &Queue{limit: limit}
+	q.limit = limit
 	q.cond.L = &q.mu
-	return q
 }
 
 // Push appends b, waiting while the queue is full. It reports false, and

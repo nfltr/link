@@ -78,7 +78,8 @@ func (m *Mux) nextSID() string {
 	if m.c.dialer {
 		n--
 	}
-	return string(binary.AppendUvarint(nil, n))
+	var b [binary.MaxVarintLen64]byte
+	return string(binary.AppendUvarint(b[:0], n))
 }
 
 // Open starts a session with header, the bytes the peer's accept
@@ -129,12 +130,13 @@ func (m *Mux) add(sid string, header []byte, c Chain, accepter bool) (*Session, 
 	if len(m.sess) >= MaxSessions {
 		return nil, ErrFull
 	}
-	s := &Session{m: m, id: sid, q: bytequeue.New(m.c.credit.window), header: header, done: make(chan struct{}),
+	s := &Session{m: m, id: sid, header: header, done: make(chan struct{}),
 		chain: c, answers: m.c.chain(), accepter: accepter}
+	s.q.Init(m.c.credit.window) // a field, and the Session its Popper: docs/performance.md, P8
 	if s.answers && !accepter {
 		s.answered = make(chan struct{})
 	}
-	s.q.OnPop(func(n int) { m.c.credit.Consumed(sid, n) })
+	s.q.OnPop((*sessionPopper)(s))
 	if old := m.sess[sid]; old != nil { // a peer reusing an id ends the old session
 		old.ended()
 	}
@@ -475,7 +477,7 @@ type Session struct {
 	m      *Mux
 	id     string
 	header []byte
-	q      *bytequeue.Queue
+	q      bytequeue.Queue
 	rest   []byte // unread tail of the last slice taken from q
 	cur    []byte // that slice, released once read
 
@@ -587,6 +589,13 @@ func (s *Session) Read(b []byte) (int, error) {
 	}
 	return n, nil
 }
+
+// sessionPopper is a Session as its queue's bytequeue.Popper: it returns
+// the credit of the bytes a read took (a type of its own, so Session's API
+// does not grow).
+type sessionPopper Session
+
+func (p *sessionPopper) Popped(n int) { p.m.c.credit.Consumed(p.id, n) }
 
 // OwnedWriter is a writer that may keep the slices it is given: WriteTo
 // hands it the received slices themselves, no copy.
