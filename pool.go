@@ -391,7 +391,7 @@ func (p *Pool) Drain(ctx context.Context) error {
 			return ctx.Err()
 		}
 	}
-	return nil
+	return lateErr(ctx)
 }
 
 // Close closes every connection; Open fails from then on. A connection

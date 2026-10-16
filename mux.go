@@ -311,11 +311,21 @@ func (m *Mux) Drain(ctx context.Context) error {
 	}
 	select {
 	case <-m.c.Done():
-		return nil
+		return lateErr(ctx)
 	case <-ctx.Done():
 		m.cut()
 		return ctx.Err()
 	}
+}
+
+// lateErr is a drain's result once its connections closed: nil, unless
+// its deadline had come, when goAway's own cut closed them (racing ctx's
+// timer): then context.DeadlineExceeded, as if ctx's end were seen first.
+func lateErr(ctx context.Context) error {
+	if d, ok := ctx.Deadline(); ok && !time.Now().Before(d) {
+		return context.DeadlineExceeded
+	}
+	return nil
 }
 
 // cut ends a drain at its deadline: on a FeatureChain connection each

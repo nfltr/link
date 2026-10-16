@@ -405,6 +405,10 @@ func (n *Node) Drain(ctx context.Context) error {
 	var err error
 	select {
 	case <-idle:
+		// the connections' own cut at the deadline (racing ctx's timer)
+		if hasDeadline && !time.Now().Before(deadline) {
+			err = context.DeadlineExceeded
+		}
 	case <-ctx.Done():
 		err = ctx.Err()
 		if hasDeadline { // each connection's own cut: its aborts first
