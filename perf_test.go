@@ -125,3 +125,40 @@ func TestIdleConnHoldsNoReadBuffer(t *testing.T) {
 		t.Fatal("the idle receive loop held a pooled read buffer")
 	}
 }
+
+// Short frames of a session whose reader is behind are queued packed, in
+// one buffer, not one each: memory about their bytes, and one Read takes
+// them all.
+func TestShortFramesQueuePacked(t *testing.T) {
+	got := make(chan *Session, 2)
+	dm, _ := v2muxPair(t, func(_ []byte, s *Session) { got <- s }, v2cfg, v2cfg)
+	a, err := dm.Open([]byte("a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := dm.Open([]byte("b"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const n = 1000
+	for range n {
+		if _, err := a.Write([]byte{'x'}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := b.Write([]byte{'y'}); err != nil {
+		t.Fatal(err)
+	}
+	peer := map[string]*Session{}
+	for range 2 {
+		s := <-got
+		peer[string(s.Header())] = s
+	}
+	// b's byte arrived after a's: one receive loop applies frames in order.
+	if _, err := io.ReadFull(peer["b"], make([]byte, 1)); err != nil {
+		t.Fatal(err)
+	}
+	if k, err := peer["a"].Read(make([]byte, 64<<10)); err != nil || k != n {
+		t.Fatalf("Read: %d bytes, %v; want the %d frames' bytes at once", k, err, n)
+	}
+}

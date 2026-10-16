@@ -161,3 +161,26 @@ func TestQueueReusesItsArray(t *testing.T) {
 		}
 	}
 }
+
+// Append copies onto the newest queued slice while its spare capacity
+// takes all of b, and declines otherwise.
+func TestQueueAppend(t *testing.T) {
+	q := New(1 << 20)
+	if q.Append([]byte("a")) {
+		t.Fatal("Append to an empty queue")
+	}
+	q.Push(make([]byte, 1, 4))
+	if !q.Append([]byte("bc")) || q.Append([]byte("de")) {
+		t.Fatal("Append within and past the spare capacity")
+	}
+	if !q.Append([]byte("d")) {
+		t.Fatal("Append of the last byte that fits")
+	}
+	if b, ok := q.Pop(); !ok || string(b[1:]) != "bcd" {
+		t.Fatalf("Pop: %q", b)
+	}
+	q.Close()
+	if q.Append(nil) {
+		t.Fatal("Append to a closed queue")
+	}
+}
