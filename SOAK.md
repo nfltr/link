@@ -161,6 +161,15 @@ Per pair (that run): link-forward 52547 echoes (21.3 GiB), link-reverse
 cuts and black holes make them; 12 cuts, throttles, black holes and
 drains each, 12 rebinds for QUIC.
 
+Finding (2026-10-16, `cmd/linkhop` on Kubernetes, link v0.10.5): a
+5-hop TCP chain (mutual TLS, a pod per role) with the middle hop killed,
+partitioned or drained every 2 minutes for 40 min had 7 integrity
+failures in 99,469 echoes: sessions joined through a hop ended cleanly
+with bytes missing (a cut taken for a clean close, a half close taken
+for a full one). The same plan over QUIC (3 hops) had none. Fixed in
+link v0.10.6 (CHANGELOG); `TestChainMiddleHopFaultsIntegrity` runs the
+three faults on the middle of 5 in-process hops with echoes in flight.
+
 Finding: QUIC's dead peer was detected at up to 5.22 s (macOS, loaded)
 and 4.99 s (Linux CI, otherwise idle) against `quiclink`'s stated bound
 of 4.5 s (link: 4.50-4.51 s), within the soak's 2 s allowance. The

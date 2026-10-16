@@ -255,9 +255,10 @@ func (m *Mux) serve(f Frame, accept func([]byte, *Session)) {
 			m.drop(s)
 			return
 		}
-		s.q.Close() // reads end once the queue drains
+		s.peerHalf.Store(true) // before the queue's end: a Pump's done (Join) reads it
+		s.q.Close()            // reads end once the queue drains
 		s.kick()
-		if s.peerHalf.Store(true); s.halfClosed.Load() {
+		if s.halfClosed.Load() {
 			s.peerClosed.Store(true)
 			m.drop(s) // both sides stopped sending
 		}
@@ -274,25 +275,32 @@ func (m *Mux) close() {
 	m.mu.Lock()
 	m.done = true
 	sess := m.sess
-	cutting := m.cutting
 	m.sess = nil
 	m.mu.Unlock()
 	_ = m.c.Close() // senders waiting for credit give up
-	var err error
-	switch why := m.c.why(); {
-	case cutting:
-		err = fmt.Errorf("%w: %w", ErrConnClosed, errDrainDeadline)
-	case why == nil:
-		err = fmt.Errorf("%w; open a new session", ErrConnClosed)
-	case errors.Is(why, io.EOF): // never a session's clean end
-		err = fmt.Errorf("%w: the peer closed it (%v); open a new session", ErrConnClosed, why)
-	default:
-		err = fmt.Errorf("%w: %w; open a new session", ErrConnClosed, why)
-	}
+	err := m.connErr()
 	for _, s := range sess {
 		s.fail(err) // a session cut with its connection never reads a clean end
 		s.peerClosed.Store(true)
 		s.ended()
+	}
+}
+
+// connErr is what a session cut with its connection reads: ErrConnClosed
+// wrapping why (a drain's deadline, ErrDeadPeer, the network's error).
+func (m *Mux) connErr() error {
+	m.mu.Lock()
+	cutting := m.cutting
+	m.mu.Unlock()
+	switch why := m.c.why(); {
+	case cutting:
+		return fmt.Errorf("%w: %w", ErrConnClosed, errDrainDeadline)
+	case why == nil:
+		return fmt.Errorf("%w; open a new session", ErrConnClosed)
+	case errors.Is(why, io.EOF): // never a session's clean end
+		return fmt.Errorf("%w: the peer closed it (%v); open a new session", ErrConnClosed, why)
+	default:
+		return fmt.Errorf("%w: %w; open a new session", ErrConnClosed, why)
 	}
 }
 
@@ -342,8 +350,9 @@ func (m *Mux) cut() {
 	}
 	m.cutting = true
 	ids := make([]string, 0, len(m.sess))
-	for id := range m.sess {
+	for id, s := range m.sess {
 		ids = append(ids, id)
+		s.fail(fmt.Errorf("%w: %w", ErrConnClosed, errDrainDeadline)) // before its ABORT ends its credit (writeErr)
 	}
 	m.mu.Unlock()
 	if m.c.chain() && len(ids) > 0 {
@@ -724,7 +733,30 @@ func (s *Session) Write(b []byte) (int, error) {
 	if err == nil {
 		err = s.flush()
 	}
-	return n, err
+	return n, s.writeErr(err)
+}
+
+// writeErr is what a write that failed with err returns: io.ErrClosedPipe
+// wrapping why the session was cut (an *Abort, ErrReset, the
+// connection's end), plain only when the session was closed (by its peer
+// whole, or here). A splice (Join) passes the first on as an abort and
+// the second as a clean close, so a write must not fail plain before
+// the cause reached the session: the credit of a session ends (the
+// write fails) when the peer's ABORT or CLOSE is read, a moment before
+// the receive loop applies it, so the write waits for that; a network
+// write that failed says so at once (the connection's end may be long
+// coming).
+func (s *Session) writeErr(err error) error {
+	switch {
+	case err == nil || errors.Is(err, os.ErrDeadlineExceeded) || errors.Is(err, errSID):
+		return err
+	case s.closed.Load() || s.err.Load() != nil || s.halfClosed.Load():
+	case closed(s.m.c.Done()) || s.m.c.writeFailed():
+		return fmt.Errorf("%w: %w", io.ErrClosedPipe, s.m.connErr())
+	default:
+		<-s.done // the session's end is on its way: the receive loop's next step, or Close here
+	}
+	return s.closedPipe()
 }
 
 // WriteBuffers is Write of each of bufs in turn, with one flush at the
@@ -737,10 +769,10 @@ func (s *Session) WriteBuffers(bufs [][]byte) (int64, error) {
 		n, err := s.send(b)
 		total += int64(n)
 		if err != nil {
-			return total, err
+			return total, s.writeErr(err)
 		}
 	}
-	return total, s.flush()
+	return total, s.writeErr(s.flush())
 }
 
 // send buffers b as data frames, MaxChunk at a time, each once it has

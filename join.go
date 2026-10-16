@@ -290,13 +290,14 @@ func (j *joint) ended(i int, n int64, err, werr error) {
 	src, dst := j.s[i], j.s[1-i]
 	switch {
 	case werr != nil:
-		if e := dst.err.Load(); e != nil {
-			j.abort(src, abortFor(*e))
-		} else if !errors.Is(werr, ErrConnClosed) && errors.Is(werr, os.ErrDeadlineExceeded) {
+		switch {
+		case errors.Is(werr, ErrReset) || errors.Is(werr, ErrConnClosed): // dst was cut (Session.writeErr)
+			j.abort(src, abortFor(werr))
+		case errors.Is(werr, os.ErrDeadlineExceeded):
 			a := &Abort{Code: CodeTimeout, Msg: "write deadline"}
 			j.abort(src, a)
 			_ = dst.AbortWith(a)
-		} else if !j.failed() {
+		case !j.failed():
 			_ = src.Close() // dst's peer closed it: a full close
 		}
 	case err != nil:

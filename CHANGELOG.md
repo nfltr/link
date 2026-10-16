@@ -5,6 +5,37 @@ it (`peerlink/grpclink/vX.Y.Z`, `peerlink/quiclink/vX.Y.Z`). The wire
 format is [WIRE.md](WIRE.md); every release since v0.2.0 speaks the same
 version 2 unless an entry says otherwise.
 
+## v0.10.6 (2026-10-16)
+
+- Bug fix: a session joined through `Join` or `Forward` (link's and
+  `peerlink`'s) could end cleanly with bytes missing when a hop of its
+  path was killed, partitioned or drained: the origin read a short echo
+  and `io.EOF`. Seen as 7 integrity failures in 99,469 echoes on a 5-hop
+  TCP chain across Kubernetes pods (`soak/cmd/linkhop`, the middle hop
+  killed, partitioned or drained every 2 minutes); reproduced in process
+  by `TestChainMiddleHopFaultsIntegrity` (kill 4-6, drain 2-17,
+  partition 5 integrity failures before; 0 after, also under `-race`). Two causes,
+  each a session's end seen before it was recorded:
+  - A `Session` write could fail with a plain `io.ErrClosedPipe`, which
+    a splice reads as "the peer closed it whole" and passes on as a clean
+    `Close`, when the session had in fact been cut: its credit ends when
+    the peer's ABORT is read, when the connection closes and when a
+    drain's deadline sends its ABORTs, each a moment before the session
+    records why. A write now fails with the cause (`*Abort`, `ErrReset`,
+    `ErrConnClosed` wrapping the connection's end or the drain deadline;
+    a failed network write at once), plain only once the session was
+    closed; `Join` passes such a failure on as an abort
+    (`TestWriteFailsWithPeerAbort`).
+  - A peer's `CloseWrite` was recorded after the session's queue ended,
+    so a `Pump`'s done (`Join`) could see a clean end without it and
+    close the other side whole instead of half: the answer coming back
+    was dropped (`TestPumpEndSeesPeerHalfClose`).
+
+  The abort's hop index was right throughout: when hop k (the origin's
+  peer is hop 1) dies, the origin reads `CodeConnLost` with `Hops` k-2
+  (the abort comes from hop k-1, chaining.md "Liveness"): `hops=1` for
+  the middle of 5 hops, `hops=0` for the middle of 3.
+
 ## peerlink/quiclink v0.4.4 (2026-10-16)
 
 - Requires link v0.10.5. No change of its own.
