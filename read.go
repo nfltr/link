@@ -19,6 +19,10 @@ const (
 	// rsmallLen is the read while idle: the frames of a small message, or
 	// of a few, in one read.
 	rsmallLen = 2 << 10
+	// rheadLen is the read after a long payload went straight to its
+	// buffer: the next frame's header and sid with little of its payload,
+	// which a long one would only copy once more.
+	rheadLen = 512
 	// viewMax: a data frame whose payload is shorter is read ahead, and
 	// handed to a Mux as a view of the read buffer (rframe).
 	viewMax = MaxChunk / 16
@@ -56,10 +60,13 @@ func (c *Conn) readFull(p []byte) error {
 	}
 	n := copy(p, c.rbuf)
 	c.rbuf = c.rbuf[n:]
-	c.rfull = false // the next frame's header goes into rsmall, not ahead into this payload's buffer
 	if n == len(p) {
 		return nil
 	}
+	// The rest goes straight into p. The next frame's header then goes
+	// into rsmall, not ahead into a buffer, and reads little more than a
+	// header (rheadLen): a long payload after it would be copied twice.
+	c.rfull, c.rlong = false, true
 	if err := c.rerr; err != nil {
 		c.rerr = nil
 		return eofIn(err, n)
@@ -87,6 +94,10 @@ func (c *Conn) view(n int) ([]byte, error) {
 		return v, nil
 	}
 	buf := c.rsmall[:]
+	if c.rlong && n <= rheadLen {
+		buf = c.rsmall[:rheadLen]
+	}
+	c.rlong = false
 	if c.rbig != nil || c.rfull || n > len(buf) {
 		if c.rbig == nil {
 			c.rbig = dataBufs.Get().(*[MaxChunk]byte)

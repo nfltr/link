@@ -165,6 +165,7 @@ type Conn struct {
 	rbig   *[MaxChunk]byte // from dataBufs while bytes are buffered in it, else nil
 	rbuf   []byte          // read ahead and not yet taken: a tail of rsmall or *rbig
 	rfull  bool            // the last read filled its buffer: more is likely waiting
+	rlong  bool            // the last payload went straight to its buffer (long frames)
 	rerr   error           // a read's error that came with enough bytes: the next read's
 
 	wmu     sync.Mutex

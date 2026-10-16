@@ -148,8 +148,15 @@ accept).
 | 2026-10-14 | GitHub Actions ubuntu, linux/amd64, 4 CPUs | 1.08 | all four, 12 epochs | 172626 | 69.9 | 0 | 0 failures | link 4.50 s, QUIC 4.99 s | none: 2 goroutines, 9 FDs after every epoch; heap 5-10 MiB in use | pass |
 | 2026-10-14 | macOS arm64, 10 CPUs, shared; quiclink with the dead-peer fix | 0.18 | all four, 2 epochs | 33681 | 13.5 | 0 | 0 failures | link 4.50 s, QUIC 3.86 s | none: 2 goroutines, 5 FDs after every epoch | pass |
 | 2026-10-16 | macOS arm64, 10 CPUs, shared (load average 14-26); link v0.10.0 with chain-3hop | 0.27 | all five, 3 epochs | 661867 (chain-3hop 612387) | 273.3 (chain-3hop 250.0) | 0 | 0 failures | link 4.50 s, QUIC 3.86 s | none: 2 goroutines, 5 FDs after every epoch; heap 6-8 MiB in use | pass |
+| 2026-10-17 | macOS arm64, 10 CPUs, shared (load average 2-10); link v0.10.9 (read-ahead, packed session queues: docs/performance.md) | 0.27 | all five, 3 epochs | 742089 (chain-3hop 691788) | 302.5 (chain-3hop 282.1) | 0 | 0 failures | link 4.50 s, QUIC 3.99 s | none: 2 goroutines, 5 FDs after every epoch; heap 9-10 MiB in use | pass |
 
-Cumulative: 2.62 h. chain-3hop (2026-10-16): 3 middle-link cuts, one
+Cumulative: 2.89 h. The v0.10.9 run (`2026-10-17-16m-perf.json`) checks
+the receive path rewritten for speed (docs/performance.md, P3) under the
+same faults: chain-3hop echoed 13 % more than the v0.10.0 run in the
+same time, with 83 echoes failed inside the fault windows, each a typed
+abort, and the stalled far reader at 3.16 MiB of its 3.5 MiB bound.
+
+chain-3hop (2026-10-16): 3 middle-link cuts, one
 hop 2 drained, one black-holed and one killed; 85 echoes failed inside
 those windows, each with a typed `*link.Abort` (`CodeConnLost` from the
 hop beside the fault); a stalled far reader held at most 3.31 MiB of its
