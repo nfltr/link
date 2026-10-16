@@ -13,6 +13,7 @@ import "io"
 // MaxChunk buffer from dataBufs, which goes back at the next boundary with
 // nothing buffered. A payload of viewMax bytes or more goes from the
 // connection straight into its own buffer, never through the read-ahead.
+// docs/performance.md, P3, has the measurements and what not to undo.
 
 const (
 	// rsmallLen is the read while idle: the frames of a small message, or

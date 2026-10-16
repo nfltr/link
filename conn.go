@@ -78,7 +78,8 @@ const traceLen = 16
 // frame. A buffer handed elsewhere (Recv's caller, an OwnedWriter) is
 // never returned: it is the garbage collector's.
 // The pool holds array pointers: a slice's own (b[:MaxChunk]) goes back
-// without the allocation that a pointer to a slice header costs.
+// without the allocation that a pointer to a slice header costs
+// (docs/performance.md, P1: keep it so).
 var dataBufs = sync.Pool{New: func() any { return new([MaxChunk]byte) }}
 
 func newData(n int) []byte {
@@ -91,7 +92,7 @@ func newData(n int) []byte {
 // smallBufs holds the buffers that short payloads, read ahead (read.go),
 // are copied into: a session's queue appends the next ones onto it
 // (bytequeue.Append), so a session whose reader is behind holds them
-// packed, at most twice their bytes.
+// packed, at most twice their bytes (docs/performance.md, P3).
 const smallChunk = MaxChunk / 16
 
 var smallBufs = sync.Pool{New: func() any { return new([smallChunk]byte) }}
@@ -151,9 +152,9 @@ type Frame struct {
 // Receives; the sends, Flush and the credit calls (its Credit's) are safe
 // from any.
 //
-// Reads go through a read-ahead buffer (read.go): a burst of small frames
-// is one read of the connection, and an idle connection holds no pooled
-// buffer (only rsmall, its own).
+// Reads go through a read-ahead buffer (read.go; docs/performance.md,
+// P3): a burst of small frames is one read of the connection, and an idle
+// connection holds no pooled buffer (only rsmall, its own).
 type Conn struct {
 	credit *Credit
 	nc     net.Conn
@@ -297,9 +298,10 @@ type writeDeadline struct {
 func (wd *writeDeadline) expired() bool { return wd != nil && wd.past.Load() }
 
 // sendData is SendData for a Session, which answered its session before
-// it sends (autoAccept), bounded by wd: past it, it returns
-// os.ErrDeadlineExceeded with the frame not buffered. With flush it then
-// flushes under the same lock, and flushErr is Flush's.
+// it sends (autoAccept: no acceptLocked here, docs/performance.md P6),
+// bounded by wd: past it, it returns os.ErrDeadlineExceeded with the
+// frame not buffered. With flush it then flushes under the same lock, and
+// flushErr is Flush's: one lock per small Write, not two (P5).
 func (c *Conn) sendData(sid string, data []byte, wd *writeDeadline, flush bool) (flushErr, err error) {
 	if len(sid) > MaxSID {
 		return nil, errSID
@@ -574,7 +576,7 @@ func (c *Conn) frameLocked(typ byte, sid string, body []byte, wd *writeDeadline)
 			c.inBuf = map[string]bool{}
 		}
 		c.inBuf[sid] = true
-		if sid != c.lastData {
+		if sid != c.lastData { // docs/performance.md, P4
 			c.lastData, c.mixed = sid, mixedFlushes
 		}
 	}

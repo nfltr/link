@@ -211,7 +211,8 @@ func (m *Mux) Serve(accept func(open []byte, s *Session)) error {
 
 // data queues a data frame's payload on its session (within its credit:
 // no wait), onto the newest queued buffer when that has room: a session
-// whose reader is behind holds its bytes packed, not a buffer per frame.
+// whose reader is behind holds its bytes packed, not a buffer per frame
+// (docs/performance.md, P3).
 // A view of the read buffer is copied; data of a session this side does
 // not know is dropped.
 func (m *Mux) data(f rframe) {
@@ -811,7 +812,8 @@ func (s *Session) WriteBuffers(bufs [][]byte) (int64, error) {
 
 // send buffers b as data frames, MaxChunk at a time, each once it has
 // credit; it returns how many bytes it buffered. With flush the last
-// frame's lock also writes them (Flush): one lock per small Write.
+// frame's lock also writes them (Flush): one lock per small Write
+// (docs/performance.md, P5).
 func (s *Session) send(b []byte, flush bool) (int, error) {
 	if len(b) == 0 && flush {
 		return 0, s.m.c.Flush()

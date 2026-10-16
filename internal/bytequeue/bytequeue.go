@@ -70,7 +70,7 @@ func (q *Queue) Push(b []byte) bool {
 }
 
 // pushLocked appends b, reusing the array's head that pops freed before
-// it grows a new one.
+// it grows a new one (link's docs/performance.md, P2).
 func (q *Queue) pushLocked(b []byte) {
 	if len(q.bufs) == cap(q.bufs) && q.head > 0 {
 		n := copy(q.bufs, q.bufs[q.head:])
