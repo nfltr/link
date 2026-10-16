@@ -379,9 +379,12 @@ func (j *joint) abort(c net.Conn, a *link.Abort) {
 }
 
 // cleanClose reports whether werr says only that dst was closed (by its
-// peer whole, or here): no failure to pass on.
+// peer whole, or here): no failure to pass on. net.ErrClosed is never
+// one: quic-go's connection errors (idle timeout, a peer's or a drain's
+// close, a stateless reset) are net.ErrClosed, and a cut taken for a
+// close ends the session upstream cleanly with bytes missing.
 func cleanClose(werr error) bool {
-	return (errors.Is(werr, io.ErrClosedPipe) || errors.Is(werr, net.ErrClosed)) &&
+	return errors.Is(werr, io.ErrClosedPipe) && !errors.Is(werr, net.ErrClosed) &&
 		!errors.Is(werr, link.ErrReset) && !errors.Is(werr, link.ErrConnClosed)
 }
 

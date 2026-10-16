@@ -422,14 +422,17 @@ func (s *session) Write(b []byte) (int, error) {
 	defer s.wmu.Unlock()
 	written := 0
 	for len(b) > 0 {
-		if s.wclosed || s.peerClosed.Load() || s.gone.Load() {
+		if s.wclosed || s.peerClosed.Load() {
 			return written, io.ErrClosedPipe
+		}
+		if s.gone.Load() {
+			return written, s.goneErr()
 		}
 		k := min(len(b), maxChunk)
 		m := make([]byte, 1+k) // gRPC may hold a message after SendMsg returns
 		copy(m[1:], b[:k])
 		if err := s.send(m); err != nil {
-			return written, sendErr(err)
+			return written, s.sendErr(err)
 		}
 		written += k
 		b = b[k:]
@@ -438,12 +441,29 @@ func (s *session) Write(b []byte) (int, error) {
 }
 
 // sendErr: the opener's SendMsg says io.EOF once the accepter ended the
-// stream (the reason is RecvMsg's).
-func sendErr(err error) error {
-	if err == io.EOF {
+// stream (the reason is RecvMsg's): io.ErrClosedPipe after its close,
+// else errCut (a reset or a cut, or a close not read yet: an error, never
+// a clean close taken for a cut).
+func (s *session) sendErr(err error) error {
+	switch {
+	case err != io.EOF:
+		return err
+	case s.peerClosed.Load():
 		return io.ErrClosedPipe
 	}
-	return err
+	return errCut
+}
+
+// goneErr is a write's error once the accepter's handler returned:
+// io.ErrClosedPipe after Close or Reset here, else errCut (the stream
+// ended: the opener's reset, a dead or closed connection).
+func (s *session) goneErr() error {
+	select {
+	case <-s.closed:
+		return io.ErrClosedPipe
+	default:
+		return errCut
+	}
 }
 
 // CloseWrite sends the EOF message: the peer reads io.EOF after what was
@@ -460,7 +480,7 @@ func (s *session) CloseWrite() error {
 		_ = s.closeSend()
 	}
 	if err != nil {
-		return sendErr(err)
+		return s.sendErr(err)
 	}
 	return nil
 }

@@ -5,6 +5,49 @@ it (`peerlink/grpclink/vX.Y.Z`, `peerlink/quiclink/vX.Y.Z`). The wire
 format is [WIRE.md](WIRE.md); every release since v0.2.0 speaks the same
 version 2 unless an entry says otherwise.
 
+## peerlink/grpclink v0.3.2 (2026-10-16)
+
+- Requires link v0.10.7.
+- Bug fix: a write on a session whose stream was cut (the opener's
+  reset, a dead or closed connection; on the opener, the accepter's
+  reset) failed with a plain `io.ErrClosedPipe`, which `peerlink.Join`
+  takes for the peer's `Close`: the other side was closed cleanly with
+  bytes missing. It now fails with the cut (`grpclink: stream ended
+  without the peer's close`); plain `io.ErrClosedPipe` only after the
+  peer's `Close` or this side's (`TestWriteAfterCutIsNoClose`).
+
+## peerlink/quiclink v0.4.6 (2026-10-16)
+
+- Requires link v0.10.7 (a lost QUIC connection is no clean close to a
+  splice: below).
+- Bug fix: `Abort` on a session whose write side the peer had already
+  reset (its STOP_SENDING, as when both hops beside a dead one abort
+  toward each other) crashed the process: quic-go counted the stream's
+  frames again after `SetReliableBoundary` and panicked
+  (`numOutStandingFrames negative`) as their acks arrived. `Abort` now
+  sets the reliable boundary only while the write side is not reset
+  (`TestAbortAfterPeerAbort`: a panic in the first of 300 before, none
+  after). A STOP_SENDING read in the instant between the check and the
+  call still panics: the fix is quic-go's.
+- `TestChainMiddleHopFaultsMixed`: link's middle-hop faults (kill,
+  drain, partition) on 5 `peerlink.Forward` hops whose links are QUIC
+  or TCP at random, echoes of up to 4 MiB in flight: on link v0.10.6
+  and quiclink v0.4.5, 15 integrity failures in 30 partition runs and
+  the panic above within the first kill or drain run; 0 and none in 69
+  runs after.
+
+## v0.10.7 (2026-10-16)
+
+- Bug fix: `peerlink.Join` (and `peerlink.Forward`) took a write that
+  failed with an error that is `net.ErrClosed` for the peer's clean
+  close and closed the other side cleanly: the session ended upstream
+  with `io.EOF` and bytes missing. quic-go's connection errors (idle
+  timeout, a dead peer's or a drain's close, a stateless reset) are all
+  `net.ErrClosed`, so every hop splicing a `quiclink` session lost bytes
+  silently when that QUIC connection died (v0.10.6 fixed `link.Session`'s
+  own writes only). A write failure is a clean close now only when it is
+  `io.ErrClosedPipe` and not a cut (`TestJoinWriteToLostConnAborts`).
+
 ## peerlink/quiclink v0.4.5 (2026-10-16)
 
 - Requires link v0.10.6. No change of its own.

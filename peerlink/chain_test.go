@@ -9,7 +9,9 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
 	"testing"
+	"time"
 
 	"github.com/nfltr/link"
 	"github.com/nfltr/link/peerlink"
@@ -159,4 +161,67 @@ func TestJoinCopiesInChunks(t *testing.T) {
 		t.Fatalf("largest write %d bytes, want link.MaxChunk (%d)", biggest, link.MaxChunk)
 	}
 	_ = dstPeer.Close()
+}
+
+// lostConn is a conn whose connection was lost: its writes fail with an
+// error that is net.ErrClosed (as quic-go's IdleTimeoutError,
+// ApplicationError and StatelessResetError are); its reads wait for
+// Close.
+type lostConn struct {
+	net.Conn
+	closed chan struct{}
+}
+
+type connLost struct{}
+
+func (connLost) Error() string { return "timeout: no recent network activity" }
+func (connLost) Unwrap() error { return net.ErrClosed }
+
+func (lostConn) Write([]byte) (int, error) { return 0, connLost{} }
+
+func (c lostConn) Read([]byte) (int, error) {
+	<-c.closed
+	return 0, connLost{}
+}
+
+func (c lostConn) Close() error {
+	select {
+	case <-c.closed:
+	default:
+		close(c.closed)
+	}
+	return nil
+}
+
+// TestJoinWriteToLostConnAborts: a write that failed because the conn's
+// connection was lost (an error that is net.ErrClosed) aborts the other
+// side (an RST on a TCP conn), never closes it cleanly: quiclink's
+// writes fail so when its QUIC connection dies (idle timeout, dead
+// peer, drain deadline), and a clean close upstream truncated the
+// session (TestChainMiddleHopFaultsMixed in quiclink).
+func TestJoinWriteToLostConnAborts(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close() //nolint:errcheck
+	peer, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer peer.Close() //nolint:errcheck
+	a, err := ln.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := lostConn{closed: make(chan struct{})}
+	defer b.Close() //nolint:errcheck
+	go func() { _ = peerlink.Join(a, b) }()
+	if _, err := peer.Write([]byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	_ = peer.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := peer.Read(make([]byte, 1)); err == nil || errors.Is(err, io.EOF) || errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("read %v, want a reset", err)
+	}
 }
