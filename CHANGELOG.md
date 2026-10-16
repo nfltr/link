@@ -5,6 +5,36 @@ it (`peerlink/grpclink/vX.Y.Z`, `peerlink/quiclink/vX.Y.Z`). The wire
 format is [WIRE.md](WIRE.md); every release since v0.2.0 speaks the same
 version 2 unless an entry says otherwise.
 
+## v0.10.9 (2026-10-17)
+
+Raw speed, same wire and API ([docs/performance.md](docs/performance.md)
+has each change, its measurements and its guard):
+
+- The receive loop reads frames ahead: a burst of small frames is one
+  read of the connection instead of three per frame (header, sid,
+  payload). An idle connection still holds no pooled buffer: it waits in
+  a read into a 2 KiB array of its own (per connection, new), and takes
+  a 64 KiB pooled buffer only while frames stream. Payloads of 4 KiB or
+  more go straight into their own buffer.
+- Short payloads of a session whose reader is behind are queued packed
+  (appended to its newest buffer, else a pooled 4 KiB chunk): a session
+  holds about its bytes, not a buffer per frame (before: up to 16x for
+  4 KiB frames, about 40x for 1-byte ones), and a Read returns many small
+  frames at once.
+- No allocation per message in steady state, either direction
+  (`TestSteadyStateAllocs`; before: 2 to 4 per echoed message).
+- A Session's Write frames and flushes under one lock, its data frames
+  skip a credit-lock check they never needed, and a connection that one
+  session writes on no longer yields before each write.
+- Measured (TCP loopback, Apple M5): 64-byte messages on 8 sessions 6x
+  the throughput, 1 KiB 1.8x, one session +17 to +31 % for 64 B to 4 KiB;
+  large messages and latency unchanged or slightly better. Over
+  `net.Pipe` small messages 3x.
+- New tests: `TestSteadyStateAllocs`, `TestFramesAndReadsPerMessage`,
+  `TestIdleConnHoldsNoReadBuffer`, `TestShortFramesQueuePacked`;
+  benchmarks `BenchmarkThroughput`, `BenchmarkLatency`,
+  `BenchmarkIdleSessions`; `scripts/perf.sh` (A/B and profiles).
+
 ## peerlink/quiclink v0.4.7 (2026-10-16)
 
 - Requires link v0.10.8.

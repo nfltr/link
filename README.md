@@ -241,6 +241,33 @@ sessions and joint (origin, one Forward hop, far end; `TestChainIdleCost`,
 200 sessions). In-flight bytes for a stalled far reader stay within the
 links' windows plus 256 KiB per hop (`TestChainStalledFarReader`).
 
+## Performance
+
+One connection, in process, Apple M5 (10 CPUs), v0.10.9 against v0.10.8,
+medians of 8 alternating runs on a shared machine
+([docs/performance.md](docs/performance.md) has every cell, the method
+and each optimization):
+
+| message | sessions | TCP MB/s | TLS 1.3 MB/s | allocations per message |
+|---:|---:|---:|---:|---|
+| 64 B | 1 | 23 -> 32 | 21 -> 28 | 2 -> 0 |
+| 64 B | 8 | 56 -> 335 | 160 -> 295 | 2 -> 0 |
+| 1 KiB | 8 | 676 -> 1,180 | 694 -> 884 | 2 -> 0 |
+| 4 KiB | 1 | 1,465 -> 1,946 | 993 -> 1,402 | 1 -> 0 |
+| 64 KiB | 8 | 7,557 -> 7,953 | 2,951 -> 3,003 | 1 -> 0 |
+| 1 MiB | 1 | 8,834 -> 9,701 | 2,940 -> 2,915 | 20 -> 0 |
+
+The 64 KiB and 1 MiB rows differ within the noise of a shared machine.
+A 64-byte echo on a held session takes 20 µs (p50) either way. Per
+message: one data frame (up to 64 KiB), at most one write of the
+connection (fewer when sessions share a write), and the receiver reads
+the connection about once per burst of small frames (v0.10.8: three
+reads per frame). An idle session holds no goroutine, and an idle
+connection no pooled buffer. `TestSteadyStateAllocs` and
+`TestFramesAndReadsPerMessage` fail if an allocation, a frame or a read
+comes back onto that path; `scripts/perf.sh ab OLD NEW OUT` compares two
+refs.
+
 ## Which API
 
 | you want | use |
@@ -327,7 +354,7 @@ is the long fuzz run ([FUZZING.md](FUZZING.md)).
 
 ## Status and compatibility
 
-The latest release is v0.10.0; [CHANGELOG.md](CHANGELOG.md) lists every
+The latest release is v0.10.9; [CHANGELOG.md](CHANGELOG.md) lists every
 release. link is pre-1.0 and follows [semantic versioning](https://semver.org)
 as Go modules do for v0:
 
