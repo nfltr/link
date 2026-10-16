@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/metrics"
 	"runtime/pprof"
 	"slices"
 	"strings"
@@ -308,38 +309,53 @@ func benchThroughput(b *testing.B, tr string, size, sessions int, both bool) {
 
 // BenchmarkLatency: a 64-byte echo round trip on a held session, and a
 // fresh session's open, echo and close (answered: waiting for the far
-// end's answer, Answered, before the echo), with p50 and p99.
+// end's answer, Answered, before the echo), with p50 and p99. held-mixed
+// echoes on two held sessions in turn (a connection that more than one
+// session writes on); raw is the same echo on the bare connection, the
+// floor link adds to. Per round trip: wakeups/op, goroutines scheduled to
+// run (runtime/metrics /sched/latencies, which samples one transition in
+// 8: x8, an estimate), and goroutines/op, goroutines started.
 func BenchmarkLatency(b *testing.B) {
 	for _, tr := range perfTransports {
-		for _, mode := range []string{"held", "fresh", "fresh-answered"} {
+		for _, mode := range []string{"raw", "held", "held-mixed", "fresh", "fresh-answered"} {
 			b.Run(fmt.Sprintf("tr=%s/%s", tr, mode), func(b *testing.B) {
 				r := newPerfRig(b, tr, perfEcho)
 				msg, got := make([]byte, 64), make([]byte, 64)
-				var held *Session
-				if mode == "held" {
-					var err error
-					if held, err = r.a.Open([]byte("echo")); err != nil {
-						b.Fatal(err)
+				var held []io.ReadWriter
+				switch mode {
+				case "raw":
+					held = append(held, rawEcho(b, tr))
+				case "held", "held-mixed":
+					for range map[bool]int{true: 1, false: 2}[mode == "held"] {
+						s, err := r.a.Open([]byte("echo"))
+						if err != nil {
+							b.Fatal(err)
+						}
+						defer s.Close() //nolint:errcheck
+						held = append(held, s)
 					}
-					defer held.Close() //nolint:errcheck
 				}
 				lat := make([]time.Duration, b.N)
 				tx0, rx0 := r.la.snap(), r.lb.snap()
+				w0, g0 := schedCounts()
 				b.ReportAllocs()
 				b.ResetTimer()
 				for i := range b.N {
 					t0 := time.Now()
-					s := held
-					if s == nil {
-						var err error
-						if s, err = r.a.Open([]byte("echo")); err != nil {
+					var s io.ReadWriter
+					if held != nil {
+						s = held[i%len(held)]
+					} else {
+						o, err := r.a.Open([]byte("echo"))
+						if err != nil {
 							b.Fatal(err)
 						}
 						if mode == "fresh-answered" {
-							if err := s.Answered(context.Background()); err != nil {
+							if err := o.Answered(context.Background()); err != nil {
 								b.Fatal(err)
 							}
 						}
+						s = o
 					}
 					if _, err := s.Write(msg); err != nil {
 						b.Fatal(err)
@@ -347,15 +363,18 @@ func BenchmarkLatency(b *testing.B) {
 					if _, err := io.ReadFull(s, got); err != nil {
 						b.Fatal(err)
 					}
-					if s != held {
-						_ = s.Close()
+					if held == nil {
+						_ = s.(*Session).Close()
 					}
 					lat[i] = time.Since(t0)
 				}
 				b.StopTimer()
+				w1, g1 := schedCounts()
 				slices.Sort(lat)
 				b.ReportMetric(float64(lat[len(lat)/2].Nanoseconds()), "p50-ns")
 				b.ReportMetric(float64(lat[len(lat)*99/100].Nanoseconds()), "p99-ns")
+				b.ReportMetric(8*float64(w1-w0)/float64(b.N), "wakeups/op")
+				b.ReportMetric(float64(g1-g0)/float64(b.N), "goroutines/op")
 				if mode == "held" {
 					tx, rx := r.la.snap().sub(tx0), r.lb.snap().sub(rx0)
 					b.ReportMetric(float64(tx.writes)/float64(b.N), "writes/msg")
@@ -364,6 +383,40 @@ func BenchmarkLatency(b *testing.B) {
 			})
 		}
 	}
+}
+
+// schedCounts reads the scheduler's sampled run transitions
+// (/sched/latencies) and the goroutines created so far.
+func schedCounts() (runs, created uint64) {
+	m := []metrics.Sample{{Name: "/sched/latencies:seconds"}, {Name: "/sched/goroutines-created:goroutines"}}
+	metrics.Read(m)
+	for _, c := range m[0].Value.Float64Histogram().Counts {
+		runs += c
+	}
+	return runs, m[1].Value.Uint64()
+}
+
+// rawEcho is a connection (TCP loopback, or TLS 1.3 over it) to a
+// goroutine that echoes what it reads: the floor under BenchmarkLatency.
+func rawEcho(tb testing.TB, tr string) net.Conn {
+	x, y := tcpPair(tb)
+	if tr == "tls" {
+		stls, ctls := selfSigned(tb)
+		x, y = tls.Client(x, ctls), tls.Server(y, stls)
+	}
+	go func() {
+		buf := make([]byte, 32<<10)
+		for {
+			n, err := y.Read(buf)
+			if err != nil {
+				return
+			}
+			if _, err := y.Write(buf[:n]); err != nil {
+				return
+			}
+		}
+	}()
+	return x
 }
 
 // BenchmarkIdleSessions: 8 busy sessions moving 4 KiB messages beside 0
