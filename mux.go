@@ -329,9 +329,11 @@ func lateErr(ctx context.Context) error {
 }
 
 // cut ends a drain at its deadline: on a FeatureChain connection each
-// session still open gets an ABORT (CodeDrainDeadline) first, written
-// within a second, and reads here end with errDrainDeadline; then the
-// connection closes.
+// session still open gets an ABORT (CodeDrainDeadline) first, and reads
+// here end with errDrainDeadline; the connection then closes its write
+// side once the ABORTs are written, and the rest at the peer's close
+// (closeFlushed: a reset under frames the peer still sends would drop the
+// ABORTs before the peer read them), within two seconds at most.
 func (m *Mux) cut() {
 	m.mu.Lock()
 	if m.cutting { // the drain's timer and Drain's ctx: one cut
@@ -345,19 +347,19 @@ func (m *Mux) cut() {
 	}
 	m.mu.Unlock()
 	if m.c.chain() && len(ids) > 0 {
-		written := make(chan struct{})
+		closed := make(chan struct{})
 		go func() {
-			defer close(written)
+			defer close(closed)
 			for _, id := range ids {
 				if m.c.sendAbort(id, &Abort{Code: CodeDrainDeadline, Msg: "drain deadline"}) != nil {
 					return
 				}
 			}
-			_ = m.c.Flush()
+			m.c.closeFlushed(time.Second)
 		}()
-		t := time.NewTimer(time.Second)
+		t := time.NewTimer(2 * time.Second)
 		select {
-		case <-written:
+		case <-closed:
 		case <-t.C:
 		}
 		t.Stop()

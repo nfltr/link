@@ -6,6 +6,7 @@ package link
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"sync"
@@ -334,5 +335,51 @@ func TestPoolCloseKeepsEndedSessionsTails(t *testing.T) {
 	if r.err != nil || !bytes.Equal(r.b, append(head, tail...)) {
 		t.Fatalf("peer read %d of %d bytes (intact: %v), then %v; want every byte, then io.EOF",
 			len(r.b), len(head)+len(tail), bytes.Equal(r.b, append(head, tail...)), r.err)
+	}
+}
+
+// TestDrainDeadlineAbortsReachABusyPeer: the ABORTs a drain's deadline
+// sends reach the peer although the peer keeps writing on the leaving
+// connection: the connection closes gracefully (its write side first),
+// never with bytes unread, whose reset would drop the ABORTs before the
+// peer read them.
+func TestDrainDeadlineAbortsReachABusyPeer(t *testing.T) {
+	for i := range 20 {
+		hold := make(chan struct{})
+		accept := func(h []byte, s *Session) {
+			if string(h) == "sink" {
+				_, _ = io.Copy(io.Discard, s)
+				return
+			}
+			<-hold
+		}
+		dm, lm := v2muxPair(t, accept, Config{Auth: testToken}, Config{Auth: testToken})
+		held, err := openV2(dm, "held")
+		if err != nil {
+			t.Fatal(err)
+		}
+		sink, err := openV2(dm, "sink")
+		if err != nil {
+			t.Fatal(err)
+		}
+		go func() {
+			b := make([]byte, 16<<10)
+			for {
+				if _, err := sink.Write(b); err != nil {
+					return
+				}
+			}
+		}()
+		waitUntil(t, func() bool { return lm.Sessions() == 2 })
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		_ = lm.Drain(ctx)
+		cancel()
+		_ = held.SetReadDeadline(time.Now().Add(5 * time.Second))
+		_, err = held.Read(make([]byte, 1))
+		var a *Abort
+		if !errors.As(err, &a) || a.Code != CodeDrainDeadline {
+			t.Fatalf("run %d: the held session at the drain's deadline: %v, want aborted drain deadline", i, err)
+		}
+		close(hold)
 	}
 }

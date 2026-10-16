@@ -5,6 +5,17 @@ it (`peerlink/grpclink/vX.Y.Z`, `peerlink/quiclink/vX.Y.Z`). The wire
 format is [WIRE.md](WIRE.md); every release since v0.2.0 speaks the same
 version 2 unless an entry says otherwise.
 
+## v0.10.5 (2026-10-16)
+
+- Bug fix: a drain cut at its deadline closes the connection gracefully
+  once its ABORTs (`CodeDrainDeadline`) are written: its write side first
+  (`CloseWrite`, TLS close_notify), the rest at the peer's close, within
+  two seconds at most. It closed at once, and a peer still sending (window
+  updates, data) got a TCP reset that dropped the ABORTs before it read
+  them: the session ended `connection reset by peer` instead of drain
+  deadline (`TestDrainDeadlineAbortsReachABusyPeer`: 1 in 20 failed;
+  0 in 200 after). Seen draining a relay's clients' data connections.
+
 ## peerlink/quiclink v0.4.3 (2026-10-16)
 
 - Requires link v0.10.4. No change of its own.
