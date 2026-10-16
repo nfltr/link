@@ -5,6 +5,10 @@ it (`peerlink/grpclink/vX.Y.Z`, `peerlink/quiclink/vX.Y.Z`). The wire
 format is [WIRE.md](WIRE.md); every release since v0.2.0 speaks the same
 version 2 unless an entry says otherwise.
 
+## peerlink/quiclink v0.4.5 (2026-10-16)
+
+- Requires link v0.10.6. No change of its own.
+
 ## v0.10.6 (2026-10-16)
 
 - Bug fix: a session joined through `Join` or `Forward` (link's and
