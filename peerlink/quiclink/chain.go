@@ -119,9 +119,16 @@ func (s *Session) answer() error {
 	}
 }
 
-// mapErr turns a stream error carrying an Abort (ALPNChain) into it, and
-// a write refused by the peer's Close into io.ErrClosedPipe (wrapping it).
+// mapErr turns a stream error carrying an Abort (ALPNChain) into it, a
+// write refused by the peer's Close into io.ErrClosedPipe (wrapping it),
+// and this Node's own Drain deadline closing the connection into
+// link.ErrDrainDeadline (wrapping it: a splice sends it on as
+// link.CodeDrainDeadline, as on a link.Mux).
 func (s *Session) mapErr(err error) error {
+	var ae *quic.ApplicationError
+	if errors.As(err, &ae) && !ae.Remote && ae.ErrorCode == CodeDrainDeadline {
+		return fmt.Errorf("%w: %w", err, link.ErrDrainDeadline)
+	}
 	var se *quic.StreamError
 	if err == nil || !errors.As(err, &se) {
 		return err

@@ -308,3 +308,37 @@ func TestOpenTowardDrainingPeer(t *testing.T) {
 		t.Errorf("Drain: %v", err)
 	}
 }
+
+// TestDrainDeadlineCutIsDrainDeadline: a session that its own Node's
+// Drain deadline cut fails with link.ErrDrainDeadline on that side (as on
+// a link.Mux), so a splice there sends link.CodeDrainDeadline on rather
+// than link.CodeConnLost.
+func TestDrainDeadlineCutIsDrainDeadline(t *testing.T) {
+	pc := listenUDP(t)
+	a := mustNew(t, quiclink.Config{PacketConn: pc, TLS: serverTLS("a"), Liveness: link.LivenessFast})
+	b := mustNew(t, quiclink.Config{Dial: dialer("b", "a", pc.LocalAddr().String()), Connect: []string{"a"}, Liveness: link.LivenessFast})
+	go func() { _ = a.Serve(func(_ string, _ []byte, s peerlink.Session) { _ = s.Close() }) }()
+	go func() {
+		_ = b.Serve(func(_ string, _ []byte, s peerlink.Session) { defer s.Close(); _, _ = io.Copy(s, s) })
+	}()
+	t.Cleanup(func() { _ = b.Drain(context.Background()) })
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	s, err := a.Open(ctx, "b", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Write([]byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadFull(s, make([]byte, 1)); err != nil {
+		t.Fatal(err)
+	}
+	dctx, dcancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer dcancel()
+	_ = a.Drain(dctx)
+	_ = s.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := s.Read(make([]byte, 1)); !errors.Is(err, link.ErrDrainDeadline) {
+		t.Fatalf("read after the drain's deadline: %v, want link.ErrDrainDeadline", err)
+	}
+}
