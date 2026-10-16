@@ -144,3 +144,20 @@ func TestNewRefusesNoLimit(t *testing.T) {
 	}()
 	New(0)
 }
+
+// A queue that never drains (a reader one slice behind) reuses the head
+// of its array that pops freed: no allocation per push.
+func TestQueueReusesItsArray(t *testing.T) {
+	q := New(1 << 20)
+	b := make([]byte, 1)
+	q.Push(b)
+	q.Push(b)
+	if n := testing.AllocsPerRun(1000, func() { q.Push(b); q.Pop() }); n != 0 {
+		t.Fatalf("%v allocations per push and pop", n)
+	}
+	for range 2 {
+		if got, ok := q.Pop(); !ok || len(got) != 1 {
+			t.Fatal("lost a slice")
+		}
+	}
+}

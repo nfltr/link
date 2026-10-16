@@ -19,7 +19,8 @@ import (
 type Queue struct {
 	mu     sync.Mutex
 	cond   sync.Cond
-	bufs   [][]byte
+	bufs   [][]byte // queued from head on; a drained queue keeps its array
+	head   int
 	size   int
 	limit  int
 	closed bool
@@ -64,11 +65,25 @@ func (q *Queue) Push(b []byte) bool {
 	if q.closed {
 		return false
 	}
+	q.pushLocked(b)
+	return true
+}
+
+// pushLocked appends b, reusing the array's head that pops freed before
+// it grows a new one.
+func (q *Queue) pushLocked(b []byte) {
+	if len(q.bufs) == cap(q.bufs) && q.head > 0 {
+		n := copy(q.bufs, q.bufs[q.head:])
+		clear(q.bufs[n:])
+		q.bufs, q.head = q.bufs[:n], 0
+	}
 	q.bufs = append(q.bufs, b)
 	q.size += len(b)
 	q.cond.Broadcast()
-	return true
 }
+
+// queued is how many slices are queued.
+func (q *Queue) queued() int { return len(q.bufs) - q.head }
 
 // ErrStalled is PushWithin's report of a queue that took nothing for the
 // stall bound.
@@ -120,9 +135,7 @@ func (q *Queue) PushWithin(b []byte, stall time.Duration) error {
 	if q.closed {
 		return ErrClosed
 	}
-	q.bufs = append(q.bufs, b)
-	q.size += len(b)
-	q.cond.Broadcast()
+	q.pushLocked(b)
 	return nil
 }
 
@@ -141,16 +154,16 @@ func (q *Queue) Wake() {
 // and Wake is called: a conn's read deadline.
 func (q *Queue) PopUnless(stop *atomic.Bool) ([]byte, bool) {
 	q.mu.Lock()
-	for len(q.bufs) == 0 && !q.closed && (stop == nil || !stop.Load()) {
+	for q.queued() == 0 && !q.closed && (stop == nil || !stop.Load()) {
 		q.cond.Wait()
 	}
-	if len(q.bufs) == 0 || stop != nil && stop.Load() {
+	if q.queued() == 0 || stop != nil && stop.Load() {
 		q.mu.Unlock()
 		return nil, false
 	}
-	b := q.bufs[0]
-	q.bufs[0] = nil
-	q.bufs = q.trim(1)
+	b := q.bufs[q.head]
+	q.bufs[q.head] = nil
+	q.trim(1)
 	q.size -= len(b)
 	q.pops++
 	q.cond.Broadcast()
@@ -164,10 +177,10 @@ func (q *Queue) PopUnless(stop *atomic.Bool) ([]byte, bool) {
 // sends its backlog with one write (net.Buffers) instead of one per slice.
 func (q *Queue) PopBatch(dst [][]byte, max int) ([][]byte, bool) {
 	q.mu.Lock()
-	for len(q.bufs) == 0 && !q.closed {
+	for q.queued() == 0 && !q.closed {
 		q.cond.Wait()
 	}
-	if len(q.bufs) == 0 {
+	if q.queued() == 0 {
 		q.mu.Unlock()
 		return dst, false
 	}
@@ -178,7 +191,7 @@ func (q *Queue) PopBatch(dst [][]byte, max int) ([][]byte, bool) {
 // queued, ended too once the queue is closed and drained.
 func (q *Queue) TryPopBatch(dst [][]byte, max int) (out [][]byte, ok, ended bool) {
 	q.mu.Lock()
-	if len(q.bufs) == 0 {
+	if q.queued() == 0 {
 		ended = q.closed
 		q.mu.Unlock()
 		return dst, false, ended
@@ -191,22 +204,22 @@ func (q *Queue) TryPopBatch(dst [][]byte, max int) (out [][]byte, ok, ended bool
 func (q *Queue) Ready() bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	return len(q.bufs) > 0 || q.closed
+	return q.queued() > 0 || q.closed
 }
 
 // popBatchLocked pops at least one slice (one is queued); it unlocks mu.
 func (q *Queue) popBatchLocked(dst [][]byte, max int) [][]byte {
 	n, k := 0, 0
-	for _, b := range q.bufs {
+	for i, b := range q.bufs[q.head:] {
 		if k > 0 && n+len(b) > max {
 			break
 		}
 		n += len(b)
 		dst = append(dst, b)
-		q.bufs[k] = nil
+		q.bufs[q.head+i] = nil
 		k++
 	}
-	q.bufs = q.trim(k)
+	q.trim(k)
 	q.size -= n
 	q.pops++
 	q.cond.Broadcast()
@@ -215,13 +228,12 @@ func (q *Queue) popBatchLocked(dst [][]byte, max int) [][]byte {
 	return dst
 }
 
-// trim drops the first k queued slices; a drained queue keeps its array
-// (pushes then reuse it, not grow a new one).
-func (q *Queue) trim(k int) [][]byte {
-	if k == len(q.bufs) {
-		return q.bufs[:0]
+// trim drops the first k queued slices (already cleared); a drained
+// queue starts its array over.
+func (q *Queue) trim(k int) {
+	if q.head += k; q.head == len(q.bufs) {
+		q.bufs, q.head = q.bufs[:0], 0
 	}
-	return q.bufs[k:]
 }
 
 // Close stops further pushes and wakes every waiter. Already queued slices
