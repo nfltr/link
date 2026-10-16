@@ -276,6 +276,33 @@ it aborts them both ways with `CodeDrainDeadline`. A hop that received
 GOAWAY from its next hop opens new sessions elsewhere as today (Pool and
 Node already skip connections going away).
 
+**Liveness and deadlines across hops, measured (v0.10.8).** What the
+two paragraphs above promise, timed, and what they leave to the
+application:
+
+- Liveness costs per connection, not per session: an idle link with
+  `LivenessDefault` carried 156 bytes in 20 s with one session open on
+  it and 208 bytes with 500.
+- A dead middle link (origin -> hop -> hop -> far end, `LivenessDefault`
+  on every link, the middle one black-holed: both TCP connections kept,
+  every byte dropped) reached the origin as `*Abort{CodeConnLost, Hops:
+  0}` after 14.0 s and the far end the same after 15.0 s: the link's
+  bound (15 s from its last frame) plus a trip. `Example_deadMiddleHop`
+  checks the shape with a 3 s bound on every `go test`. (Measured in
+  process by github.com/nfltr/nfltr `tests/connect/grpc-liveness`, run by
+  its `make test-grpc-liveness`.)
+- No deadline crosses a hop. The open is bounded by the origin's
+  `Answered(ctx)` (and a hop's `AnswerTimeout`, when it sets one); a side
+  that gives up aborts, and the abort reaches every hop: in
+  `Example_deadlines` the far end reads the origin's `Abort(CodeApp+1)`
+  with `Hops` 2. A budget the far end needs travels in the header (gRPC's
+  `grpc-timeout` is in band: through a two-link chain the handler saw
+  2,999 ms of a 3,000 ms deadline).
+- Per-link liveness does not see a process stuck behind a connection
+  that still answers pings (a deadline does), a plain TCP leg beyond the
+  chain (TCP keepalive only), or a reader that stopped (flow control
+  bounds it to its own session).
+
 ## 4. The wire: feature bit 1
 
 **Decision: a feature bit in version 2, not a version 3.** WIRE.md

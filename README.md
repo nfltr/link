@@ -268,6 +268,96 @@ connection no pooled buffer. `TestSteadyStateAllocs` and
 comes back onto that path; `scripts/perf.sh ab OLD NEW OUT` compares two
 refs.
 
+## Liveness and deadlines
+
+**Liveness is per link.** A connection pings once nothing arrived for its
+`Interval` and is dead once nothing arrived for `Interval + Timeout`
+(`link.ErrDeadPeer`), so an idle connection costs a few bytes whatever
+its session count: an idle link carried 156 bytes in 20 s with one
+session open on it and 208 with 500 (measured below). Set a preset on the
+dialer ([choosing one](docs/recipes.md#choosing-a-liveness-preset)); a
+listener with none of its own adopts the dialer's. On a chain each link
+keeps its own: when a link in the middle dies, the hops beside it notice
+within that link's bound and abort both ways with `CodeConnLost`, so both
+ends read a `*link.Abort`, never a clean EOF, within that bound plus one
+trip along the chain (`Example_deadMiddleHop`). A hop's drain does the
+same at its deadline with `CodeDrainDeadline`.
+
+**Deadlines are each side's own; link carries none from hop to hop.**
+`Answered(ctx)` (or `Pool.Open(ctx, ...)`, `Node.Open(ctx, ...)`) bounds
+the open across every hop. `SetReadDeadline` and `SetWriteDeadline` are
+local, as on a `net.Conn`. A side that gives up calls `Abort` (or
+`Close`), which reaches the far end through every hop as a typed
+`*link.Abort`. A `Forward` hop sets no read deadline and no idle limit; a
+write deadline set on a spliced session aborts both sides with
+`CodeTimeout`, and `ForwardConfig.AnswerTimeout` refuses an open whose
+onward answer is late (`CodeTimeout`, with the hop). Where the far end
+needs the caller's budget, send it in the header, as gRPC sends
+`grpc-timeout` in band:
+
+```go
+// Example_deadlines: link carries no deadline value from hop to hop.
+// The origin bounds the open across every hop with Answered's context,
+// sets its own read deadline (local, as on a net.Conn), sends its budget
+// in the header where the far end needs it, and propagates its giving up
+// with Abort, which reaches the far end through the hop as a typed
+// *link.Abort.
+func Example_deadlines() {
+	gaveUp := make(chan error, 1)
+	m := chain3(func(header []byte, s *link.Session) {
+		budget, _ := time.ParseDuration(string(header)) // the origin's budget, if the far end needs it
+		_ = s.Accept()
+		_ = s.SetReadDeadline(time.Now().Add(budget)) // the far end's own deadline
+		_, err := io.Copy(io.Discard, s)              // works, never answers
+		gaveUp <- err
+	}, nil, link.Liveness{})
+	defer m.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	s, err := m.Open([]byte("5s"))
+	if err != nil {
+		panic(err)
+	}
+	if err := s.Answered(ctx); err != nil { // the open, across every hop, within ctx
+		panic(err)
+	}
+	stop := context.AfterFunc(ctx, func() { _ = s.Abort(link.CodeApp+1, "caller gave up") })
+	defer stop()
+
+	_ = s.SetReadDeadline(time.Now().Add(200 * time.Millisecond)) // this side only
+	_, err = s.Read(make([]byte, 1))
+	fmt.Println("origin read:", errors.Is(err, os.ErrDeadlineExceeded))
+	cancel() // give up: Abort, both ways along the chain
+
+	var a *link.Abort
+	if errors.As(<-gaveUp, &a) {
+		fmt.Printf("far end: code %d, %d join(s) away: %s\n", a.Code-link.CodeApp, a.Hops, a.Msg)
+	}
+	// Output:
+	// origin read: true
+	// far end: code 1, 2 join(s) away: caller gave up
+}
+```
+
+link adds no deadline field of its own: the application's protocol
+already carries one where it needs it (gRPC, HTTP), a wall-clock deadline
+would need hops to agree on time or subtract their own delay, and the
+case that matters, a side giving up, already reaches every hop as an
+abort.
+
+What per-link liveness cannot see: a process that is stuck while its
+connection still answers pings (only a deadline finds it); a plain TCP
+connection beyond the chain, such as the one a far end dials to its
+target, which has TCP keepalive only; and a reader that stopped reading,
+which flow control bounds instead (it stalls its own session only).
+Measured with `LivenessDefault` (dead after 15 s) on every link of
+origin -> hop -> hop -> far end, the middle link black-holed (both TCP
+connections kept, every byte dropped): the origin read `CodeConnLost`
+after 14.0 s and the far end after 15.0 s, each from the hop beside the
+dead link (`Hops` 0); [docs/design/chaining.md](docs/design/chaining.md)
+says how.
+
 ## Which API
 
 | you want | use |
