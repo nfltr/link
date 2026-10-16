@@ -275,7 +275,8 @@ func (c *Conn) SendMsg(b []byte) error {
 // the first data or close of a session the peer opened is preceded by an
 // ACCEPT when nothing answered it yet (a Mux's Session answers itself).
 func (c *Conn) SendData(sid string, data []byte) error {
-	return c.sendData(sid, data, nil)
+	_, err := c.sendData(sid, data, nil, false)
+	return err
 }
 
 // writeDeadline is a session's write deadline as its sends see it: set,
@@ -289,24 +290,29 @@ type writeDeadline struct {
 func (wd *writeDeadline) expired() bool { return wd != nil && wd.past.Load() }
 
 // sendData is SendData bounded by wd (nil: none): past it, it returns
-// os.ErrDeadlineExceeded with the frame not buffered.
-func (c *Conn) sendData(sid string, data []byte, wd *writeDeadline) error {
+// os.ErrDeadlineExceeded with the frame not buffered. With flush it then
+// flushes under the same lock, and flushErr is Flush's.
+func (c *Conn) sendData(sid string, data []byte, wd *writeDeadline, flush bool) (flushErr, err error) {
 	if len(sid) > MaxSID {
-		return errSID
+		return nil, errSID
 	}
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
 	if err := c.acceptLocked(sid, wd); err != nil {
-		return err
+		return nil, err
 	}
 	for len(data) > 0 {
 		n := min(len(data), maxData)
 		if err := c.frameLocked(typeData, sid, data[:n], wd); err != nil {
-			return err
+			return nil, err
 		}
 		data = data[n:]
 	}
-	return nil
+	if flush {
+		c.flushLocked()
+		return c.werr, nil
+	}
+	return nil, nil
 }
 
 // SendOpen buffers an OPEN frame for session sid, with header

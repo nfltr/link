@@ -762,8 +762,9 @@ func (s *Session) writeOwned(w OwnedWriter) (int64, error) {
 // buffer.
 func (s *Session) Write(b []byte) (int, error) {
 	s.autoAccept()
-	n, err := s.send(b)
-	if err == nil {
+	inline := !s.wd.set.Load()
+	n, err := s.send(b, inline)
+	if err == nil && !inline {
 		err = s.flush()
 	}
 	return n, s.writeErr(err)
@@ -799,7 +800,7 @@ func (s *Session) WriteBuffers(bufs [][]byte) (int64, error) {
 	s.autoAccept()
 	var total int64
 	for _, b := range bufs {
-		n, err := s.send(b)
+		n, err := s.send(b, false)
 		total += int64(n)
 		if err != nil {
 			return total, s.writeErr(err)
@@ -809,20 +810,27 @@ func (s *Session) WriteBuffers(bufs [][]byte) (int64, error) {
 }
 
 // send buffers b as data frames, MaxChunk at a time, each once it has
-// credit; it returns how many bytes it buffered.
-func (s *Session) send(b []byte) (int, error) {
+// credit; it returns how many bytes it buffered. With flush the last
+// frame's lock also writes them (Flush): one lock per small Write.
+func (s *Session) send(b []byte, flush bool) (int, error) {
+	if len(b) == 0 && flush {
+		return 0, s.m.c.Flush()
+	}
 	for p := b; len(p) > 0; {
 		n := min(len(p), MaxChunk)
 		if err := s.acquire(n); err != nil {
 			return len(b) - len(p), err
 		}
-		if err := s.m.c.sendData(s.id, p[:n], &s.wd); err != nil {
+		flushErr, err := s.m.c.sendData(s.id, p[:n], &s.wd, flush && n == len(p))
+		if err != nil {
 			if errors.Is(err, os.ErrDeadlineExceeded) {
 				s.m.c.credit.refund(s.id, n) // nothing of it was sent
 			}
 			return len(b) - len(p), err
 		}
-		p = p[n:]
+		if p = p[n:]; flushErr != nil {
+			return len(b), flushErr
+		}
 	}
 	return len(b), nil
 }
