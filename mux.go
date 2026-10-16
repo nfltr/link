@@ -294,7 +294,7 @@ func (m *Mux) connErr() error {
 	m.mu.Unlock()
 	switch why := m.c.why(); {
 	case cutting:
-		return fmt.Errorf("%w: %w", ErrConnClosed, errDrainDeadline)
+		return fmt.Errorf("%w: %w", ErrConnClosed, ErrDrainDeadline)
 	case why == nil:
 		return fmt.Errorf("%w; open a new session", ErrConnClosed)
 	case errors.Is(why, io.EOF): // never a session's clean end
@@ -338,7 +338,7 @@ func lateErr(ctx context.Context) error {
 
 // cut ends a drain at its deadline: on a FeatureChain connection each
 // session still open gets an ABORT (CodeDrainDeadline) first, and reads
-// here end with errDrainDeadline; the connection then closes its write
+// here end with ErrDrainDeadline; the connection then closes its write
 // side once the ABORTs are written, and the rest at the peer's close
 // (closeFlushed: a reset under frames the peer still sends would drop the
 // ABORTs before the peer read them), within two seconds at most.
@@ -352,7 +352,7 @@ func (m *Mux) cut() {
 	ids := make([]string, 0, len(m.sess))
 	for id, s := range m.sess {
 		ids = append(ids, id)
-		s.fail(fmt.Errorf("%w: %w", ErrConnClosed, errDrainDeadline)) // before its ABORT ends its credit (writeErr)
+		s.fail(fmt.Errorf("%w: %w", ErrConnClosed, ErrDrainDeadline)) // before its ABORT ends its credit (writeErr)
 	}
 	m.mu.Unlock()
 	if m.c.chain() && len(ids) > 0 {

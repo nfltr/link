@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -223,5 +224,41 @@ func TestJoinWriteToLostConnAborts(t *testing.T) {
 	_ = peer.SetReadDeadline(time.Now().Add(5 * time.Second))
 	if _, err := peer.Read(make([]byte, 1)); err == nil || errors.Is(err, io.EOF) || errors.Is(err, os.ErrDeadlineExceeded) {
 		t.Fatalf("read %v, want a reset", err)
+	}
+}
+
+// drainCutConn is the onward side of a hop whose drain's deadline cut it
+// (link.Mux: link.ErrConnClosed wrapping link.ErrDrainDeadline).
+type drainCutConn struct{ lostConn }
+
+func (drainCutConn) Write([]byte) (int, error) {
+	return 0, fmt.Errorf("%w: %w", link.ErrConnClosed, link.ErrDrainDeadline)
+}
+
+func (c drainCutConn) Read([]byte) (int, error) {
+	<-c.closed
+	return 0, fmt.Errorf("%w: %w", link.ErrConnClosed, link.ErrDrainDeadline)
+}
+
+// TestJoinSendsDrainDeadlineOn: a hop whose onward session its own
+// drain's deadline cut aborts the origin's side CodeDrainDeadline, as
+// link.Join does, not CodeConnLost: a relay that drains both its
+// replica link and its agents' links at one deadline gave the origin
+// either code, by which cut came first.
+func TestJoinSendsDrainDeadlineOn(t *testing.T) {
+	a, b := nodes(t, link.LivenessFast, func(ln net.Listener) string { return ln.Addr().String() }, nil)
+	serveBoth(t, a, b, func(_ string, _ []byte, s peerlink.Session) {
+		_ = peerlink.Join(s, drainCutConn{lostConn{closed: make(chan struct{})}})
+	})
+	s, err := a.Open(context.Background(), "b", []byte("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = s.Write([]byte("go"))
+	_ = s.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, err = io.ReadAll(s)
+	var ab *link.Abort
+	if !errors.As(err, &ab) || ab.Code != link.CodeDrainDeadline || ab.Hops != 0 {
+		t.Fatalf("read %v, want aborted CodeDrainDeadline from hop 0", err)
 	}
 }

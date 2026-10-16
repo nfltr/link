@@ -116,8 +116,10 @@ var ErrOpenRefused = errors.New("link: session refused")
 // negotiate FeatureChain: its peer does not answer opens.
 var ErrNoAnswers = errors.New("link: the peer does not answer opens (no FeatureChain)")
 
-// errDrainDeadline is why a draining Mux's deadline cut a session.
-var errDrainDeadline = errors.New("link: the drain's deadline cut the session")
+// ErrDrainDeadline is matched (errors.Is) by the error of a session that
+// a draining Mux's deadline cut, on the side that drained: a splice
+// (Join, peerlink.Forward) sends it on as CodeDrainDeadline.
+var ErrDrainDeadline = errors.New("link: the drain's deadline cut the session")
 
 // clipMsg makes msg valid UTF-8 of at most MaxAbortMsg bytes.
 func clipMsg(msg string) string {
@@ -186,7 +188,7 @@ func abortFor(err error) *Abort {
 		return a.passed()
 	case errors.Is(err, ErrReset):
 		return &Abort{Code: CodeUnspecified, Hops: 1}
-	case errors.Is(err, errDrainDeadline):
+	case errors.Is(err, ErrDrainDeadline):
 		return &Abort{Code: CodeDrainDeadline, Msg: "drain deadline"}
 	case !errors.Is(err, ErrConnClosed) && errors.Is(err, os.ErrDeadlineExceeded):
 		return &Abort{Code: CodeTimeout, Msg: "write deadline"}

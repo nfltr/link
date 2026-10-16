@@ -241,8 +241,9 @@ func passed(a *link.Abort) *link.Abort {
 
 // abortOf is the Abort a join sends on after err ended one side (as
 // link.Join's): an *link.Abort one hop further, a plain reset as
-// CodeUnspecified one hop further, a deadline as CodeTimeout, anything
-// else as CodeConnLost.
+// CodeUnspecified one hop further, a drain's deadline here as
+// CodeDrainDeadline, a deadline as CodeTimeout, anything else as
+// CodeConnLost.
 func abortOf(err error) *link.Abort {
 	var a *link.Abort
 	switch {
@@ -250,6 +251,8 @@ func abortOf(err error) *link.Abort {
 		return passed(a)
 	case errors.Is(err, link.ErrReset):
 		return &link.Abort{Code: link.CodeUnspecified, Hops: 1}
+	case errors.Is(err, link.ErrDrainDeadline):
+		return &link.Abort{Code: link.CodeDrainDeadline, Msg: "drain deadline"}
 	case !errors.Is(err, link.ErrConnClosed) && errors.Is(err, os.ErrDeadlineExceeded):
 		return &link.Abort{Code: link.CodeTimeout, Msg: "write deadline"}
 	default:

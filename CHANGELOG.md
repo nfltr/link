@@ -5,6 +5,27 @@ it (`peerlink/grpclink/vX.Y.Z`, `peerlink/quiclink/vX.Y.Z`). The wire
 format is [WIRE.md](WIRE.md); every release since v0.2.0 speaks the same
 version 2 unless an entry says otherwise.
 
+## peerlink/quiclink v0.4.7 (2026-10-16)
+
+- Requires link v0.10.8.
+- A session that its own Node's `Drain` deadline cut (the connection
+  closed `CodeDrainDeadline`) fails with an error that is
+  `link.ErrDrainDeadline` on that side, as on a `link.Mux`: a splice
+  there (`peerlink.Forward`, `Join`) sends `link.CodeDrainDeadline` on,
+  not `link.CodeConnLost` (`TestDrainDeadlineCutIsDrainDeadline`).
+
+## v0.10.8 (2026-10-16)
+
+- New: `ErrDrainDeadline`, which the error of a session a draining Mux's
+  deadline cut matches (`errors.Is`) on the side that drained (it was
+  unexported).
+- Bug fix: `peerlink.Join` and `peerlink.Forward` sent a session that the
+  hop's own drain deadline cut on as `CodeConnLost`; `link.Join` sent
+  `CodeDrainDeadline`. A relay that drains its replica link and its
+  agents' links at one deadline gave the origin either code, by which cut
+  came first. Both now send `CodeDrainDeadline`
+  (`TestJoinSendsDrainDeadlineOn`).
+
 ## peerlink/grpclink v0.3.2 (2026-10-16)
 
 - Requires link v0.10.7.
