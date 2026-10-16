@@ -5,6 +5,19 @@ it (`peerlink/grpclink/vX.Y.Z`, `peerlink/quiclink/vX.Y.Z`). The wire
 format is [WIRE.md](WIRE.md); every release since v0.2.0 speaks the same
 version 2 unless an entry says otherwise.
 
+## peerlink/quiclink v0.4.3 (2026-10-16)
+
+- Requires link v0.10.4. No change of its own.
+
+## v0.10.4 (2026-10-16)
+
+- Bug fix: a drain cut at its deadline returns `context.DeadlineExceeded`.
+  `goAway`'s own timer cuts the open sessions at the deadline and races
+  ctx's timer; when the connections' close was seen first, `Mux.Drain`,
+  `Pool.Drain` and `peerlink.Node.Drain` returned nil for a drain that cut
+  sessions (`TestConformance/DrainDeadline/accepter`: 2/150 under `-race`,
+  0/150 after).
+
 ## v0.10.3 (2026-10-16)
 
 - Performance fix: `peerlink.Join` copies a conn without `Pump` (a TCP
