@@ -390,18 +390,27 @@ no significant change in p50.
   would move into whichever reader holds the role. The risk to the
   guarantees is out of proportion to ~4 µs per round trip.
 
-**Per-open cost (P8, not merged).** Branch `perf/latency-open-allocs`
-(commit 7df91b4): the session's queue becomes a field of the Session
-(`bytequeue.Init`), the queue's pop hook an interface the Session
-satisfies through an unexported type instead of a closure, and the
-session id is formatted on the stack: a fresh session's open, echo and
-close takes 22 -> 18 allocations. Median latency did not move (8
-interleaved runs: TCP fresh p50 28.1 -> 28.5 µs, answered 44.3 -> 44.1
-µs, both ~; evidence `~/nfltr-evidence/profiles/2026-10-17-link-perf/link@7df91b4/ab-P8-latency/`), so under
-the latency rule it waits for a decision. The rest of an open's cost is
-syscalls: the OPEN is written at once (`Open`'s contract: a peer that
-speaks first is reached), the accepter's explicit ACCEPT is a write of
-its own, and the close is a third.
+**Per-open cost (P8, dropped 2026-10-17).** Commit 7df91b4 (branch
+`perf/latency-open-allocs`, deleted): the session's queue becomes a
+field of the Session (`bytequeue.Init`), the queue's pop hook an
+interface the Session satisfies through an unexported type instead of a
+closure, and the session id is formatted on the stack: a fresh session's
+open, echo and close takes 22 -> 18 allocations (2.00 -> 1.87 KiB).
+Median latency did not move (8 interleaved runs: TCP fresh p50 28.1 ->
+28.5 µs, answered 44.3 -> 44.1 µs, both ~; evidence
+`~/nfltr-evidence/profiles/2026-10-17-link-perf/link@7df91b4/ab-P8-latency/`).
+Re-measured on v0.10.12 (7df91b4 cherry-picked, 8 interleaved runs,
+benchstat): `fresh` and `fresh-answered` sec/op and p50 ~ (p=0.38,
+0.28, 0.65, 0.13), and the open rate with 32 goroutines opening, echoing
+and closing on one connection ~ (17.6 vs 17.7 µs per open, p=1.0): the
+four allocations per open do not show as time even when opens contend.
+Dropped: no measured gain in latency or throughput, for a new exported
+`bytequeue.Popper`, a second constructor and a type conversion trick in
+`mux.go`. Revisit if a profile of a real workload shows the GC working
+on session opens. The rest of an open's cost is syscalls: the OPEN is
+written at once (`Open`'s contract: a peer that speaks first is
+reached), the accepter's explicit ACCEPT is a write of its own, and the
+close is a third.
 
 ## What was looked at and left
 
