@@ -521,11 +521,15 @@ func TestDrainDuringHandshake(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	close(release)
+	// The open went out before the server registers the connection: had
+	// the server's GOAWAY (it drains the connection once registered) come
+	// first, the client would rightly open elsewhere, and find the
+	// listener closed.
 	s := <-opened
 	if s == nil {
 		t.FailNow()
 	}
+	close(release)
 	_, _ = io.WriteString(s, "last request")
 	_ = s.CloseWrite()
 	reply, err := io.ReadAll(s)
