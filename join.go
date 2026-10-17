@@ -206,6 +206,10 @@ type joint struct {
 }
 
 func newJoint(in, out *Session, obs Observer, done func(error)) *joint {
+	if debugOn { // the joint owns both now: it ends them
+		debugReleased(in)
+		debugReleased(out)
+	}
 	return &joint{s: [2]*Session{in, out}, obs: obs, chain: in.chain, done: done, left: 2}
 }
 
