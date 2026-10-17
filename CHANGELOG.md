@@ -1,9 +1,33 @@
 # Changelog
 
 Releases of `github.com/nfltr/link` (tags `vX.Y.Z`) and of the modules in
-it (`peerlink/grpclink/vX.Y.Z`, `peerlink/quiclink/vX.Y.Z`). The wire
+it (`peerlink/grpclink/vX.Y.Z`, `peerlink/quiclink/vX.Y.Z`,
+`linkvet/vX.Y.Z`). The wire
 format is [WIRE.md](WIRE.md); every release since v0.2.0 speaks the same
 version 2 unless an entry says otherwise.
+
+## linkvet v0.1.0 (2026-10-17)
+
+- New module `github.com/nfltr/link/linkvet`: `go vet` checks
+  (`go vet -vettool=$(command -v linkvet) ./...`). link: `sessionclose`
+  (a session some path leaves open, from `Open` or an accept handler),
+  `readloop` (a read loop with no deadline and no cancel path), `closewrite`
+  (a write after `CloseWrite`), `openctx` (`Open` with
+  `context.Background()` outside tests). gRPC clients: `grpcrecvselect`,
+  `grpcdrain`, `grpcclosesend`, `grpcdeadline`, `grpcdial`. Each with
+  `analysistest` cases, negative ones included; over link, relay and nfltr
+  it reports no false positive (linkvet/README.md). `make check-linkvet`
+  runs it over link's own packages.
+
+## v0.10.12 (2026-10-17)
+
+- Debug mode, the build tag `linkdebug`: a session garbage-collected that
+  this side never closed (with the stack that opened it), two Reads or two
+  Writes on one session at once (both stacks), and with `LINKDEBUG_IDLE`
+  a session open that long with no IO. A build without the tag carries
+  none of it: no field, no call, no allocation (`TestDebugOffAddsNothing`;
+  `BenchmarkLatency` and `BenchmarkThroughput` unchanged against
+  v0.10.11). `make test-linkdebug` is in `make check`. No API change.
 
 ## peerlink/quiclink v0.4.12 (2026-10-17)
 

@@ -18,6 +18,9 @@ import (
 // and Read) allocates nothing per message, for short payloads (read ahead
 // and packed) and long ones (pooled buffers).
 func TestSteadyStateAllocs(t *testing.T) {
+	if debugOn {
+		t.Skip("linkdebug records a stack per Read and Write")
+	}
 	if raceEnabled {
 		t.Skip("sync.Pool drops items at random under -race")
 	}
