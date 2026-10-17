@@ -398,11 +398,16 @@ func TestMuxV2GoAway(t *testing.T) {
 	}
 }
 
+// TestPingRTTObserved: an idle connection's pings report their round
+// trip. Each side pings only when nothing arrived for the interval, and the
+// peer's ping counts, so with one negotiated interval either side may be
+// the one that pings in a round: both observe.
 func TestPingRTTObserved(t *testing.T) {
 	obs := &countObserver{}
-	dcfg := v2cfg
+	dcfg, scfg := v2cfg, v2cfg
 	dcfg.Observer, dcfg.Liveness = obs, LivenessFast
-	c, s := v2pair(t, dcfg, v2cfg)
+	scfg.Observer = obs
+	c, s := v2pair(t, dcfg, scfg)
 	go func() { _, _ = c.Recv() }()
 	go func() { _, _ = s.Recv() }()
 	waitUntil(t, func() bool { return obs.rtt.Load() > 0 })
