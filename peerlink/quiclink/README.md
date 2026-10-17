@@ -97,7 +97,8 @@ What it costs, and when not to use it:
   round trip (`TestThroughputAfterBurstTheOtherWay`, 100 ms RTT, 20 MB/s
   bottleneck: 0.7 MB/s before, 17-20 MB/s now). It also fixes a panic
   (`numOutStandingFrames negative`) when a stream was aborted after the
-  peer's STOP_SENDING.
+  peer's STOP_SENDING, and a congestion window that stayed cut after a
+  path reordered a burst of more than 64 packets.
 - **No 0-RTT.** 0-RTT data can be replayed by an attacker; quiclink turns
   it off and every connection pays the 1-RTT handshake.
 

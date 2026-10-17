@@ -8,9 +8,9 @@ version 2 unless an entry says otherwise.
 
 ## peerlink/quiclink (unreleased, branch quic-fork)
 
-- Requires `github.com/nfltr/quic-go` v0.63.1-nfltr.1 in place of
-  `github.com/quic-go/quic-go`: nfltr's fork, upstream 4b404ee15e68 plus
-  two fixes. The API names the fork's types (`*quic.Config`,
+- Requires `github.com/nfltr/quic-go` (a072850, to be tagged
+  v0.63.1-nfltr.2) in place of `github.com/quic-go/quic-go`: nfltr's fork,
+  upstream 4b404ee15e68 plus four fixes. The API names the fork's types (`*quic.Config`,
   `*quic.Conn` in `Config.Dial`); importers switch their quic-go import
   to the fork's path. The soak and compare modules do.
 - Bug fix (quic-go): after a burst one way, the other way ran at a
@@ -24,6 +24,15 @@ version 2 unless an entry says otherwise.
   check and the call is gone (`TestAbortAfterPeerAbort`; quic-go's
   `TestSendStreamResetStreamAtStopSendingRace`, 10000 iterations under
   -race).
+- Bug fix (quic-go): the same miscount had a second way in, a stream
+  reset during 0-RTT before the peer's transport parameters enabled
+  RESET_STREAM_AT. The send stream's reliable size is now fixed once its
+  write side is reset, whatever is called later (the race test also races
+  that; it failed at iteration 3-5 before).
+- Bug fix (quic-go): a late ACK restores the congestion window also after
+  a reordered burst of more than 64 packets (quic-go remembered the last
+  64 lost packets only, so the window stayed cut for good). Spurious-loss
+  detection got cheaper per ACK on the way (7-12 ns from 140-240 ns).
 - `reorderingPath` takes a bottleneck rate.
 
 ## linkvet v0.1.0 (2026-10-17)
