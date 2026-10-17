@@ -6,13 +6,15 @@ it (`peerlink/grpclink/vX.Y.Z`, `peerlink/quiclink/vX.Y.Z`,
 format is [WIRE.md](WIRE.md); every release since v0.2.0 speaks the same
 version 2 unless an entry says otherwise.
 
-## peerlink/quiclink (unreleased, branch quic-fork)
+## peerlink/quiclink v0.5.0 (2026-10-17)
 
-- Requires `github.com/nfltr/quic-go` (a072850, to be tagged
-  v0.63.1-nfltr.2) in place of `github.com/quic-go/quic-go`: nfltr's fork,
-  upstream 4b404ee15e68 plus four fixes. The API names the fork's types (`*quic.Config`,
-  `*quic.Conn` in `Config.Dial`); importers switch their quic-go import
-  to the fork's path. The soak and compare modules do.
+- Requires `github.com/nfltr/quic-go` at a072850 (tag v0.63.1-nfltr.2;
+  pseudo-version v0.63.1-nfltr.1.0.20261017085836-a0728504a86f) in place of
+  `github.com/quic-go/quic-go`: nfltr's fork, upstream 4b404ee15e68 plus
+  four fixes. The API names the fork's types (`*quic.Config`,
+  `*quic.Conn` in `Config.Dial`), an incompatible change, hence v0.5.0;
+  importers switch their quic-go import to the fork's path. The soak and
+  compare modules do.
 - Bug fix (quic-go): after a burst one way, the other way ran at a
   fraction of the path's rate for the connection's life. HyStart now
   leaves slow start only while the sender uses its window
