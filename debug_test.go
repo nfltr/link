@@ -150,3 +150,14 @@ func TestDebugReportsIdleSession(t *testing.T) {
 		t.Fatalf("report without the opener's stack:\n%s", m)
 	}
 }
+
+// A failed open (here: a header past the limit) hands the caller no session
+// to close: debug mode must not report it collected unclosed.
+func TestDebugFailedOpenNotReported(t *testing.T) {
+	_, none := debugReports(t)
+	client := muxPair(t, echoAccept)
+	if _, err := client.Open(make([]byte, maxHeader+1)); err == nil {
+		t.Fatal("an open with a header past the limit succeeded")
+	}
+	none("garbage-collected")
+}
