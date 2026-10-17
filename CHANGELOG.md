@@ -5,6 +5,12 @@ it (`peerlink/grpclink/vX.Y.Z`, `peerlink/quiclink/vX.Y.Z`). The wire
 format is [WIRE.md](WIRE.md); every release since v0.2.0 speaks the same
 version 2 unless an entry says otherwise.
 
+## peerlink/quiclink v0.4.11 (2026-10-17)
+
+- No change of its own. The soak module (which builds quiclink from this
+  tree) requires link v0.10.10 too: at v0.4.10 its `go vet` stopped on
+  "updates to go.mod needed", so `make ci` failed at that tag.
+
 ## peerlink/quiclink v0.4.10 (2026-10-17)
 
 - Requires link v0.10.10. No change of its own.
