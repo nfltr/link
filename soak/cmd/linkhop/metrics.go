@@ -16,7 +16,7 @@ import (
 
 	"github.com/nfltr/link"
 	"github.com/nfltr/link/peerlink/quiclink"
-	"github.com/quic-go/quic-go"
+	quic "github.com/nfltr/quic-go"
 )
 
 // bounds are the histograms' upper bounds in seconds.

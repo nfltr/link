@@ -12,7 +12,7 @@ import (
 	"github.com/nfltr/link"
 	"github.com/nfltr/link/peerlink"
 	"github.com/nfltr/link/peerlink/quiclink"
-	"github.com/quic-go/quic-go"
+	quic "github.com/nfltr/quic-go"
 )
 
 // quicLib is github.com/nfltr/link/peerlink/quiclink: one QUIC connection

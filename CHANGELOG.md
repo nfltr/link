@@ -5,6 +5,26 @@ it (`peerlink/grpclink/vX.Y.Z`, `peerlink/quiclink/vX.Y.Z`). The wire
 format is [WIRE.md](WIRE.md); every release since v0.2.0 speaks the same
 version 2 unless an entry says otherwise.
 
+## peerlink/quiclink (unreleased, branch quic-fork)
+
+- Requires `github.com/nfltr/quic-go` v0.63.1-nfltr.1 in place of
+  `github.com/quic-go/quic-go`: nfltr's fork, upstream 4b404ee15e68 plus
+  two fixes. The API names the fork's types (`*quic.Config`,
+  `*quic.Conn` in `Config.Dial`); importers switch their quic-go import
+  to the fork's path. The soak and compare modules do.
+- Bug fix (quic-go): after a burst one way, the other way ran at a
+  fraction of the path's rate for the connection's life. HyStart now
+  leaves slow start only while the sender uses its window
+  (`TestThroughputAfterBurstTheOtherWay`: 100 ms RTT, 20 MB/s
+  bottleneck, 0.6-0.7 MB/s before, 16.7-19.6 MB/s now).
+- Bug fix (quic-go): `SetReliableBoundary` after the peer's STOP_SENDING
+  is a no-op instead of a later panic (`numOutStandingFrames negative`),
+  so `Abort` no longer checks for the reset first: the race between that
+  check and the call is gone (`TestAbortAfterPeerAbort`; quic-go's
+  `TestSendStreamResetStreamAtStopSendingRace`, 10000 iterations under
+  -race).
+- `reorderingPath` takes a bottleneck rate.
+
 ## peerlink/quiclink v0.4.12 (2026-10-17)
 
 - Requires link v0.10.11 (Node.Drain during a handshake). No change of its

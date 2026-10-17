@@ -25,7 +25,7 @@ import (
 	"github.com/nfltr/link/peerlink"
 	"github.com/nfltr/link/peerlink/peerlinktest"
 	"github.com/nfltr/link/peerlink/quiclink"
-	"github.com/quic-go/quic-go"
+	quic "github.com/nfltr/quic-go"
 )
 
 // pki is a CA and a certificate per peer name, each trusting the CA.

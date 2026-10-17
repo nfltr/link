@@ -47,7 +47,7 @@ import (
 	"github.com/nfltr/link/peerlink"
 	"github.com/nfltr/link/peerlink/quiclink"
 	"github.com/nfltr/link/soak/chainsoak"
-	"github.com/quic-go/quic-go"
+	quic "github.com/nfltr/quic-go"
 )
 
 type summary struct {

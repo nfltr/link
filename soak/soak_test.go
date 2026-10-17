@@ -39,7 +39,7 @@ import (
 	"github.com/nfltr/link/peerlink"
 	"github.com/nfltr/link/peerlink/peerlinktest"
 	"github.com/nfltr/link/peerlink/quiclink"
-	"github.com/quic-go/quic-go"
+	quic "github.com/nfltr/quic-go"
 )
 
 // Knobs (environment): SOAKTIME the whole run (unset: the test skips),

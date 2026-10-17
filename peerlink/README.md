@@ -172,7 +172,7 @@ sessions answer, the plain contract where they do not.
 | | `peerlink.Node` (this package) | `grpclink.Node` (`peerlink/grpclink`) | `quiclink.Node` (`peerlink/quiclink`) |
 |---|---|---|---|
 | carries sessions over | `link.Pool` per peer (dialling), `link.Mux` per accepted connection | one gRPC bidirectional stream per session, a `grpc.ClientConn` per peer | one QUIC stream per session, a QUIC connection per peer |
-| dependencies | standard library | google.golang.org/grpc (a module of its own) | github.com/quic-go/quic-go (a module of its own) |
+| dependencies | standard library | google.golang.org/grpc (a module of its own) | github.com/nfltr/quic-go, nfltr's fork of quic-go (a module of its own) |
 | who the opener is | the `Identity.Subject` of the caller's `link.Authenticator` | the caller's `Identify(ctx)` (metadata, credentials) | the caller's `ServedPeer(conn)`, else the client certificate's CommonName |
 | dead-peer bound (`DeadAfter`) | Interval + Timeout of the liveness (`LivenessFast`: 4.5 s) | max(Interval, 10 s) + Timeout + 5 s (`LivenessFast`: 18 s): gRPC clients ping no more often than every 10 s, and a client whose writes are stuck waits 5 s to send GOAWAY before closing | Interval + Timeout (`LivenessFast`: 4.5 s): keep-alive after Interval, QUIC's idle timeout of Timeout, and a check that closes a connection silent for Interval + Timeout/2 (QUIC's idle timer alone runs late on a side that cannot send) |
 | deadlines | read and write deadlines | none (`errors.ErrUnsupported`) | read and write deadlines |

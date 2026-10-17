@@ -4,9 +4,9 @@ go 1.27.0
 
 require (
 	github.com/hashicorp/yamux v0.1.2
-	github.com/nfltr/link v0.10.0
+	github.com/nfltr/link v0.10.11
 	github.com/nfltr/link/peerlink/quiclink v0.4.0
-	github.com/quic-go/quic-go v0.63.1-0.20261014084224-4b404ee15e68
+	github.com/nfltr/quic-go v0.63.1-nfltr.1
 )
 
 require (

@@ -19,7 +19,7 @@ import (
 
 	"github.com/nfltr/link/peerlink"
 	"github.com/nfltr/link/peerlink/quiclink"
-	"github.com/quic-go/quic-go"
+	quic "github.com/nfltr/quic-go"
 )
 
 // Example: node "b" listens on a UDP socket with a certificate and

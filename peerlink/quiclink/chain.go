@@ -14,7 +14,7 @@ import (
 
 	"github.com/nfltr/link"
 	"github.com/nfltr/link/peerlink"
-	"github.com/quic-go/quic-go"
+	quic "github.com/nfltr/quic-go"
 )
 
 // On an ALPNChain connection (since v0.4.0) a session's stream starts
@@ -264,16 +264,9 @@ func (s *Session) AbortWith(a *link.Abort) error {
 		return nil
 	}
 	s.reset.Store(true)
-	var se *quic.StreamError
-	if !errors.As(context.Cause(s.Stream.Context()), &se) {
-		// The bytes written before the abort arrive (RESET_STREAM_AT).
-		// Not once the write side was reset (the peer's STOP_SENDING, a
-		// CancelWrite): quic-go then counts frames it forgot and panics
-		// (numOutStandingFrames negative) as their acks arrive. A
-		// STOP_SENDING read between this check and the call still does:
-		// the fix is quic-go's (SetReliableBoundary after a reset).
-		s.Stream.SetReliableBoundary()
-	}
+	// The bytes written before the abort arrive (RESET_STREAM_AT); once
+	// the write side was reset (the peer's STOP_SENDING) it does nothing.
+	s.Stream.SetReliableBoundary()
 	s.Stream.CancelWrite(abortCode(a))
 	s.Stream.CancelRead(abortCode(a))
 	s.ended()

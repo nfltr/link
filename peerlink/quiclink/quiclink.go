@@ -63,7 +63,7 @@ import (
 
 	"github.com/nfltr/link"
 	"github.com/nfltr/link/peerlink"
-	"github.com/quic-go/quic-go"
+	quic "github.com/nfltr/quic-go"
 )
 
 // ALPN is the application protocol of a connection whose sessions do not
