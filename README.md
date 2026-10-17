@@ -6,6 +6,18 @@
 a dead peer is noticed within a bound you pick, and the main module
 imports only the Go standard library (Apache-2.0).
 
+It is for Go programs that run many streams between two endpoints (proxies,
+tunnels, relays, RPC fabrics) and want per-stream backpressure and bounded
+dead-peer detection without building them. **Status:** v0.10.12, pre-1.0
+([Status and compatibility](#status-and-compatibility)). **In the nfltr
+stack:** link is the bottom layer. [nfltr/relay](https://github.com/nfltr/relay)
+(SDK and protocol) carries its agent data plane on link,
+[nfltr/relay-server](https://github.com/nfltr/relay-server) is the relay that
+speaks it, and [nfltr](https://nfltr.xyz) is the product on top; link stands
+alone and does not import any of them. **Docs:** this file, [WIRE.md](WIRE.md),
+[docs/](docs), [CHANGELOG.md](CHANGELOG.md). **Checks:** `make ci`
+([Checks](#checks)).
+
 ## Quick start
 
 Two peers in one program: `a` dials `b` over plaintext TCP, then each
@@ -482,7 +494,7 @@ is the long fuzz run ([FUZZING.md](FUZZING.md)).
 
 ## Status and compatibility
 
-The latest release is v0.10.9; [CHANGELOG.md](CHANGELOG.md) lists every
+The latest release is v0.10.12; [CHANGELOG.md](CHANGELOG.md) lists every
 release. link is pre-1.0 and follows [semantic versioning](https://semver.org)
 as Go modules do for v0:
 
@@ -532,3 +544,7 @@ no exported name that exists only for one caller; option structs instead
 of positional growth; the peerlink contract unchanged for two minor
 releases; deprecated names removed. Use in production by its first
 user (an HTTP and TCP relay) is supporting evidence, not a criterion.
+
+## License
+
+Apache License 2.0; see [LICENSE](LICENSE) and [NOTICE](NOTICE).

@@ -37,6 +37,16 @@ version 2 unless an entry says otherwise.
   detection got cheaper per ACK on the way (7-12 ns from 140-240 ns).
 - `reorderingPath` takes a bottleneck rate.
 
+## v0.10.13 (2026-10-17)
+
+- Test only: `TestDrainDuringHandshake` released the server's handshake
+  before the client's open had gone out; when the server's GOAWAY (it
+  drains a connection registered during a drain) reached the client
+  first, the client rightly opened elsewhere and found the listener
+  closed ("connection refused", 4 of 6 runs in a loaded linux/arm64
+  container). It now waits for the open first: 3,600 runs with `-race`,
+  12 processes at once, clean. No library change.
+
 ## linkvet v0.1.0 (2026-10-17)
 
 - New module `github.com/nfltr/link/linkvet`: `go vet` checks
