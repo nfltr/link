@@ -437,9 +437,14 @@ release, with [apidiff](https://pkg.go.dev/golang.org/x/exp/cmd/apidiff);
 the changes must be the ones listed in `api/` (an API change is never
 an accident). `make check-grpclink`, `make check-quiclink`: the gRPC and
 QUIC implementations' modules; `make check-soak`: the soak module builds
-and vets. `make check-all` runs every one of them, as CI does. GitHub Actions
-(`.github/workflows/check.yml`) runs them on every push and pull request,
-and every fuzz target for 5 minutes weekly. `make fuzz-long FUZZTIME=30m`
+and vets. `make ci` (alias `check-all`) runs every one of them: the steps
+`.github/workflows/check.yml` runs on a push, read from that file
+(`scripts/ci.sh`). CI is `make ci`, not GitHub Actions: `make hooks`
+installs a pre-push hook that runs it on the commit pushed to main or a tag
+(bypass `NFLTR_CI_BYPASS=<reason>`, logged), and a Linux runner on the
+maintainer's machine runs it for each new sha of main and each tag. The
+workflow still runs on GitHub as an extra signal, and every fuzz target
+for 5 minutes weekly. `make fuzz-long FUZZTIME=30m`
 is the long fuzz run ([FUZZING.md](FUZZING.md)).
 
 ## Status and compatibility

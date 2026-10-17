@@ -6,10 +6,11 @@ GOVULNCHECK_VERSION := v1.8.0
 .PHONY: check build vet test test-race fuzz-short fuzz-long check-gosec check-semgrep check-govulncheck
 check: build vet test-race fuzz-short check-gosec check-semgrep check-govulncheck
 
-# Everything CI runs: check plus every module of its own (the soak module's
-# go.mod goes stale on each link or quiclink bump unless it is checked too).
+# Everything CI runs (make ci, from the workflow): check plus every module of
+# its own (the soak module's go.mod goes stale on each link or quiclink bump
+# unless it is checked too).
 .PHONY: check-all
-check-all: check check-api check-grpclink check-quiclink check-soak
+check-all: ci
 
 build:
 	go build ./...
@@ -89,3 +90,20 @@ soak:
 # The soak module builds and vets (its test runs only with SOAKTIME).
 check-soak:
 	cd soak && GOWORK=off go vet ./...
+
+CI_WORKFLOW_FILE := .github/workflows/check.yml
+# ci: what the GitHub workflow runs on a push (CI_WORKFLOW_FILE), run here.
+# GitHub Actions is not a gate; this is, before a push (the pre-push hook)
+# and after it (nfltr's Linux CI runner). scripts/ci.sh reads the steps from
+# the workflow file itself, so the two cannot drift; a pass on a clean tree
+# is stamped and not rerun for the same tree.
+# hooks: install the pre-push hook (scripts/pre-push): `make ci` on the
+# exact commit pushed to main or a tag; bypass only with
+# NFLTR_CI_BYPASS=<reason> (logged to <git-common-dir>/ci-bypass.log).
+.PHONY: ci hooks
+ci:
+	@CI_WORKFLOW=$(CI_WORKFLOW_FILE) ./scripts/ci.sh
+hooks:
+	@h="$$(git rev-parse --git-path hooks)/pre-push"; \
+	if [ -e "$$h" ] && ! grep -q 'scripts/pre-push' "$$h"; then echo "hooks: $$h exists and is not this one; move it away first" >&2; exit 1; fi; \
+	printf '#!/bin/sh\n# make hooks: scripts/pre-push of the checkout pushing (else of %s)\ns="$$(git rev-parse --show-toplevel)/scripts/pre-push"\n[ -x "$$s" ] || s=%s/scripts/pre-push\nexec "$$s" "$$@"\n' "$(CURDIR)" "$(CURDIR)" >"$$h" && chmod +x "$$h" && echo "hooks: installed $$h"
