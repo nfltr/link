@@ -77,9 +77,11 @@ type Node struct {
 	changed  chan struct{}        // closed when served changes
 	accept   func(string, []byte, Session)
 	draining bool
-	drained  chan struct{}  // closed when Drain starts
-	opened   sync.WaitGroup // dialled sessions not yet closed
-	accepted sync.WaitGroup // sessions taken on dialled connections, not yet closed
+	drained  chan struct{}   // closed when Drain starts
+	opened   sync.WaitGroup  // dialled sessions not yet closed
+	accepted sync.WaitGroup  // sessions taken on dialled connections, not yet closed
+	conns    sync.WaitGroup  // accepted connections not yet ended, handshakes included
+	drainCtx context.Context // Drain's, for a connection whose handshake outlasted its start
 }
 
 var (
@@ -312,11 +314,20 @@ func (n *Node) Serve(accept func(peer string, header []byte, s Session)) error {
 			}
 			return err
 		}
+		n.mu.Lock()
+		if n.draining { // accepted before the listener closed: no session on it yet
+			n.mu.Unlock()
+			_ = nc.Close()
+			continue
+		}
+		n.conns.Add(1) // before Drain's Wait: both under mu
+		n.mu.Unlock()
 		go n.serveConn(nc, accept)
 	}
 }
 
 func (n *Node) serveConn(nc net.Conn, accept func(string, []byte, Session)) {
+	defer n.conns.Done()
 	cfg := n.cfg.Link
 	cfg.Observer = nil
 	if n.cfg.Observer != nil {
@@ -336,13 +347,13 @@ func (n *Node) serveConn(nc net.Conn, accept func(string, []byte, Session)) {
 	m := link.NewMux(c)
 	peer := n.servedPeer(nc, id)
 	n.mu.Lock()
-	if n.draining {
-		n.mu.Unlock()
-		_ = m.Close()
-		return
-	}
 	n.served[m] = peer
 	n.changedLocked()
+	if n.draining {
+		// Drain began during the handshake: the peer may have opened
+		// sessions already; they run to their end like the others.
+		go func() { _ = m.Drain(n.drainCtx) }()
+	}
 	n.mu.Unlock()
 	_ = m.Serve(func(h []byte, s *link.Session) { accept(peer, h, s) })
 	n.mu.Lock()
@@ -369,17 +380,6 @@ func (n *Node) servedPeer(nc net.Conn, id link.Identity) string {
 // connections to be closed, then closes every pool. At ctx's end it
 // closes everything at once and returns ctx's error.
 func (n *Node) Drain(ctx context.Context) error {
-	n.mu.Lock()
-	first := !n.draining
-	n.draining = true
-	served := slices.Collect(maps.Keys(n.served))
-	if first {
-		close(n.drained)
-	}
-	n.mu.Unlock()
-	if first && n.cfg.Listener != nil {
-		_ = n.cfg.Listener.Close()
-	}
 	// ctx's end is this Drain's to act on (below); its deadline is each
 	// connection's too, which then aborts the sessions it still carries
 	// (link.CodeDrainDeadline) before it closes.
@@ -390,6 +390,18 @@ func (n *Node) Drain(ctx context.Context) error {
 		mctx, stop = context.WithDeadline(mctx, deadline)
 		defer stop()
 	}
+	n.mu.Lock()
+	first := !n.draining
+	n.draining = true
+	served := slices.Collect(maps.Keys(n.served))
+	if first {
+		n.drainCtx = mctx
+		close(n.drained)
+	}
+	n.mu.Unlock()
+	if first && n.cfg.Listener != nil {
+		_ = n.cfg.Listener.Close()
+	}
 	for _, m := range served {
 		go func() { _ = m.Drain(mctx) }()
 	}
@@ -397,9 +409,7 @@ func (n *Node) Drain(ctx context.Context) error {
 	go func() {
 		n.opened.Wait()
 		n.accepted.Wait()
-		for _, m := range served {
-			<-m.Conn().Done()
-		}
+		n.conns.Wait() // every accepted connection ended, a late handshake's too
 		close(idle)
 	}()
 	var err error
@@ -424,6 +434,7 @@ func (n *Node) Drain(ctx context.Context) error {
 	}
 	n.mu.Lock()
 	pools := slices.Collect(maps.Values(n.pools))
+	served = slices.Collect(maps.Keys(n.served)) // a late handshake's too
 	n.mu.Unlock()
 	for _, m := range served {
 		_ = m.Close()

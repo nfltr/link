@@ -5,6 +5,18 @@ it (`peerlink/grpclink/vX.Y.Z`, `peerlink/quiclink/vX.Y.Z`). The wire
 format is [WIRE.md](WIRE.md); every release since v0.2.0 speaks the same
 version 2 unless an entry says otherwise.
 
+## v0.10.11 (2026-10-17)
+
+- peerlink: a session a peer opened on a connection whose handshake ended
+  as `Node.Drain` began (Serve had not registered it yet) was reset while
+  Drain returned nil. Drain now drains such a connection too and waits for
+  every accepted connection, mid-handshake ones included; a connection
+  accepted after Drain began is closed before its handshake
+  (`TestDrainDuringHandshake`; `ExampleNode_Drain` failed 7 of 300 runs
+  under load).
+- Test: `TestPoolReplacesConnectionsGoingAway` waits for the background
+  growth dial instead of counting connections before it lands.
+
 ## peerlink/quiclink v0.4.11 (2026-10-17)
 
 - No change of its own. The soak module (which builds quiclink from this

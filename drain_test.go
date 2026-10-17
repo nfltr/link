@@ -200,8 +200,11 @@ func TestPoolReplacesConnectionsGoingAway(t *testing.T) {
 		echoOK(t, s)
 		_ = s.Close()
 	}
-	if accepted.Load() != 4 {
-		t.Fatalf("%d connections, want 2 new ones", accepted.Load())
+	// the second new one is a growth dial in the background (GrowWait):
+	// the sessions above may all have gone on the first
+	waitUntil(t, func() bool { return accepted.Load() == 4 })
+	if n := p.Stats().Conns; n != 2 {
+		t.Fatalf("%d connections, want 2 new ones", n)
 	}
 }
 

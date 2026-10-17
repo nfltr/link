@@ -477,3 +477,63 @@ func TestOpenServedPassesABrokenConnection(t *testing.T) {
 		t.Fatalf("Open with the peer's first connection broken and a second up: %v", err)
 	}
 }
+
+// TestDrainDuringHandshake: a session the peer opened on a connection whose
+// handshake ended as Drain began (Serve had not registered it yet) runs to
+// its end, and Drain waits for it; it is never reset under a nil Drain.
+func TestDrainDuringHandshake(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reached, release := make(chan struct{}), make(chan struct{})
+	server := mustNew(t, peerlink.Config{Listener: ln, Link: link.Config{Auth: link.NameAuth("server")},
+		ServedPeer: func(_ net.Conn, id link.Identity) string {
+			close(reached) // the handshake ended; the connection is not registered yet
+			<-release
+			return id.Subject
+		}})
+	go func() { _ = server.Serve(echoAccept) }()
+	client := mustNew(t, peerlink.Config{Link: link.Config{Auth: link.NameAuth("client")},
+		Dial: func(ctx context.Context, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "tcp", ln.Addr().String())
+		}})
+	defer drainNow(client)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	opened := make(chan peerlink.Session, 1)
+	go func() {
+		s, err := client.Open(ctx, "server", nil)
+		if err != nil {
+			t.Error(err)
+		}
+		opened <- s
+	}()
+	<-reached
+	drained := make(chan error, 1)
+	go func() { drained <- server.Drain(ctx) }()
+	probe, stop := context.WithCancel(ctx)
+	stop() // Open checks draining first, then waits no longer
+	for {  // Drain started
+		if _, err := server.Open(probe, "client", nil); errors.Is(err, peerlink.ErrDraining) {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(release)
+	s := <-opened
+	if s == nil {
+		t.FailNow()
+	}
+	_, _ = io.WriteString(s, "last request")
+	_ = s.CloseWrite()
+	reply, err := io.ReadAll(s)
+	_ = s.Close()
+	if string(reply) != "last request" {
+		t.Errorf("reply %q (%v), want the echo", reply, err)
+	}
+	if err := <-drained; err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+}
