@@ -404,6 +404,36 @@ the messages name what to change.
 quiclink adds its own codes (`quiclink.Code*`, in the QUIC errors its
 sessions read); grpclink's are gRPC statuses.
 
+## Finding misuse: linkvet and debug mode
+
+[linkvet](linkvet/README.md) (`github.com/nfltr/link/linkvet`, a module
+of its own) is a `go vet` tool: a session some path leaves open (one
+`Open` returns, or the one an accept handler is given), a read loop with
+no deadline and no cancel path, a write after `CloseWrite`, an `Open`
+given `context.Background()`, and five checks for gRPC clients (apps
+behind the connect sidecar):
+
+```
+go install github.com/nfltr/link/linkvet/cmd/linkvet@latest
+go vet -vettool=$(command -v linkvet) ./...
+```
+
+Debug mode is a build tag, `linkdebug`; a build without it carries
+nothing of it (no field in a `Session`, no call: the hooks sit behind a
+constant the compiler drops; `TestDebugOffAddsNothing`, and
+`BenchmarkLatency`/`BenchmarkThroughput` against v0.10.11: the same ns/op
+within noise, 0 allocs/op both). With it (`go test -tags linkdebug ./...`,
+or `go build -tags linkdebug`), link reports on stderr:
+
+| report | means |
+|---|---|
+| `session 3 (header "x") opened and garbage-collected, never closed`, with the stack that opened it | this side never called `Close`, `CloseWrite`, `Reset` or `Abort` (a session `Join` or `Forward` took counts as closed) |
+| `concurrent Reads on session ...` (or `Writes`), with both stacks | two goroutines in `Read`/`WriteTo` (or `Write`/`WriteBuffers`) of one session at once: their bytes interleave |
+| `session ... and open 30s with no Read or Write`, with the stack that opened it | with `LINKDEBUG_IDLE=30s` (any duration): a session open that long with no IO, once each; the leak a collector cannot see, since the Mux holds every session until it ends |
+
+Each Read and Write records a stack in this mode: for tests and
+debugging, not production.
+
 ## Packages
 
 | package | what |
@@ -412,6 +442,7 @@ sessions read); grpclink's are gRPC statuses.
 | `link/peerlink` | a transport-neutral API for sessions between peers (`Link`: `Open`, `Serve`, `Drain`), its contract, `Node` (an implementation over `Pool` and `Mux`) and `Listener` ([peerlink/README.md](peerlink/README.md)) |
 | `link/peerlink/peerlinktest` | the contract's conformance suite (`Run`) and the fault-injecting `Proxy` (TCP) and `UDPProxy`, for any implementation |
 | `link/examples/quickstart` | the quick start above |
+| `link/linkvet` | `go vet` checks for code using link, and for gRPC clients (a module of its own, `make check-linkvet`; [linkvet/README.md](linkvet/README.md)) |
 
 `peerlink/grpclink` (a module of its own, `make check-grpclink`) implements
 `peerlink.Link` over gRPC streams and passes the same suite (one
@@ -437,7 +468,9 @@ release, with [apidiff](https://pkg.go.dev/golang.org/x/exp/cmd/apidiff);
 the changes must be the ones listed in `api/` (an API change is never
 an accident). `make check-grpclink`, `make check-quiclink`: the gRPC and
 QUIC implementations' modules; `make check-soak`: the soak module builds
-and vets. `make ci` (alias `check-all`) runs every one of them: the steps
+and vets; `make check-linkvet`: linkvet's tests, then its checks over
+link's own packages; `make test-linkdebug` (in `check`): debug mode's
+tests. `make ci` (alias `check-all`) runs every one of them: the steps
 `.github/workflows/check.yml` runs on a push, read from that file
 (`scripts/ci.sh`). CI is `make ci`, not GitHub Actions: `make hooks`
 installs a pre-push hook that runs it on the commit pushed to main or a tag

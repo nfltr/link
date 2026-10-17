@@ -3,8 +3,8 @@
 
 GOVULNCHECK_VERSION := v1.8.0
 
-.PHONY: check build vet test test-race fuzz-short fuzz-long check-gosec check-semgrep check-govulncheck
-check: build vet test-race fuzz-short check-gosec check-semgrep check-govulncheck
+.PHONY: check build vet test test-race test-linkdebug fuzz-short fuzz-long check-gosec check-semgrep check-govulncheck
+check: build vet test-race test-linkdebug fuzz-short check-gosec check-semgrep check-govulncheck
 
 # Everything CI runs (make ci, from the workflow): check plus every module of
 # its own (the soak module's go.mod goes stale on each link or quiclink bump
@@ -23,6 +23,11 @@ test:
 
 test-race:
 	go test -count=1 -race ./...
+
+# Debug mode (-tags linkdebug, README "Debug mode"): its build and tests.
+test-linkdebug:
+	go vet -tags linkdebug .
+	go test -count=1 -race -tags linkdebug -run TestDebug .
 
 # FUZZTIME per target (default 10s); FUZZPARALLEL caps the workers.
 fuzz-short:
@@ -64,6 +69,16 @@ check-grpclink:
 .PHONY: check-quiclink
 check-quiclink:
 	cd peerlink/quiclink && GOWORK=off go build ./... && GOWORK=off go vet ./... && GOWORK=off go test -count=1 -race ./...
+
+# linkvet (linkvet/, a module of its own: golang.org/x/tools never enters
+# link's dependencies): vet, its analysistest cases with -race, then its
+# checks over link's own packages (tests aside: they leave sessions to the
+# peer on purpose; peerlinktest writes after CloseWrite on purpose).
+.PHONY: check-linkvet
+check-linkvet:
+	cd linkvet && GOWORK=off go vet ./... && GOWORK=off go test -count=1 -race ./...
+	t="$$(mktemp -d)" && (cd linkvet && GOWORK=off go build -o "$$t/linkvet" ./cmd/linkvet) && \
+	GOWORK=off "$$t/linkvet" -test=false $$(GOWORK=off go list ./... | grep -v /peerlinktest); s=$$?; rm -rf "$$t"; exit $$s
 
 # link vs yamux (compare/, a module of its own; its README). OUT holds the
 # JSON lines; compare-docker needs docker with NET_ADMIN (about an hour).
