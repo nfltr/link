@@ -299,6 +299,9 @@ func (s *Session) Abort(code uint32, msg string) error {
 // passing on an abort from the other side of a join sets Hops (the
 // abort's own Hops plus one).
 func (s *Session) AbortWith(a *Abort) error {
+	if debugOn {
+		debugReleased(s)
+	}
 	if a.Refused {
 		if !s.accepter {
 			return errors.New("link: Refuse of a session this side opened (Abort it)")

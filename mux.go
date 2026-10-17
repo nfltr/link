@@ -140,6 +140,9 @@ func (m *Mux) add(sid string, header []byte, c Chain, accepter bool) (*Session, 
 	}
 	m.sess[sid] = s
 	m.used.Store(true)
+	if debugOn {
+		debugOpened(s)
+	}
 	return s, nil
 }
 
@@ -473,6 +476,7 @@ func (m *Mux) closeIdle() {
 // os.ErrDeadlineExceeded.
 type Session struct {
 	m      *Mux
+	dbg    debugState // linkdebug builds only (debug_on.go); zero size otherwise
 	id     string
 	header []byte
 	q      *bytequeue.Queue
@@ -570,6 +574,9 @@ func (s *Session) ended() {
 // Read reads the peer's bytes in order: io.EOF once the peer ended its
 // writes, or the error that cut the session (see Session).
 func (s *Session) Read(b []byte) (int, error) {
+	if debugOn {
+		defer debugEnter(s, debugRead)()
+	}
 	if len(s.rest) == 0 {
 		data, ok := s.q.PopUnless(&s.dlPast)
 		if !ok {
@@ -598,6 +605,9 @@ type OwnedWriter interface {
 // goes in one net.Buffers write (writev on a TCP conn), or slice by slice
 // to an OwnedWriter.
 func (s *Session) WriteTo(w io.Writer) (int64, error) {
+	if debugOn {
+		defer debugEnter(s, debugRead)()
+	}
 	if ow, ok := w.(OwnedWriter); ok {
 		return s.writeOwned(ow)
 	}
@@ -762,6 +772,9 @@ func (s *Session) writeOwned(w OwnedWriter) (int64, error) {
 // while it waited for credit or for room in the connection's write
 // buffer.
 func (s *Session) Write(b []byte) (int, error) {
+	if debugOn {
+		defer debugEnter(s, debugWrite)()
+	}
 	s.autoAccept()
 	inline := !s.wd.set.Load()
 	n, err := s.send(b, inline)
@@ -798,6 +811,9 @@ func (s *Session) writeErr(err error) error {
 // end (and before any wait for credit): a backlog goes to the network in
 // one write.
 func (s *Session) WriteBuffers(bufs [][]byte) (int64, error) {
+	if debugOn {
+		defer debugEnter(s, debugWrite)()
+	}
 	s.autoAccept()
 	var total int64
 	for _, b := range bufs {
@@ -878,6 +894,9 @@ func (s *Session) writeWait() <-chan struct{} {
 // io.EOF after what was written; this side still reads the peer's bytes.
 // The session ends once both sides closed their write side.
 func (s *Session) CloseWrite() error {
+	if debugOn {
+		debugReleased(s)
+	}
 	s.autoAccept()
 	if s.closed.Load() || s.halfClosed.Swap(true) {
 		return nil
@@ -902,6 +921,9 @@ func (s *Session) endErr() error {
 // Close ends the session: the peer gets a close unless it closed it; a
 // pending Read returns.
 func (s *Session) Close() error {
+	if debugOn {
+		debugReleased(s)
+	}
 	s.autoAccept()
 	s.once.Do(func() {
 		if !s.peerClosed.Load() {
@@ -917,6 +939,9 @@ func (s *Session) Close() error {
 // close).
 // Reads here end as after Close.
 func (s *Session) Reset() error {
+	if debugOn {
+		debugReleased(s)
+	}
 	s.once.Do(func() {
 		defer s.m.drop(s) // after the reset: a leaving connection closes after it
 		if s.peerClosed.Load() {
