@@ -43,5 +43,7 @@ while read -r _lref lsha rref _rsha; do
 		git worktree remove --force "$wt" && rmdir "$(dirname "$wt")"
 	fi
 	[ $rc -eq 0 ] || { echo "pre-push: make ci failed for $rref $short: push refused" >&2; exit 1; }
+	# git opened the connection before this hook; a long run can outlast it.
+	echo "pre-push: $rref $short: make ci passed and is stamped; if the push now fails or pushes nothing, push again" >&2
 done
 exit $rc
