@@ -5,6 +5,10 @@ it (`peerlink/grpclink/vX.Y.Z`, `peerlink/quiclink/vX.Y.Z`). The wire
 format is [WIRE.md](WIRE.md); every release since v0.2.0 speaks the same
 version 2 unless an entry says otherwise.
 
+## peerlink/quiclink v0.4.10 (2026-10-17)
+
+- Requires link v0.10.10. No change of its own.
+
 ## v0.10.10 and peerlink/quiclink v0.4.9 (2026-10-17)
 
 - No library change. `make ci` (what CI runs, also the pre-push gate) and
