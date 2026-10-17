@@ -114,6 +114,9 @@ func (m *Mux) OpenChain(header []byte, c Chain) (*Session, error) {
 	}
 	if err != nil {
 		s.peerClosed.Store(true) // the peer never heard of it
+		if debugOn {
+			debugReleased(s) // the caller never gets it to close
+		}
 		m.drop(s)
 		return nil, err
 	}
