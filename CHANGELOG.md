@@ -5,6 +5,13 @@ it (`peerlink/grpclink/vX.Y.Z`, `peerlink/quiclink/vX.Y.Z`). The wire
 format is [WIRE.md](WIRE.md); every release since v0.2.0 speaks the same
 version 2 unless an entry says otherwise.
 
+## v0.10.10 and peerlink/quiclink v0.4.9 (2026-10-17)
+
+- No library change. `make ci` (what CI runs, also the pre-push gate) and
+  docs, tests and the soak since v0.10.9 / quiclink v0.4.8: the first tags
+  the model-free Linux CI runner can check, which a release of nfltr requires
+  of every tag it pins.
+
 ## v0.10.9 (2026-10-17)
 
 Raw speed, same wire and API ([docs/performance.md](docs/performance.md)
