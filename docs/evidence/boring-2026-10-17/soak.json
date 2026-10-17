@@ -1,0 +1,268 @@
+{
+  "start": "2026-10-17T13:57:32.21202071Z",
+  "duration_s": 7495.887505909,
+  "epoch_s": 300,
+  "epochs": 23,
+  "go_version": "go1.27.2",
+  "os": "linux/amd64",
+  "cpus": 4,
+  "configs": {
+    "chain-3hop": {
+      "ops": 1707735,
+      "bytes_echoed": 750599610310,
+      "errors_in_fault_windows": 618,
+      "errors_unexpected": 0,
+      "integrity_failures": 0,
+      "cuts": 23,
+      "throttles": 0,
+      "black_holes": 8,
+      "rebinds": 0,
+      "drains": 8,
+      "drain_errors": 0,
+      "dead_after_bound_s": 4.5,
+      "dead_detect_max_s": 0,
+      "dead_detect_misses": 0,
+      "stalled_minutes": 0,
+      "in_flight_max": 3670016,
+      "in_flight_bound": 3670016,
+      "first_aborts": [
+        "link: session reset (connection lost) by the peer: link: connection closed: read tcp 127.0.0.1:34782-\u003e127.0.0.1:35087: read: connection reset by peer; open a new session",
+        "link: session reset (connection lost) by the peer: io: read/write on closed pipe: link: connection closed: read tcp 127.0.0.1:34782-\u003e127.0.0.1:35087: read: connection reset by peer; open a new session",
+        "link: session reset (connection lost) by the peer: link: connection closed: read tcp 127.0.0.1:34782-\u003e127.0.0.1:35087: read: connection reset by peer; open a new session",
+        "link: session refused (draining) 1 hop(s) beyond the peer: peerlink: draining",
+        "link: session refused (connection lost) by the peer: link: connection closed: the peer closed it (EOF); open a new session",
+        "link: session reset (connection lost) by the peer: link: connection closed: the peer closed it (EOF); open a new session",
+        "link: session reset (connection lost) by the peer: io: read/write on closed pipe: link: connection closed; open a new session",
+        "link: session reset (connection lost) 1 hop(s) beyond the peer: link: connection closed: link: peer silent past the liveness timeout; open a new session",
+        "link: session refused (connection lost) 1 hop(s) beyond the peer: link: connection closed: link: peer silent past the liveness timeout; open a new session",
+        "link: session refused (connection lost) 1 hop(s) beyond the peer: link: connection closed: link: peer silent past the liveness timeout; open a new session",
+        "link: session reset (connection lost) 1 hop(s) beyond the peer: io: read/write on closed pipe: link: connection closed: link: peer silent past the liveness timeout; open a new session",
+        "link: session reset (connection lost) 1 hop(s) beyond the peer: link: connection closed: link: peer silent past the liveness timeout; open a new session",
+        "link: session refused (connection lost) 1 hop(s) beyond the peer: link: connection closed: link: peer silent past the liveness timeout; open a new session",
+        "link: session reset (connection lost) by the peer: io: read/write on closed pipe: link: connection closed; open a new session",
+        "link: session reset (connection lost) by the peer: io: read/write on closed pipe: link: connection closed; open a new session",
+        "link: session reset (connection lost) by the peer: io: read/write on closed pipe: link: connection closed; open a new session",
+        "link: session reset (connection lost) by the peer: link: connection closed: the peer closed it (EOF); open a new session",
+        "link: session reset (connection lost) by the peer: io: read/write on closed pipe: link: connection closed: the peer closed it (EOF); open a new session",
+        "link: session reset (connection lost) by the peer: link: connection closed: the peer closed it (EOF); open a new session",
+        "link: session reset (connection lost) by the peer: io: read/write on closed pipe: link: connection closed: the peer closed it (EOF); open a new session"
+      ]
+    },
+    "link-forward": {
+      "ops": 100579,
+      "bytes_echoed": 43904052192,
+      "errors_in_fault_windows": 552,
+      "errors_unexpected": 0,
+      "integrity_failures": 0,
+      "cuts": 23,
+      "throttles": 23,
+      "black_holes": 23,
+      "rebinds": 0,
+      "drains": 23,
+      "drain_errors": 0,
+      "dead_after_bound_s": 4.5,
+      "dead_detect_max_s": 4.505922462,
+      "dead_detect_misses": 0,
+      "stalled_minutes": 0
+    },
+    "link-reverse": {
+      "ops": 100002,
+      "bytes_echoed": 43898964897,
+      "errors_in_fault_windows": 551,
+      "errors_unexpected": 0,
+      "integrity_failures": 0,
+      "cuts": 23,
+      "throttles": 23,
+      "black_holes": 23,
+      "rebinds": 0,
+      "drains": 23,
+      "drain_errors": 0,
+      "dead_after_bound_s": 4.5,
+      "dead_detect_max_s": 4.504583234,
+      "dead_detect_misses": 0,
+      "stalled_minutes": 0
+    },
+    "quic-forward": {
+      "ops": 54069,
+      "bytes_echoed": 23601449479,
+      "errors_in_fault_windows": 621,
+      "errors_unexpected": 0,
+      "integrity_failures": 0,
+      "cuts": 23,
+      "throttles": 23,
+      "black_holes": 23,
+      "rebinds": 23,
+      "drains": 23,
+      "drain_errors": 0,
+      "dead_after_bound_s": 4.5,
+      "dead_detect_max_s": 3.881227071,
+      "dead_detect_misses": 0,
+      "stalled_minutes": 0
+    },
+    "quic-reverse": {
+      "ops": 55541,
+      "bytes_echoed": 23559749832,
+      "errors_in_fault_windows": 552,
+      "errors_unexpected": 0,
+      "integrity_failures": 0,
+      "cuts": 23,
+      "throttles": 23,
+      "black_holes": 23,
+      "rebinds": 23,
+      "drains": 23,
+      "drain_errors": 0,
+      "dead_after_bound_s": 4.5,
+      "dead_detect_max_s": 3.79758014,
+      "dead_detect_misses": 0,
+      "stalled_minutes": 0
+    }
+  },
+  "samples": [
+    {
+      "epoch": 0,
+      "goroutines": 2,
+      "fds": 8,
+      "heap_inuse": 729088
+    },
+    {
+      "epoch": 1,
+      "goroutines": 2,
+      "fds": 8,
+      "heap_inuse": 5505024
+    },
+    {
+      "epoch": 2,
+      "goroutines": 2,
+      "fds": 8,
+      "heap_inuse": 8347648
+    },
+    {
+      "epoch": 3,
+      "goroutines": 2,
+      "fds": 8,
+      "heap_inuse": 7847936
+    },
+    {
+      "epoch": 4,
+      "goroutines": 2,
+      "fds": 8,
+      "heap_inuse": 7938048
+    },
+    {
+      "epoch": 5,
+      "goroutines": 2,
+      "fds": 8,
+      "heap_inuse": 9052160
+    },
+    {
+      "epoch": 6,
+      "goroutines": 2,
+      "fds": 8,
+      "heap_inuse": 7888896
+    },
+    {
+      "epoch": 7,
+      "goroutines": 2,
+      "fds": 8,
+      "heap_inuse": 6578176
+    },
+    {
+      "epoch": 8,
+      "goroutines": 2,
+      "fds": 8,
+      "heap_inuse": 7651328
+    },
+    {
+      "epoch": 9,
+      "goroutines": 2,
+      "fds": 8,
+      "heap_inuse": 9224192
+    },
+    {
+      "epoch": 10,
+      "goroutines": 2,
+      "fds": 8,
+      "heap_inuse": 7749632
+    },
+    {
+      "epoch": 11,
+      "goroutines": 2,
+      "fds": 8,
+      "heap_inuse": 7618560
+    },
+    {
+      "epoch": 12,
+      "goroutines": 2,
+      "fds": 8,
+      "heap_inuse": 7733248
+    },
+    {
+      "epoch": 13,
+      "goroutines": 2,
+      "fds": 8,
+      "heap_inuse": 8372224
+    },
+    {
+      "epoch": 14,
+      "goroutines": 2,
+      "fds": 8,
+      "heap_inuse": 8052736
+    },
+    {
+      "epoch": 15,
+      "goroutines": 2,
+      "fds": 8,
+      "heap_inuse": 8364032
+    },
+    {
+      "epoch": 16,
+      "goroutines": 2,
+      "fds": 8,
+      "heap_inuse": 7569408
+    },
+    {
+      "epoch": 17,
+      "goroutines": 2,
+      "fds": 8,
+      "heap_inuse": 10592256
+    },
+    {
+      "epoch": 18,
+      "goroutines": 2,
+      "fds": 8,
+      "heap_inuse": 8331264
+    },
+    {
+      "epoch": 19,
+      "goroutines": 2,
+      "fds": 8,
+      "heap_inuse": 8011776
+    },
+    {
+      "epoch": 20,
+      "goroutines": 2,
+      "fds": 8,
+      "heap_inuse": 6299648
+    },
+    {
+      "epoch": 21,
+      "goroutines": 2,
+      "fds": 8,
+      "heap_inuse": 6914048
+    },
+    {
+      "epoch": 22,
+      "goroutines": 2,
+      "fds": 8,
+      "heap_inuse": 7118848
+    },
+    {
+      "epoch": 23,
+      "goroutines": 2,
+      "fds": 8,
+      "heap_inuse": 7249920
+    }
+  ],
+  "failures": null,
+  "pass": true
+}
