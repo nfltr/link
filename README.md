@@ -446,6 +446,14 @@ or `go build -tags linkdebug`), link reports on stderr:
 Each Read and Write records a stack in this mode: for tests and
 debugging, not production.
 
+We run both on ourselves: relay, relay-server and nfltr have a
+`make check-linkvet` (fails on a finding outside tests that their
+`scripts/linkvet-allow.txt` does not list, each with a reason), relay and
+relay-server a `make test-linkdebug` (their link-session packages under
+`-tags linkdebug -race`, failing on any report), and nfltr's kind soak can
+build with `-tags linkdebug` and count the reports in its pod logs. All are
+CI steps.
+
 ## Packages
 
 | package | what |
