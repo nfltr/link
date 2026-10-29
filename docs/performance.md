@@ -11,7 +11,7 @@ the guard that keeps it, and what a later edit must not undo. The README's
 `perf_bench_test.go` (all in process, Apple M5, 10 CPUs):
 
 - `BenchmarkThroughput`: messages of 64 B, 1 KiB, 4 KiB, 64 KiB and
-  1 MiB, on 1 and 8 sessions of one connection, one way (`oneway`) or
+  1 MiB, on 1, 8 and 64 sessions of one connection, one way (`oneway`) or
   both ways at once (`both`: each side opens the sessions and writes),
   over TCP loopback and TLS 1.3 (`net.Pipe` as an extra). The reader
   reads with a 32 KiB buffer. Each run also reports, per message, the
@@ -339,6 +339,66 @@ user-space copies 1 %.
   `~/nfltr-evidence/profiles/2026-10-17-link-perf/link@1fd57b5/ab-P7/`.
 - **Guarantee at risk**: as P3 (the same tests).
 - **Don't undo**: keep the boundary read short after a long frame.
+
+### P9: a sender waiting for its turn is woken alone
+
+- **Where**: `conn.go`: `waiter`, `parkLocked`, `wakeTurnLocked`,
+  `wroteLocked` (they replace the connection's `sync.Cond`) (commit
+  1d4804e).
+- **Why it was slow**: senders waiting for room in the write buffer, for
+  their turn (a ticket: sessions take turns) or for the write in flight all
+  waited on one condition variable, and every change (a ticket served, a
+  buffer taken, a write done) broadcast to all of them. Only the sender
+  holding the served ticket could go on; the others took the write lock
+  just to wait again. With 64 sessions writing 64 KiB at once that was
+  about 66 goroutines woken per message (`TestManyWritersWakeForTheirTurn`
+  at the base commit), 45 % of the CPU in `frameLocked`'s waits and 70 %
+  of the mutex profile's contention (`sync.(*Cond).Wait` re-taking the
+  write lock); the write syscalls were 15 % of the CPU. link moved 2.4
+  GiB/s there, against 6.2 for yamux and 4.5 for muxado
+  (`compare/defaults`). Profiles at the base: `~/nfltr-evidence/profiles/2026-10-29-LINK64/link@7812759/base-profile/`.
+- **What it does now**: each parked goroutine has a waiter of its own
+  (a channel of capacity 1, reused: no allocation per wait). A served
+  ticket wakes its holder only; the end of a write wakes the holder of
+  the served ticket and the waiters without a ticket (a session waiting
+  for the next buffer, which may then write it; `closeFlushed`); a failed
+  write or a write deadline wakes all. The order of turns and tickets is
+  unchanged.
+- **Gain**: goroutines woken per 64 KiB message, 64 sessions: 66 -> 3.
+  Against yamux and muxado with their defaults (`compare/defaults`, all
+  three after the change): 64 streams link 6.6, yamux 5.3, muxado 3.8
+  GiB/s (before: link 2.4).
+  `compare/defaults`, link alone, 8 passes alternating base and new (the
+  first 6 at load average 5-8, the last two at 15-70; benchstat of the
+  first 6): 64 sessions 2.35 -> 8.06 GiB/s (+242 %, p=0.002); one stream,
+  40 ms RTT, held and fresh echo, open rate and idle heap per stream: no
+  significant difference. Over all 8 passes the same: 2.32 -> 7.30 GiB/s
+  (p=0.005), the rest `~`. After the change the CPU of that benchmark is
+  84 % write and read syscalls. Evidence:
+  `~/nfltr-evidence/profiles/2026-10-29-LINK64/link@1d4804e/` (`ab-defaults/`,
+  `ab-perf/`).
+  `BenchmarkThroughput` (TCP, one way, `scripts/perf.sh ab`, 8 runs
+  alternating, load average 10-73): 64 sessions, 64 KiB 2.53 -> 6.67
+  GiB/s (+163 %), writes of the connection per message 0.58 -> 0.35;
+  64 sessions, 64 B 18.1 us -> 0.92 us per message (3.4 -> 66 MiB/s:
+  each 64-byte frame woke every waiting sender); 1 and 8 sessions,
+  `BenchmarkLatency` (held, held-mixed, fresh: p50, p99, wakeups per
+  round trip) and `BenchmarkIdleSessions`: no significant difference;
+  0 allocations per message throughout.
+- **Guarantee at risk**: fairness and turn order (a woken sender must be
+  the one whose turn it is, and no sender may be left parked with
+  nobody to wake it), write deadlines, and the close that waits for the
+  last write: `TestTurnsKeepTheirPlace`, `TestSessionsTakeTurnsOnASlowConn`,
+  `TestConnCombinesWrites`, `TestWriteDeadline`,
+  `TestWriteDeadlineStuckNetwork`, `TestMuxSlowSessionIsolated`,
+  `TestMuxV2StuckReaderIsolation`, `TestSessionPumpStuckWriterIsolation`,
+  `TestChainStalledFarReader` (x20 under `-race`), and the wire
+  (`TestV2Golden`: `testdata/v2_session.golden` unchanged).
+- **Guard**: `TestManyWritersWakeForTheirTurn` (at most 20 goroutines
+  woken per message with 64 sessions writing; 66 before, 3 after); the
+  `sessions=64` rows of `BenchmarkThroughput`.
+- **Don't undo**: no broadcast to every waiter on the hot path. A new
+  reason to wait gets the waiters it concerns woken, not all of them.
 
 ## Latency (2026-10-17, after v0.10.9)
 

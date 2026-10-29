@@ -56,27 +56,31 @@ the sha, versions, Go, machine and the load average before and after.
 
 ## Results (2026-10-29)
 
-Apple M5, 10 CPUs, macOS, Go 1.27.0, link at main 92a1618, 8 passes alternating. The machine was shared with other work:
-load average 5.9 at the start, 9.0 at the end, up to 11 during the
-run. Pass 8 lost its later benchmarks to an exhausted ephemeral port
-range on the machine (`connect: can't assign requested address`), so
-those rows have n=7. Medians; `±` is benchstat's spread, `~` no
+Apple M5, 10 CPUs, macOS, Go 1.27.0, link at main 1d4804e (with the
+write path change below), 8 passes alternating. The machine was shared
+with other work: load average 8.3 at the start, 5.3 at the end, 5.8-8.4
+at the start of each pass. Medians; `±` is benchstat's spread, `~` no
 significant difference (p >= 0.05). benchstat prints the MB/s metrics as
 B/s with binary prefixes (1 GiB/s = 1,074 MB/s).
 
 | scenario | link | yamux | muxado |
 |---|---:|---:|---:|
-| bulk, 1 stream (GiB/s) | **8.34** ± 35% | 3.96 ± 100% | 3.77 ± 98% |
-| bulk, 1 stream: B/op, allocs/op per 64 KiB | 12, 0 | 134, 2 | 78, 2 |
-| bulk, 64 streams (GiB/s) | 2.45 ± 6% | **6.16** ± 13% | 4.45 ± 16% |
-| bulk, 1 stream, 40 ms RTT (MiB/s) | **23.4** | 5.8 | 5.9 |
-| held echo p50 / p99 (µs; raw TCP 13.3 / 18.9) | 19.5 / 29.6 | 21.3 / 33.6 (~) | 23.8 / 35.4 (~) |
-| fresh open+echo+close p50 / p99 (µs) | **27.6** / 72.6 | 35.5 / 95.3 | 31.1 / 80.4 (p99 ~) |
-| open rate (µs per stream) | **9.5** | 17.4 | 14.1 |
-| idle stream: heap (both ends), goroutines | **1.98 KiB**, 0 | 3.88 KiB, 0 | 3.06 KiB, 0 |
-| slow reader 1 s: B before / during A's stall (GiB/s) | 3.70 / 6.51 | 1.87 / 3.34 | 1.62 / 3.19 |
-| slow reader 5 s: B before / during A's stall (GiB/s) | 3.67 / 6.67 | 1.88 / 3.23 | 1.62 / 3.11 |
+| bulk, 1 stream (GiB/s) | **8.19** ± 25% | 3.75 ± 39% | 3.57 ± 28% |
+| bulk, 1 stream: B/op, allocs/op per 64 KiB | 12, 0 | 140, 2 | 83, 2 |
+| bulk, 64 streams (GiB/s) | **6.59** ± 29% | 5.32 ± 22% | 3.78 ± 16% |
+| bulk, 64 streams: B/op, allocs/op per 64 KiB | 18, 0 | 246, 2 | 543, 2 |
+| bulk, 1 stream, 40 ms RTT (MiB/s) | **23.6** | 6.0 | 5.9 |
+| held echo p50 / p99 (µs; raw TCP 13.3 / 36.0) | **20.2** / 49.4 | 22.1 / 53.0 (p99 ~) | 24.5 / 58.4 (p99 ~) |
+| fresh open+echo+close p50 / p99 (µs) | **28.2** / **83.7** | 40.3 / 124.8 | 31.5 / 90.4 (~) |
+| open rate (µs per stream) | **10.1** | 17.9 | 15.0 |
+| idle stream: heap (both ends), goroutines | **1.97 KiB**, 0 | 3.88 KiB, 0 | 3.06 KiB, 0 |
+| slow reader 1 s: B before / during A's stall (GiB/s) | 3.45 / 6.54 | 1.70 / 3.16 | 1.62 / 2.80 |
+| slow reader 5 s: B before / during A's stall (GiB/s) | 3.28 / 6.18 | 1.56 / 2.75 | 1.31 / 2.60 |
 | slow reader: B stalled, B longest gap, A resumed (keeps), stuck | no, 0 ms, yes, no | no, 0 ms, yes, no | no, 0 ms, yes, no |
+
+The first run (link at 92a1618, before the change; load average 5.9-11):
+64 streams 2.45 GiB/s for link, 6.16 for yamux and 4.45 for muxado; the
+other rows within the spread of the run above.
 
 ## Reading
 
@@ -89,21 +93,27 @@ B/s with binary prefixes (1 GiB/s = 1,074 MB/s).
   stall the first link post measured was gRPC's (one stream's flow
   control shared by many sessions), not a multiplexer with per-stream
   windows.
-- **One stream: link moves about twice as many bytes** (8.3 against
-  4.0 and 3.8 GiB/s) with no allocation per 64 KiB. The spread is wide
-  (the first pass ran while the machine stalled loopback for every
-  library); link was ahead in every pass.
-- **64 streams at once: link loses.** yamux moved 2.5 times and muxado
-  1.8 times link's bytes. link serializes writers on the connection in
-  turns (docs/performance.md P4); 64 concurrent 64 KiB writers pay for
-  it. Not yet investigated; the profiles are in the evidence directory.
+- **One stream: link moves about twice as many bytes** (8.2 against
+  3.8 and 3.6 GiB/s) with no allocation per 64 KiB. link was ahead in
+  every pass.
+- **64 streams at once: link 6.6, yamux 5.3, muxado 3.8 GiB/s.** In the
+  first run link lost here (2.45 against 6.16 and 4.45): senders waiting
+  for room in link's write buffer all waited on one condition variable,
+  and each frame woke every one of them (about 66 goroutines woken per
+  64 KiB message, most of the CPU in scheduler and lock handoffs). Each
+  is now woken alone, when it is its turn (docs/performance.md, P9):
+  about 3 wakeups per message. link alone, base and change alternating,
+  8 passes: 2.35 -> 8.06 GiB/s, the other rows unchanged. The spread is
+  wide on a shared machine; yamux's median moved 6.2 -> 5.3 between the
+  two runs with no change of its own.
 - **40 ms RTT: link's 4x is its default window**, 1 MiB against
   256 KiB: one window per round trip (24 against 6 MiB/s). With the same
   window the three would be alike; `compare/` sets yamux to 1 MiB.
-- **Latency on a held stream: no significant difference.** A new
-  stream's open, echo and close: link 22 % below yamux and 11 % below
-  muxado at the median.
-- **Opening streams: link 9.5 µs, muxado 14.1, yamux 17.4.** No stream
+- **Latency on a held stream: close.** At the median yamux takes 9.7 %
+  and muxado 22 % longer than link; p99 no significant difference. A new stream's open,
+  echo and close: link 30 % below yamux at the median, muxado not
+  significantly different.
+- **Opening streams: link 10.1 µs, muxado 15.0, yamux 17.9.** No stream
   was lost in these passes; muxado did lose 7 of 29,089 in an earlier
   run on this machine, refused past its 128-stream accept backlog after
   the opener had closed.
@@ -125,157 +135,157 @@ goos: darwin
 goarch: arm64
 pkg: github.com/nfltr/link/compare/defaults
 cpu: Apple M5
-                            │      link       │                   yamux                   │                  muxado                  │        tcp         │
-                            │     sec/op      │     sec/op       vs base                  │     sec/op      vs base                  │   sec/op     vs base   │
-Bulk/sessions=1/rtt=0s-10      7.321µ ±   34%   15.415µ ±    4%  +110.55% (p=0.000 n=8)     16.180µ ±   2%  +121.01% (p=0.000 n=8)
-Bulk/sessions=64/rtt=0s-10    24.924µ ±    6%    9.906µ ±    4%   -60.25% (p=0.000 n=8)     13.703µ ±   7%   -45.02% (p=0.000 n=8)
-Bulk/sessions=1/rtt=40ms-10    2.676m ±    2%   10.745m ±    3%  +301.51% (p=0.000 n=8)     10.680m ±   1%  +299.08% (p=0.000 n=8)
-Latency/raw-10                                                                                                                         13.92µ ± 2%
-Latency/held-10                19.62µ ±   83%    21.81µ ±    4%         ~ (p=0.083 n=8)      24.31µ ±  15%         ~ (p=0.105 n=8)
-Latency/fresh-10               28.94µ ±   35%    37.99µ ±   43%   +31.28% (p=0.006 n=7+8)    33.09µ ±   2%   +14.33% (p=0.014 n=7+8)
-Open-10                        9.542µ ±   54%   17.440µ ±   44%   +82.77% (p=0.001 n=7)     14.063µ ±  26%   +47.38% (p=0.011 n=7)
-IdleMemory/n=1000-10           29.40m ± 8199%    38.38m ± 6097%         ~ (p=0.128 n=7)      36.51m ± 107%         ~ (p=0.165 n=7)
-geomean                        96.47µ            137.1µ           +42.10%                    138.5µ          +43.57%                   13.92µ       ? ¹ ²
+                            │     link     │                 yamux                 │                muxado                 │         tcp         │
+                            │    sec/op    │    sec/op      vs base                │    sec/op      vs base                │    sec/op     vs base   │
+Bulk/sessions=1/rtt=0s-10     7.456µ ± 29%   16.275µ ± 41%  +118.30% (p=0.000 n=8)   17.087µ ± 38%  +129.19% (p=0.000 n=8)
+Bulk/sessions=64/rtt=0s-10    9.271µ ± 25%   11.598µ ± 21%   +25.09% (p=0.001 n=8)   16.153µ ± 14%   +74.23% (p=0.000 n=8)
+Bulk/sessions=1/rtt=40ms-10   2.644m ±  1%   10.439m ±  1%  +294.81% (p=0.000 n=8)   10.573m ±  2%  +299.88% (p=0.000 n=8)
+Latency/raw-10                                                                                                               14.72µ ± 17%
+Latency/held-10               22.16µ ± 13%    24.38µ ± 18%         ~ (p=0.161 n=8)    26.11µ ± 30%   +17.82% (p=0.007 n=8)
+Latency/fresh-10              30.45µ ± 47%    48.97µ ± 19%   +60.84% (p=0.007 n=8)    34.03µ ± 23%         ~ (p=0.234 n=8)
+Open-10                       10.10µ ± 17%    17.88µ ± 28%   +77.03% (p=0.000 n=8)    14.95µ ±  7%   +47.99% (p=0.000 n=8)
+IdleMemory/n=1000-10          31.78m ± 25%    38.62m ±  3%   +21.52% (p=0.050 n=8)    37.09m ±  8%   +16.71% (p=0.050 n=8)
+geomean                       87.60µ          148.9µ         +70.01%                  146.3µ         +67.06%                 14.72µ        ? ¹ ²
 ¹ benchmark set differs from baseline; geomeans may not be comparable
 ² ratios must be >0 to compute geomean
 
-                            │      link      │                 yamux                  │                muxado                │
-                            │      B/s       │      B/s        vs base                │      B/s       vs base               │
-Bulk/sessions=1/rtt=0s-10      8.338Gi ± 35%   3.960Gi ± 100%   -52.51% (p=0.000 n=8)   3.772Gi ± 98%  -54.76% (p=0.000 n=8)
-Bulk/sessions=64/rtt=0s-10     2.449Gi ±  6%   6.162Gi ±  13%  +151.61% (p=0.000 n=8)   4.454Gi ± 16%  +81.89% (p=0.000 n=8)
-Bulk/sessions=1/rtt=40ms-10   23.355Mi ±  2%   5.817Mi ±   2%   -75.09% (p=0.000 n=8)   5.851Mi ±  3%  -74.95% (p=0.000 n=8)
-geomean                        793.7Mi         529.9Mi          -33.23%                 468.9Mi        -40.93%
+                            │      link      │                yamux                 │                muxado                │
+                            │      B/s       │      B/s       vs base               │      B/s       vs base               │
+Bulk/sessions=1/rtt=0s-10      8.188Gi ± 25%   3.753Gi ± 39%  -54.17% (p=0.000 n=8)   3.573Gi ± 28%  -56.36% (p=0.000 n=8)
+Bulk/sessions=64/rtt=0s-10     6.589Gi ± 29%   5.323Gi ± 22%  -19.21% (p=0.001 n=8)   3.779Gi ± 16%  -42.65% (p=0.000 n=8)
+Bulk/sessions=1/rtt=40ms-10   23.637Mi ±  1%   5.984Mi ±  2%  -74.68% (p=0.000 n=8)   5.908Mi ±  2%  -75.01% (p=0.000 n=8)
+geomean                        1.076Gi         500.5Mi        -54.57%                 437.3Mi        -60.30%
 
-                                     │      link      │                   yamux                   │                 muxado                  │         tcp         │
-                                     │      B/op      │      B/op       vs base                   │      B/op       vs base                 │    B/op     vs base │
-Bulk/sessions=1/rtt=0s-10                12.50 ± 116%     134.00 ±  0%   +972.00% (p=0.000 n=8)        78.00 ±  5%   +524.00% (p=0.000 n=8)
-Bulk/sessions=64/rtt=0s-10               50.00 ±  72%     232.50 ± 26%   +365.00% (p=0.000 n=8)       363.00 ± 23%   +626.00% (p=0.000 n=8)
-Bulk/sessions=1/rtt=40ms-10            78.96Ki ±   4%    73.65Ki ±  0%     -6.72% (p=0.000 n=8)      73.84Ki ±  3%     -6.48% (p=0.000 n=8)
-Latency/raw-10                                                                                                                                0.000 ± 0%
-Latency/held-10                          4.500 ±    ?    176.000 ±  0%  +3811.11% (p=0.000 n=8)       64.000 ±  0%  +1322.22% (p=0.000 n=8)
-Latency/fresh-10                       36.56Ki ±   1%    37.70Ki ±  0%     +3.11% (p=0.000 n=7+8)    36.02Ki ±  0%     -1.47% (n=7+8)
-Open-10                                34.10Ki ±   0%    35.95Ki ±  0%     +5.42% (p=0.001 n=7)      34.53Ki ±  0%     +1.26% (p=0.001 n=7)
-IdleMemory/n=1000-10                   4.786Mi ±  16%    5.804Mi ±  0%    +21.26% (p=0.001 n=7)      4.161Mi ±  0%    -13.06% (p=0.026 n=7)
-SlowReader/stall=1s/awriter=stops-10   6.923Mi ±  13%   19.418Mi ± 37%   +180.48% (p=0.001 n=7)      7.010Mi ± 11%          ~ (p=0.535 n=7)
-SlowReader/stall=1s/awriter=keeps-10   7.103Mi ±  18%   19.129Mi ± 44%   +169.31% (p=0.001 n=7)      6.733Mi ± 28%          ~ (p=0.456 n=7)
-SlowReader/stall=5s/awriter=stops-10   6.995Mi ±  10%   62.346Mi ± 47%   +791.24% (p=0.001 n=7)     19.536Mi ± 35%   +179.27% (p=0.001 n=7)
-SlowReader/stall=5s/awriter=keeps-10   7.361Mi ±  37%   59.092Mi ± 63%   +702.75% (p=0.001 n=7)     19.909Mi ± 41%   +170.45% (p=0.001 n=7)
-geomean                                48.53Ki           174.5Ki         +259.48%                    102.6Ki         +111.50%                             ? ¹ ² ³
+                                     │      link      │                  yamux                   │                 muxado                  │         tcp         │
+                                     │      B/op      │      B/op        vs base                 │      B/op       vs base                 │    B/op     vs base │
+Bulk/sessions=1/rtt=0s-10                12.00 ± 117%     140.00 ±   9%  +1066.67% (p=0.000 n=8)      83.00 ±  7%   +591.67% (p=0.000 n=8)
+Bulk/sessions=64/rtt=0s-10               18.50 ± 403%     245.50 ± 131%  +1227.03% (p=0.000 n=8)     542.50 ± 67%  +2832.43% (p=0.000 n=8)
+Bulk/sessions=1/rtt=40ms-10            80.12Ki ±   8%    73.65Ki ±   3%     -8.07% (p=0.000 n=8)    73.13Ki ±  1%     -8.71% (p=0.000 n=8)
+Latency/raw-10                                                                                                                               0.000 ± 0%
+Latency/held-10                          4.500 ±    ?    176.000 ±   1%  +3811.11% (p=0.000 n=8)     64.000 ±  2%  +1322.22% (p=0.000 n=8)
+Latency/fresh-10                       36.42Ki ±   1%    37.70Ki ±   0%     +3.50% (p=0.000 n=8)    36.02Ki ±  0%     -1.10% (p=0.000 n=8)
+Open-10                                34.13Ki ±   0%    35.95Ki ±   0%     +5.33% (p=0.000 n=8)    34.53Ki ±  0%     +1.18% (p=0.000 n=8)
+IdleMemory/n=1000-10                   4.408Mi ±  26%    5.802Mi ±   0%    +31.63% (p=0.000 n=8)    4.162Mi ±  0%          ~ (p=0.105 n=8)
+SlowReader/stall=1s/awriter=stops-10   5.878Mi ±  30%   18.616Mi ±  16%   +216.69% (p=0.000 n=8)    7.190Mi ± 24%          ~ (p=0.234 n=8)
+SlowReader/stall=1s/awriter=keeps-10   7.745Mi ±  25%   18.867Mi ±  27%   +143.61% (p=0.000 n=8)    6.758Mi ± 22%    -12.74% (p=0.038 n=8)
+SlowReader/stall=5s/awriter=stops-10   6.086Mi ±  14%   52.688Mi ±  22%   +765.72% (p=0.000 n=8)   16.877Mi ± 21%   +177.31% (p=0.000 n=8)
+SlowReader/stall=5s/awriter=keeps-10   7.725Mi ±  21%   52.213Mi ±  27%   +575.92% (p=0.000 n=8)   17.609Mi ± 23%   +127.96% (p=0.000 n=8)
+geomean                                43.23Ki           170.5Ki          +294.54%                  104.7Ki         +142.15%                             ? ¹ ² ³
 ¹ benchmark set differs from baseline; geomeans may not be comparable
 ² summaries must be >0 to compute geomean
 ³ ratios must be >0 to compute geomean
 
-                                     │      link       │                   yamux                   │                  muxado                  │         tcp         │
-                                     │    allocs/op    │   allocs/op     vs base                   │   allocs/op    vs base                   │ allocs/op   vs base │
-Bulk/sessions=1/rtt=0s-10                0.000 ±  0%        2.000 ±  0%          ? (p=0.000 n=8)       2.000 ±  0%          ? (p=0.000 n=8)
-Bulk/sessions=64/rtt=0s-10               0.000 ±  0%        2.000 ±  0%          ? (p=0.000 n=8)       2.000 ±  0%          ? (p=0.000 n=8)
-Bulk/sessions=1/rtt=40ms-10              1.000 ±  0%        5.000 ±  0%   +400.00% (p=0.000 n=8)       6.000 ±  0%   +500.00% (p=0.000 n=8)
-Latency/raw-10                                                                                                                                  0.000 ± 0%
-Latency/held-10                          0.000 ±  0%        4.000 ±  0%          ? (p=0.000 n=8)       2.000 ±  0%          ? (p=0.000 n=8)
-Latency/fresh-10                         23.00 ±  0%        44.00 ±  0%    +91.30% (p=0.000 n=7+8)     10.00 ±  0%    -56.52% (p=0.002 n=7+8)
-Open-10                                 21.000 ±  0%       37.000 ±  0%    +76.19% (p=0.001 n=7)       7.000 ±  0%    -66.67% (p=0.001 n=7)
-IdleMemory/n=1000-10                   22.071k ±  0%      44.525k ±  0%   +101.74% (p=0.001 n=7)      8.113k ±  0%    -63.24% (p=0.001 n=7)
-SlowReader/stall=1s/awriter=stops-10    43.25k ± 50%      388.00k ± 47%   +797.04% (p=0.001 n=7)     156.92k ± 35%   +262.80% (p=0.001 n=7)
-SlowReader/stall=1s/awriter=keeps-10    43.04k ± 19%      374.77k ± 51%   +770.76% (p=0.001 n=7)     153.53k ± 42%   +256.72% (p=0.001 n=7)
-SlowReader/stall=5s/awriter=stops-10    41.99k ± 46%     1324.71k ± 49%  +3054.89% (p=0.001 n=7)     561.32k ± 39%  +1236.81% (p=0.001 n=7)
-SlowReader/stall=5s/awriter=keeps-10    40.05k ± 57%     1285.96k ± 66%  +3110.90% (p=0.001 n=7)     573.13k ± 49%  +1331.04% (p=0.001 n=7)
-geomean                                              ¹     1.033k        ?                             463.3        ?                                       ? ² ¹ ³
+                                     │      link       │                   yamux                   │                 muxado                  │         tcp         │
+                                     │    allocs/op    │    allocs/op     vs base                  │   allocs/op     vs base                 │ allocs/op   vs base │
+Bulk/sessions=1/rtt=0s-10                0.000 ±  0%         2.000 ±  0%           ? (p=0.000 n=8)      2.000 ±  0%          ? (p=0.000 n=8)
+Bulk/sessions=64/rtt=0s-10               0.000 ±  0%         2.000 ±  0%           ? (p=0.000 n=8)      2.000 ±  0%          ? (p=0.000 n=8)
+Bulk/sessions=1/rtt=40ms-10              1.000 ±  0%         5.000 ±  0%    +400.00% (p=0.000 n=8)      6.000 ±  0%   +500.00% (p=0.000 n=8)
+Latency/raw-10                                                                                                                                 0.000 ± 0%
+Latency/held-10                          0.000 ±  0%         4.000 ±  0%           ? (p=0.000 n=8)      2.000 ±  0%          ? (p=0.000 n=8)
+Latency/fresh-10                         23.00 ±  0%         44.00 ±  0%     +91.30% (p=0.000 n=8)      10.00 ±  0%    -56.52% (p=0.000 n=8)
+Open-10                                 21.000 ±  0%        37.000 ±  0%     +76.19% (p=0.000 n=8)      7.000 ±  0%    -66.67% (p=0.000 n=8)
+IdleMemory/n=1000-10                   22.043k ±  0%       44.484k ±  0%    +101.81% (p=0.000 n=8)     8.113k ±  0%    -63.19% (p=0.000 n=8)
+SlowReader/stall=1s/awriter=stops-10    5.572k ± 23%      355.093k ± 23%   +6272.81% (p=0.000 n=8)   143.855k ± 24%  +2481.75% (p=0.000 n=8)
+SlowReader/stall=1s/awriter=keeps-10    4.263k ± 37%      377.984k ± 37%   +8765.58% (p=0.000 n=8)   130.406k ± 20%  +2958.67% (p=0.000 n=8)
+SlowReader/stall=5s/awriter=stops-10    4.814k ± 21%     1123.814k ± 23%  +23242.28% (p=0.000 n=8)   466.365k ± 22%  +9586.67% (p=0.000 n=8)
+SlowReader/stall=5s/awriter=keeps-10    5.903k ± 35%     1125.576k ± 29%  +18967.87% (p=0.000 n=8)   496.235k ± 26%  +8306.49% (p=0.000 n=8)
+geomean                                              ¹       998.5        ?                             439.6        ?                                     ? ² ¹ ³
 ¹ summaries must be >0 to compute geomean
 ² benchmark set differs from baseline; geomeans may not be comparable
 ³ ratios must be >0 to compute geomean
 
-                 │     link     │                 yamux                 │                muxado                │        tcp         │
-                 │   p50-sec    │   p50-sec     vs base                 │   p50-sec    vs base                 │   p50-sec    vs base   │
-Latency/raw-10                                                                                                   13.33µ ± 1%
-Latency/held-10    19.48µ ± 43%   21.31µ ±  2%        ~ (p=0.083 n=8)     23.77µ ± 4%        ~ (p=0.098 n=8)
-Latency/fresh-10   27.58µ ± 11%   35.52µ ± 33%  +28.78% (p=0.000 n=7+8)   31.08µ ± 2%  +12.69% (p=0.000 n=7+8)
-geomean            23.18µ         27.51µ        +18.70%                   27.18µ       +17.27%                   13.33µ       ? ¹ ²
+                 │     link     │                yamux                │               muxado               │        tcp         │
+                 │   p50-sec    │   p50-sec     vs base               │   p50-sec    vs base               │   p50-sec    vs base   │
+Latency/raw-10                                                                                               13.31µ ± 1%
+Latency/held-10    20.15µ ± 10%   22.10µ ± 15%   +9.72% (p=0.013 n=8)   24.54µ ± 4%  +21.82% (p=0.000 n=8)
+Latency/fresh-10   28.17µ ± 26%   40.29µ ± 11%  +43.04% (p=0.002 n=8)   31.54µ ± 9%        ~ (p=0.061 n=8)
+geomean            23.82µ         29.84µ        +25.28%                 27.82µ       +16.80%                 13.31µ       ? ¹ ²
 ¹ benchmark set differs from baseline; geomeans may not be comparable
 ² ratios must be >0 to compute geomean
 
-                 │     link      │                 yamux                 │                muxado                 │        tcp         │
-                 │    p99-sec    │   p99-sec     vs base                 │   p99-sec     vs base                 │   p99-sec    vs base   │
-Latency/raw-10                                                                                                     18.92µ ± 7%
-Latency/held-10    29.56µ ± 141%   33.63µ ± 43%        ~ (p=0.130 n=8)     35.42µ ± 90%        ~ (p=0.105 n=8)
-Latency/fresh-10   72.58µ ±  38%   95.33µ ± 35%  +31.34% (p=0.006 n=7+8)   80.35µ ±  5%        ~ (p=0.152 n=7+8)
-geomean            46.32µ          56.62µ        +22.23%                   53.35µ        +15.16%                   18.92µ       ? ¹ ²
+                 │     link     │                yamux                 │               muxado                │         tcp         │
+                 │   p99-sec    │    p99-sec     vs base               │   p99-sec     vs base               │   p99-sec     vs base   │
+Latency/raw-10                                                                                                 35.98µ ± 42%
+Latency/held-10    49.42µ ± 38%    53.00µ ± 35%        ~ (p=0.505 n=8)   58.35µ ± 43%        ~ (p=0.195 n=8)
+Latency/fresh-10   83.71µ ± 52%   124.83µ ± 18%  +49.13% (p=0.028 n=8)   90.40µ ± 22%        ~ (p=0.442 n=8)
+geomean            64.32µ          81.34µ        +26.47%                 72.63µ        +12.93%                 35.98µ        ? ¹ ²
 ¹ benchmark set differs from baseline; geomeans may not be comparable
 ² ratios must be >0 to compute geomean
 
         │    link    │             yamux             │            muxado             │
         │  lost/op   │  lost/op    vs base           │  lost/op    vs base           │
-Open-10   0.000 ± 0%   0.000 ± 0%  ~ (p=1.000 n=7) ¹   0.000 ± 0%  ~ (p=1.000 n=7) ¹
+Open-10   0.000 ± 0%   0.000 ± 0%  ~ (p=1.000 n=8) ¹   0.000 ± 0%  ~ (p=1.000 n=8) ¹
 ¹ all samples are equal
 
                      │        link        │                 yamux                 │                muxado                 │
                      │ goroutines/session │ goroutines/session  vs base           │ goroutines/session  vs base           │
-IdleMemory/n=1000-10           0.000 ± 0%           0.000 ± 0%  ~ (p=1.000 n=7) ¹           0.000 ± 0%  ~ (p=1.000 n=7) ¹
+IdleMemory/n=1000-10           0.000 ± 0%           0.000 ± 0%  ~ (p=1.000 n=8) ¹           0.000 ± 0%  ~ (p=1.000 n=8) ¹
 ¹ all samples are equal
 
                      │      link      │                 yamux                 │                muxado                 │
                      │ heap-B/session │ heap-B/session  vs base               │ heap-B/session  vs base               │
-IdleMemory/n=1000-10     1.976Ki ± 1%     3.884Ki ± 0%  +96.59% (p=0.001 n=7)     3.063Ki ± 0%  +55.07% (p=0.001 n=7)
+IdleMemory/n=1000-10     1.968Ki ± 1%     3.876Ki ± 0%  +97.00% (p=0.000 n=8)     3.063Ki ± 0%  +55.68% (p=0.000 n=8)
 
                                      │     link      │                yamux                 │                muxado                │
                                      │ A-B/s-before  │ A-B/s-before   vs base               │ A-B/s-before   vs base               │
-SlowReader/stall=1s/awriter=stops-10   3.676Gi ± 33%   1.878Gi ± 39%  -48.90% (p=0.001 n=7)   1.648Gi ± 38%  -55.16% (p=0.001 n=7)
-SlowReader/stall=1s/awriter=keeps-10   3.643Gi ± 26%   1.878Gi ± 49%  -48.44% (p=0.001 n=7)   1.602Gi ± 88%  -56.03% (p=0.001 n=7)
-SlowReader/stall=5s/awriter=stops-10   3.654Gi ± 37%   1.869Gi ± 56%  -48.84% (p=0.001 n=7)   1.621Gi ± 51%  -55.65% (p=0.001 n=7)
-SlowReader/stall=5s/awriter=keeps-10   3.455Gi ± 31%   1.896Gi ± 91%  -45.12% (p=0.001 n=7)   1.620Gi ± 51%  -53.13% (p=0.001 n=7)
-geomean                                3.606Gi         1.881Gi        -47.85%                 1.623Gi        -55.00%
+SlowReader/stall=1s/awriter=stops-10   3.447Gi ± 23%   1.697Gi ± 17%  -50.77% (p=0.000 n=8)   1.612Gi ± 26%  -53.23% (p=0.000 n=8)
+SlowReader/stall=1s/awriter=keeps-10   2.862Gi ± 28%   1.850Gi ± 37%  -35.37% (p=0.000 n=8)   1.321Gi ± 25%  -53.85% (p=0.000 n=8)
+SlowReader/stall=5s/awriter=stops-10   3.224Gi ± 18%   1.547Gi ± 36%  -52.02% (p=0.000 n=8)   1.304Gi ± 24%  -59.56% (p=0.000 n=8)
+SlowReader/stall=5s/awriter=keeps-10   3.721Gi ± 34%   1.646Gi ± 62%  -55.76% (p=0.000 n=8)   1.467Gi ± 17%  -60.58% (p=0.000 n=8)
+geomean                                3.298Gi         1.681Gi        -49.02%                 1.421Gi        -56.93%
 
                                      │     link     │               yamux                │               muxado               │
                                      │  A-resumed   │ A-resumed   vs base                │ A-resumed   vs base                │
-SlowReader/stall=1s/awriter=stops-10   0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=7) ¹   0.000 ± 0%       ~ (p=1.000 n=7) ¹
-SlowReader/stall=1s/awriter=keeps-10   1.000 ± 0%     1.000 ± 0%       ~ (p=1.000 n=7) ¹   1.000 ± 0%       ~ (p=1.000 n=7) ¹
-SlowReader/stall=5s/awriter=stops-10   0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=7) ¹   0.000 ± 0%       ~ (p=1.000 n=7) ¹
-SlowReader/stall=5s/awriter=keeps-10   1.000 ± 0%     1.000 ± 0%       ~ (p=1.000 n=7) ¹   1.000 ± 0%       ~ (p=1.000 n=7) ¹
+SlowReader/stall=1s/awriter=stops-10   0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=8) ¹   0.000 ± 0%       ~ (p=1.000 n=8) ¹
+SlowReader/stall=1s/awriter=keeps-10   1.000 ± 0%     1.000 ± 0%       ~ (p=1.000 n=8) ¹   1.000 ± 0%       ~ (p=1.000 n=8) ¹
+SlowReader/stall=5s/awriter=stops-10   0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=8) ¹   0.000 ± 0%       ~ (p=1.000 n=8) ¹
+SlowReader/stall=5s/awriter=keeps-10   1.000 ± 0%     1.000 ± 0%       ~ (p=1.000 n=8) ¹   1.000 ± 0%       ~ (p=1.000 n=8) ¹
 geomean                                           ²               +0.00%               ²               +0.00%               ²
 ¹ all samples are equal
 ² summaries must be >0 to compute geomean
 
                                      │     link      │                yamux                 │                muxado                │
                                      │ B-B/s-before  │ B-B/s-before   vs base               │ B-B/s-before   vs base               │
-SlowReader/stall=1s/awriter=stops-10   3.702Gi ± 33%   1.873Gi ± 39%  -49.41% (p=0.001 n=7)   1.640Gi ± 36%  -55.70% (p=0.001 n=7)
-SlowReader/stall=1s/awriter=keeps-10   3.615Gi ± 25%   1.870Gi ± 49%  -48.27% (p=0.001 n=7)   1.608Gi ± 88%  -55.51% (p=0.001 n=7)
-SlowReader/stall=5s/awriter=stops-10   3.671Gi ± 37%   1.878Gi ± 56%  -48.83% (p=0.001 n=7)   1.615Gi ± 51%  -56.01% (p=0.001 n=7)
-SlowReader/stall=5s/awriter=keeps-10   3.501Gi ± 31%   1.892Gi ± 93%  -45.97% (p=0.001 n=7)   1.607Gi ± 52%  -54.08% (p=0.001 n=7)
-geomean                                3.622Gi         1.878Gi        -48.14%                 1.618Gi        -55.33%
+SlowReader/stall=1s/awriter=stops-10   3.445Gi ± 24%   1.699Gi ± 16%  -50.69% (p=0.000 n=8)   1.616Gi ± 26%  -53.10% (p=0.000 n=8)
+SlowReader/stall=1s/awriter=keeps-10   2.845Gi ± 29%   1.837Gi ± 36%  -35.42% (p=0.000 n=8)   1.321Gi ± 25%  -53.58% (p=0.000 n=8)
+SlowReader/stall=5s/awriter=stops-10   3.275Gi ± 18%   1.556Gi ± 35%  -52.49% (p=0.000 n=8)   1.306Gi ± 24%  -60.12% (p=0.000 n=8)
+SlowReader/stall=5s/awriter=keeps-10   3.722Gi ± 35%   1.653Gi ± 62%  -55.59% (p=0.000 n=8)   1.466Gi ± 20%  -60.60% (p=0.000 n=8)
+geomean                                3.306Gi         1.683Gi        -49.09%                 1.422Gi        -56.99%
 
                                      │     link      │                yamux                 │                muxado                │
                                      │  B-B/s-stall  │  B-B/s-stall   vs base               │  B-B/s-stall   vs base               │
-SlowReader/stall=1s/awriter=stops-10   6.511Gi ± 54%   3.340Gi ± 51%  -48.71% (p=0.017 n=7)   3.188Gi ± 35%  -51.04% (p=0.017 n=7)
-SlowReader/stall=1s/awriter=keeps-10   6.881Gi ± 42%   3.181Gi ± 50%  -53.76% (p=0.001 n=7)   3.050Gi ± 40%  -55.67% (p=0.001 n=7)
-SlowReader/stall=5s/awriter=stops-10   6.668Gi ± 58%   3.225Gi ± 48%  -51.63% (p=0.007 n=7)   3.105Gi ± 39%  -53.44% (p=0.011 n=7)
-SlowReader/stall=5s/awriter=keeps-10   6.651Gi ± 25%   3.106Gi ± 64%  -53.30% (p=0.001 n=7)   3.161Gi ± 50%  -52.47% (p=0.001 n=7)
-geomean                                6.676Gi         3.212Gi        -51.89%                 3.126Gi        -53.18%
+SlowReader/stall=1s/awriter=stops-10   6.539Gi ± 18%   3.155Gi ± 28%  -51.74% (p=0.000 n=8)   2.797Gi ± 27%  -57.23% (p=0.000 n=8)
+SlowReader/stall=1s/awriter=keeps-10   5.825Gi ± 14%   3.256Gi ± 39%  -44.10% (p=0.000 n=8)   2.587Gi ± 28%  -55.59% (p=0.000 n=8)
+SlowReader/stall=5s/awriter=stops-10   6.177Gi ± 22%   2.754Gi ± 23%  -55.42% (p=0.000 n=8)   2.599Gi ± 21%  -57.92% (p=0.000 n=8)
+SlowReader/stall=5s/awriter=keeps-10   6.648Gi ± 20%   2.719Gi ± 28%  -59.09% (p=0.000 n=8)   2.746Gi ± 27%  -58.69% (p=0.000 n=8)
+geomean                                6.289Gi         2.962Gi        -52.90%                 2.681Gi        -57.37%
 
                                      │     link     │               yamux                │               muxado               │
                                      │   B-gap-ms   │  B-gap-ms   vs base                │  B-gap-ms   vs base                │
-SlowReader/stall=1s/awriter=stops-10   0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=7) ¹   0.000 ± 0%       ~ (p=1.000 n=7) ¹
-SlowReader/stall=1s/awriter=keeps-10   0.000 ± 0%     0.000 ±  ?       ~ (p=1.000 n=7)     0.000 ± 0%       ~ (p=1.000 n=7) ¹
-SlowReader/stall=5s/awriter=stops-10   0.000 ±  ?     0.000 ±  ?       ~ (p=1.000 n=7)     0.000 ± 0%       ~ (p=1.000 n=7)
-SlowReader/stall=5s/awriter=keeps-10   0.000 ±  ?     0.000 ±  ?       ~ (p=0.192 n=7)     0.000 ±  ?       ~ (p=0.462 n=7)
+SlowReader/stall=1s/awriter=stops-10   0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=8) ¹   0.000 ± 0%       ~ (p=1.000 n=8) ¹
+SlowReader/stall=1s/awriter=keeps-10   0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=8) ¹   0.000 ± 0%       ~ (p=1.000 n=8) ¹
+SlowReader/stall=5s/awriter=stops-10   0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=8) ¹   0.000 ± 0%       ~ (p=1.000 n=8) ¹
+SlowReader/stall=5s/awriter=keeps-10   0.000 ± 0%     0.000 ±  ?       ~ (p=0.467 n=8)     0.000 ± 0%       ~ (p=1.000 n=8) ¹
 geomean                                           ²               +0.00%               ²               +0.00%               ²
 ¹ all samples are equal
 ² summaries must be >0 to compute geomean
 
                                      │     link     │               yamux                │               muxado               │
                                      │  B-stalled   │ B-stalled   vs base                │ B-stalled   vs base                │
-SlowReader/stall=1s/awriter=stops-10   0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=7) ¹   0.000 ± 0%       ~ (p=1.000 n=7) ¹
-SlowReader/stall=1s/awriter=keeps-10   0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=7) ¹   0.000 ± 0%       ~ (p=1.000 n=7) ¹
-SlowReader/stall=5s/awriter=stops-10   0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=7) ¹   0.000 ± 0%       ~ (p=1.000 n=7) ¹
-SlowReader/stall=5s/awriter=keeps-10   0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=7) ¹   0.000 ± 0%       ~ (p=1.000 n=7) ¹
+SlowReader/stall=1s/awriter=stops-10   0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=8) ¹   0.000 ± 0%       ~ (p=1.000 n=8) ¹
+SlowReader/stall=1s/awriter=keeps-10   0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=8) ¹   0.000 ± 0%       ~ (p=1.000 n=8) ¹
+SlowReader/stall=5s/awriter=stops-10   0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=8) ¹   0.000 ± 0%       ~ (p=1.000 n=8) ¹
+SlowReader/stall=5s/awriter=keeps-10   0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=8) ¹   0.000 ± 0%       ~ (p=1.000 n=8) ¹
 geomean                                           ²               +0.00%               ²               +0.00%               ²
 ¹ all samples are equal
 ² summaries must be >0 to compute geomean
 
                                      │     link     │               yamux                │               muxado               │
                                      │    stuck     │   stuck     vs base                │   stuck     vs base                │
-SlowReader/stall=1s/awriter=stops-10   0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=7) ¹   0.000 ± 0%       ~ (p=1.000 n=7) ¹
-SlowReader/stall=1s/awriter=keeps-10   0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=7) ¹   0.000 ± 0%       ~ (p=1.000 n=7) ¹
-SlowReader/stall=5s/awriter=stops-10   0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=7) ¹   0.000 ± 0%       ~ (p=1.000 n=7) ¹
-SlowReader/stall=5s/awriter=keeps-10   0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=7) ¹   0.000 ± 0%       ~ (p=1.000 n=7) ¹
+SlowReader/stall=1s/awriter=stops-10   0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=8) ¹   0.000 ± 0%       ~ (p=1.000 n=8) ¹
+SlowReader/stall=1s/awriter=keeps-10   0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=8) ¹   0.000 ± 0%       ~ (p=1.000 n=8) ¹
+SlowReader/stall=5s/awriter=stops-10   0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=8) ¹   0.000 ± 0%       ~ (p=1.000 n=8) ¹
+SlowReader/stall=5s/awriter=keeps-10   0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=8) ¹   0.000 ± 0%       ~ (p=1.000 n=8) ¹
 geomean                                           ²               +0.00%               ²               +0.00%               ²
 ¹ all samples are equal
 ² summaries must be >0 to compute geomean

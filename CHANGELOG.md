@@ -8,6 +8,12 @@ version 2 unless an entry says otherwise.
 
 ## Unreleased
 
+- Senders waiting for room or their turn in a connection's write
+  buffer are woken one at a time, the one whose turn it is, instead of
+  all of them on every frame. 64 sessions writing 64 KiB at once on one
+  TCP connection: 2.4 -> 8.1 GiB/s; 64-byte messages on 64 sessions
+  about 20x faster. One session, latency, opens and idle memory
+  unchanged; the wire is unchanged. docs/performance.md, P9.
 - peerlinktest: StuckReader bounds the sessions beside the stuck one on
   progress (nothing echoed for `Within`), not on the time their 32 MiB
   each way takes: a QUIC pair on a starved host moved them in 60-120 s,
