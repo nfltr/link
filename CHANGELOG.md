@@ -12,6 +12,13 @@ version 2 unless an entry says otherwise.
   progress (nothing echoed for `Within`), not on the time their 32 MiB
   each way takes: a QUIC pair on a starved host moved them in 60-120 s,
   waiting on a wakeup per datagram at a few % CPU, while still moving.
+- peerlinktest: the TCP Proxy's Throttle no longer shrinks send buffers.
+  At 16 KiB (one segment on macOS loopback) every write waited for the
+  receiver's delayed ACK, so a throttled path relayed a tenth to a
+  thirtieth of its rate under load and Fairness failed (most sessions
+  read nothing for 4 s). The backlog waits in front of the throttle as
+  before. Same host, load 62-98, -race: 3 of 30 Fairness runs green
+  before, 30 of 30 after.
 - v0.10.17: documentation only. Comments, the README, CHANGELOG and
   design notes stand alone (no citation of documents outside this
   repository); a logo in `docs/logo.svg`.

@@ -66,23 +66,14 @@ func (p *Proxy) Cut() {
 	}
 }
 
-// Throttle relays at most bytesPerSecond each way on every connection,
-// with small send buffers, so a backlog waits in the endpoints rather
-// than in the kernel. (Receive buffers keep their size: on Linux, one
-// shrunk under an established connection stalls it on zero-window
-// probes, which relayed a seventh of the rate.)
-func (p *Proxy) Throttle(bytesPerSecond int) {
-	p.rate.Store(int64(bytesPerSecond))
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	for _, c := range p.conns {
-		smallBuffers(c)
-	}
-}
-
-func smallBuffers(c *net.TCPConn) {
-	_ = c.SetWriteBuffer(16 << 10)
-}
+// Throttle relays at most bytesPerSecond each way on every connection: a
+// backlog waits in front of the throttle (the endpoints and the Proxy's
+// receive buffers), never behind it. Socket buffers keep their size: a
+// shrunk receive buffer stalls an established connection on zero-window
+// probes on Linux (a seventh of the rate), and a send buffer of one
+// segment (16 KiB, macOS loopback's MTU) waits out the receiver's delayed
+// ACK on every write (a tenth to a thirtieth of the rate under load).
+func (p *Proxy) Throttle(bytesPerSecond int) { p.rate.Store(int64(bytesPerSecond)) }
 
 func (p *Proxy) accept() {
 	for {
@@ -96,10 +87,6 @@ func (p *Proxy) accept() {
 			continue
 		}
 		a, b := nc.(*net.TCPConn), tc.(*net.TCPConn)
-		if p.rate.Load() > 0 {
-			smallBuffers(a)
-			smallBuffers(b)
-		}
 		p.mu.Lock()
 		p.conns = append(p.conns, a, b)
 		p.mu.Unlock()
