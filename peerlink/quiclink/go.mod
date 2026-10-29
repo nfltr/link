@@ -5,7 +5,7 @@ go 1.27.0
 replace github.com/nfltr/link => ../../
 
 require (
-	github.com/nfltr/link v0.10.18
+	github.com/nfltr/link v0.11.0
 	github.com/nfltr/quic-go v0.63.1-nfltr.2
 )
 

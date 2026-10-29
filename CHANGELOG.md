@@ -8,7 +8,7 @@ version 2 unless an entry says otherwise.
 
 ## Unreleased
 
-- Counters for metrics, read when wanted (a scrape); nothing counts per
+- v0.11.0: counters for metrics, read when wanted (a scrape); nothing counts per
   frame and nothing runs between reads. `Conn.Stats()` returns a
   `ConnStats`: `BytesIn` and `BytesOut` (the connection's bytes after the
   handshake, framing included; one atomic add per read or write of the
@@ -18,13 +18,13 @@ version 2 unless an entry says otherwise.
   `Pool.ConnStats()` sums every connection the Pool had, ended ones
   included, so its counters never go back. 0 allocations per message
   still (`TestSteadyStateAllocs`); the wire is unchanged.
-- `Observer` gains `SessionAbort(Abort, byPeer bool)`: an ABORT sent or
+- v0.11.0: `Observer` gains `SessionAbort(Abort, byPeer bool)`: an ABORT sent or
   received (refusals too), with its code, before its `SessionClose`.
   Implementations embed `NopObserver`, which ignores it.
-- `Credit.SetObserver`: a Credit made with `NewCredit` (sessions on a
+- v0.11.0: `Credit.SetObserver`: a Credit made with `NewCredit` (sessions on a
   transport of the caller's) reports its senders' waits (`CreditWait`)
   too.
-- peerlink/quiclink: `Node.Stats()` returns a `link.ConnStats` with the
+- peerlink/quiclink v0.5.0: requires link v0.11.0. `Node.Stats()` returns a `link.ConnStats` with the
   bytes QUIC sent and received on every connection the Node had and the
   sessions opened both ways.
 - v0.10.18: senders waiting for room or their turn in a connection's write
@@ -111,13 +111,13 @@ version 2 unless an entry says otherwise.
   with `-race`, quiet and beside 10 busy loops on 10 CPUs (load 84),
   clean. No library change.
 
-## peerlink/quiclink v0.5.0 (2026-10-17)
+## peerlink/quiclink: nfltr's quic-go fork (2026-10-17)
 
 - Requires `github.com/nfltr/quic-go` at a072850 (tag v0.63.1-nfltr.2;
   pseudo-version v0.63.1-nfltr.1.0.20261017085836-a0728504a86f) in place of
   `github.com/quic-go/quic-go`: nfltr's fork, upstream 4b404ee15e68 plus
   four fixes. The API names the fork's types (`*quic.Config`,
-  `*quic.Conn` in `Config.Dial`), an incompatible change, hence v0.5.0;
+  `*quic.Conn` in `Config.Dial`), an incompatible change, first tagged in v0.4.17;
   importers switch their quic-go import to the fork's path. The soak and
   compare modules do.
 - Bug fix (quic-go): after a burst one way, the other way ran at a
