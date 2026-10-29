@@ -12,6 +12,8 @@ version 2 unless an entry says otherwise.
   design notes stand alone (no citation of documents outside this
   repository); a logo in `docs/logo.svg`.
 - peerlink/quiclink v0.4.17: requires link v0.10.17.
+- peerlink/grpclink v0.3.3: requires link v0.10.17 (was v0.10.7); no
+  code change.
 - v0.10.16: `peerlink.Forward` returned without closing its incoming
   session when the route failed after that session's opener had already
   ended it; the session was done, but this side never released it, so
