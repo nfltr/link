@@ -8,6 +8,25 @@ version 2 unless an entry says otherwise.
 
 ## Unreleased
 
+- Counters for metrics, read when wanted (a scrape); nothing counts per
+  frame and nothing runs between reads. `Conn.Stats()` returns a
+  `ConnStats`: `BytesIn` and `BytesOut` (the connection's bytes after the
+  handshake, framing included; one atomic add per read or write of the
+  connection), `SessionsOpened`, `SessionsAborted`, `CreditWaits` and
+  `CreditWait` (how long senders waited for credit), and the gauge
+  `QueuedBytes` (received, not yet read by its session).
+  `Pool.ConnStats()` sums every connection the Pool had, ended ones
+  included, so its counters never go back. 0 allocations per message
+  still (`TestSteadyStateAllocs`); the wire is unchanged.
+- `Observer` gains `SessionAbort(Abort, byPeer bool)`: an ABORT sent or
+  received (refusals too), with its code, before its `SessionClose`.
+  Implementations embed `NopObserver`, which ignores it.
+- `Credit.SetObserver`: a Credit made with `NewCredit` (sessions on a
+  transport of the caller's) reports its senders' waits (`CreditWait`)
+  too.
+- peerlink/quiclink: `Node.Stats()` returns a `link.ConnStats` with the
+  bytes QUIC sent and received on every connection the Node had and the
+  sessions opened both ways.
 - v0.10.18: senders waiting for room or their turn in a connection's write
   buffer are woken one at a time, the one whose turn it is, instead of
   all of them on every frame. 64 sessions writing 64 KiB at once on one

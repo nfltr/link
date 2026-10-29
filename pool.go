@@ -68,6 +68,7 @@ type Pool struct {
 	// liveness interval (a peer shutting down that still accepts). Min
 	// is redialled after Backoff(refused), never in a tight loop.
 	refused int
+	ended   ConnStats // the counters of its connections that ended
 }
 
 // NewPool returns a Pool; it dials its Min connections in the background.
@@ -113,6 +114,21 @@ func (p *Pool) Stats() PoolStats {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.statsLocked()
+}
+
+// ConnStats sums the counters of every connection the Pool had, those
+// that ended included, so they never go back; QueuedBytes is its open
+// connections'.
+func (p *Pool) ConnStats() ConnStats {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	st := p.ended
+	for _, m := range p.conns {
+		cs := m.c.Stats()
+		st.add(cs)
+		st.QueuedBytes += cs.QueuedBytes
+	}
+	return st
 }
 
 func (p *Pool) statsLocked() PoolStats {
@@ -274,6 +290,7 @@ func (p *Pool) dial(ctx context.Context) (*Mux, error) {
 			p.refused = 0
 		}
 		p.conns = slices.DeleteFunc(p.conns, func(x *Mux) bool { return x == m })
+		p.ended.add(m.c.Stats())
 		p.changedLocked()
 		p.mu.Unlock()
 	}()

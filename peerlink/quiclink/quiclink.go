@@ -149,6 +149,8 @@ type Node struct {
 	cut      bool          // a Drain's ctx ended: close what a dial still brings
 	sessions sync.WaitGroup
 	tr       *quic.Transport
+	live     map[*conn]bool // the connections running (run), for Stats
+	ended    link.ConnStats // the counters of those that ended
 }
 
 var (
@@ -172,7 +174,7 @@ func New(cfg Config) (*Node, error) {
 	if err := (link.Config{Liveness: cfg.Liveness, Window: cfg.Window, MaxSessions: cfg.MaxSessions}).Validate(); err != nil {
 		return nil, fmt.Errorf("quiclink: %w", err)
 	}
-	n := &Node{cfg: cfg, dialled: map[string]*peerConns{}, served: map[*conn]bool{},
+	n := &Node{cfg: cfg, dialled: map[string]*peerConns{}, served: map[*conn]bool{}, live: map[*conn]bool{},
 		changed: make(chan struct{}), drained: make(chan struct{})}
 	l := n.liveness()
 	window := uint64(max(cmpOr(cfg.Window, link.DefaultWindow), 1)) // #nosec G115 -- at least 1
@@ -246,6 +248,7 @@ func (c *conn) addLocked() bool {
 		return false
 	}
 	c.active++
+	c.n.ended.SessionsOpened++ // a counter: Stats adds the live connections' bytes to it
 	c.n.sessions.Add(1)
 	return true
 }
@@ -311,6 +314,17 @@ func (c *conn) waitIdle(ctx context.Context) bool {
 // run serves c until it closes: the streams the peer opens, its control
 // stream, and closing c once the peer is DONE and c is idle.
 func (c *conn) run() {
+	c.n.mu.Lock()
+	c.n.live[c] = true
+	c.n.mu.Unlock()
+	defer func() {
+		st := c.q.ConnectionStats()
+		c.n.mu.Lock()
+		delete(c.n.live, c)
+		c.n.ended.BytesIn += st.BytesReceived
+		c.n.ended.BytesOut += st.BytesSent
+		c.n.mu.Unlock()
+	}()
 	go c.control()
 	go c.watch()
 	go func() {
@@ -807,6 +821,23 @@ func (n *Node) Drain(ctx context.Context) error {
 		_ = tr.Close()
 	}
 	return err
+}
+
+// Stats is the Node's counters, for the caller's metrics: BytesIn and
+// BytesOut as QUIC received and sent them on every connection the Node
+// had (packet payloads, retransmissions included), and SessionsOpened,
+// sessions both ways. Its other fields are zero: QUIC keeps flow control
+// and resets to itself.
+func (n *Node) Stats() link.ConnStats {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	st := n.ended
+	for c := range n.live {
+		qs := c.q.ConnectionStats()
+		st.BytesIn += qs.BytesReceived
+		st.BytesOut += qs.BytesSent
+	}
+	return st
 }
 
 // connsLocked is every connection of n's: served and dialled.

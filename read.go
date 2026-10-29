@@ -71,7 +71,8 @@ func (c *Conn) readFull(p []byte) error {
 		c.rerr = nil
 		return eofIn(err, n)
 	}
-	_, err := io.ReadFull(c.nc, p[n:])
+	m, err := io.ReadFull(c.nc, p[n:])
+	c.rx.Add(uint64(m)) // #nosec G115 -- m >= 0
 	return eofIn(err, n)
 }
 
@@ -110,6 +111,7 @@ func (c *Conn) view(n int) ([]byte, error) {
 	for got < n && err == nil {
 		var m int
 		m, err = c.nc.Read(buf[got:])
+		c.rx.Add(uint64(m)) // #nosec G115 -- m >= 0
 		got += m
 	}
 	if got < n {

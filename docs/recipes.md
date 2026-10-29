@@ -363,7 +363,17 @@ are called from the connection's goroutines and must not block. Embed
 (why it ended: `ErrDeadPeer`, the network's error, nil when closed on
 purpose), `SessionOpen`, `SessionClose` (also for each session its
 connection's end cut, before `ConnDown`), `CreditWait` (a sender waited
-for its reader: backpressure), `PingRTT`, `GoAway` (`Example_observer`):
+for its reader: backpressure), `PingRTT`, `GoAway`, `SessionAbort(a,
+byPeer)` (an ABORT with its code, sent or received) (`Example_observer`).
+A `Credit` from `NewCredit` takes one with `SetObserver`.
+
+Counters need no Observer: `Conn.Stats()` (a `link.ConnStats`: bytes in
+and out, sessions opened and aborted, credit waits and their time, bytes
+queued for readers), `Pool.ConnStats()` (every connection it had) and
+quiclink's `Node.Stats()` are atomics read when called, so a metrics
+collector reads them at scrape time and nothing runs between scrapes.
+
+An Observer that counts a peer's connections and sessions:
 
 ```go
 // counter counts a peer's connections and the sessions it opened.

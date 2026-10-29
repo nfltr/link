@@ -208,6 +208,9 @@ type Conn struct {
 	drained     chan struct{}
 	drainedOnce sync.Once
 
+	rx, tx  atomic.Uint64 // bytes read and written after the handshake (Stats)
+	aborted atomic.Uint64 // ABORT frames sent and received (Stats)
+
 	errMu   sync.Mutex
 	err     error // why the connection ended (ErrDeadPeer), set before it closes
 	cause   error // what ended it when the peer or the network did (ConnDown)
@@ -397,8 +400,65 @@ func (c *Conn) sendAbort(sid string, a *Abort) error {
 	}
 	c.credit.Forget(sid)
 	c.wmu.Lock()
-	defer c.wmu.Unlock()
-	return c.frameLocked(typeAbort, sid, appendAbort(nil, a), nil)
+	err := c.frameLocked(typeAbort, sid, appendAbort(nil, a), nil)
+	c.wmu.Unlock()
+	if err == nil {
+		c.abort(a, false)
+	}
+	return err
+}
+
+// abort counts an ABORT frame sent or received (byPeer) and reports it.
+func (c *Conn) abort(a *Abort, byPeer bool) {
+	c.aborted.Add(1)
+	if c.credit.obs != nil {
+		c.credit.obs.SessionAbort(*a, byPeer)
+	}
+}
+
+// ConnStats is a connection's counters since its handshake, for the
+// caller's metrics. Stats reads them when they are wanted (a scrape):
+// nothing counts per frame, and nothing runs between reads.
+type ConnStats struct {
+	// BytesIn and BytesOut are the bytes read from and written to the
+	// connection after the handshake, framing included.
+	BytesIn, BytesOut uint64
+	// SessionsOpened counts the sessions opened by OPEN frames, by either
+	// side (Observer.SessionOpen); SessionsAborted the ABORT frames sent
+	// or received, refusals included (Observer.SessionAbort).
+	SessionsOpened, SessionsAborted uint64
+	// CreditWaits counts the times a sender waited for credit, and
+	// CreditWait is how long they waited in all (Observer.CreditWait).
+	CreditWaits uint64
+	CreditWait  time.Duration
+	// QueuedBytes is a gauge: the bytes received and not yet read by
+	// their sessions.
+	QueuedBytes int
+}
+
+// Stats returns the connection's counters (ConnStats). Safe from any
+// goroutine, during and after the connection's life.
+func (c *Conn) Stats() ConnStats {
+	cr := c.credit
+	cr.mu.Lock()
+	opened, queued := cr.openedN, cr.queued
+	cr.mu.Unlock()
+	return ConnStats{
+		BytesIn: c.rx.Load(), BytesOut: c.tx.Load(),
+		SessionsOpened: opened, SessionsAborted: c.aborted.Load(),
+		CreditWaits: cr.waits.Load(), CreditWait: time.Duration(cr.waitNanos.Load()),
+		QueuedBytes: queued,
+	}
+}
+
+// add adds o's counters to s; QueuedBytes, a gauge, is not added.
+func (s *ConnStats) add(o ConnStats) {
+	s.BytesIn += o.BytesIn
+	s.BytesOut += o.BytesOut
+	s.SessionsOpened += o.SessionsOpened
+	s.SessionsAborted += o.SessionsAborted
+	s.CreditWaits += o.CreditWaits
+	s.CreditWait += o.CreditWait
 }
 
 // SendClose buffers a CLOSE frame for sid: half, the side
@@ -812,7 +872,8 @@ func (c *Conn) writeOneLocked() {
 	}
 	b := c.takeLocked()
 	c.wmu.Unlock()
-	_, err := c.nc.Write(*b)
+	n, err := c.nc.Write(*b)
+	c.tx.Add(uint64(n))      // #nosec G115 -- n >= 0
 	if cap(*b) <= writeBuf { // not one grown for a huge frame
 		*b = (*b)[:0]
 		writeBufs.Put(b)
@@ -1008,6 +1069,7 @@ func (c *Conn) recv() (rframe, bool, error) {
 			}
 		}
 		c.credit.Forget(sid)
+		c.abort(a, true)
 		return rframe{Frame: Frame{SID: sid, Close: true, Reset: true, Abort: a}}, true, nil
 	case typeClose:
 		b, err := c.small(n, 2, 2+MaxSID)

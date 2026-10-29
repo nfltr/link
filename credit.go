@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -41,8 +42,13 @@ type Credit struct {
 	flush              func() error            // before Acquire waits; nil: none
 	obs                Observer                // nil: none
 
+	waits     atomic.Uint64 // senders' waits for credit (Stats)
+	waitNanos atomic.Int64  // and how long, in all
+
 	mu       sync.Mutex
 	sessions map[string]*sessionCredit
+	queued   int    // received and not yet consumed, every session's (Stats)
+	openedN  uint64 // link-managed sessions opened (Stats)
 	opened   [2]int // sessions open by side: [0] this side's, [1] the peer's
 	cut      bool   // the connection ended: sessions are no longer observed (cutSessions)
 	closed   chan struct{}
@@ -77,6 +83,11 @@ func NewCredit(window, peerWindow int, grant func(sid string, n int)) *Credit {
 	}
 }
 
+// SetObserver sets the observer of a Credit made with NewCredit: it gets
+// CreditWait for each wait of a sender (Acquire). Call it before the
+// Credit is used. A Conn's Credit has its Config.Observer.
+func (c *Credit) SetObserver(obs Observer) { c.obs = obs }
+
 // Window is this side's window.
 func (c *Credit) Window() int { return c.window }
 
@@ -106,6 +117,9 @@ func (c *Credit) open(sid string, by int) {
 	c.sessions[sid] = &sessionCredit{n: c.peerWindow, wake: make(chan struct{}, 1), by: by}
 	if by != byCaller {
 		c.opened[by-1]++
+		if old == nil {
+			c.openedN++
+		}
 	}
 	c.mu.Unlock()
 	if old == nil && by != byCaller && c.obs != nil {
@@ -140,6 +154,7 @@ func (c *Credit) Forget(sid string) {
 	if s != nil {
 		close(s.wake)
 		delete(c.sessions, sid)
+		c.queued -= s.held - s.consumed
 		if s.by != byCaller {
 			c.opened[s.by-1]--
 		}
@@ -183,8 +198,13 @@ func (c *Credit) acquire(sid string, n int, flush func() error, stop <-chan stru
 		if s.n >= n {
 			s.n -= n
 			c.mu.Unlock()
-			if !waited.IsZero() && c.obs != nil {
-				c.obs.CreditWait(time.Since(waited))
+			if !waited.IsZero() {
+				d := time.Since(waited)
+				c.waits.Add(1)
+				c.waitNanos.Add(int64(d))
+				if c.obs != nil {
+					c.obs.CreditWait(d)
+				}
 			}
 			return true, false
 		}
@@ -230,6 +250,7 @@ func (c *Credit) Consumed(sid string, n int) {
 		return
 	}
 	s.consumed += n
+	c.queued -= n
 	r := s.consumed
 	if r < c.window/4 {
 		c.mu.Unlock()
@@ -273,6 +294,7 @@ func (c *Credit) chargeLocked(s *sessionCredit, n int, answers bool) error {
 		return ErrCredit
 	}
 	s.held += n
+	c.queued += n
 	return nil
 }
 

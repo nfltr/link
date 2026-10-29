@@ -172,6 +172,7 @@ type Observer interface {
 	PingRTT(time.Duration)    // a ping's round trip
 	GoAway(Identity)          // the peer sent GOAWAY
 	Hop(HopEvent)             // a hop of a path of joined sessions: Forward, Join (since v0.10.0)
+	SessionAbort(Abort, bool) // an ABORT (a refusal too) sent, or received when the bool is set; then SessionClose (since v0.11.0)
 	nopObserver()             // NopObserver's: implementations embed it
 }
 
@@ -201,6 +202,9 @@ func (NopObserver) GoAway(Identity) {}
 
 // Hop ignores the event.
 func (NopObserver) Hop(HopEvent) {}
+
+// SessionAbort ignores the event.
+func (NopObserver) SessionAbort(Abort, bool) {}
 
 func (NopObserver) nopObserver() {}
 

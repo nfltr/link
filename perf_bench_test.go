@@ -37,8 +37,9 @@ var (
 // the frames written through it (the stream after the handshake).
 type perfConn struct {
 	net.Conn
-	writes, reads atomic.Int64
-	on            atomic.Bool
+	writes, reads  atomic.Int64
+	on             atomic.Bool
+	wbytes, rbytes atomic.Int64 // once on
 
 	mu                 sync.Mutex
 	hdr                [5]byte
@@ -48,12 +49,17 @@ type perfConn struct {
 
 func (c *perfConn) Read(b []byte) (int, error) {
 	c.reads.Add(1)
-	return c.Conn.Read(b)
+	n, err := c.Conn.Read(b)
+	if c.on.Load() {
+		c.rbytes.Add(int64(n))
+	}
+	return n, err
 }
 
 func (c *perfConn) Write(b []byte) (int, error) {
 	c.writes.Add(1)
 	if c.on.Load() {
+		c.wbytes.Add(int64(len(b)))
 		c.mu.Lock()
 		c.feed(b)
 		c.mu.Unlock()

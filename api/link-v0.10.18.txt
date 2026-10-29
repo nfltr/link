@@ -1,0 +1,7 @@
+Compatible changes:
+- (*Conn).Stats: added
+- (*Credit).SetObserver: added
+- (*Pool).ConnStats: added
+- ConnStats: added
+- NopObserver.SessionAbort: added
+- Observer.SessionAbort: added
