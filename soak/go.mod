@@ -3,7 +3,7 @@ module github.com/nfltr/link/soak
 go 1.27.0
 
 require (
-	github.com/nfltr/link v0.10.17
+	github.com/nfltr/link v0.10.18
 	github.com/nfltr/link/peerlink/quiclink v0.4.0
 	github.com/nfltr/quic-go v0.63.1-nfltr.2
 )
