@@ -44,6 +44,10 @@ machine:
   the goroutine-leak profile);
 - `link@<commit>/ab-P<n>/`: each optimization against its parent.
 
+Against yamux and muxado, each with its defaults (bulk, 64 streams,
+latency, open rate, idle memory, a slow reader, 40 ms RTT):
+`compare/defaults/README.md`.
+
 The machine was shared with other work throughout (load average 2-20),
 so the A/B runs alternate binaries and benchstat reports medians with
 their spread; read deltas below 10 % as noise unless benchstat marks them.

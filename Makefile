@@ -98,6 +98,17 @@ compare-docker:
 compare-summary:
 	cd compare && python3 rig.py summarize $(OUT)
 
+# link, yamux and muxado with their defaults, as Go benchmarks
+# (compare/defaults/README.md): check-compare vets the compare module (CI);
+# compare-defaults runs the measured passes into COMPARE_OUT.
+COMPARE_OUT ?= $(CURDIR)/compare/out/defaults
+.PHONY: check-compare compare-defaults
+check-compare:
+	cd compare && GOWORK=off go vet ./...
+
+compare-defaults:
+	compare/defaults/run.sh $(COMPARE_OUT)
+
 # The soak (soak/, a module of its own; SOAK.md): link over TCP and
 # quiclink over UDP, both directions, under faults, for SOAKTIME (default
 # 1h); the JSON summary goes to SOAKOUT.

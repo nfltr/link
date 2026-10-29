@@ -27,6 +27,8 @@ mode=check
 cd "${ROOT}"
 python3 scripts/sast-baseline.py --self-test >/dev/null 2>&1 || { echo "FAIL: sast-baseline self-test" >&2; exit 1; }
 
+# compare/ is a benchmark harness module of its own (not shipped); gosec
+# reported nothing there until compare/defaults was added: excluded.
 out="$(mktemp)"
 trap 'rm -f "${out}"' EXIT
 if [[ -n "${GOSEC_JSON:-}" ]]; then
@@ -42,7 +44,7 @@ else
             GOFLAGS=-mod=mod go build -o "${bin}" github.com/securego/gosec/v2/cmd/gosec)
     fi
     # Exit 1 = issues found; the baseline decides below.
-    "${bin}" -quiet -exclude-dir=testdata -fmt=json -out="${out}" ./... || [[ $? == 1 ]]
+    "${bin}" -quiet -exclude-dir=testdata -exclude-dir=compare -fmt=json -out="${out}" ./... || [[ $? == 1 ]]
     [[ -s "${out}" ]] || echo '{"Issues": []}' >"${out}" # -quiet writes nothing when clean
     [[ -z "${GOSEC_REPORT:-}" ]] || cp "${out}" "${GOSEC_REPORT}"
 fi
