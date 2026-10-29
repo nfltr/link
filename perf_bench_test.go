@@ -242,13 +242,13 @@ func reportPerMsg(b *testing.B, tx, rx counts, msgs int, sock *counts) {
 }
 
 // BenchmarkThroughput: MB/s of messages of each size over one connection,
-// with 1 and 8 sessions; oneway from the dialer, or both ways at once
+// with 1, 8 and 64 sessions; oneway from the dialer, or both ways at once
 // (each side opens the sessions and writes, so an op is a message each
 // way). pipe (net.Pipe) is an extra, at 1 session one way.
 func BenchmarkThroughput(b *testing.B) {
 	for _, tr := range append(slices.Clone(perfTransports), "pipe") {
 		for _, size := range perfSizes {
-			for _, sessions := range []int{1, 8} {
+			for _, sessions := range []int{1, 8, 64} {
 				for _, dir := range []string{"oneway", "both"} {
 					if tr == "pipe" && (sessions != 1 || dir != "oneway") {
 						continue
