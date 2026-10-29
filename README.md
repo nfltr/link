@@ -10,7 +10,7 @@ imports only the Go standard library (Apache-2.0).
 
 It is for Go programs that run many streams between two endpoints (proxies,
 tunnels, relays, RPC fabrics) and want per-stream backpressure and bounded
-dead-peer detection without building them. **Status:** v0.10.12, pre-1.0
+dead-peer detection without building them. **Status:** pre-1.0
 ([Status and compatibility](#status-and-compatibility)). **In the nfltr
 stack:** link is the bottom layer. [nfltr/relay](https://github.com/nfltr/relay)
 (SDK and protocol) carries its agent data plane on link,
@@ -503,8 +503,9 @@ is the long fuzz run ([FUZZING.md](FUZZING.md)).
 
 ## Status and compatibility
 
-The latest release is v0.10.12; [CHANGELOG.md](CHANGELOG.md) lists every
-release. link is pre-1.0 and follows [semantic versioning](https://semver.org)
+The latest release is the newest `vX.Y.Z` tag
+([tags](https://github.com/nfltr/link/tags)); [CHANGELOG.md](CHANGELOG.md)
+lists the changes. link is pre-1.0 and follows [semantic versioning](https://semver.org)
 as Go modules do for v0:
 
 - **The wire** is the stronger promise: version 2 ([WIRE.md](WIRE.md)) is
