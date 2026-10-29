@@ -1,0 +1,15 @@
+Incompatible changes:
+- (*Node).QUICConfig: changed from func() *github.com/quic-go/quic-go.Config to func() *github.com/nfltr/quic-go.Config
+- CodeClosed: changed from github.com/quic-go/quic-go/internal/qerr.StreamErrorCode to github.com/nfltr/quic-go/internal/qerr.StreamErrorCode
+- CodeDeadPeer: changed from github.com/quic-go/quic-go/internal/qerr.ApplicationErrorCode to github.com/nfltr/quic-go/internal/qerr.ApplicationErrorCode
+- CodeDone: changed from github.com/quic-go/quic-go/internal/qerr.ApplicationErrorCode to github.com/nfltr/quic-go/internal/qerr.ApplicationErrorCode
+- CodeDrainDeadline: changed from github.com/quic-go/quic-go/internal/qerr.ApplicationErrorCode to github.com/nfltr/quic-go/internal/qerr.ApplicationErrorCode
+- CodeRefused: changed from github.com/quic-go/quic-go/internal/qerr.StreamErrorCode to github.com/nfltr/quic-go/internal/qerr.StreamErrorCode
+- CodeReset: changed from github.com/quic-go/quic-go/internal/qerr.StreamErrorCode to github.com/nfltr/quic-go/internal/qerr.StreamErrorCode
+- CodeUnnamed: changed from github.com/quic-go/quic-go/internal/qerr.ApplicationErrorCode to github.com/nfltr/quic-go/internal/qerr.ApplicationErrorCode
+- Config.Dial: changed from func(context.Context, string, *github.com/quic-go/quic-go.Config) (*github.com/quic-go/quic-go.Conn, error) to func(context.Context, string, *github.com/nfltr/quic-go.Config) (*github.com/nfltr/quic-go.Conn, error)
+- Config.ServedPeer: changed from func(*github.com/quic-go/quic-go.Conn) (string, error) to func(*github.com/nfltr/quic-go.Conn) (string, error)
+- Session.Stream: changed from *github.com/quic-go/quic-go.Stream to *github.com/nfltr/quic-go.Stream
+- github.com/quic-go/quic-go.(*Stream).CancelRead: changed from func(github.com/quic-go/quic-go.StreamErrorCode) to func(github.com/nfltr/quic-go.StreamErrorCode)
+- github.com/quic-go/quic-go.(*Stream).CancelWrite: changed from func(github.com/quic-go/quic-go.StreamErrorCode) to func(github.com/nfltr/quic-go.StreamErrorCode)
+- github.com/quic-go/quic-go.(*Stream).StreamID: changed from func() github.com/quic-go/quic-go.StreamID to func() github.com/nfltr/quic-go.StreamID

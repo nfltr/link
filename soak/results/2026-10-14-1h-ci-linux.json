@@ -1,0 +1,161 @@
+{
+  "start": "2026-10-14T14:54:38.76286235Z",
+  "duration_s": 3900.919480702,
+  "epoch_s": 300,
+  "epochs": 12,
+  "go_version": "go1.27.2",
+  "os": "linux/amd64",
+  "cpus": 4,
+  "configs": {
+    "link-forward": {
+      "ops": 52478,
+      "bytes_echoed": 22890372445,
+      "errors_in_fault_windows": 288,
+      "errors_unexpected": 0,
+      "integrity_failures": 0,
+      "cuts": 12,
+      "throttles": 12,
+      "black_holes": 12,
+      "rebinds": 0,
+      "drains": 12,
+      "drain_errors": 0,
+      "dead_after_bound_s": 4.5,
+      "dead_detect_max_s": 4.503043925,
+      "dead_detect_misses": 0,
+      "stalled_minutes": 0
+    },
+    "link-reverse": {
+      "ops": 51805,
+      "bytes_echoed": 22664460285,
+      "errors_in_fault_windows": 288,
+      "errors_unexpected": 0,
+      "integrity_failures": 0,
+      "cuts": 12,
+      "throttles": 12,
+      "black_holes": 12,
+      "rebinds": 0,
+      "drains": 12,
+      "drain_errors": 0,
+      "dead_after_bound_s": 4.5,
+      "dead_detect_max_s": 4.502725585,
+      "dead_detect_misses": 0,
+      "stalled_minutes": 0
+    },
+    "quic-forward": {
+      "ops": 34308,
+      "bytes_echoed": 14743546044,
+      "errors_in_fault_windows": 321,
+      "errors_unexpected": 0,
+      "integrity_failures": 0,
+      "cuts": 12,
+      "throttles": 12,
+      "black_holes": 12,
+      "rebinds": 12,
+      "drains": 12,
+      "drain_errors": 0,
+      "dead_after_bound_s": 4.5,
+      "dead_detect_max_s": 4.98901507,
+      "dead_detect_misses": 0,
+      "stalled_minutes": 0
+    },
+    "quic-reverse": {
+      "ops": 34035,
+      "bytes_echoed": 14763869521,
+      "errors_in_fault_windows": 288,
+      "errors_unexpected": 0,
+      "integrity_failures": 0,
+      "cuts": 12,
+      "throttles": 12,
+      "black_holes": 12,
+      "rebinds": 12,
+      "drains": 12,
+      "drain_errors": 0,
+      "dead_after_bound_s": 4.5,
+      "dead_detect_max_s": 4.929605489,
+      "dead_detect_misses": 0,
+      "stalled_minutes": 0
+    }
+  },
+  "samples": [
+    {
+      "epoch": 0,
+      "goroutines": 2,
+      "fds": 9,
+      "heap_inuse": 688128
+    },
+    {
+      "epoch": 1,
+      "goroutines": 2,
+      "fds": 9,
+      "heap_inuse": 5636096
+    },
+    {
+      "epoch": 2,
+      "goroutines": 2,
+      "fds": 9,
+      "heap_inuse": 8028160
+    },
+    {
+      "epoch": 3,
+      "goroutines": 2,
+      "fds": 9,
+      "heap_inuse": 5382144
+    },
+    {
+      "epoch": 4,
+      "goroutines": 2,
+      "fds": 9,
+      "heap_inuse": 7569408
+    },
+    {
+      "epoch": 5,
+      "goroutines": 2,
+      "fds": 9,
+      "heap_inuse": 9265152
+    },
+    {
+      "epoch": 6,
+      "goroutines": 2,
+      "fds": 9,
+      "heap_inuse": 18554880
+    },
+    {
+      "epoch": 7,
+      "goroutines": 2,
+      "fds": 9,
+      "heap_inuse": 8945664
+    },
+    {
+      "epoch": 8,
+      "goroutines": 2,
+      "fds": 9,
+      "heap_inuse": 7315456
+    },
+    {
+      "epoch": 9,
+      "goroutines": 2,
+      "fds": 9,
+      "heap_inuse": 8183808
+    },
+    {
+      "epoch": 10,
+      "goroutines": 2,
+      "fds": 9,
+      "heap_inuse": 7487488
+    },
+    {
+      "epoch": 11,
+      "goroutines": 2,
+      "fds": 9,
+      "heap_inuse": 4530176
+    },
+    {
+      "epoch": 12,
+      "goroutines": 2,
+      "fds": 9,
+      "heap_inuse": 9650176
+    }
+  ],
+  "failures": null,
+  "pass": true
+}

@@ -1,0 +1,45 @@
+
+=== RUN   TestDeadPeerWorstCaseIdle
+=== RUN   TestDeadPeerWorstCaseIdle/fast/dialer
+=== PAUSE TestDeadPeerWorstCaseIdle/fast/dialer
+=== RUN   TestDeadPeerWorstCaseIdle/fast/listener
+=== PAUSE TestDeadPeerWorstCaseIdle/fast/listener
+=== RUN   TestDeadPeerWorstCaseIdle/default/dialer
+=== PAUSE TestDeadPeerWorstCaseIdle/default/dialer
+=== RUN   TestDeadPeerWorstCaseIdle/default/listener
+=== PAUSE TestDeadPeerWorstCaseIdle/default/listener
+=== CONT  TestDeadPeerWorstCaseIdle/fast/listener
+=== CONT  TestDeadPeerWorstCaseIdle/default/listener
+=== CONT  TestDeadPeerWorstCaseIdle/default/dialer
+=== CONT  TestDeadPeerWorstCaseIdle/fast/dialer
+=== NAME  TestDeadPeerWorstCaseIdle/fast/listener
+    deadpeer_test.go:173: fast, cut after the listener's pong: dialer 4.501s, listener 4.501s, bound 4.5s
+=== NAME  TestDeadPeerWorstCaseIdle/fast/dialer
+    deadpeer_test.go:173: fast, cut after the dialer's pong: dialer 4.501s, listener 4.501s, bound 4.5s
+=== NAME  TestDeadPeerWorstCaseIdle/default/listener
+    deadpeer_test.go:173: default, cut after the listener's pong: dialer 15.006s, listener 15.006s, bound 15s
+=== NAME  TestDeadPeerWorstCaseIdle/default/dialer
+    deadpeer_test.go:168: no pong
+--- FAIL: TestDeadPeerWorstCaseIdle (0.00s)
+
+=== RUN   TestDeadPeerWorstCaseIdle
+=== RUN   TestDeadPeerWorstCaseIdle/fast/dialer
+=== PAUSE TestDeadPeerWorstCaseIdle/fast/dialer
+=== RUN   TestDeadPeerWorstCaseIdle/fast/listener
+=== PAUSE TestDeadPeerWorstCaseIdle/fast/listener
+=== RUN   TestDeadPeerWorstCaseIdle/default/dialer
+=== PAUSE TestDeadPeerWorstCaseIdle/default/dialer
+=== RUN   TestDeadPeerWorstCaseIdle/default/listener
+=== PAUSE TestDeadPeerWorstCaseIdle/default/listener
+=== CONT  TestDeadPeerWorstCaseIdle/fast/listener
+=== CONT  TestDeadPeerWorstCaseIdle/default/listener
+=== CONT  TestDeadPeerWorstCaseIdle/default/dialer
+=== CONT  TestDeadPeerWorstCaseIdle/fast/dialer
+    deadpeer_test.go:173: fast, cut after the dialer's pong: dialer 4.503s, listener 4.503s, bound 4.5s
+=== NAME  TestDeadPeerWorstCaseIdle/fast/listener
+    deadpeer_test.go:168: no pong
+=== NAME  TestDeadPeerWorstCaseIdle/default/listener
+    deadpeer_test.go:173: default, cut after the listener's pong: dialer 15.004s, listener 15.004s, bound 15s
+=== NAME  TestDeadPeerWorstCaseIdle/default/dialer
+    deadpeer_test.go:173: default, cut after the dialer's pong: dialer 15.003s, listener 15.003s, bound 15s
+--- FAIL: TestDeadPeerWorstCaseIdle (0.00s)

@@ -1,0 +1,23 @@
+Incompatible changes:
+- package github.com/nfltr/link/bytequeue: removed
+- (*Credit).Acquire, method set of *Conn: removed
+- (*Credit).Consumed, method set of *Conn: removed
+- (*Credit).Forget, method set of *Conn: removed
+- (*Credit).Grant, method set of *Conn: removed
+- (*Credit).Open, method set of *Conn: removed
+- (*Credit).PeerWindow, method set of *Conn: removed
+- (*Credit).Received, method set of *Conn: removed
+- (*Credit).Window, method set of *Conn: removed
+- (*Mux).GoAway: removed
+- (*Mux).Open: changed from func(func(sid string) ([]byte, error)) (*Session, error) to func([]byte) (*Session, error)
+- Conn.Credit: removed
+- ErrV1: removed
+- Observer.nopObserver: added unexported method
+- ./peerlink.(*Listener).Handle: changed from func(string, []byte, net.Conn) to func(string, []byte, Session)
+- ./peerlink.(*Node).Open: changed from func(context.Context, string, []byte) (net.Conn, error) to func(context.Context, string, []byte) (Session, error)
+- ./peerlink.(*Node).Serve: changed from func(func(peer string, header []byte, s net.Conn)) error to func(func(peer string, header []byte, s Session)) error
+- ./peerlink.Link.Open: changed from func(context.Context, string, []byte) (net.Conn, error) to func(context.Context, string, []byte) (Session, error)
+- ./peerlink.Link.Serve: changed from func(func(peer string, header []byte, s net.Conn)) error to func(func(peer string, header []byte, s Session)) error
+Compatible changes:
+- (*Conn).Credit: added
+- (*Mux).Drain: added

@@ -1,0 +1,21 @@
+Incompatible changes:
+- (*Conn).PeerFeatures: removed
+- Config.Version: removed
+- FeatureReset: removed
+- NewPool: changed from func(PoolConfig) *Pool to func(PoolConfig) (*Pool, error)
+- StatusBound: removed
+- StatusRefused: removed
+- StatusVersion: removed
+- ./peerlink.New: changed from func(Config) *Node to func(Config) (*Node, error)
+Compatible changes:
+- CertAuth: added
+- Config.Validate: added
+- ErrHandshake: added
+- MethodName: added
+- NameAuth: added
+- PoolConfig.Validate: added
+- ./peerlink.Config.HandshakeError: added
+- ./peerlink.Listener: added
+- ./peerlink.NewListener: added
+- ./peerlink.Session: added
+- package github.com/nfltr/link/examples/quickstart: added

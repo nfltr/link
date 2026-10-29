@@ -1,0 +1,3 @@
+Incompatible changes:
+- (*Node).Open: changed from func(context.Context, string, []byte) (net.Conn, error) to func(context.Context, string, []byte) (github.com/nfltr/link/peerlink.Session, error)
+- (*Node).Serve: changed from func(func(peer string, header []byte, s net.Conn)) error to func(func(peer string, header []byte, s github.com/nfltr/link/peerlink.Session)) error

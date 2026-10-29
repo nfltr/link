@@ -1,0 +1,101 @@
+{
+  "start": "2026-10-14T23:30:30.139201+05:30",
+  "duration_s": 651.483331625,
+  "epoch_s": 300,
+  "epochs": 2,
+  "go_version": "go1.27.0",
+  "os": "darwin/arm64",
+  "cpus": 10,
+  "configs": {
+    "link-forward": {
+      "ops": 9021,
+      "bytes_echoed": 3820275070,
+      "errors_in_fault_windows": 48,
+      "errors_unexpected": 0,
+      "integrity_failures": 0,
+      "cuts": 2,
+      "throttles": 2,
+      "black_holes": 2,
+      "rebinds": 0,
+      "drains": 2,
+      "drain_errors": 0,
+      "dead_after_bound_s": 4.5,
+      "dead_detect_max_s": 4.5015216670000004,
+      "dead_detect_misses": 0,
+      "stalled_minutes": 0
+    },
+    "link-reverse": {
+      "ops": 8816,
+      "bytes_echoed": 3822979743,
+      "errors_in_fault_windows": 48,
+      "errors_unexpected": 0,
+      "integrity_failures": 0,
+      "cuts": 2,
+      "throttles": 2,
+      "black_holes": 2,
+      "rebinds": 0,
+      "drains": 2,
+      "drain_errors": 0,
+      "dead_after_bound_s": 4.5,
+      "dead_detect_max_s": 4.50154425,
+      "dead_detect_misses": 0,
+      "stalled_minutes": 0
+    },
+    "quic-forward": {
+      "ops": 7672,
+      "bytes_echoed": 3373843755,
+      "errors_in_fault_windows": 54,
+      "errors_unexpected": 0,
+      "integrity_failures": 0,
+      "cuts": 2,
+      "throttles": 2,
+      "black_holes": 2,
+      "rebinds": 2,
+      "drains": 2,
+      "drain_errors": 0,
+      "dead_after_bound_s": 4.5,
+      "dead_detect_max_s": 3.8590185,
+      "dead_detect_misses": 0,
+      "stalled_minutes": 0
+    },
+    "quic-reverse": {
+      "ops": 8172,
+      "bytes_echoed": 3432644280,
+      "errors_in_fault_windows": 48,
+      "errors_unexpected": 0,
+      "integrity_failures": 0,
+      "cuts": 2,
+      "throttles": 2,
+      "black_holes": 2,
+      "rebinds": 2,
+      "drains": 2,
+      "drain_errors": 0,
+      "dead_after_bound_s": 4.5,
+      "dead_detect_max_s": 3.754207,
+      "dead_detect_misses": 0,
+      "stalled_minutes": 0
+    }
+  },
+  "samples": [
+    {
+      "epoch": 0,
+      "goroutines": 2,
+      "fds": 5,
+      "heap_inuse": 1015808
+    },
+    {
+      "epoch": 1,
+      "goroutines": 2,
+      "fds": 5,
+      "heap_inuse": 18407424
+    },
+    {
+      "epoch": 2,
+      "goroutines": 2,
+      "fds": 5,
+      "heap_inuse": 4710400
+    }
+  ],
+  "failures": null,
+  "pass": true
+}

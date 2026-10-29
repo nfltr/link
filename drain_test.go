@@ -1,0 +1,388 @@
+// Copyright 2026 nfltr
+// SPDX-License-Identifier: Apache-2.0
+
+package link
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"io"
+	"net"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+// pattern is n bytes of a session's stream: byte i is i mod 251 + seed.
+func pattern(n int, seed byte) []byte {
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = byte(i%251) + seed
+	}
+	return b
+}
+
+// TestGoAwayDrainKeepsTails: sessions open on a connection that goes
+// away finish intact, the last one too: the connection closes only after
+// their tails and CLOSE frames went out.
+func TestGoAwayDrainKeepsTails(t *testing.T) {
+	const n, sessions = 2 << 20, 8
+	release := make(chan struct{})
+	accept := func(h []byte, s *Session) {
+		<-release
+		_, _ = s.Write(pattern(n, h[0]))
+		_ = s.Close()
+	}
+	dm, lm := v2muxPair(t, accept, Config{Auth: testToken}, Config{Auth: testToken})
+	var ss []*Session
+	for i := range sessions {
+		s, err := openV2(dm, string(rune('a'+i)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		ss = append(ss, s)
+	}
+	waitUntil(t, func() bool { return lm.Sessions() == sessions })
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	drained := make(chan error, 1)
+	go func() { drained <- lm.Drain(ctx) }()
+	waitUntil(t, lm.c.GoingAway)
+	close(release)
+	var wg sync.WaitGroup
+	var intact atomic.Int32
+	for i, s := range ss {
+		wg.Go(func() {
+			b, err := io.ReadAll(s)
+			if err == nil && bytes.Equal(b, pattern(n, byte('a'+i))) {
+				intact.Add(1)
+			} else {
+				t.Logf("session %d: %d bytes, %v", i, len(b), err)
+			}
+		})
+	}
+	wg.Wait()
+	if intact.Load() != sessions {
+		t.Fatalf("%d of %d sessions intact", intact.Load(), sessions)
+	}
+	select {
+	case err := <-drained:
+		if err != nil {
+			t.Fatalf("Drain: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the leaving connection did not close")
+	}
+}
+
+// TestCrossedOpenRunsOnTheLeavingConnection: an OPEN the peer sent before
+// it read this side's GOAWAY is a session like the others (never refused):
+// it runs, and the connection closes once it ended.
+func TestCrossedOpenRunsOnTheLeavingConnection(t *testing.T) {
+	c, s := v2pair(t, v2cfg, v2cfg)
+	dm, lm := NewMux(c), NewMux(s)
+	go func() { _ = dm.Serve(nil) }()
+	sess, err := openV2(dm, "x") // waits unread at the listener
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lm.goAway(time.Now().Add(30 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = lm.Serve(v2echo) }()
+	if _, err := sess.Write([]byte("hi")); err != nil {
+		t.Fatal(err)
+	}
+	b := make([]byte, 2)
+	if _, err := io.ReadFull(sess, b); err != nil || string(b) != "hi" {
+		t.Fatalf("crossed session: %q %v", b, err)
+	}
+	if _, err := openV2(dm, "y"); err != ErrGoAway {
+		t.Fatalf("open after GOAWAY: %v", err)
+	}
+	_ = sess.Close()
+	select {
+	case <-lm.c.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the leaving connection did not close after its last session")
+	}
+}
+
+// echoListener serves v2echo on a TCP listener and records each Mux.
+func echoListener(t *testing.T) (addr string, muxes func() []*Mux, accepted *atomic.Int32) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	var mu sync.Mutex
+	var ms []*Mux
+	accepted = new(atomic.Int32)
+	go func() {
+		for {
+			nc, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				c, _, err := Server(context.Background(), nc, v2cfg)
+				if err != nil {
+					_ = nc.Close()
+					return
+				}
+				accepted.Add(1)
+				m := NewMux(c)
+				mu.Lock()
+				ms = append(ms, m)
+				mu.Unlock()
+				t.Cleanup(func() { _ = m.Close() })
+				_ = m.Serve(v2echo)
+			}()
+		}
+	}()
+	return ln.Addr().String(), func() []*Mux {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]*Mux(nil), ms...)
+	}, accepted
+}
+
+func echoOK(t *testing.T, s *Session) {
+	t.Helper()
+	if _, err := s.Write([]byte("ping")); err != nil {
+		t.Fatal(err)
+	}
+	b := make([]byte, 4)
+	if _, err := io.ReadFull(s, b); err != nil || string(b) != "ping" {
+		t.Fatalf("echo %q %v", b, err)
+	}
+}
+
+// TestPoolReplacesConnectionsGoingAway: a Pool at Max whose every
+// connection is going away opens new sessions on new connections (going
+// away ones do not count against Max), while the old sessions run on.
+func TestPoolReplacesConnectionsGoingAway(t *testing.T) {
+	addr, muxes, accepted := echoListener(t)
+	p := mustPool(t, PoolConfig{
+		Link: v2cfg,
+		Dial: func(ctx context.Context) (net.Conn, error) { return (&net.Dialer{}).DialContext(ctx, "tcp", addr) },
+		Max:  2,
+		Grow: func(st PoolStats) bool { return st.Sessions >= 2*st.Conns },
+	})
+	defer p.Close() //nolint:errcheck
+	ctx := context.Background()
+	var old []*Session
+	for range 4 {
+		s, err := p.Open(ctx, []byte("x"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		echoOK(t, s)
+		old = append(old, s)
+	}
+	waitUntil(t, func() bool { return accepted.Load() == 2 })
+	for _, m := range muxes() {
+		_ = m.goAway(time.Now().Add(30 * time.Second))
+	}
+	waitUntil(t, func() bool { return p.Stats().Conns == 0 })
+	for range 4 {
+		s, err := p.Open(ctx, []byte("x"))
+		if err != nil {
+			t.Fatalf("open with every connection going away: %v", err)
+		}
+		echoOK(t, s)
+		defer s.Close() //nolint:errcheck
+	}
+	for _, s := range old {
+		echoOK(t, s)
+		_ = s.Close()
+	}
+	// the second new one is a growth dial in the background (GrowWait):
+	// the sessions above may all have gone on the first
+	waitUntil(t, func() bool { return accepted.Load() == 4 })
+	if n := p.Stats().Conns; n != 2 {
+		t.Fatalf("%d connections, want 2 new ones", n)
+	}
+}
+
+// TestPoolGrowsInTheBackground: a growth dial holds up the Open that
+// started it for GrowWait at most, which then takes a connection that is
+// up; the new connection takes the next sessions once up.
+func TestPoolGrowsInTheBackground(t *testing.T) {
+	addr, _, accepted := echoListener(t)
+	var dials atomic.Int32
+	hold := make(chan struct{})
+	p := mustPool(t, PoolConfig{
+		Link: v2cfg,
+		Dial: func(ctx context.Context) (net.Conn, error) {
+			if dials.Add(1) == 2 {
+				select {
+				case <-hold:
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
+			return (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+		},
+		Max:      2,
+		Grow:     func(st PoolStats) bool { return st.Sessions >= st.Conns },
+		GrowWait: 200 * time.Millisecond,
+	})
+	defer p.Close() //nolint:errcheck
+	s1, err := p.Open(context.Background(), []byte("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	echoOK(t, s1)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	start := time.Now()
+	s2, err := p.Open(ctx, []byte("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("Open waited %v for a growth dial", d)
+	}
+	echoOK(t, s2)
+	if dials.Load() != 2 {
+		t.Fatalf("%d dials, want the growth dial started", dials.Load())
+	}
+	close(hold)
+	waitUntil(t, func() bool { return accepted.Load() == 2 && p.Stats().Conns == 2 })
+	s3, err := p.Open(context.Background(), []byte("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	echoOK(t, s3)
+	if st := p.Stats(); st.Conns != 2 || st.Sessions != 3 {
+		t.Fatalf("stats %+v", st)
+	}
+}
+
+// gatedConn holds its writes once armed, until released: the frames
+// written meanwhile wait in the link's buffer.
+type gatedConn struct {
+	*net.TCPConn
+	armed   atomic.Bool
+	entered chan struct{} // a write is held
+	release chan struct{}
+	once    sync.Once
+}
+
+func (c *gatedConn) Write(b []byte) (int, error) {
+	if c.armed.Load() {
+		c.once.Do(func() { close(c.entered) })
+		<-c.release
+	}
+	return c.TCPConn.Write(b)
+}
+
+// TestPoolCloseKeepsEndedSessionsTails: Pool.Close after a session's
+// Write and Close returned, its bytes still in the link's buffer, does
+// not cut them: the peer reads every byte, then io.EOF.
+func TestPoolCloseKeepsEndedSessionsTails(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	type result struct {
+		b   []byte
+		err error
+	}
+	got := make(chan result, 1)
+	go func() {
+		nc, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		c, _, err := Server(context.Background(), nc, v2cfg)
+		if err != nil {
+			return
+		}
+		m := NewMux(c)
+		defer m.Close()
+		_ = m.Serve(func(_ []byte, s *Session) {
+			b, err := io.ReadAll(s)
+			got <- result{b, err}
+		})
+	}()
+	gc := &gatedConn{entered: make(chan struct{}), release: make(chan struct{})}
+	p := mustPool(t, PoolConfig{Link: v2cfg, Dial: func(ctx context.Context) (net.Conn, error) {
+		nc, err := (&net.Dialer{}).DialContext(ctx, "tcp", ln.Addr().String())
+		if err != nil {
+			return nil, err
+		}
+		gc.TCPConn = nc.(*net.TCPConn)
+		return gc, nil
+	}})
+	s, err := p.Open(context.Background(), []byte("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, tail := pattern(1000, 1), pattern(1000, 2)
+	gc.armed.Store(true)
+	go func() { _, _ = s.Write(head) }() // writes inline: held
+	<-gc.entered
+	if _, err := s.Write(tail); err != nil { // buffered behind the held write
+		t.Fatal(err)
+	}
+	_ = s.Close()
+	_ = p.Close()
+	close(gc.release)
+	r := <-got
+	if r.err != nil || !bytes.Equal(r.b, append(head, tail...)) {
+		t.Fatalf("peer read %d of %d bytes (intact: %v), then %v; want every byte, then io.EOF",
+			len(r.b), len(head)+len(tail), bytes.Equal(r.b, append(head, tail...)), r.err)
+	}
+}
+
+// TestDrainDeadlineAbortsReachABusyPeer: the ABORTs a drain's deadline
+// sends reach the peer although the peer keeps writing on the leaving
+// connection: the connection closes gracefully (its write side first),
+// never with bytes unread, whose reset would drop the ABORTs before the
+// peer read them.
+func TestDrainDeadlineAbortsReachABusyPeer(t *testing.T) {
+	for i := range 20 {
+		hold := make(chan struct{})
+		accept := func(h []byte, s *Session) {
+			if string(h) == "sink" {
+				_, _ = io.Copy(io.Discard, s)
+				return
+			}
+			<-hold
+		}
+		dm, lm := v2muxPair(t, accept, Config{Auth: testToken}, Config{Auth: testToken})
+		held, err := openV2(dm, "held")
+		if err != nil {
+			t.Fatal(err)
+		}
+		sink, err := openV2(dm, "sink")
+		if err != nil {
+			t.Fatal(err)
+		}
+		go func() {
+			b := make([]byte, 16<<10)
+			for {
+				if _, err := sink.Write(b); err != nil {
+					return
+				}
+			}
+		}()
+		waitUntil(t, func() bool { return lm.Sessions() == 2 })
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		_ = lm.Drain(ctx)
+		cancel()
+		_ = held.SetReadDeadline(time.Now().Add(5 * time.Second))
+		_, err = held.Read(make([]byte, 1))
+		var a *Abort
+		if !errors.As(err, &a) || a.Code != CodeDrainDeadline {
+			t.Fatalf("run %d: the held session at the drain's deadline: %v, want aborted drain deadline", i, err)
+		}
+		close(hold)
+	}
+}

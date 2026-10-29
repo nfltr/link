@@ -1,0 +1,4 @@
+# make check-semgrep (scripts/check-semgrep.sh): first-party Go only.
+# A .semgrepignore replaces semgrep's defaults, so everything is listed here.
+**/testdata/
+*_test.go

@@ -1,0 +1,192 @@
+# Soak
+
+`make soak SOAKTIME=24h` runs link for as long as asked, under faults, and
+writes a JSON summary (`SOAKOUT`, default `soak/out/soak.json`). The soak
+is a module of its own (`soak/`), so quic-go stays out of link's
+dependencies; GitHub Actions runs it for an hour weekly and keeps the
+summary as an artifact.
+
+## What it runs
+
+Four pairs at once (and the chain-3hop path, "Chains" below), each in epochs (`SOAKEPOCH`, default 5 min) on a
+fresh pair:
+
+| pair | transport | direction |
+|---|---|---|
+| link-forward | `peerlink.Node` over TCP through `peerlinktest.Proxy` | A dials B and opens |
+| link-reverse | the same | B dials A (`Config.Connect`); A opens on B's connection |
+| quic-forward | `quiclink` over UDP through `peerlinktest.UDPProxy`, mutual TLS | A dials B and opens |
+| quic-reverse | the same | B dials A; A opens on B's connection |
+
+Each pair's path runs at `SOAKRATE` (default 8 MiB/s each way) with
+`link.LivenessFast` (dead-peer bound 4.5 s). In every epoch:
+
+- `SOAKWORKERS` (default 6) workers open session after session and echo
+  random bytes, 40 % under 1 KiB, 40 % up to 64 KiB, 20 % up to 4 MiB;
+  each echo's SHA-256 and length must come back unchanged.
+- Two stuck sessions: the accepter writes, the opener never reads, for
+  the whole epoch; the echoes beside them must keep completing.
+- At 25 % of the epoch the path is cut (TCP: every connection reset;
+  UDP: the flows go silent), from 45 % to 55 % it is throttled to 1 MiB/s,
+  at 65 % the UDP flows are rebound to new source ports (QUIC connection
+  migration).
+- At 85 % the path is black-holed with three idle probe sessions open:
+  each end of each probe must read an error within the dead-peer bound
+  (+2 s for a loaded host); the time is recorded.
+- At the end both Links are drained (10 s deadline), the proxies closed,
+  and the process's goroutines, file descriptors and heap sampled.
+
+## Chains
+
+A fifth config, `chain-3hop` (since link v0.10.0), runs a path
+`origin -> hop 1 -> hop 2 -> echo` of `peerlink.Node`s over TCP, each
+link through a `peerlinktest.Proxy`, each hop a `peerlink.Forward`
+(`soak/chainsoak`). Per epoch, beside `SOAKWORKERS` echo workers (each
+waiting for the far end's answer, then checked by SHA-256):
+
+- at 25 % the middle link is reset: hop 1 aborts what it joined
+  (`CodeConnLost`, read by the origin as from its peer) and redials;
+- at 50 % a stalled far reader's bytes in flight are measured: at most
+  3 windows + 2 x 256 KiB (3.5 MiB with the default 1 MiB windows), or
+  the run fails;
+- at 70 %, in rotation: hop 2 killed (the origin reads `CodeConnLost`
+  from hop 1), hop 2 drained (what it joined finishes, new opens are
+  refused `CodeDraining`), or the last link black-holed (hop 2 sees it
+  dead within the liveness bound and aborts toward the origin); then
+  every Node drains.
+
+Errors inside these windows are counted (`errors_in_fault_windows`, the
+first typed aborts in `first_aborts`); any other error, an integrity
+failure or an in-flight measure over its bound fails the run.
+`TestChainSoakShort` is one 20 s epoch (`go test ./soak -run
+TestChainSoakShort`).
+
+### Across machines: `cmd/linkhop`
+
+The same roles as separate processes, for a path whose hops are pods or
+hosts. By default plaintext TCP with `link.NameAuth` (a trusted network
+such as a cluster's pod network):
+
+    go build -o linkhop ./soak/cmd/linkhop        # in soak/
+    linkhop -role echo   -listen :7000
+    linkhop -role hop    -listen :7000 -next echo:7000
+    linkhop -role hop    -listen :7000 -next hop-2:7000
+    linkhop -role origin -next hop-1:7000 -hops 2 -duration 1h -bound 3670016 -out chain.json
+
+The origin runs `-workers` echo loops of mixed sizes and measures a
+stalled far reader's in-flight bytes every `-inflight`; its JSON summary
+counts echoes, bytes, integrity failures, errors by `*link.Abort` code,
+hop and kind, and the largest in-flight measure, and states the path's
+`hops` (`-hops`), `transport`, `throughput_bytes_per_s` (bytes echoed
+over the run) and `echo_p50_ms` / `echo_p99_ms` (open to the echo's
+last byte, interpolated within the latency histogram's buckets). It
+exits 1 on an integrity failure, on no echo completed, or on an
+in-flight measure over `-bound` (links x window + hops x 256 KiB).
+Faults are yours (delete or drain a hop's pod, a NetworkPolicy): errors
+during them are counted, never fatal. `hop` and `echo` drain on SIGTERM
+(`-drain`, 30 s).
+
+On an untrusted network, or to soak what production runs:
+
+- `-tls-dir <dir>`: mutual TLS (`link.CertAuth`) from `ca.crt`,
+  `tls.crt` and `tls.key` in the directory, the keys of a Kubernetes
+  TLS Secret mounted there (cert-manager writes all three). One
+  certificate for every role is enough: each verifies its peer against
+  `ca.crt`, the dialer for `-tls-name` (default `-next`'s host), so the
+  certificate needs that name (a wildcard such as `*.hop.ns.svc`, say)
+  and a CommonName or DNS name.
+- `-transport quic`: the same roles over `quiclink` (UDP, the Service's
+  port with `protocol: UDP`); needs `-tls-dir`.
+
+`-metrics :9090` serves each role's Prometheus text on `/metrics`.
+Every series carries `role` (origin, hop, echo) and `hop` (`-hop-index`:
+the origin 0, hops 1..N from the origin, the echo N+1; in a StatefulSet
+pass the ordinal, e.g. from the `apps.kubernetes.io/pod-index` label
+through the downward API). `peer` is `next` (the connection this role
+dialled) or `prev` (one it accepted). A series appears at its first
+event.
+
+| metric | type | labels | what |
+|---|---|---|---|
+| `linkhop_conn_up_total` | counter | peer | connections up (handshake done) |
+| `linkhop_conn_down_total` | counter | peer, reason | connections ended: `dead_peer`, `goaway` (QUIC drained), `local`, `eof`, `error` |
+| `linkhop_goaways_total` | counter | peer | GOAWAYs received (TCP) |
+| `linkhop_sessions_opened_total`, `_closed_total` | counter | | sessions (TCP) |
+| `linkhop_sessions_open` | gauge | | sessions open now (TCP) |
+| `linkhop_credit_waits_total`, `linkhop_credit_wait_seconds_total` | counter | | senders' waits for credit (TCP) |
+| `linkhop_ping_rtt_seconds` | histogram | | pings' round trips (TCP) |
+| `linkhop_forward_events_total` | counter | event, code | hop: opened, answered, ended; `code` the `*link.Abort` code ("" clean) |
+| `linkhop_forward_bytes_total` | counter | dir | hop: bytes `in` (origin -> far) and `out` of ended joins |
+| `linkhop_goroutines`, `linkhop_open_fds`, `linkhop_heap_inuse_bytes` | gauge | | the process (FDs from /proc/self/fd or /dev/fd) |
+| `linkhop_chain_hops` | gauge | | origin: `-hops` |
+| `linkhop_echoes_total`, `linkhop_echo_bytes_total` | counter | | origin: echoes completed intact, their bytes |
+| `linkhop_integrity_failures_total` | counter | | origin: echoes that came back different |
+| `linkhop_echo_errors_total` | counter | code, hops, refused | origin: failed echoes by `*link.Abort` (`code="other"`: not an abort) |
+| `linkhop_inflight_bytes` | gauge | | origin: the last in-flight measure |
+| `linkhop_echo_seconds` | histogram | | origin: echo latency |
+
+`quiclink` has no Observer: over QUIC only the connection, forward,
+process and origin series move (connections counted from its dial and
+accept).
+
+## What fails it
+
+- a chain's stalled far reader holding more than its in-flight bound;
+- an echo error outside a fault window (the fault plus its bound and
+  10 s), or any echo that came back different;
+- a probe that outlived the dead-peer bound + 2 s;
+- a minute outside the fault windows in which no echo completed;
+- a drain whose `Serve` did not return;
+- leaks: at the end, more than 10 goroutines or 8 file descriptors over
+  the sample after the first epoch, or a heap over twice it plus 16 MiB.
+
+## Results
+
+| date | where | hours | pairs | echoes | GiB echoed | unexpected errors | integrity | dead-peer max (bound 4.5 s) | leaks | result |
+|---|---|---:|---|---:|---:|---:|---:|---|---|---|
+| 2026-10-14 | macOS arm64, 10 CPUs, shared (load average 7-35 from other work) | 1.08 | all four, 12 epochs | 191882 | 77.7 | 0 | 0 failures | link 4.51 s, QUIC 5.22 s | none: 2 goroutines, 5 FDs after every epoch; heap 4-13 MiB in use | pass |
+| 2026-10-14 | GitHub Actions ubuntu, linux/amd64, 4 CPUs | 1.08 | all four, 12 epochs | 172626 | 69.9 | 0 | 0 failures | link 4.50 s, QUIC 4.99 s | none: 2 goroutines, 9 FDs after every epoch; heap 5-10 MiB in use | pass |
+| 2026-10-14 | macOS arm64, 10 CPUs, shared; quiclink with the dead-peer fix | 0.18 | all four, 2 epochs | 33681 | 13.5 | 0 | 0 failures | link 4.50 s, QUIC 3.86 s | none: 2 goroutines, 5 FDs after every epoch | pass |
+| 2026-10-16 | macOS arm64, 10 CPUs, shared (load average 14-26); link v0.10.0 with chain-3hop | 0.27 | all five, 3 epochs | 661867 (chain-3hop 612387) | 273.3 (chain-3hop 250.0) | 0 | 0 failures | link 4.50 s, QUIC 3.86 s | none: 2 goroutines, 5 FDs after every epoch; heap 6-8 MiB in use | pass |
+| 2026-10-17 | macOS arm64, 10 CPUs, shared (load average 2-10); link v0.10.9 (read-ahead, packed session queues: docs/performance.md) | 0.27 | all five, 3 epochs | 742089 (chain-3hop 691788) | 302.5 (chain-3hop 282.1) | 0 | 0 failures | link 4.50 s, QUIC 3.99 s | none: 2 goroutines, 5 FDs after every epoch; heap 9-10 MiB in use | pass |
+
+Cumulative: 2.89 h. The v0.10.9 run (`2026-10-17-16m-perf.json`) checks
+the receive path rewritten for speed (docs/performance.md, P3) under the
+same faults: chain-3hop echoed 13 % more than the v0.10.0 run in the
+same time, with 83 echoes failed inside the fault windows, each a typed
+abort, and the stalled far reader at 3.16 MiB of its 3.5 MiB bound.
+
+chain-3hop (2026-10-16): 3 middle-link cuts, one
+hop 2 drained, one black-holed and one killed; 85 echoes failed inside
+those windows, each with a typed `*link.Abort` (`CodeConnLost` from the
+hop beside the fault); a stalled far reader held at most 3.31 MiB of its
+3.5 MiB bound. The summaries are in [`soak/results/`](soak/results/).
+
+Per pair (that run): link-forward 52547 echoes (21.3 GiB), link-reverse
+52377 (21.3 GiB), quic-forward 43482 (17.4 GiB), quic-reverse 43476
+(17.6 GiB); 287-320 echoes per pair failed inside the fault windows, as
+cuts and black holes make them; 12 cuts, throttles, black holes and
+drains each, 12 rebinds for QUIC.
+
+Finding (2026-10-16, `cmd/linkhop` on Kubernetes, link 09bc22e, after v0.10.1): a
+5-hop TCP chain (mutual TLS, a pod per role) with the middle hop killed,
+partitioned or drained every 2 minutes for 40 min had 7 integrity
+failures in 99,469 echoes: sessions joined through a hop ended cleanly
+with bytes missing (a cut taken for a clean close, a half close taken
+for a full one). The same plan over QUIC (3 hops) had none. Fixed in
+link v0.10.6 (CHANGELOG); `TestChainMiddleHopFaultsIntegrity` runs the
+three faults on the middle of 5 in-process hops with echoes in flight.
+The same faults on hops that splice QUIC and TCP links
+(`TestChainMiddleHopFaultsMixed` in quiclink) still lost bytes on
+v0.10.6 (a lost QUIC connection taken for a clean close) and crashed on
+quic-go's reliable reset; fixed in link v0.10.7 and quiclink v0.4.6.
+
+Finding: QUIC's dead peer was detected at up to 5.22 s (macOS, loaded)
+and 4.99 s (Linux CI, otherwise idle) against `quiclink`'s stated bound
+of 4.5 s (link: 4.50-4.51 s), within the soak's 2 s allowance. The
+missing term: QUIC's idle timer starts at the first packet sent after the
+last one received, so a side that could not send when the path went
+silent (writes stalled, congestion window full) timed out late by as long
+as it could not send. Fixed in `peerlink/quiclink` v0.2.0, which closes a
+connection silent for Interval + Timeout/2 itself
+(`TestDeadPeerSendStalled`: 5.4 s before, within 4.5 s after).

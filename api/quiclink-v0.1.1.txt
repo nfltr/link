@@ -1,0 +1,4 @@
+Incompatible changes:
+- New: changed from func(Config) *Node to func(Config) (*Node, error)
+Compatible changes:
+- CodeDeadPeer: added
