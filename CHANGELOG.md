@@ -8,6 +8,10 @@ version 2 unless an entry says otherwise.
 
 ## Unreleased
 
+- peerlinktest: StuckReader bounds the sessions beside the stuck one on
+  progress (nothing echoed for `Within`), not on the time their 32 MiB
+  each way takes: a QUIC pair on a starved host moved them in 60-120 s,
+  waiting on a wakeup per datagram at a few % CPU, while still moving.
 - v0.10.17: documentation only. Comments, the README, CHANGELOG and
   design notes stand alone (no citation of documents outside this
   repository); a logo in `docs/logo.svg`.

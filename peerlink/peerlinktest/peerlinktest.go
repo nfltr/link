@@ -371,7 +371,8 @@ func testConcurrent(t *testing.T, newPair func(*testing.T) Pair) {
 }
 
 // StuckReader: a session whose reader never reads, its writer blocked,
-// does not keep 8 others from moving 4 MiB each.
+// does not keep 8 others from moving 4 MiB each: they never go Within
+// without moving.
 func testStuckReader(t *testing.T, newPair func(*testing.T) Pair) {
 	const n = 8
 	release := make(chan struct{})
@@ -407,8 +408,9 @@ func testStuckReader(t *testing.T, newPair func(*testing.T) Pair) {
 	}
 	start := time.Now()
 	var wg sync.WaitGroup
+	var moved atomic.Int64 // echoed bytes the sessions beside it read
 	for i := range n {
-		s := open(t, p, "echo")
+		s := counting{open(t, p, "echo"), &moved}
 		wg.Go(func() {
 			if err := exchange(s, 4<<20); err != nil {
 				t.Errorf("session %d: %v", i, err)
@@ -417,12 +419,36 @@ func testStuckReader(t *testing.T, newPair func(*testing.T) Pair) {
 	}
 	finished := make(chan struct{})
 	go func() { wg.Wait(); close(finished) }()
-	select {
-	case <-finished:
-	case <-time.After(Within):
-		t.Fatalf("%d sessions beside a stuck one did not finish within %v", n, Within)
+	// A session held up behind the stuck one hangs: nothing moves for
+	// Within. A slow path (a starved host, a userspace transport paying a
+	// wakeup per datagram) still moves, so the bound is on progress, not
+	// on the time 32 MiB each way takes.
+	for last, at := int64(-1), time.Now(); ; {
+		select {
+		case <-finished:
+		case <-time.After(time.Second):
+			if m := moved.Load(); m != last {
+				last, at = m, time.Now()
+			} else if time.Since(at) > Within {
+				t.Fatalf("%d sessions beside a stuck one moved nothing for %v (%d bytes echoed in all)", n, Within, m)
+			}
+			continue
+		}
+		break
 	}
 	t.Logf("stuck session blocked after %d bytes; %d sessions beside it moved 4 MiB each way in %v", wrote.Load(), n, time.Since(start).Round(time.Millisecond))
+}
+
+// counting counts what a Session reads into n.
+type counting struct {
+	peerlink.Session
+	n *atomic.Int64
+}
+
+func (c counting) Read(b []byte) (int, error) {
+	k, err := c.Session.Read(b)
+	c.n.Add(int64(k))
+	return k, err
 }
 
 // Fairness: on a path throttled to 1 MiB/s, 8 sessions the accepter writes
