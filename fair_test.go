@@ -138,7 +138,7 @@ func TestTurnsKeepTheirPlace(t *testing.T) {
 		t.Helper()
 		for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
 			c.wmu.Lock()
-			w := c.waiting
+			w := len(c.waiters)
 			c.wmu.Unlock()
 			if w == n {
 				return

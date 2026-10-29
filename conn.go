@@ -169,12 +169,12 @@ type Conn struct {
 	rerr   error           // a read's error that came with enough bytes: the next read's
 
 	wmu     sync.Mutex
-	wcond   sync.Cond       // on wmu: a write finished or took the buffer
 	wbuf    *[]byte         // frames not yet written; nil when none
 	writing bool            // a write is in flight, wmu released
-	waiting int             // senders waiting on wcond for room or their turn
+	waiters []*waiter       // goroutines parked on wmu's conditions (parkLocked)
+	spare   []*waiter       // parked before, reused: no allocation per wait
 	inBuf   map[string]bool // sessions with a data frame in wbuf (turns)
-	turns   []*turn         // senders waiting for the next buffer (turns)
+	turns   []*waiter       // senders waiting for the next buffer (turns)
 	// lastData is the session of the last data frame buffered; mixed, how
 	// many more flushes yield (writeLocked) since data of two sessions
 	// last followed each other: a connection that one session writes on
@@ -221,7 +221,6 @@ func newConnV2(nc net.Conn, cfg Config, peerWindow, peerMaxSessions int, dialer 
 	c := &Conn{nc: nc}
 	c.credit = NewCredit(cfg.Window, peerWindow, c.sendWindow)
 	c.credit.flush = c.Flush
-	c.wcond.L = &c.wmu
 	c.dialer, c.peerMaxSessions, c.live = dialer, peerMaxSessions, cfg.Liveness
 	c.maxSessions = cfg.MaxSessions
 	c.t0 = time.Now()
@@ -523,24 +522,24 @@ func (c *Conn) frameLocked(typ byte, sid string, body []byte, wd *writeDeadline)
 	// 1 MiB/s path; TestTurnsKeepTheirPlace).
 	var my uint64
 	queued := false
-	if typ == typeData && c.werr == nil && c.waiting > 0 && c.wbuf != nil && c.inBuf[sid] {
-		t := &turn{}
-		c.turns = append(c.turns, t)
-		for !t.queued && c.werr == nil && c.waiting > 0 && c.wbuf != nil && c.inBuf[sid] {
+	var w *waiter // this sender's, once it waits
+	defer c.spareLocked(&w)
+	if typ == typeData && c.werr == nil && len(c.waiters) > 0 && c.wbuf != nil && c.inBuf[sid] {
+		w = c.waiterLocked()
+		c.turns = append(c.turns, w)
+		for !w.queued && c.werr == nil && len(c.waiters) > 0 && c.wbuf != nil && c.inBuf[sid] {
 			if wd.expired() {
-				c.leaveTurns(t)
+				c.leaveTurns(w)
 				return os.ErrDeadlineExceeded
 			}
 			if !c.writing { // no write to wait for: this sender writes the buffer
 				c.writeOrDrainLocked(wd)
 				continue
 			}
-			c.waiting++
-			c.wcond.Wait()
-			c.waiting--
+			c.parkLocked(w)
 		}
-		if my, queued = t.my, t.queued; !queued {
-			c.leaveTurns(t)
+		if my, queued = w.my, w.queued; !queued {
+			c.leaveTurns(w)
 		}
 	}
 	// A full buffer goes out first, by this sender or the write in flight.
@@ -570,9 +569,11 @@ func (c *Conn) frameLocked(typ byte, sid string, body []byte, wd *writeDeadline)
 				c.writeOrDrainLocked(wd)
 				continue
 			}
-			c.waiting++
-			c.wcond.Wait()
-			c.waiting--
+			if w == nil {
+				w = c.waiterLocked()
+			}
+			w.my, w.queued = my, true // wakeTurnLocked finds it by its ticket
+			c.parkLocked(w)
 		}
 		if my == c.serving {
 			c.nextTurnLocked()
@@ -606,16 +607,96 @@ func (c *Conn) frameLocked(typ byte, sid string, body []byte, wd *writeDeadline)
 // followed each other.
 const mixedFlushes = 64
 
-// turn is a sender waiting for its turn: the write that takes the buffer
-// gives it a ticket.
-type turn struct {
+// waiter is a goroutine parked on wmu's conditions (parkLocked): a sender
+// waiting for room in wbuf, for its turn (a ticket, my, once queued) or for
+// the write in flight, or closeFlushed.
+//
+// Each is woken alone, only when it may go on (docs/performance.md, P9;
+// TestManyWritersWakeForTheirTurn): the sender whose ticket is served
+// (wakeTurnLocked), and, once no write is in flight, those without a
+// ticket (wroteLocked). One condition variable for all of them woke every
+// waiting sender for each frame, and each took wmu only to wait again: 64
+// sessions writing at once moved 2.5 GiB/s, mostly scheduler and lock
+// handoffs.
+type waiter struct {
+	wake   chan struct{} // capacity 1: a wakeup sent before the wait is kept
 	my     uint64
 	queued bool
 }
 
+// signal wakes w, or leaves it a wakeup if it is not waiting yet.
+func (w *waiter) signal() {
+	select {
+	case w.wake <- struct{}{}:
+	default:
+	}
+}
+
+// waiterLocked returns a waiter without a ticket, reused if one is spare.
+func (c *Conn) waiterLocked() *waiter {
+	if n := len(c.spare); n > 0 {
+		w := c.spare[n-1]
+		c.spare = c.spare[:n-1]
+		return w
+	}
+	return &waiter{wake: make(chan struct{}, 1)}
+}
+
+// spareLocked keeps *w, if any, for the next wait.
+func (c *Conn) spareLocked(w **waiter) {
+	if *w == nil {
+		return
+	}
+	select {
+	case <-(*w).wake: // a wakeup it did not wait for
+	default:
+	}
+	(*w).my, (*w).queued = 0, false
+	c.spare = append(c.spare, *w)
+}
+
+// parkLocked waits, wmu released, until w is woken. The caller checks its
+// condition again: a wakeup may be for a condition that has passed.
+func (c *Conn) parkLocked(w *waiter) {
+	c.waiters = append(c.waiters, w)
+	c.wmu.Unlock()
+	<-w.wake
+	c.wmu.Lock()
+	for i, o := range c.waiters {
+		if o == w {
+			c.waiters = append(c.waiters[:i], c.waiters[i+1:]...)
+			break
+		}
+	}
+}
+
+// wakeTurnLocked wakes the sender whose ticket is served.
+// ponytail: a scan of the parked waiters, at most the connection's
+// senders; a map by ticket if many hundreds wait at once.
+func (c *Conn) wakeTurnLocked() {
+	for _, w := range c.waiters {
+		if w.queued && w.my == c.serving {
+			w.signal()
+			return
+		}
+	}
+}
+
+// wroteLocked ends the write in flight: it wakes the sender whose ticket
+// is served and those without one (they may write the buffer themselves),
+// or, after a failed write, every waiter.
+func (c *Conn) wroteLocked() {
+	c.writing = false
+	for _, w := range c.waiters {
+		if c.werr != nil || !w.queued || w.my == c.serving {
+			w.signal()
+		}
+	}
+}
+
 // leaveTurns removes t, which got no ticket, from the senders waiting for
 // their turn.
-func (c *Conn) leaveTurns(t *turn) {
+func (c *Conn) leaveTurns(t *waiter) {
 	for i, w := range c.turns {
 		if w == t {
 			c.turns = append(c.turns[:i], c.turns[i+1:]...)
@@ -632,9 +713,7 @@ func (c *Conn) nextTurnLocked() {
 		delete(c.abandoned, c.serving)
 		c.serving++
 	}
-	if c.waiting > 0 {
-		c.wcond.Broadcast() // the next ticket's turn
-	}
+	c.wakeTurnLocked() // the next ticket's turn
 }
 
 // writeOrDrainLocked writes the buffer inline, or, for a sender with a
@@ -652,7 +731,9 @@ func (c *Conn) writeOrDrainLocked(wd *writeDeadline) {
 // deadline passed.
 func (c *Conn) wakeWriters() {
 	c.wmu.Lock()
-	c.wcond.Broadcast()
+	for _, w := range c.waiters {
+		w.signal()
+	}
 	c.wmu.Unlock()
 }
 
@@ -695,8 +776,7 @@ func (c *Conn) writeLocked(yield bool) {
 		go c.drain() // writing stays set until it is done
 		return
 	}
-	c.writing = false
-	c.wcond.Broadcast()
+	c.wroteLocked()
 }
 
 // drain writes what was buffered while a sender wrote, and what is
@@ -707,8 +787,7 @@ func (c *Conn) drain() {
 	for c.wbuf != nil && c.werr == nil {
 		c.writeOneLocked()
 	}
-	c.writing = false
-	c.wcond.Broadcast()
+	c.wroteLocked()
 }
 
 // takeLocked takes the buffer to write, and starts a new one.
@@ -722,7 +801,7 @@ func (c *Conn) takeLocked() *[]byte {
 	}
 	clear(c.turns)
 	c.turns = c.turns[:0]
-	c.wcond.Broadcast() // senders waiting on the full buffer start a new one
+	c.wakeTurnLocked() // the sender waiting on the full buffer starts a new one
 	return b
 }
 
@@ -1135,13 +1214,18 @@ func (c *Conn) why() error {
 func (c *Conn) closeFlushed(wait time.Duration) {
 	c.closing.Store(true)
 	c.wmu.Lock()
+	var w *waiter
 	for (c.writing || c.wbuf != nil) && c.werr == nil {
 		if !c.writing {
 			c.flushLocked()
 			continue
 		}
-		c.wcond.Wait()
+		if w == nil {
+			w = c.waiterLocked()
+		}
+		c.parkLocked(w) // woken by wroteLocked
 	}
+	c.spareLocked(&w)
 	c.wmu.Unlock()
 	if cw, ok := c.nc.(interface{ CloseWrite() error }); ok && cw.CloseWrite() == nil {
 		t := time.AfterFunc(wait, func() { _ = c.Close() })

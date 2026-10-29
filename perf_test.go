@@ -6,6 +6,7 @@ package link
 import (
 	"fmt"
 	"io"
+	"sync"
 	"testing"
 )
 
@@ -163,5 +164,40 @@ func TestShortFramesQueuePacked(t *testing.T) {
 	}
 	if k, err := peer["a"].Read(make([]byte, 64<<10)); err != nil || k != n {
 		t.Fatalf("Read: %d bytes, %v; want the %d frames' bytes at once", k, err, n)
+	}
+}
+
+// TestManyWritersWakeForTheirTurn: 64 sessions writing 64 KiB at once on
+// one connection wake about one sender per frame, the one whose turn it
+// is, not every waiting sender (docs/performance.md, P9). Goroutines
+// scheduled to run per message (runtime/metrics /sched/latencies, both
+// ends, the receivers included): about 70 when each write woke every
+// waiting sender.
+func TestManyWritersWakeForTheirTurn(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector's scheduling")
+	}
+	r := newPerfRig(t, "tcp", perfSink)
+	const sessions, per = 64, 40
+	ss := make([]*Session, sessions)
+	for i := range ss {
+		s, err := r.a.Open([]byte("sink"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		ss[i] = s
+	}
+	msg := make([]byte, 64<<10)
+	w0, _ := schedCounts()
+	var wg sync.WaitGroup
+	for _, s := range ss {
+		wg.Go(func() { send(t, s, msg, per) })
+	}
+	wg.Wait()
+	w1, _ := schedCounts()
+	if w := 8 * float64(w1-w0) / (sessions * per); w > 20 {
+		t.Errorf("%.1f goroutines woken per 64 KiB message, want at most 20", w)
+	} else {
+		t.Logf("%.1f goroutines woken per 64 KiB message", w)
 	}
 }
