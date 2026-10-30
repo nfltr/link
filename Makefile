@@ -71,9 +71,12 @@ check-grpclink:
 
 # peerlink over QUIC (peerlink/quiclink, a module of its own: quic-go never
 # enters link's dependencies): build, vet, the conformance suite with -race.
+# 30 min bounds a hang: on a loaded macOS host QUIC over loopback pays a
+# wakeup per datagram and the package takes past go test's default 10 min
+# while moving (a stuck case fails on its own progress bound first).
 .PHONY: check-quiclink
 check-quiclink:
-	cd peerlink/quiclink && GOWORK=off go build ./... && GOWORK=off go vet ./... && GOWORK=off go test -count=1 -race ./...
+	cd peerlink/quiclink && GOWORK=off go build ./... && GOWORK=off go vet ./... && GOWORK=off go test -count=1 -race -timeout 30m ./...
 
 # linkvet (linkvet/, a module of its own: golang.org/x/tools never enters
 # link's dependencies): vet, its analysistest cases with -race, then its

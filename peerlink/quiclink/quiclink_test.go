@@ -148,8 +148,9 @@ func TestConformanceReverse(t *testing.T) {
 }
 
 // TestMigration: the dialer's address changes (the proxy rebinds) three
-// times while a session moves 32 MiB each way: the session goes on intact
-// and the listener sees the new addresses.
+// times while a session moves 8 MiB each way, each once the echo moved
+// another quarter: the session goes on intact and the listener sees the
+// new addresses.
 func TestMigration(t *testing.T) {
 	for _, reverse := range []bool{false, true} {
 		t.Run(fmt.Sprintf("reverse=%v", reverse), func(t *testing.T) {
@@ -178,8 +179,10 @@ func TestMigration(t *testing.T) {
 					}
 				}
 			}
-			listener := mustNew(t, quiclink.Config{PacketConn: pc, TLS: serverTLS("b"), Liveness: link.LivenessFast})
-			dcfg := quiclink.Config{Dial: dialer("a", "b", px.Addr()), Liveness: link.LivenessFast}
+			// The default liveness: a path a loaded host leaves silent for
+			// LivenessFast's 3 s is no migration failure.
+			listener := mustNew(t, quiclink.Config{PacketConn: pc, TLS: serverTLS("b")})
+			dcfg := quiclink.Config{Dial: dialer("a", "b", px.Addr())}
 			opener, peer := peerlink.Link(nil), "b"
 			if reverse {
 				dcfg.Connect = []string{"b"}
@@ -193,7 +196,6 @@ func TestMigration(t *testing.T) {
 				opener = dialling
 				go func() { _ = listener.Serve(echo) }()
 			}
-			px.Throttle(16 << 20) // 2 s each way: time for the rebinds
 			t.Cleanup(func() {
 				ctx, cancel := context.WithCancel(context.Background())
 				cancel()
@@ -207,12 +209,19 @@ func TestMigration(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer s.Close()
-			const n = 32 << 20
+			const n = 8 << 20
 			sent, got := sha256.New(), sha256.New()
+			// Each rebind once the echo moved another quarter: after the
+			// path the one before brought carried bytes, whatever the pace.
+			echoed := &quarters{w: got, n: n, at: make(chan struct{}, 3)}
 			go func() {
-				for i := range 3 {
-					time.Sleep(time.Duration(200*(i+1)) * time.Millisecond)
-					px.Rebind()
+				for range 3 {
+					select {
+					case <-echoed.at:
+						px.Rebind()
+					case <-ctx.Done():
+						return
+					}
 				}
 			}()
 			go func() {
@@ -220,18 +229,37 @@ func TestMigration(t *testing.T) {
 				_ = s.CloseWrite()
 			}()
 			start := time.Now()
-			m, err := io.Copy(got, s)
+			m, err := io.Copy(echoed, s)
 			if err != nil || m != n || string(got.Sum(nil)) != string(sent.Sum(nil)) {
 				t.Fatalf("echo across the rebinds: %d of %d bytes, %v (intact %v)", m, n, err, string(got.Sum(nil)) == string(sent.Sum(nil)))
 			}
 			mu.Lock()
 			defer mu.Unlock()
-			t.Logf("32 MiB each way in %v across 3 rebinds; the listener saw %d addresses", time.Since(start).Round(time.Millisecond), len(addrs))
+			t.Logf("8 MiB each way in %v across 3 rebinds; the listener saw %d addresses", time.Since(start).Round(time.Millisecond), len(addrs))
 			if !reverse && len(addrs) < 2 {
 				t.Errorf("the listener saw the dialer at %d address(es), want the new ones too", len(addrs))
 			}
 		})
 	}
+}
+
+// quarters writes to w and signals at once each quarter of n written.
+type quarters struct {
+	w    io.Writer
+	n, m int64
+	at   chan struct{}
+}
+
+func (q *quarters) Write(b []byte) (int, error) {
+	k, err := q.w.Write(b)
+	before := q.m
+	q.m += int64(k)
+	for i := int64(1); i <= 3; i++ {
+		if mark := i * q.n / 4; before < mark && q.m >= mark {
+			q.at <- struct{}{}
+		}
+	}
+	return k, err
 }
 
 // TestListenerSettings: connections Serve accepts keep the Node's settings

@@ -26,8 +26,28 @@ func TestThroughputReorderedPath(t *testing.T) {
 	if testing.Short() {
 		t.Skip("moves data for seconds")
 	}
+	// The floor follows the same path without the reordering, measured in
+	// this run, so a loaded host slows both: a starved macOS host moved
+	// 0.5-0.9 MB/s on either, against an absolute 4. quic-go v0.63.0 moves
+	// 1.2-1.4 MB/s here and falling, v0.63.1-0.20261014084224 23-25 under
+	// -race on 2 CPUs, as on the clean path. The path is 20 ms, not the
+	// 200 ms of an agent's: a shared CI runner sometimes stalls the relay
+	// goroutines long enough for a real loss, and at 200 ms Reno regrows
+	// one packet per 200 ms (CI, 2026-10-15). The reordering bug cuts the
+	// window at any RTT.
+	clean := pathRate(t, 0)
+	rate := pathRate(t, 100)
+	t.Logf("%.1f MB/s at 20 ms RTT, every 100th datagram 2 ms late; %.1f MB/s without", rate, clean)
+	if rate < clean/4 {
+		t.Fatalf("%.2f MB/s, want at least a quarter of the clean path's %.2f", rate, clean)
+	}
+}
+
+// pathRate is the rate (MB/s) a session moves for 4 s after a 2 s slow
+// start on a 20 ms path whose every nth datagram (none: 0) is 2 ms late.
+func pathRate(t *testing.T, nth int) float64 {
 	pc := listenUDP(t)
-	addr := reorderingPath(t, pc.LocalAddr().String(), 10*time.Millisecond, 100, 2*time.Millisecond, 0)
+	addr := reorderingPath(t, pc.LocalAddr().String(), 10*time.Millisecond, nth, 2*time.Millisecond, 0)
 	const window = 16 << 20
 	b := mustNew(t, quiclink.Config{PacketConn: pc, TLS: serverTLS("b"), Window: window})
 	a := mustNew(t, quiclink.Config{Dial: dialer("a", "b", addr), Connect: []string{"b"}, Window: window})
@@ -45,12 +65,12 @@ func TestThroughputReorderedPath(t *testing.T) {
 		})
 	}()
 	go func() { _ = b.Serve(func(string, []byte, peerlink.Session) {}) }()
-	t.Cleanup(func() {
+	defer func() {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		_ = a.Drain(ctx)
 		_ = b.Drain(ctx)
-	})
+	}()
 	// b opens on the connection a dialled and sends, as a relay does
 	// toward its agent.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -79,17 +99,7 @@ func TestThroughputReorderedPath(t *testing.T) {
 	from := got.Load()
 	const secs = 4
 	time.Sleep(secs * time.Second)
-	rate := float64(got.Load()-from) / secs / 1e6
-	t.Logf("%.1f MB/s at 20 ms RTT, every 100th datagram 2 ms late", rate)
-	// quic-go v0.63.0 moves 1.2-1.4 MB/s here, v0.63.1-0.20261014084224
-	// 23-25 under -race on 2 CPUs. The path is 20 ms, not the 200 ms of an
-	// agent's: a shared CI runner sometimes stalls the relay goroutines long
-	// enough for a real loss, and at 200 ms Reno regrows one packet per
-	// 200 ms, which read as 0.2 MB/s over this window (CI, 2026-10-15) with
-	// the fix in place. The reordering bug cuts the window at any RTT.
-	if rate < 4 {
-		t.Fatalf("%.2f MB/s, want at least 4", rate)
-	}
+	return float64(got.Load()-from) / secs / 1e6
 }
 
 // TestThroughputAfterBurstTheOtherWay: once b has sent a burst through a
@@ -183,14 +193,15 @@ func TestThroughputAfterBurstTheOtherWay(t *testing.T) {
 	r := float64(got.Load()-from) / secs / 1e6
 	t.Logf("%.1f MB/s a to b after b's burst (%.1f MB/s), 100 ms RTT, bottleneck %.0f MB/s", r, burstRate, rate/1e6)
 	// The floor follows the burst, measured on this path in this run, so a
-	// loaded runner slows both: idle, a gets about twice the burst's rate
-	// (the burst includes slow start), under load 25 a fell to 2.19 MB/s
-	// against an absolute 4. Without the fork's fix a gets 0.6-0.7 MB/s
-	// against an 8 MB/s burst (0.08 of it), whatever the load: it grows one
-	// packet per round trip. 1 MB/s stays above that when load slows the
-	// burst itself.
-	if want := max(burstRate/4, 1); r < want {
-		t.Fatalf("%.2f MB/s, want at least %.2f (a quarter of the burst's %.2f, at least 1)", r, want, burstRate)
+	// loaded host slows both: idle, a gets about twice the burst's rate
+	// (the burst includes slow start), on a starved macOS host (load 25,
+	// GOMAXPROCS=2, background priority) 0.9-1.5 times it at 0.6-0.9 MB/s,
+	// where an absolute floor of 1 MB/s failed. Without the fork's fix a
+	// gets 0.6-0.7 MB/s against an 8 MB/s burst (0.08 of it): it grows one
+	// packet per round trip, so it fails half the burst's rate wherever the
+	// burst itself moves 1.4 MB/s or more.
+	if want := burstRate / 2; r < want {
+		t.Fatalf("%.2f MB/s, want at least %.2f (half the burst's %.2f)", r, want, burstRate)
 	}
 }
 

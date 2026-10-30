@@ -20,7 +20,8 @@ import (
 // OnGrant replaces it, and nil removes it.
 func TestSessionOnGrant(t *testing.T) {
 	const window, half, slack = 128 << 10, 64 << 10, 1 << 10 // slack: the session's preamble
-	read := make(chan struct{}) // the accept side reads half a window, a quarter at a time
+	// The accept side reads half a window, a quarter at a time.
+	read := make(chan struct{})
 	readDone := make(chan struct{})
 	pc := listenUDP(t)
 	b := mustNew(t, quiclink.Config{PacketConn: pc, TLS: serverTLS("b"), Window: window})

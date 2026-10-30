@@ -346,15 +346,18 @@ func testHalfCloseAccepterFirst(t *testing.T, newPair func(*testing.T) Pair) {
 	}
 }
 
-// Large: 64 MiB each way at once, intact.
+// Large: 16 MiB each way at once, intact: many windows (link's default is
+// 1 MiB) both ways, as large as a QUIC connection's whole window. More
+// proves nothing more and costs minutes on a transport that pays a wakeup
+// per datagram on a loaded host.
 func testLarge(t *testing.T, newPair func(*testing.T) Pair) {
 	p := pair(t, newPair, echo)
-	if err := exchange(open(t, p, "echo"), 64<<20); err != nil {
+	if err := exchange(open(t, p, "echo"), 16<<20); err != nil {
 		t.Fatal(err)
 	}
 }
 
-// Concurrent: 32 sessions echo 1 MiB each at once, each intact.
+// Concurrent: 32 sessions echo 512 KiB each at once, each intact.
 func testConcurrent(t *testing.T, newPair func(*testing.T) Pair) {
 	const n = 32
 	p := pair(t, newPair, echo)
@@ -362,7 +365,7 @@ func testConcurrent(t *testing.T, newPair func(*testing.T) Pair) {
 	for i := range n {
 		s := open(t, p, "echo")
 		wg.Go(func() {
-			if err := exchange(s, 1<<20); err != nil {
+			if err := exchange(s, 512<<10); err != nil {
 				t.Errorf("session %d: %v", i, err)
 			}
 		})
@@ -371,8 +374,9 @@ func testConcurrent(t *testing.T, newPair func(*testing.T) Pair) {
 }
 
 // StuckReader: a session whose reader never reads, its writer blocked,
-// does not keep 8 others from moving 4 MiB each: they never go Within
-// without moving.
+// does not keep 8 others from moving 2 MiB each, 16 MiB in all beside the
+// stuck session's window (a QUIC connection's window): they never go
+// Within without moving.
 func testStuckReader(t *testing.T, newPair func(*testing.T) Pair) {
 	const n = 8
 	release := make(chan struct{})
@@ -412,7 +416,7 @@ func testStuckReader(t *testing.T, newPair func(*testing.T) Pair) {
 	for i := range n {
 		s := counting{open(t, p, "echo"), &moved}
 		wg.Go(func() {
-			if err := exchange(s, 4<<20); err != nil {
+			if err := exchange(s, 2<<20); err != nil {
 				t.Errorf("session %d: %v", i, err)
 			}
 		})
@@ -422,7 +426,7 @@ func testStuckReader(t *testing.T, newPair func(*testing.T) Pair) {
 	// A session held up behind the stuck one hangs: nothing moves for
 	// Within. A slow path (a starved host, a userspace transport paying a
 	// wakeup per datagram) still moves, so the bound is on progress, not
-	// on the time 32 MiB each way takes.
+	// on the time 16 MiB each way takes.
 	for last, at := int64(-1), time.Now(); ; {
 		select {
 		case <-finished:
@@ -436,7 +440,7 @@ func testStuckReader(t *testing.T, newPair func(*testing.T) Pair) {
 		}
 		break
 	}
-	t.Logf("stuck session blocked after %d bytes; %d sessions beside it moved 4 MiB each way in %v", wrote.Load(), n, time.Since(start).Round(time.Millisecond))
+	t.Logf("stuck session blocked after %d bytes; %d sessions beside it moved 2 MiB each way in %v", wrote.Load(), n, time.Since(start).Round(time.Millisecond))
 }
 
 // counting counts what a Session reads into n.

@@ -14,6 +14,18 @@ version 2 unless an entry says otherwise.
   sees them still moving over QUIC too. It requires
   `github.com/nfltr/quic-go` with `Stream.SetSendWindowCallback`. The wire
   is unchanged.
+- peerlinktest: Large moves 16 MiB each way (was 64), Concurrent 512 KiB
+  per session (was 1 MiB), StuckReader 2 MiB per session beside the stuck
+  one (was 4 MiB): still many windows each, and past a QUIC connection's
+  window. A QUIC pair over loopback on a loaded macOS host pays a wakeup
+  per datagram (no batched sends there) at 0.3-1 s a wakeup, and
+  quiclink's package, three runs of the suite one after another, outran
+  `go test`'s 10 min (20 min without -race at load 25); `make
+  check-quiclink` bounds it at 30 min as a hang bound. TestMigration
+  rebinds once the echo moved each quarter (it rebound at fixed times and
+  failed with nothing moved yet) on the default liveness, and the
+  throughput tests' floors follow a rate measured on the same path in the
+  same run.
 - v0.11.1: `Session.OnGrant(f)`: `f(n)` for each window update the peer
   sends the session, n more of this side's bytes taken by its reader, so
   a writer whose writes all returned sees them still moving (a proxy's
