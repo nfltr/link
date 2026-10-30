@@ -1,0 +1,3 @@
+Compatible changes:
+- (*Session).OnGrant: added
+- github.com/nfltr/quic-go.(*Stream).SetSendWindowCallback: added

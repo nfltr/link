@@ -917,3 +917,18 @@ func (s *Session) LocalAddr() net.Addr { return s.c.q.LocalAddr() }
 // RemoteAddr is the QUIC connection's peer address (it changes as the
 // peer migrates).
 func (s *Session) RemoteAddr() net.Addr { return s.c.q.RemoteAddr() }
+
+// OnGrant sets f to be called with each window update the peer sends for
+// the session (QUIC's MAX_STREAM_DATA), as link's Session.OnGrant: n more
+// bytes of what this side wrote left the peer's receive buffer (its reader
+// took them). The peer sends one per at least a quarter of its window
+// read, so f is how a writer sees its bytes still moving after its last
+// Write returned. f runs on the connection's loop: it must not block. A
+// later call replaces f; nil removes it.
+func (s *Session) OnGrant(f func(n int)) {
+	if f == nil {
+		s.Stream.SetSendWindowCallback(nil)
+		return
+	}
+	s.Stream.SetSendWindowCallback(func(n int64) { f(int(n)) })
+}

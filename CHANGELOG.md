@@ -8,6 +8,12 @@ version 2 unless an entry says otherwise.
 
 ## Unreleased
 
+- quiclink: `Session.OnGrant(f)`, as link's: `f(n)` for each window
+  update (MAX_STREAM_DATA) the peer sends the session, n more of this
+  side's bytes taken by its reader, so a writer whose writes all returned
+  sees them still moving over QUIC too. It requires
+  `github.com/nfltr/quic-go` with `Stream.SetSendWindowCallback`. The wire
+  is unchanged.
 - v0.11.1: `Session.OnGrant(f)`: `f(n)` for each window update the peer
   sends the session, n more of this side's bytes taken by its reader, so
   a writer whose writes all returned sees them still moving (a proxy's

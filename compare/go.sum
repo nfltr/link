@@ -1,7 +1,7 @@
 github.com/hashicorp/yamux v0.1.2 h1:XtB8kyFOyHXYVFnwT5C3+Bdo8gArse7j2AQ0DA0Uey8=
 github.com/hashicorp/yamux v0.1.2/go.mod h1:C+zze2n6e/7wshOZep2A70/aQU6QBRWJO/G6FT1wIns=
-github.com/nfltr/quic-go v0.63.1-nfltr.2 h1:lO4X1/sAhQEyLcsSqDlw06gx3u8+3rb4LzZ9ROsbn6M=
-github.com/nfltr/quic-go v0.63.1-nfltr.2/go.mod h1:KlJwkQMVhFf/rlYdkm18TkxbgyKn1UO4AtWyo/hOj10=
+github.com/nfltr/quic-go v0.63.1-nfltr.2.0.20261030112406-3f0877f63743 h1:EcY2hcbCatEE/MiulXfzNQU1yXHJ3pvBw9mAR3fpWbw=
+github.com/nfltr/quic-go v0.63.1-nfltr.2.0.20261030112406-3f0877f63743/go.mod h1:KlJwkQMVhFf/rlYdkm18TkxbgyKn1UO4AtWyo/hOj10=
 github.com/quic-go/go-ossfuzz-seeds v0.1.0 h1:APacT+iIaNF6fd8AGEiN3bT/Jtkd2jz4v4TzM7MFjy0=
 github.com/quic-go/go-ossfuzz-seeds v0.1.0/go.mod h1:3IOHRbJIc+L6YKMwfDtJAM9Vj9k0YY4muhuyUYk5tbk=
 github.com/stretchr/testify v1.12.1 h1:EuwCh5fleGS7H32xRwO3wRGT7DxrDhLAT6FF8MpWDWE=
