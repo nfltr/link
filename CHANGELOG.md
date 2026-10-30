@@ -8,13 +8,15 @@ version 2 unless an entry says otherwise.
 
 ## Unreleased
 
-- quiclink: `Session.OnGrant(f)`, as link's: `f(n)` for each window
+- peerlink/quiclink v0.5.3: requires link v0.11.2 (peerlinktest's lighter
+  volumes below); nothing else changed.
+- peerlink/quiclink v0.5.2: `Session.OnGrant(f)`, as link's: `f(n)` for each window
   update (MAX_STREAM_DATA) the peer sends the session, n more of this
   side's bytes taken by its reader, so a writer whose writes all returned
   sees them still moving over QUIC too. It requires
   `github.com/nfltr/quic-go` with `Stream.SetSendWindowCallback`. The wire
   is unchanged.
-- peerlinktest: Large moves 16 MiB each way (was 64), Concurrent 512 KiB
+- v0.11.2, peerlinktest (and peerlink/quiclink v0.5.2's tests): Large moves 16 MiB each way (was 64), Concurrent 512 KiB
   per session (was 1 MiB), StuckReader 2 MiB per session beside the stuck
   one (was 4 MiB): still many windows each, and past a QUIC connection's
   window. A QUIC pair over loopback on a loaded macOS host pays a wakeup
