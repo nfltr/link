@@ -70,6 +70,7 @@ type sessionCredit struct {
 	consumed int           // left the buffer, not yet acknowledged
 	by       int           // byCaller, byUs or byPeer
 	answered bool          // FeatureChain connections: byUs, the peer's ACCEPT or refusal came; byPeer, this side's went
+	onGrant  func(int)     // Session.OnGrant's; nil: none
 }
 
 // NewCredit returns the credit of a connection whose side buffers window
@@ -332,12 +333,13 @@ func (c *Credit) answering(sid string) bool {
 // the peer's window.
 func (c *Credit) Grant(sid string, n int) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	s := c.sessions[sid]
 	if s == nil {
+		c.mu.Unlock()
 		return nil
 	}
 	if n < 0 || n > c.peerWindow-s.n {
+		c.mu.Unlock()
 		return ErrCredit
 	}
 	s.n += n
@@ -345,7 +347,21 @@ func (c *Credit) Grant(sid string, n int) error {
 	case s.wake <- struct{}{}:
 	default:
 	}
+	f := s.onGrant
+	c.mu.Unlock()
+	if f != nil {
+		f(n)
+	}
 	return nil
+}
+
+// setOnGrant sets sid's grant callback (Session.OnGrant).
+func (c *Credit) setOnGrant(sid string, f func(int)) {
+	c.mu.Lock()
+	if s := c.sessions[sid]; s != nil {
+		s.onGrant = f
+	}
+	c.mu.Unlock()
 }
 
 // Close makes every sender waiting in Acquire, and every later Acquire,

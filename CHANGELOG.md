@@ -8,6 +8,12 @@ version 2 unless an entry says otherwise.
 
 ## Unreleased
 
+- v0.11.1: `Session.OnGrant(f)`: `f(n)` for each window update the peer
+  sends the session, n more of this side's bytes taken by its reader, so
+  a writer whose writes all returned sees them still moving (a proxy's
+  idle timeout over an upload draining to a slow backend). Called on the
+  receive loop, after the credit's lock; nil removes it. The wire is
+  unchanged.
 - v0.11.0: counters for metrics, read when wanted (a scrape); nothing counts per
   frame and nothing runs between reads. `Conn.Stats()` returns a
   `ConnStats`: `BytesIn` and `BytesOut` (the connection's bytes after the

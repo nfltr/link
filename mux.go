@@ -563,6 +563,14 @@ func (s *Session) end() error {
 // readable.
 func (s *Session) Done() <-chan struct{} { return s.done }
 
+// OnGrant sets f to be called with each window update the peer sends for
+// the session: n more bytes of what this side wrote left the peer's
+// receive buffer (its reader took them). The peer sends one per at least a
+// quarter of its window read, so f is how a writer sees its bytes still
+// moving after its last Write returned. f runs on the connection's receive
+// loop: it must not block. A later call replaces f; nil removes it.
+func (s *Session) OnGrant(f func(n int)) { s.m.c.credit.setOnGrant(s.id, f) }
+
 // Header is the bytes that opened the session: the OPEN frame's header.
 func (s *Session) Header() []byte { return s.header }
 

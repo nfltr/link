@@ -373,6 +373,13 @@ queued for readers), `Pool.ConnStats()` (every connection it had) and
 quiclink's `Node.Stats()` are atomics read when called, so a metrics
 collector reads them at scrape time and nothing runs between scrapes.
 
+One session's progress: `Session.OnGrant(f)` calls `f(n)` with each
+window update its peer sends, n more of this side's bytes taken by the
+peer's reader (one per at least a quarter of the peer's window). A proxy
+whose writes all returned sees its upload still draining to a slow
+reader with it, and can count that as progress on an idle timeout. `f`
+runs on the receive loop and must not block.
+
 An Observer that counts a peer's connections and sessions:
 
 ```go
