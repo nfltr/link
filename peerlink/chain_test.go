@@ -296,3 +296,53 @@ func TestForwardReleasesAnEndedSessionWhenItsRouteFails(t *testing.T) {
 		t.Fatal("Forward returned without closing a session that ended while its route ran")
 	}
 }
+
+// pipeSession is a net.Pipe end as a Session without answers.
+type pipeSession struct{ net.Conn }
+
+func (s pipeSession) CloseWrite() error { return s.Close() }
+func (s pipeSession) Reset() error      { return s.Close() }
+
+// hopEnds sends each HopEnded event on its channel.
+type hopEnds struct {
+	link.NopObserver
+	ch chan link.HopEvent
+}
+
+func (o hopEnds) Hop(e link.HopEvent) {
+	if e.Kind == link.HopEnded {
+		o.ch <- e
+	}
+}
+
+// TestForwardReportsFirstOut: HopEnded carries when the far end's first
+// byte was written toward the origin, which a caller of a join (whose
+// bytes it never sees) reports as the session's first byte; zero when
+// none crossed.
+func TestForwardReportsFirstOut(t *testing.T) {
+	for _, reply := range []bool{true, false} {
+		in, origin := net.Pipe()
+		out, far := net.Pipe()
+		obs := hopEnds{ch: make(chan link.HopEvent, 1)}
+		before := time.Now()
+		peerlink.Forward(func(context.Context, string, []byte, peerlink.Session) (peerlink.Session, error) {
+			return pipeSession{out}, nil
+		}, link.ForwardConfig{Observer: obs})("", nil, pipeSession{in})
+		if reply {
+			go func() { _, _ = far.Write([]byte("hi")) }()
+			if _, err := io.ReadFull(origin, make([]byte, 2)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		_ = far.Close()
+		_ = origin.Close()
+		e := <-obs.ch
+		read := time.Now()
+		switch {
+		case reply && (e.FirstOut.Before(before) || e.FirstOut.After(read)):
+			t.Fatalf("FirstOut %v, want between %v and its HopEnded %v", e.FirstOut, before, read)
+		case !reply && !e.FirstOut.IsZero():
+			t.Fatalf("FirstOut %v with no byte from the far end", e.FirstOut)
+		}
+	}
+}

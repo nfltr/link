@@ -198,10 +198,11 @@ type joint struct {
 	done  func(error) // nil: none
 
 	mu      sync.Mutex
-	left    int      // directions not yet ended
-	n       [2]int64 // bytes [0]->[1] and [1]->[0]
-	err     error    // the Abort that ended it; nil: a clean end
-	pending bool     // Forward waits for the onward answer: direction 0's failure waits (held)
+	left    int       // directions not yet ended
+	n       [2]int64  // bytes [0]->[1] and [1]->[0]
+	first   time.Time // the first byte [1]->[0] written (HopEvent.FirstOut)
+	err     error     // the Abort that ended it; nil: a clean end
+	pending bool      // Forward waits for the onward answer: direction 0's failure waits (held)
 	held    func()
 }
 
@@ -213,10 +214,13 @@ func newJoint(in, out *Session, obs Observer, done func(error)) *joint {
 	return &joint{s: [2]*Session{in, out}, obs: obs, chain: in.chain, done: done, left: 2}
 }
 
-// joinWriter writes into a joined session and keeps its write error.
+// joinWriter writes into a joined session and keeps its write error;
+// toward the origin it notes the first byte written (j: nil after it, and
+// in the other direction): one branch per batch, a lock once a session.
 type joinWriter struct {
 	s   *Session
 	err error
+	j   *joint
 }
 
 func (w *joinWriter) Write(p []byte) (int, error) {
@@ -224,6 +228,7 @@ func (w *joinWriter) Write(p []byte) (int, error) {
 	if err != nil {
 		w.err = err
 	}
+	w.wrote(n)
 	return n, err
 }
 
@@ -232,12 +237,25 @@ func (w *joinWriter) WriteBuffers(b [][]byte) (int64, error) {
 	if err != nil {
 		w.err = err
 	}
+	w.wrote(int(n))
 	return n, err
+}
+
+func (w *joinWriter) wrote(n int) {
+	if w.j != nil && n > 0 {
+		w.j.mu.Lock()
+		w.j.first = time.Now()
+		w.j.mu.Unlock()
+		w.j = nil
+	}
 }
 
 // dir starts direction i: s[i]'s bytes to s[1-i].
 func (j *joint) dir(i int) {
 	w := &joinWriter{s: j.s[1-i]}
+	if i == 1 {
+		w.j = j
+	}
 	j.s[i].Pump(w, func(n int64, err error) { j.ended(i, n, err, w.err) })
 }
 
@@ -319,13 +337,13 @@ func (j *joint) ended(i int, n int64, err, werr error) {
 func (j *joint) finish() {
 	j.mu.Lock()
 	j.left--
-	last, err, n := j.left == 0, j.err, j.n
+	last, err, n, first := j.left == 0, j.err, j.n, j.first
 	j.mu.Unlock()
 	if !last {
 		return
 	}
 	if j.obs != nil {
-		j.obs.Hop(HopEvent{Kind: HopEnded, Chain: j.chain, Err: err, In: n[0], Out: n[1]})
+		j.obs.Hop(HopEvent{Kind: HopEnded, Chain: j.chain, Err: err, In: n[0], Out: n[1], FirstOut: first})
 	}
 	if j.done != nil {
 		j.done(err)

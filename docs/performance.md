@@ -476,6 +476,19 @@ written at once (`Open`'s contract: a peer that speaks first is
 reached), the accepter's explicit ACCEPT is a write of its own, and the
 close is a third.
 
+## HopEvent.FirstOut (2026-10-31, unreleased)
+
+`Join` and `Forward` (link's and peerlink's) note when the first byte
+toward the origin was written, for HopEnded's `FirstOut`: one branch per
+batch written toward the origin and one lock per session; the splice
+stays zero-copy. `BenchmarkChainThroughput` (hops 1, 2; one session) and
+`BenchmarkChainLatency` (hops 1, 2), the old and new test binaries
+interleaved on a shared machine (load average 12 to 15): no significant
+change in time, bytes or allocations (benchstat p >= 0.24, n = 6; allocs
+per op equal). Evidence:
+`~/nfltr-evidence/profiles/2026-10-31-w1f/link-firstout/` (benchstat.txt).
+Guard: `TestChainEcho` and peerlink's `TestForwardReportsFirstOut`.
+
 ## What was looked at and left
 
 - **TLS writes**: link writes a coalesced batch with one `Write` on the

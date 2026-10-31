@@ -271,16 +271,19 @@ type joint struct {
 	mu      sync.Mutex
 	left    int
 	n       [2]int64
+	first   time.Time // the first byte [1]->[0] written (HopEvent.FirstOut)
 	err     error
 	pending bool // Forward waits for the onward answer: direction 0's failure waits (held)
 	held    func()
 }
 
 // connWriter writes into a joined conn and keeps its write error; a
-// *link.Session takes a batch with one flush.
+// *link.Session takes a batch with one flush. Toward the origin it notes
+// the first byte written (j: nil after it, and in the other direction).
 type connWriter struct {
 	c   net.Conn
 	err error
+	j   *joint
 }
 
 func (w *connWriter) Write(p []byte) (int, error) {
@@ -288,7 +291,17 @@ func (w *connWriter) Write(p []byte) (int, error) {
 	if err != nil {
 		w.err = err
 	}
+	w.wrote(int64(n))
 	return n, err
+}
+
+func (w *connWriter) wrote(n int64) {
+	if w.j != nil && n > 0 {
+		w.j.mu.Lock()
+		w.j.first = time.Now()
+		w.j.mu.Unlock()
+		w.j = nil
+	}
 }
 
 func (w *connWriter) WriteBuffers(b [][]byte) (int64, error) {
@@ -309,6 +322,7 @@ func (w *connWriter) WriteBuffers(b [][]byte) (int64, error) {
 	if err != nil {
 		w.err = err
 	}
+	w.wrote(n)
 	return n, err
 }
 
@@ -316,6 +330,9 @@ func (w *connWriter) WriteBuffers(b [][]byte) (int64, error) {
 func (j *joint) dir(i int) {
 	src := j.c[i]
 	w := &connWriter{c: j.c[1-i]}
+	if i == 1 {
+		w.j = j
+	}
 	end := func(n int64, err error) { j.ended(i, n, err, w.err) }
 	if s := native(src); s != nil {
 		s.Pump(w, end)
@@ -434,7 +451,7 @@ func (j *joint) ended(i int, n int64, err, werr error) {
 func (j *joint) finish() {
 	j.mu.Lock()
 	j.left--
-	last, err, n := j.left == 0, j.err, j.n
+	last, err, n, first := j.left == 0, j.err, j.n, j.first
 	j.mu.Unlock()
 	if !last {
 		return
@@ -442,7 +459,7 @@ func (j *joint) finish() {
 	_ = j.c[0].Close() // both directions ended: release them (a Node's Drain waits for its sessions' Close)
 	_ = j.c[1].Close()
 	if j.obs != nil {
-		j.obs.Hop(link.HopEvent{Kind: link.HopEnded, Chain: j.chain, Err: err, In: n[0], Out: n[1]})
+		j.obs.Hop(link.HopEvent{Kind: link.HopEnded, Chain: j.chain, Err: err, In: n[0], Out: n[1], FirstOut: first})
 	}
 	if j.done != nil {
 		j.done(err)

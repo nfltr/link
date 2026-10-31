@@ -214,6 +214,11 @@ type HopEvent struct {
 	Latency time.Duration // HopAnswered: Route called -> onward answer
 	Err     error         // HopAnswered: the refusal; HopEnded: the abort, nil on a clean end
 	In, Out int64         // HopEnded: bytes origin->far and far->origin
+	// FirstOut is, on HopEnded, when the far end's first byte was written
+	// toward the origin (zero when none was): a spliced session's time to
+	// first byte, which no caller sees when the join moves the bytes
+	// (since v0.12.0).
+	FirstOut time.Time
 }
 
 // Answers reports whether the session's connection negotiated

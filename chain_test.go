@@ -242,7 +242,7 @@ func TestChainEcho(t *testing.T) {
 						if e.Chain.Trace != s.Chain().Trace || int(e.Chain.Hops) != h {
 							t.Errorf("hop %d: event %+v, trace %x", h+1, e, s.Chain().Trace)
 						}
-						if e.Kind == HopEnded && (e.Err != nil || e.In == 0 || e.In != e.Out) {
+						if e.Kind == HopEnded && (e.Err != nil || e.In == 0 || e.In != e.Out || e.FirstOut.IsZero()) {
 							t.Errorf("hop %d ended: %+v", h+1, e)
 						}
 					}

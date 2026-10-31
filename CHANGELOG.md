@@ -8,6 +8,13 @@ version 2 unless an entry says otherwise.
 
 ## Unreleased
 
+- `HopEvent.FirstOut`: on HopEnded, when the far end's first byte was
+  written toward the origin (zero when none was), from `Join`, `Forward`
+  and peerlink's `Join` and `Forward`. A relay that splices a session
+  without copying it can report the session's time to first byte. The
+  splice stays zero-copy: one branch per batch toward the origin and one
+  lock per session (docs/performance.md, "HopEvent.FirstOut"). The wire is
+  unchanged.
 - peerlink/quiclink v0.5.3: requires link v0.11.2 (peerlinktest's lighter
   volumes below); nothing else changed.
 - peerlink/quiclink v0.5.2: `Session.OnGrant(f)`, as link's: `f(n)` for each window
