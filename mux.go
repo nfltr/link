@@ -574,12 +574,25 @@ func (s *Session) OnGrant(f func(n int)) { s.m.c.credit.setOnGrant(s.id, f) }
 // Header is the bytes that opened the session: the OPEN frame's header.
 func (s *Session) Header() []byte { return s.header }
 
-// ended stops writes and lets reads drain the queue.
+// ended stops writes and lets reads drain the queue; its deadline
+// timers stop (a pending one held the session until it fired).
 func (s *Session) ended() {
 	s.closed.Store(true)
 	s.q.Close()
 	s.kick()
 	s.endOnce.Do(func() { close(s.done) })
+	s.dlMu.Lock()
+	if s.dlTimer != nil {
+		s.dlTimer.Stop()
+		s.dlTimer = nil
+	}
+	s.dlMu.Unlock()
+	s.wdMu.Lock()
+	if s.wdTimer != nil {
+		s.wdTimer.Stop()
+		s.wdTimer = nil
+	}
+	s.wdMu.Unlock()
 }
 
 // Read reads the peer's bytes in order: io.EOF once the peer ended its
@@ -993,7 +1006,7 @@ func (s *Session) SetReadDeadline(t time.Time) error {
 	if s.dlPast.Load() {
 		s.q.Wake()
 	}
-	if !t.IsZero() && d > 0 {
+	if !t.IsZero() && d > 0 && !s.closed.Load() { // none for an ended session
 		gen := s.dlGen
 		s.dlTimer = time.AfterFunc(d, func() {
 			s.dlMu.Lock()
@@ -1025,7 +1038,7 @@ func (s *Session) SetWriteDeadline(t time.Time) error {
 	past := !t.IsZero() && d <= 0
 	s.wd.set.Store(!t.IsZero())
 	s.wd.past.Store(past)
-	if !t.IsZero() && d > 0 {
+	if !t.IsZero() && d > 0 && !s.closed.Load() { // none for an ended session
 		gen := s.wdGen
 		s.wdTimer = time.AfterFunc(d, func() {
 			s.wdMu.Lock()

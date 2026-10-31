@@ -220,3 +220,27 @@ func TestSessionConnClosed(t *testing.T) {
 		})
 	}
 }
+
+// A session's deadline timers stop when it ends, and none arms after: a
+// pending one held the session (its queue, its Mux) until it fired.
+func TestSessionEndStopsDeadlineTimers(t *testing.T) {
+	s, _ := openPair(t, v2cfg, v2cfg)
+	armed := func() bool {
+		s.dlMu.Lock()
+		r := s.dlTimer != nil
+		s.dlMu.Unlock()
+		s.wdMu.Lock()
+		w := s.wdTimer != nil
+		s.wdMu.Unlock()
+		return r || w
+	}
+	_ = s.SetDeadline(time.Now().Add(time.Hour))
+	_ = s.Reset()
+	if armed() {
+		t.Fatal("a deadline timer outlived the session")
+	}
+	_ = s.SetDeadline(time.Now().Add(time.Hour))
+	if armed() {
+		t.Fatal("a deadline set after the session ended armed a timer")
+	}
+}
