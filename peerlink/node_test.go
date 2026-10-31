@@ -599,4 +599,53 @@ func TestNodeDropsIdlePeers(t *testing.T) {
 			}
 		})
 	}
+	// As relay replicas use it: both Nodes listen and dial, the pool grows,
+	// and the peer goes while a session to it is open; once that session
+	// ends, nothing of the peer stays.
+	t.Run("peer gone mid-session, listening and dialling", func(t *testing.T) {
+		lnB, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		lnA, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		dialB := func(ctx context.Context, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "tcp", lnB.Addr().String())
+		}
+		b := mustNew(t, peerlink.Config{Listener: lnB, Dial: dialB, Link: link.Config{Liveness: link.LivenessFast, Auth: link.NameAuth("b")}})
+		a := mustNew(t, peerlink.Config{
+			Listener: lnA,
+			Dial:     dialB,
+			Link:     link.Config{Liveness: link.LivenessFast, Auth: link.NameAuth("a")},
+			Pool:     link.PoolConfig{Max: 4, Grow: func(st link.PoolStats) bool { return st.Sessions >= 2*st.Conns }},
+		})
+		defer drainNow(a)
+		go func() { _ = a.Serve(echoAccept) }()
+		go func() { _ = b.Serve(echoAccept) }()
+		ctx, cancel := context.WithTimeout(context.Background(), peerlinktest.Within)
+		defer cancel()
+		s, err := a.Open(ctx, "b", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.WriteString(s, "hi"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.ReadFull(s, make([]byte, 2)); err != nil {
+			t.Fatal(err)
+		}
+		drainNow(b) // the peer is gone with the session open
+		if _, err := io.ReadFull(s, make([]byte, 1)); err == nil {
+			t.Fatal("read on a gone peer's session succeeded")
+		}
+		_ = s.Close()
+		for peerlink.Peers(a) != 0 {
+			if ctx.Err() != nil {
+				t.Fatal("the gone peer's state stayed")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	})
 }

@@ -319,7 +319,9 @@ func (s *session) AbortWith(a *link.Abort) error {
 // accepts on Config.Listener (if any), and on the connections this Node
 // dialled, Config.Connect's among them, which it dials now. A failed
 // handshake closes that connection only (Config.HandshakeError hears of
-// it); an Accept error other than Drain's ends Serve.
+// it). A closed listener other than by Drain ends Serve with its error;
+// any other Accept error (EMFILE, ECONNABORTED) is retried after a backoff
+// of 5 ms doubling to 1 s, as net/http does.
 func (n *Node) Serve(accept func(peer string, header []byte, s Session)) error {
 	n.mu.Lock()
 	n.accept = accept
@@ -333,6 +335,7 @@ func (n *Node) Serve(accept func(peer string, header []byte, s Session)) error {
 		<-n.drained
 		return nil
 	}
+	var backoff time.Duration
 	for {
 		nc, err := n.cfg.Listener.Accept()
 		if err != nil {
@@ -342,8 +345,14 @@ func (n *Node) Serve(accept func(peer string, header []byte, s Session)) error {
 			if draining {
 				return nil
 			}
-			return err
+			if errors.Is(err, net.ErrClosed) {
+				return err
+			}
+			backoff = min(max(2*backoff, 5*time.Millisecond), time.Second)
+			time.Sleep(backoff)
+			continue
 		}
+		backoff = 0
 		n.mu.Lock()
 		if n.draining { // accepted before the listener closed: no session on it yet
 			n.mu.Unlock()

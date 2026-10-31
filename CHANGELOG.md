@@ -8,6 +8,11 @@ version 2 unless an entry says otherwise.
 
 ## Unreleased
 
+- Fix (the wire and the API unchanged): peerlink's `Node.Serve` ended on
+  any Accept error of `Config.Listener` but a closed listener's; an
+  error such as EMFILE (a process at its file descriptor limit) now is
+  retried after a backoff of 5 ms doubling to 1 s, as net/http does. A
+  listener closed other than by Drain still ends Serve with its error.
 - Fixes (the wire and the API unchanged): two concurrent opens at the
   peer's max sessions both passed its check and sent one OPEN too many,
   which made the peer end the connection with every session on it; a
