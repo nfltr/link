@@ -350,16 +350,19 @@ func (c *Conn) sendOpen(sid string, header []byte, ch Chain) error {
 		return errSID
 	case len(header) > maxHeader:
 		return errHeader
-	case c.credit.count(byUs) >= c.peerMaxSessions:
-		return ErrFull
 	}
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
 	// Checked with the frame buffered under one lock: once the peer's
 	// GOAWAY was read, no OPEN goes out after a frame written since (the
-	// pong that ends the peer's drain barrier, GoAway).
+	// pong that ends the peer's drain barrier, GoAway); and two opens at
+	// the peer's max sessions never both pass (byUs sessions open only
+	// here, under wmu).
 	if c.goingAway.Load() {
 		return ErrGoAway
+	}
+	if c.credit.count(byUs) >= c.peerMaxSessions {
+		return ErrFull
 	}
 	c.credit.open(sid, byUs)
 	if c.chain() {

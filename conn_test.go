@@ -7,10 +7,13 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"reflect"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -288,6 +291,40 @@ func TestCreditReturnedDataIsAcceptedAgain(t *testing.T) {
 		}
 		if i == 1 {
 			c.Credit().Consumed("s", testWindow/2) // returns half a window
+		}
+	}
+}
+
+// TestSendOpenHoldsThePeersMaxSessions: concurrent opens at the peer's
+// max sessions never send one OPEN too many (which the peer takes for a
+// broken connection and ends it, every session on it): the count is
+// checked with the OPEN buffered under one lock. Rounds, as the window
+// between check and count was a few instructions wide.
+func TestSendOpenHoldsThePeersMaxSessions(t *testing.T) {
+	for round := range 500 {
+		a, b := net.Pipe()
+		c := newConnV2(a, Config{Window: testWindow, MaxSessions: MaxSessions}, testWindow, 2, false)
+		go func() { _, _ = io.Copy(io.Discard, b) }()
+		if err := c.SendOpen("s0", nil); err != nil {
+			t.Fatal(err)
+		}
+		start := make(chan struct{})
+		var opened atomic.Int32
+		var wg sync.WaitGroup
+		for i := range 8 {
+			wg.Go(func() {
+				<-start
+				if c.SendOpen(fmt.Sprint("s", i+1), nil) == nil {
+					opened.Add(1)
+				}
+			})
+		}
+		close(start)
+		wg.Wait()
+		_ = c.Close()
+		_ = b.Close()
+		if n := opened.Load(); n != 1 {
+			t.Fatalf("round %d: %d opens past one open session with the peer's max sessions 2, want 1", round, n)
 		}
 	}
 }
