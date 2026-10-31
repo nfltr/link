@@ -3,8 +3,12 @@
 
 GOVULNCHECK_VERSION := v1.8.0
 
-.PHONY: check build vet test test-race test-linkdebug test-ci fuzz-short fuzz-long check-gosec check-semgrep check-govulncheck
-check: build vet test-ci check-gosec check-semgrep check-govulncheck
+.PHONY: check test-identity build vet test test-race test-linkdebug test-ci fuzz-short fuzz-long check-gosec check-semgrep check-govulncheck
+check: build vet test-identity test-ci check-gosec check-semgrep check-govulncheck
+
+# scripts/check-identity.sh (the pre-push hook's) refuses what it should.
+test-identity:
+	./scripts/check-identity_test.sh
 
 # test-race, test-linkdebug and fuzz-short at once, each part's log printed
 # whole after all end (scripts/test-ci.sh).
