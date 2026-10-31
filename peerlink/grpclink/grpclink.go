@@ -48,6 +48,7 @@ import (
 	"github.com/nfltr/link/peerlink"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/mem"
 	"google.golang.org/grpc/metadata"
@@ -82,14 +83,15 @@ type Config struct {
 }
 
 // Node is a peerlink.Link over gRPC: a grpc.ClientConn per peer it opens
-// sessions to (made at the first Open, kept until Drain) and a grpc.Server
+// sessions to (made at the first Open, kept while it is connected or has
+// a session) and a grpc.Server
 // for Serve. Sessions have no deadlines (SetDeadline and its kind return
 // errors.ErrUnsupported).
 type Node struct {
 	cfg Config
 
 	mu       sync.Mutex
-	clients  map[string]*grpc.ClientConn
+	clients  map[string]*peerClient
 	srv      *grpc.Server
 	draining bool
 	opened   sync.WaitGroup // dialled streams not yet ended
@@ -110,7 +112,7 @@ func New(cfg Config) (*Node, error) {
 	if err := (link.Config{Liveness: cfg.Liveness}).Validate(); err != nil {
 		return nil, fmt.Errorf("grpclink: %w", err)
 	}
-	return &Node{cfg: cfg, clients: map[string]*grpc.ClientConn{}}, nil
+	return &Node{cfg: cfg, clients: map[string]*peerClient{}}, nil
 }
 
 const (
@@ -161,17 +163,21 @@ func (n *Node) Open(ctx context.Context, peer string, header []byte) (peerlink.S
 		n.mu.Unlock()
 		return nil, peerlink.ErrDraining
 	}
-	cc := n.clients[peer]
-	if cc == nil {
-		var err error
-		if cc, err = n.dial(peer); err != nil {
+	pc := n.clients[peer]
+	if pc == nil {
+		cc, err := n.dial(peer)
+		if err != nil {
 			n.mu.Unlock()
 			return nil, err
 		}
-		n.clients[peer] = cc
+		pc = &peerClient{cc: cc}
+		n.clients[peer] = pc
+		go n.watch(peer, pc)
 	}
+	pc.users++
 	n.opened.Add(1) // before Drain's Wait: both under mu
 	n.mu.Unlock()
+	cc := pc.cc
 
 	sctx, cancel := context.WithCancel(metadata.AppendToOutgoingContext(context.Background(), headerKey, string(header)))
 	stop := context.AfterFunc(ctx, cancel) // ctx bounds the open only
@@ -182,6 +188,7 @@ func (n *Node) Open(ctx context.Context, peer string, header []byte) (peerlink.S
 	if err != nil {
 		cancel()
 		n.opened.Done()
+		n.release(peer, pc, -1)
 		return nil, err
 	}
 	s := newSession(cs.SendMsg, cs.CloseSend, cs.Context())
@@ -190,8 +197,45 @@ func (n *Node) Open(ctx context.Context, peer string, header []byte) (peerlink.S
 		s.recvLoop(cs.RecvMsg)
 		cancel() // the stream ended: release it
 		n.opened.Done()
+		n.release(peer, pc, -1)
 	}()
 	return s, nil
+}
+
+// peerClient is a peer's grpc.ClientConn and its Opens and streams (users,
+// n.mu).
+type peerClient struct {
+	cc    *grpc.ClientConn
+	users int
+}
+
+// release counts users leaving (negative) or coming on pc, and closes pc
+// once it has none and is not connected: a peer named by an address that
+// changes, or gone, leaves no grpc.ClientConn behind.
+func (n *Node) release(peer string, pc *peerClient, users int) {
+	n.mu.Lock()
+	pc.users += users
+	idle := pc.users == 0 && pc.cc.GetState() != connectivity.Ready && n.clients[peer] == pc && !n.draining
+	if idle {
+		delete(n.clients, peer)
+	}
+	n.mu.Unlock()
+	if idle {
+		_ = pc.cc.Close()
+	}
+}
+
+// watch releases pc whenever its connection state leaves Ready, until it
+// is closed.
+func (n *Node) watch(peer string, pc *peerClient) {
+	for st := pc.cc.GetState(); st != connectivity.Shutdown; st = pc.cc.GetState() {
+		if st != connectivity.Ready {
+			n.release(peer, pc, 0)
+		}
+		if !pc.cc.WaitForStateChange(context.Background(), st) {
+			return
+		}
+	}
 }
 
 func (n *Node) dial(peer string) (*grpc.ClientConn, error) {
@@ -313,8 +357,8 @@ func (n *Node) Drain(ctx context.Context) error {
 	n.mu.Lock()
 	clients := slices.Collect(maps.Values(n.clients))
 	n.mu.Unlock()
-	for _, cc := range clients {
-		_ = cc.Close()
+	for _, pc := range clients {
+		_ = pc.cc.Close()
 	}
 	return err
 }

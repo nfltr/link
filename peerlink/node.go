@@ -61,8 +61,9 @@ type Config struct {
 }
 
 // Node is a Link over github.com/nfltr/link: a link.Pool per peer it opens
-// sessions to (made at the first Open, or by Serve for Config.Connect,
-// kept until Drain), and a link.Mux per connection Serve accepts. Sessions
+// sessions to (made at the first Open, or by Serve for Config.Connect;
+// kept while it has a connection up, a session or an Open, a Connect
+// peer's until Drain), and a link.Mux per connection Serve accepts. Sessions
 // go both ways on every connection: a peer opens sessions on the
 // connections this Node dialled (Serve takes them), and a Node without
 // Config.Dial opens sessions on the connections its peers dialled in.
@@ -72,7 +73,7 @@ type Node struct {
 	cfg Config
 
 	mu       sync.Mutex
-	pools    map[string]*link.Pool
+	pools    map[string]*peerPool
 	served   map[*link.Mux]string // accepted connections and their peer
 	changed  chan struct{}        // closed when served changes
 	accept   func(string, []byte, Session)
@@ -113,7 +114,7 @@ func New(cfg Config) (*Node, error) {
 			return nil, fmt.Errorf("peerlink: Config.Pool: %w", err)
 		}
 	}
-	return &Node{cfg: cfg, pools: map[string]*link.Pool{}, served: map[*link.Mux]string{},
+	return &Node{cfg: cfg, pools: map[string]*peerPool{}, served: map[*link.Mux]string{},
 		changed: make(chan struct{}), drained: make(chan struct{})}, nil
 }
 
@@ -143,15 +144,17 @@ func (n *Node) Open(ctx context.Context, peer string, header []byte) (Session, e
 		n.mu.Unlock()
 		return nil, ErrDraining
 	}
-	p := n.poolLocked(peer)
+	pp := n.poolLocked(peer)
+	pp.users++
 	n.opened.Add(1) // before Drain's Wait: both under mu
 	n.mu.Unlock()
-	s, err := p.Open(ctx, header)
+	s, err := pp.Open(ctx, header)
 	if err != nil {
 		n.opened.Done()
+		n.release(peer, pp, -1, 0)
 		return nil, fmt.Errorf("peerlink: open to %q: %w", peer, err)
 	}
-	return &session{Session: s, done: n.opened.Done}, nil
+	return &session{Session: s, done: func() { n.opened.Done(); n.release(peer, pp, -1, 0) }}, nil
 }
 
 // openServed opens a session on a connection peer dialled in.
@@ -196,29 +199,56 @@ func (n *Node) openServed(ctx context.Context, peer string, header []byte) (Sess
 	}
 }
 
-// poolLocked returns peer's pool, made at the first call.
-func (n *Node) poolLocked(peer string) *link.Pool {
-	p := n.pools[peer]
-	if p == nil {
-		p = n.newPool(peer)
-		n.pools[peer] = p
-	}
-	return p
+// peerPool is a peer's pool and what keeps it: its connections up, and
+// the Opens and sessions toward the peer (n.mu guards both counts).
+type peerPool struct {
+	*link.Pool
+	users, up int
 }
 
-func (n *Node) newPool(peer string) *link.Pool {
+// poolLocked returns peer's pool, made when it has none.
+func (n *Node) poolLocked(peer string) *peerPool {
+	pp := n.pools[peer]
+	if pp == nil {
+		pp = &peerPool{}
+		pp.Pool = n.newPool(peer, pp)
+		n.pools[peer] = pp
+	}
+	return pp
+}
+
+// release counts users and connections up leaving (negative) or coming
+// (positive) on pp, and closes pp once it has none and peer is not one
+// Serve keeps connections to: a peer named by an address that changes
+// leaves no state behind, and a gone one is not redialled (Pool.Min).
+func (n *Node) release(peer string, pp *peerPool, users, up int) {
+	n.mu.Lock()
+	pp.users += users
+	pp.up += up
+	idle := pp.users == 0 && pp.up == 0 && !n.draining && n.pools[peer] == pp && !slices.Contains(n.cfg.Connect, peer)
+	if idle {
+		delete(n.pools, peer)
+	}
+	n.mu.Unlock()
+	if idle {
+		_ = pp.Close()
+	}
+}
+
+func (n *Node) newPool(peer string, pp *peerPool) *link.Pool {
 	pc := n.cfg.Pool
 	if slices.Contains(n.cfg.Connect, peer) {
 		pc.Min = max(pc.Min, 1)
 	}
 	pc.Accept = func(h []byte, s *link.Session) { n.acceptDialled(peer, h, s) }
 	pc.Link = n.cfg.Link
-	pc.Link.Observer = nil
+	var o link.Observer = link.NopObserver{}
 	if n.cfg.Observer != nil {
-		if o := n.cfg.Observer(peer); o != nil {
-			pc.Link.Observer = o
+		if po := n.cfg.Observer(peer); po != nil {
+			o = po
 		}
 	}
+	pc.Link.Observer = &poolObserver{Observer: o, n: n, peer: peer, pp: pp}
 	pc.Dial = func(ctx context.Context) (net.Conn, error) { return n.cfg.Dial(ctx, peer) }
 	p, err := link.NewPool(pc)
 	if err != nil {
@@ -433,7 +463,10 @@ func (n *Node) Drain(ctx context.Context) error {
 		}
 	}
 	n.mu.Lock()
-	pools := slices.Collect(maps.Values(n.pools))
+	var pools []*link.Pool
+	for _, pp := range n.pools {
+		pools = append(pools, pp.Pool)
+	}
 	served = slices.Collect(maps.Keys(n.served)) // a late handshake's too
 	n.mu.Unlock()
 	for _, m := range served {
@@ -443,6 +476,25 @@ func (n *Node) Drain(ctx context.Context) error {
 		_ = p.Close()
 	}
 	return err
+}
+
+// poolObserver counts the connections of peer's pool up (release) and
+// hands every event to the caller's observer.
+type poolObserver struct {
+	link.Observer
+	n    *Node
+	peer string
+	pp   *peerPool
+}
+
+func (o *poolObserver) ConnUp(id link.Identity) {
+	o.n.release(o.peer, o.pp, 0, 1)
+	o.Observer.ConnUp(id)
+}
+
+func (o *poolObserver) ConnDown(id link.Identity, err error) {
+	o.Observer.ConnDown(id, err)
+	o.n.release(o.peer, o.pp, 0, -1)
 }
 
 // servedObserver hands an accepted connection's events to the observer

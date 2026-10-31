@@ -22,3 +22,10 @@ func Draining(n *Node) bool {
 	defer n.mu.Unlock()
 	return n.draining
 }
+
+// Peers is how many peers n keeps dialled state for.
+func Peers(n *Node) int {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return len(n.dialled)
+}

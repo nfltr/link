@@ -8,6 +8,18 @@ version 2 unless an entry says otherwise.
 
 ## Unreleased
 
+- Fixes (the wire and the API unchanged): two concurrent opens at the
+  peer's max sessions both passed its check and sent one OPEN too many,
+  which made the peer end the connection with every session on it; a
+  Pool's concurrent Opens on an empty (or all-ended) Pool each dialled,
+  past `PoolConfig.Max`, and kept the connections; a session's deadline
+  timers outlived it until they fired. peerlink's `Node`, and
+  peerlink/quiclink's and peerlink/grpclink's, drop a peer's state (its
+  Pool, its dialled connection, its `grpc.ClientConn`) once they have no
+  connection to it and no session or open toward it, unless it is in
+  `Config.Connect`: a peer named by an address that changes (a replica's
+  pod IP) left its state until Drain, and with `Pool.Min` a gone peer was
+  redialled forever.
 - `HopEvent.FirstOut`: on HopEnded, when the far end's first byte was
   written toward the origin (zero when none was), from `Join`, `Forward`
   and peerlink's `Join` and `Forward`. A relay that splices a session

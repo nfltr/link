@@ -424,3 +424,50 @@ func TestDrainDuringDialSendsGoAway(t *testing.T) {
 		t.Errorf("Drain: %v", err)
 	}
 }
+
+// TestNodeDropsIdlePeers: a Node keeps no dialled state for a peer whose
+// dial failed or whose connection closed (a peer named by an address that
+// changes otherwise piled up until Drain, its closed connection with it).
+func TestNodeDropsIdlePeers(t *testing.T) {
+	t.Run("dial fails", func(t *testing.T) {
+		n := mustNew(t, quiclink.Config{Liveness: link.LivenessFast,
+			Dial: func(context.Context, string, *quic.Config) (*quic.Conn, error) { return nil, errors.New("unreachable") }})
+		defer func() { _ = n.Drain(context.Background()) }()
+		for i := range 1000 {
+			if _, err := n.Open(context.Background(), fmt.Sprint("10.0.0.", i), nil); err == nil {
+				t.Fatal("Open on a failing Dial succeeded")
+			}
+		}
+		if got := quiclink.Peers(n); got != 0 {
+			t.Fatalf("%d peers kept after every Open to them failed", got)
+		}
+	})
+	t.Run("peer gone", func(t *testing.T) {
+		pc := listenUDP(t)
+		b := mustNew(t, quiclink.Config{PacketConn: pc, TLS: serverTLS("b"), Liveness: link.LivenessFast})
+		a := mustNew(t, quiclink.Config{Dial: dialer("a", "b", pc.LocalAddr().String()), Liveness: link.LivenessFast})
+		go func() {
+			_ = b.Serve(func(_ string, _ []byte, s peerlink.Session) { defer s.Close(); _, _ = io.Copy(s, s) })
+		}()
+		defer func() { _ = a.Drain(context.Background()) }()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		s, err := a.Open(ctx, "b", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = s.Close()
+		if got := quiclink.Peers(a); got != 1 {
+			t.Fatalf("%d peers with a connection up, want 1", got)
+		}
+		if err := b.Drain(ctx); err != nil { // the peer is gone
+			t.Fatal(err)
+		}
+		for quiclink.Peers(a) != 0 {
+			if ctx.Err() != nil {
+				t.Fatal("the gone peer's state stayed")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	})
+}

@@ -85,3 +85,70 @@ func TestWriteAfterCutIsNoClose(t *testing.T) {
 		}
 	})
 }
+
+// TestNodeDropsIdlePeers: a Node keeps no grpc.ClientConn (its goroutines,
+// its redials) for a peer it reaches no more and has no session with: a
+// peer named by an address that changes otherwise left one per address
+// until Drain.
+func TestNodeDropsIdlePeers(t *testing.T) {
+	waitNone := func(t *testing.T, n *grpclink.Node) {
+		t.Helper()
+		for deadline := time.Now().Add(10 * time.Second); grpclink.Peers(n) != 0; time.Sleep(10 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("%d peers kept with no session and no connection", grpclink.Peers(n))
+			}
+		}
+	}
+	t.Run("dial fails", func(t *testing.T) {
+		n := mustNew(t, grpclink.Config{
+			Dial:        func(context.Context, string) (net.Conn, error) { return nil, errors.New("unreachable") },
+			DialOptions: []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())},
+		})
+		defer func() { _ = n.Drain(context.Background()) }()
+		for i := range 100 {
+			s, err := n.Open(context.Background(), fmt.Sprint("10.0.0.", i), nil)
+			if err == nil {
+				if _, err = s.Read(make([]byte, 1)); err == nil {
+					t.Fatal("a session to an unreachable peer read")
+				}
+				_ = s.Close()
+			}
+		}
+		waitNone(t, n)
+	})
+	t.Run("peer gone", func(t *testing.T) {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		b := mustNew(t, grpclink.Config{Listener: ln, Identify: identify})
+		go func() {
+			_ = b.Serve(func(_ string, _ []byte, s peerlink.Session) { defer s.Close(); _, _ = io.Copy(s, s) })
+		}()
+		a := mustNew(t, grpclink.Config{
+			Dial: func(ctx context.Context, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "tcp", ln.Addr().String())
+			},
+			DialOptions: []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithPerRPCCredentials(name("a"))},
+		})
+		defer func() { _ = a.Drain(context.Background()) }()
+		s, err := a.Open(context.Background(), "b", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Write([]byte("x")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.ReadFull(s, make([]byte, 1)); err != nil {
+			t.Fatal(err)
+		}
+		_ = s.Close()
+		if got := grpclink.Peers(a); got != 1 {
+			t.Fatalf("%d peers with a connection up, want 1", got)
+		}
+		if err := b.Drain(context.Background()); err != nil { // the peer is gone
+			t.Fatal(err)
+		}
+		waitNone(t, a)
+	})
+}

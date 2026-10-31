@@ -394,8 +394,18 @@ func (n *Node) changedNow() {
 
 // peerConns is the connection this Node dialled to one peer.
 type peerConns struct {
-	sem chan struct{} // held while dialling
-	c   *conn
+	sem   chan struct{} // held while dialling
+	c     *conn
+	picks int // pick calls using it (n.mu)
+}
+
+// forgetLocked drops peer's p once nothing uses it (no connection, no
+// pick) unless Serve keeps peer connected: a peer named by an address
+// that changes leaves nothing behind. n.mu is held.
+func (n *Node) forgetLocked(peer string, p *peerConns) {
+	if p.picks == 0 && p.c == nil && n.dialled[peer] == p && !slices.Contains(n.cfg.Connect, peer) {
+		delete(n.dialled, peer)
+	}
 }
 
 // Open opens a session to peer: a stream on the connection this Node
@@ -463,7 +473,14 @@ func (n *Node) pick(ctx context.Context, peer string) (*conn, error) {
 		p = &peerConns{sem: make(chan struct{}, 1)}
 		n.dialled[peer] = p
 	}
+	p.picks++
 	n.mu.Unlock()
+	defer func() {
+		n.mu.Lock()
+		p.picks--
+		n.forgetLocked(peer, p)
+		n.mu.Unlock()
+	}()
 	select {
 	case p.sem <- struct{}{}:
 	case <-ctx.Done():
@@ -512,7 +529,15 @@ func (n *Node) dial(ctx context.Context, peer string, p *peerConns) (*conn, erro
 		_ = q.CloseWithError(CodeDrainDeadline, "drain deadline")
 		return nil, peerlink.ErrDraining
 	}
-	go c.run() // #nosec G118 -- the connection outlives the Open that dialled it
+	go func() { // #nosec G118 -- the connection outlives the Open that dialled it
+		c.run()
+		n.mu.Lock()
+		if p.c == c {
+			p.c = nil
+		}
+		n.forgetLocked(peer, p)
+		n.mu.Unlock()
+	}()
 	if draining {
 		return nil, peerlink.ErrDraining // Drain sends GOAWAY on c
 	}

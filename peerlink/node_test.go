@@ -541,3 +541,62 @@ func TestDrainDuringHandshake(t *testing.T) {
 		t.Fatalf("Drain: %v", err)
 	}
 }
+
+// TestNodeDropsIdlePeers: a Node keeps no per-peer state (a Pool, its
+// redials) for a peer it has no connection to and no session or open
+// toward, unless the peer is in Config.Connect: peers named by an address
+// that changes (a replica's pod IP) otherwise piled up until Drain, and a
+// gone peer was redialled forever with Pool.Min.
+func TestNodeDropsIdlePeers(t *testing.T) {
+	t.Run("dial fails", func(t *testing.T) {
+		n := mustNew(t, peerlink.Config{
+			Link: link.Config{Auth: link.NameAuth("a")},
+			Dial: func(context.Context, string) (net.Conn, error) { return nil, errors.New("unreachable") },
+		})
+		defer drainNow(n)
+		for i := range 1000 {
+			if _, err := n.Open(context.Background(), fmt.Sprint("10.0.0.", i), nil); err == nil {
+				t.Fatal("Open on a failing Dial succeeded")
+			}
+		}
+		if got := peerlink.Peers(n); got != 0 {
+			t.Fatalf("%d peers kept after every Open to them failed", got)
+		}
+	})
+	for _, min := range []int{0, 1} {
+		t.Run(fmt.Sprint("peer gone, Pool.Min ", min), func(t *testing.T) {
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			b := mustNew(t, peerlink.Config{Listener: ln, Link: link.Config{Liveness: link.LivenessFast, Auth: link.NameAuth("b")}})
+			a := mustNew(t, peerlink.Config{
+				Link: link.Config{Liveness: link.LivenessFast, Auth: link.NameAuth("a")},
+				Dial: func(ctx context.Context, _ string) (net.Conn, error) {
+					return (&net.Dialer{}).DialContext(ctx, "tcp", ln.Addr().String())
+				},
+				Pool: link.PoolConfig{Min: min},
+			})
+			defer drainNow(a)
+			go func() { _ = b.Serve(echoAccept) }()
+			ctx, cancel := context.WithTimeout(context.Background(), peerlinktest.Within)
+			defer cancel()
+			s, err := a.Open(ctx, "b", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			echoOnce(t, s)
+			_ = s.Close()
+			if got := peerlink.Peers(a); got != 1 {
+				t.Fatalf("%d peers with a connection up, want 1", got)
+			}
+			drainNow(b) // the peer is gone (its listener closed)
+			for peerlink.Peers(a) != 0 {
+				if ctx.Err() != nil {
+					t.Fatal("the gone peer's state stayed")
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		})
+	}
+}
