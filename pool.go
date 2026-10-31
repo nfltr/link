@@ -162,7 +162,9 @@ func (p *Pool) stayingLocked() int {
 
 // pick returns the connection with the fewest sessions that takes one
 // (nil when none), and whether to dial another: synchronously when none
-// takes the session, else in the background (growBG).
+// takes the session, else in the background (growBG). A dial it asks for
+// is reserved (counted against Max) before it returns, so concurrent
+// Opens never dial past Max; the caller makes it with dial.
 func (p *Pool) pick() (best *Mux, grow, growBG bool, err error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -180,10 +182,16 @@ func (p *Pool) pick() (best *Mux, grow, growBG bool, err error) {
 		if !room && staying > p.dials {
 			return nil, false, false, ErrFull // every connection carries its most sessions
 		}
+		if room {
+			p.dials++
+		}
 		return nil, room, false, nil
 	}
 	growBG = room && !p.growing && p.cfg.Grow != nil && p.cfg.Grow(p.statsLocked())
-	p.growing = p.growing || growBG
+	if growBG {
+		p.growing = true
+		p.dials++
+	}
 	return best, false, growBG, nil
 }
 
@@ -262,11 +270,16 @@ func (p *Pool) grow(ctx context.Context) *Mux {
 	return m
 }
 
-// dial opens one more connection and adds it to the Pool.
-func (p *Pool) dial(ctx context.Context) (*Mux, error) {
+// reserve counts a dial in flight against Max before dial makes it.
+func (p *Pool) reserve() {
 	p.mu.Lock()
 	p.dials++
 	p.mu.Unlock()
+}
+
+// dial opens one more connection and adds it to the Pool; its caller
+// reserved it (pick, reserve), and dial ends the reservation.
+func (p *Pool) dial(ctx context.Context) (*Mux, error) {
 	m, err := p.connect(ctx)
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -359,6 +372,15 @@ func (p *Pool) maintain() {
 		if refused > 0 && attempt == 0 { // the last ones were refused: as a failed dial
 			_ = p.sleep(p.ctx, p.backoff(refused))
 		}
+		p.mu.Lock() // Opens may have dialled meanwhile
+		need = p.statsLocked().Conns+p.dials < p.cfg.Min && p.stayingLocked() < p.cfg.Max
+		if need {
+			p.dials++
+		}
+		p.mu.Unlock()
+		if !need {
+			continue
+		}
 		if _, err := p.dial(p.ctx); err != nil {
 			attempt++
 			_ = p.sleep(p.ctx, p.backoff(attempt))
@@ -390,6 +412,7 @@ func (p *Pool) Drain(ctx context.Context) error {
 		return nil
 	}
 	for range max(p.cfg.Min, 1) {
+		p.reserve()
 		if _, err := p.dial(ctx); err != nil { // past Max: the old ones are about to go
 			return err
 		}
