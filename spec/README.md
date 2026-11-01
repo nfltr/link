@@ -157,6 +157,66 @@ per trace. `TraceLog.tla` holds the parsed file: TLC evaluates an
 extended module's constants first, so the file is read once (defined in
 `Trace.tla` itself, it was read again for each reference, quadratic).
 
+## Design of the fixes (2026-11-02)
+
+Findings 1, 3 and 5 below are fixed by this design; it landed before the
+code.
+
+**A Write ends at this side's FIN (finding 1).**
+
+- Invariant: no data frame of a session is buffered after this side's
+  CLOSE of it (code 1, 0 or 2) or its ABORT, and a `Write` reports only
+  the bytes it buffered before that frame: for the rest it returns
+  `io.ErrClosedPipe` (wrapping why the session was cut, `writeErr`), never
+  a nil error.
+- Where: `Conn.sendData`, under `wmu`, before the frame is buffered. It
+  sends nothing when the session's write side is closed (`halfClosed`,
+  which `CloseWrite` sets before it takes `wmu` to buffer its CLOSE) or
+  its credit is gone (`Credit.forget`, which `sendClose` runs under `wmu`
+  before it buffers the CLOSE, `sendAbort` before it takes `wmu`, and
+  `Mux.drop` and the receive of the peer's CLOSE/ABORT run too). Every
+  CLOSE and ABORT is buffered under `wmu` after one of the two, so a
+  frame that passes the check is ahead of it on the wire. Lock order:
+  `wmu`, then `Credit.mu` (as `sendClose` already takes them); no new
+  lock.
+- The `Write` then gives its credit back (`Credit.refund`, as a write
+  deadline does) and returns `io.ErrClosedPipe` with the bytes buffered
+  before. A `Write` waiting for credit when `CloseWrite` runs keeps
+  waiting until credit comes (the peer reads to the FIN, so it returns
+  its window), its deadline passes or the session ends; then it returns
+  the same. `Close`, `Reset` and the drain's abort forget the credit,
+  which wakes it at once.
+- Model: `SendData` needs `~wfin /\ cr.on`; a new `Refund(p, s)` gives a
+  taken credit back without sending (any time: a deadline's refund is the
+  same step); `CloseWrite` and `Closing` may run while a `Write` holds
+  credit. The old behaviour is the mutant `write-race` (`make
+  spec-mutants`: TLC finds data after the FIN).
+- Test: `TestWriteRacingCloseWriteSendsNothingAfterFIN`: a `Write` of a
+  window + 1000 bytes waits for credit, `CloseWrite` runs, the peer reads
+  to EOF. The `Write` must return the window and `io.ErrClosedPipe`, the
+  peer exactly the window. It fails on the old code (263144, nil).
+
+**Data for a session whose credit is gone is dropped (finding 3).**
+WIRE.md section 5 is right and the code changes: a receiver that keeps
+no credit for a session neither charges nor acknowledges its data, so
+queueing it would buffer bytes outside every window bound; and the bytes
+are past a close or an abort this side sent, so no reader should see
+them. `Conn.next` marks a data frame of a session the Credit does not
+know, and `Mux.data` drops it as it drops one of a session it does not
+know. Model: `RecvData` drops (no queue, no `dlv`), and the FIN check of
+`RecvClose` applies while the receiver's credit lives.
+
+**Only a ping buffered after the GOAWAY is the drain barrier's (finding
+5).** The ping's time is read under `wmu` (`Conn.control`), and once
+`goAwayAt` is set (also under `wmu`, when the GOAWAY is buffered) it is at
+least `goAwayAt + 1`; a pong counts when its time is past `goAwayAt`
+(`>`, not `>=`). A ping buffered before the GOAWAY was timed at or before
+`goAwayAt`, one after it past it: the order of the buffer, not the
+clock's resolution, decides. Test: `TestPingBeforeGoAwayIsNotTheBarrier`
+puts a ping and the GOAWAY on the wire with the same clock reading
+(`goAwayAt` set to the ping's time) and checks that its pong does not
+close `Drained`, and that the next ping's does.
+
 ## Findings
 
 What writing the model and checking it against the code found (the pilot
