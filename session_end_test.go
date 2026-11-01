@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -242,5 +243,73 @@ func TestSessionEndStopsDeadlineTimers(t *testing.T) {
 	_ = s.SetDeadline(time.Now().Add(time.Hour))
 	if armed() {
 		t.Fatal("a deadline set after the session ended armed a timer")
+	}
+}
+
+// waitCreditWait waits until a goroutine is blocked in Credit.acquire
+// (a Write waiting for credit), by its stack: no clock involved.
+func waitCreditWait(t *testing.T) {
+	t.Helper()
+	buf := make([]byte, 1<<20)
+	for end := time.Now().Add(10 * time.Second); time.Now().Before(end); time.Sleep(time.Millisecond) {
+		for _, g := range strings.Split(string(buf[:runtime.Stack(buf, true)]), "\n\n") {
+			if strings.Contains(g, " [select") && strings.Contains(g, "link.(*Credit).acquire") {
+				return
+			}
+		}
+	}
+	t.Fatal("no Write waits for credit")
+}
+
+// A Write waiting for credit when CloseWrite runs sends nothing after the
+// FIN: it returns what it sent before and io.ErrClosedPipe, and the peer
+// reads exactly that, then io.EOF (spec/README.md "Design of the fixes").
+// The code before returned a window + 1000, nil while the peer read the
+// window.
+func TestWriteRacingCloseWriteSendsNothingAfterFIN(t *testing.T) {
+	s, p := openPair(t, v2cfg, v2cfg)
+	type res struct {
+		n   int
+		err error
+	}
+	done := make(chan res, 1)
+	go func() {
+		n, err := s.Write(make([]byte, testWindow+1000))
+		done <- res{n, err}
+	}()
+	waitCreditWait(t) // the window is sent; the Write waits for the rest's credit
+	if err := s.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	b, err := io.ReadAll(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := <-done
+	if len(b) != testWindow || r.n != testWindow || !errors.Is(r.err, io.ErrClosedPipe) {
+		t.Fatalf("peer read %d bytes; Write returned %d, %v; want %d both and io.ErrClosedPipe", len(b), r.n, r.err, testWindow)
+	}
+}
+
+// Data for a session whose credit ended here (its CLOSE or ABORT on the
+// way, Mux.cut) is dropped, as WIRE.md section 5 says: never charged,
+// never read.
+func TestMuxDropsDataOfASessionWithoutCredit(t *testing.T) {
+	c, l := v2pair(t, v2cfg, v2cfg)
+	got := make(chan *Session, 1)
+	go func() { _ = NewMux(l).Serve(func(_ []byte, s *Session) { got <- s }) }()
+	if err := c.SendOpen("1", []byte("h")); err != nil {
+		t.Fatal(err)
+	}
+	_ = c.Flush()
+	s := <-got
+	l.credit.Forget("1") // as Conn.sendClose and Conn.sendAbort do before their frame
+	for _, err := range []error{c.SendData("1", []byte("late")), c.SendClose("1", true), c.Flush()} {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if b, err := io.ReadAll(s); err != nil || len(b) != 0 {
+		t.Fatalf("read %q, %v; want nothing, then io.EOF", b, err)
 	}
 }

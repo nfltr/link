@@ -6,6 +6,7 @@ package link
 import (
 	"encoding/binary"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"runtime"
@@ -309,12 +310,19 @@ func (wd *writeDeadline) expired() bool { return wd != nil && wd.past.Load() }
 // bounded by wd: past it, it returns os.ErrDeadlineExceeded with the
 // frame not buffered. With flush it then flushes under the same lock, and
 // flushErr is Flush's: one lock per small Write, not two (P5).
-func (c *Conn) sendData(sid string, data []byte, wd *writeDeadline, flush bool) (flushErr, err error) {
+// It buffers nothing once the session's write side closed (wclosed, set
+// before CloseWrite buffers its CLOSE) or its credit ended (before every
+// other CLOSE or ABORT is buffered): checked under wmu, so no data
+// follows this side's FIN (spec/README.md "Design of the fixes").
+func (c *Conn) sendData(sid string, data []byte, wd *writeDeadline, wclosed *atomic.Bool, flush bool) (flushErr, err error) {
 	if len(sid) > MaxSID {
 		return nil, errSID
 	}
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
+	if wclosed.Load() || !c.credit.known(sid) {
+		return nil, io.ErrClosedPipe
+	}
 	if err := c.dataLocked(sid, data, wd); err != nil {
 		return nil, err
 	}
@@ -556,10 +564,18 @@ func (c *Conn) GoAway(drain time.Duration, reason string) error {
 
 // ping sends a ping now (its pong arrives after every frame the peer sent
 // before it read this one).
-func (c *Conn) ping() {
-	var b [pingLen]byte
-	binary.BigEndian.PutUint64(b[:], uint64(time.Since(c.t0))) // #nosec G115 -- a duration since t0 is positive
-	c.control(typePing, b[:])
+func (c *Conn) ping() { c.control(typePing, nil) }
+
+// pingTime is a ping's body, its time, read under wmu: at or before
+// goAwayAt for a ping buffered before the GOAWAY, past it (at least
+// goAwayAt + 1, whatever the clock's resolution) for one after, so only
+// the latter's pong closes Drained (spec/README.md, finding 5).
+func (c *Conn) pingTime() []byte {
+	t := int64(time.Since(c.t0))
+	if at := c.goAwayAt.Load(); at > 0 {
+		t = max(t, at+1)
+	}
+	return binary.BigEndian.AppendUint64(make([]byte, 0, pingLen), uint64(t)) // #nosec G115 -- a duration since t0 is positive
 }
 
 // Drained is closed once the peer answered a ping this side
@@ -987,10 +1003,12 @@ func (c *Conn) next() (rframe, error) {
 		}
 		if ok {
 			if n := len(f.Data); n > 0 {
-				if err := c.credit.receivedSID(f.sid, n, c.chain()); err != nil {
+				known, err := c.credit.receivedSID(f.sid, n, c.chain())
+				if err != nil {
 					c.lost(err)
 					return rframe{}, err
 				}
+				f.known = known
 			}
 			return f, nil
 		}
@@ -1161,7 +1179,8 @@ func (c *Conn) recv() (rframe, bool, error) {
 			}
 		} else {
 			sent := time.Duration(binary.BigEndian.Uint64(b)) // #nosec G115 -- our own ping's time
-			if at := c.goAwayAt.Load(); at > 0 && int64(sent) >= at {
+			// Past goAwayAt: a ping buffered after our GOAWAY (pingTime).
+			if at := c.goAwayAt.Load(); at > 0 && int64(sent) > at {
 				c.drainedOnce.Do(func() { close(c.drained) })
 			}
 			if traceOn {
@@ -1261,6 +1280,9 @@ func (c *Conn) keepAlive() {
 func (c *Conn) control(typ byte, b []byte) {
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
+	if typ == typePing {
+		b = c.pingTime()
+	}
 	if typ == typePong && c.wbuf != nil && len(*c.wbuf) == c.pongEnd {
 		copy((*c.wbuf)[c.pongEnd-pingLen:], b)
 		if traceOn {
@@ -1275,7 +1297,7 @@ func (c *Conn) control(typ byte, b []byte) {
 		e := traceEvent{ev: "Pong"}
 		if typ == typePing {
 			e.ev = "Ping"
-			if at := c.goAwayAt.Load(); at > 0 && int64(binary.BigEndian.Uint64(b)) >= at { // #nosec G115 -- our own time
+			if at := c.goAwayAt.Load(); at > 0 && int64(binary.BigEndian.Uint64(b)) > at { // #nosec G115 -- our own time
 				e.n = 1
 			}
 		}

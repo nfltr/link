@@ -114,8 +114,10 @@ A session is a pair of byte streams identified by its sid.
   protocol error (`ErrFull`). An open of an id that is already open starts
   it again: the old session ends.
 - **Data.** Data frames carry a session's bytes in order, on credit.
-  Data for a session the receiver does not know is dropped and not
-  charged (it may have crossed a close).
+  Data for a session the receiver does not know, or whose credit ended
+  there (it sent a close or abort of it), is dropped and not charged (it
+  may have crossed a close). No data follows a side's own close of a
+  session.
 - **Close.** A close frame's code:
   - `0`: the sender neither sends nor reads more of the session; its
     credit ends on both sides.

@@ -220,13 +220,14 @@ func (m *Mux) Serve(accept func(open []byte, s *Session)) error {
 // whose reader is behind holds its bytes packed, not a buffer per frame
 // (docs/performance.md, P3).
 // A view of the read buffer is copied; data of a session this side does
-// not know is dropped.
+// not know, or keeps no credit for, is dropped.
 func (m *Mux) data(f rframe) {
 	m.mu.Lock()
 	s := m.sess[string(f.sid)]
 	m.mu.Unlock()
 	switch {
-	case s == nil:
+	case s == nil || !f.known: // no credit: past this side's CLOSE or ABORT (WIRE.md section 5)
+		s = nil
 	case s.q.Append(f.Data):
 	case f.view:
 		b := newChunk(len(f.Data))
@@ -866,9 +867,9 @@ func (s *Session) send(b []byte, flush bool) (int, error) {
 		if err := s.acquire(n); err != nil {
 			return len(b) - len(p), err
 		}
-		flushErr, err := s.m.c.sendData(s.id, p[:n], &s.wd, flush && n == len(p))
+		flushErr, err := s.m.c.sendData(s.id, p[:n], &s.wd, &s.halfClosed, flush && n == len(p))
 		if err != nil {
-			if errors.Is(err, os.ErrDeadlineExceeded) {
+			if errors.Is(err, os.ErrDeadlineExceeded) || err == io.ErrClosedPipe {
 				s.m.c.credit.refund(s.id, n) // nothing of it was sent
 			}
 			return len(b) - len(p), err

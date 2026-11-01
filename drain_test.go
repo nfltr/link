@@ -6,6 +6,7 @@ package link
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"io"
 	"net"
@@ -384,5 +385,65 @@ func TestDrainDeadlineAbortsReachABusyPeer(t *testing.T) {
 			t.Fatalf("run %d: the held session at the drain's deadline: %v, want aborted drain deadline", i, err)
 		}
 		close(hold)
+	}
+}
+
+// A ping buffered before the GOAWAY is not the drain barrier's, even with
+// the GOAWAY's clock reading (a coarse clock); the next one is (spec/README.md
+// "Design of the fixes", finding 5).
+func TestPingBeforeGoAwayIsNotTheBarrier(t *testing.T) {
+	a, raw := net.Pipe()
+	c := newTestConn(a, testWindow, testWindow)
+	t.Cleanup(func() { _ = c.Close(); _ = raw.Close() })
+	recv := make(chan Frame)
+	go func() {
+		for {
+			f, err := c.Recv()
+			if err != nil {
+				return
+			}
+			recv <- f
+		}
+	}()
+	// readPing reads c's next frame, a ping, and returns its time.
+	readPing := func() []byte {
+		b := make([]byte, 5+pingLen)
+		if _, err := io.ReadFull(raw, b); err != nil || b[4] != typePing {
+			t.Fatalf("ping: %x, %v", b, err)
+		}
+		return b[5:]
+	}
+	// pong answers at, then a message after it: once Recv returns the
+	// message, c applied the pong.
+	pong := func(at []byte) {
+		if _, err := raw.Write(append(frame(pingLen, typePong, at...), frame(1, typeMsg, 'm')...)); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-recv:
+		case <-time.After(10 * time.Second): // a hang's bound
+			t.Fatal("the message after the pong never came")
+		}
+	}
+
+	c.ping()
+	at := readPing()
+	c.goAwayAt.Store(int64(binary.BigEndian.Uint64(at))) // GoAway read the clock as the ping did
+	errc := make(chan error, 1)
+	go func() { errc <- c.GoAway(time.Second, "") }()
+	if _, err := io.ReadFull(raw, make([]byte, 5+4)); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-errc; err != nil {
+		t.Fatal(err)
+	}
+	pong(at)
+	if closed(c.Drained()) {
+		t.Fatal("the pong of a ping buffered before the GOAWAY closed Drained")
+	}
+	c.ping()
+	pong(readPing())
+	if !closed(c.Drained()) {
+		t.Fatal("the pong of a ping buffered after the GOAWAY left Drained open")
 	}
 }

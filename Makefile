@@ -150,9 +150,13 @@ hooks:
 # configurations; spec-mutants: every bug put back is caught; spec-traces:
 # tests run with -tags linktrace, each trace checked against the model.
 # Java and tla2tools.jar: scripts/fetch-tla.sh (cached, sha256-pinned).
-.PHONY: spec spec-mutants spec-traces
+.PHONY: spec spec-invariants spec-mutants spec-traces
 spec:
 	./scripts/spec.sh check
+
+# spec-invariants: spec without the liveness properties (about a minute; CI).
+spec-invariants:
+	./scripts/spec.sh invariants
 
 spec-mutants:
 	./scripts/spec.sh mutants

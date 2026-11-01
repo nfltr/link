@@ -41,6 +41,7 @@ Step ==
       [] E.ev = "Accept" -> Accept(P, S)
       [] E.ev = "Acquire" -> Acquire(P, S, E.n) /\ cr'[P][S].n = E.credit
       [] E.ev = "SendData" -> pend[P][S] = E.n /\ SendData(P, S)
+      [] E.ev = "Refund" -> pend[P][S] = E.n /\ Refund(P, S) /\ (E.credit >= 0 => cr'[P][S].n = E.credit)
       [] E.ev = "Forget" -> Closing(P, S, E.n)
       [] E.ev = "Close" /\ E.n = Half -> CloseWrite(P, S)
       [] E.ev = "Close" /\ E.n # Half -> ss[P][S].closing = E.n + 1 /\ End(P, S)

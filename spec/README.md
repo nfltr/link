@@ -62,7 +62,8 @@ Per side `p` and session `s`:
 | `Open(p, s)` | `Conn.sendOpen` (after the OPEN/CHAIN-OPEN is buffered) |
 | `Accept(p, s)` | `Conn.sendAccept`, `Conn.acceptLocked` |
 | `Acquire(p, s, n)` | `Credit.acquire` (credit taken) |
-| `SendData(p, s)` | `Conn.dataLocked` (a data frame buffered) |
+| `SendData(p, s)` | `Conn.dataLocked` (a data frame buffered; `Conn.sendData` checks the write side and the credit first) |
+| `Refund(p, s)` | `Credit.refund` (a `Write`'s credit given back, nothing sent: its write side closed, its credit ended or its deadline passed) |
 | `CloseWrite(p, s)` | `Session.CloseWrite` -> `Conn.sendClose` code 1 |
 | `Closing(p, s, code)` | `Conn.sendClose` (code 0 from `Session.Close`, 2 from `Session.Reset`) and `Conn.sendAbort` (3, from `Mux.cut`): the credit forgotten (`Credit.forget`) |
 | `End(p, s)` | the same, once the CLOSE/ABORT is buffered (it may wait for room between the two) |
@@ -129,11 +130,11 @@ violation for each:
   (the FIN overtakes data);
 - `grant-early`: a window update counts bytes not yet read (credit past
   the window);
-- `open-after-goaway`: a side opens after it read the peer's GOAWAY.
-
-It also checks `WriteRace` (a `Close` or `CloseWrite` while a `Write` of
-the same session runs in another goroutine, which `net.Conn` allows) and
-reports what TLC finds: see "Findings".
+- `open-after-goaway`: a side opens after it read the peer's GOAWAY;
+- `write-race`: `Conn.sendData` does not look at the write side or the
+  credit, so a `Write` that took credit before a `CloseWrite` or `Close`
+  of another goroutine sends after its FIN (finding 1, the code before
+  its fix).
 
 ## Trace validation
 
@@ -220,7 +221,8 @@ close `Drained`, and that the next ping's does.
 ## Findings
 
 What writing the model and checking it against the code found (the pilot
-of 2026-11-01). None is fixed here.
+of 2026-11-01). 1, 3, 4 and 5 are fixed (2026-11-02, "Design of the
+fixes"); 2 stays, modelled.
 
 1. **A Write racing a CloseWrite sends data after the FIN** (code; TLC,
    `WriteRace`). `Session.Write` checks `halfClosed` in `acquire`, then
@@ -237,7 +239,8 @@ of 2026-11-01). None is fixed here.
    again.) `Close` has the same window (the
    bytes go to a session the peer forgot), where losing them is what
    closing means. A fix would check `halfClosed` under `wmu` in
-   `sendData`, or let `CloseWrite` wait for a running Write.
+   `sendData`, or let `CloseWrite` wait for a running Write. **Fixed**:
+   the first ("Design of the fixes"); the model's `write-race` mutant.
 2. **The credit ends before the CLOSE is buffered** (model; a rejected
    trace of `TestMuxSessions`). `Conn.sendClose` and `Conn.sendAbort`
    forget the credit, then buffer the frame, which may wait for room in
@@ -250,10 +253,11 @@ of 2026-11-01). None is fixed here.
    Credit: after an abort (`Mux.cut`) or during 2, received bytes are
    readable though never charged or acknowledged. Bounded by the peer's
    credit; WIRE.md section 5 says such data is dropped, which holds only
-   once the Mux dropped the session.
+   once the Mux dropped the session. **Fixed** in the code: dropped, as
+   WIRE.md says ("Design of the fixes").
 4. **`Credit.Consumed`'s comment says half a window** ("a window update
    goes out once half a window has"); the code and WIRE.md section 7 use a
-   quarter.
+   quarter. **Fixed**: the comment says a quarter.
 5. **A liveness ping can count as the drain barrier's** (review while
    mapping `Ping`). `Conn.recv` takes a pong as the barrier's when the
    ping's time is `>= goAwayAt`. A keepAlive ping timed just before
@@ -263,7 +267,9 @@ of 2026-11-01). None is fixed here.
    peer drained before the peer read the GOAWAY, and an OPEN the peer
    sends after it would be refused. Deciding under `wmu` whether a ping
    follows the GOAWAY (a counter of pings buffered, say), not by clock
-   readings, closes it. Low odds; not seen in a trace.
+   readings, closes it. Low odds; not seen in a trace. **Fixed**: the
+   ping's time is read under `wmu` and past `goAwayAt` only after the
+   GOAWAY ("Design of the fixes").
 
 ## Measurements (2026-11-01)
 

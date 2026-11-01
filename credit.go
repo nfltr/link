@@ -243,7 +243,15 @@ func (c *Credit) acquire(sid string, n int, flush func() error, stop <-chan stru
 func (c *Credit) refund(sid string, n int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if s := c.sessions[sid]; s != nil {
+	s := c.sessions[sid]
+	if traceOn {
+		e := traceEvent{ev: "Refund", sid: sid, n: n, credit: -1}
+		if s != nil {
+			e.credit = s.n + n
+		}
+		traceEv(c.tr, e)
+	}
+	if s != nil {
 		s.n += n
 		select {
 		case s.wake <- struct{}{}:
@@ -253,7 +261,7 @@ func (c *Credit) refund(sid string, n int) {
 }
 
 // Consumed acknowledges n bytes of sid that left the receive buffer; a
-// window update goes out once half a window has.
+// window update goes out once a quarter window has.
 func (c *Credit) Consumed(sid string, n int) {
 	c.mu.Lock()
 	s := c.sessions[sid]
@@ -290,14 +298,22 @@ func (c *Credit) Received(sid string, n int) error {
 	return c.chargeLocked(c.sessions[sid], n, false)
 }
 
+// known reports whether sid's credit lives (not forgotten).
+func (c *Credit) known(sid string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.sessions[sid] != nil
+}
+
 // receivedSID is Received of a received frame's sid (no copy of it);
 // answers: data on a session this side opened is ErrFrame before the
-// peer's answer (FeatureChain).
-func (c *Credit) receivedSID(sid []byte, n int, answers bool) error {
+// peer's answer (FeatureChain). known is false for a session this side
+// keeps no credit for (the data is not charged).
+func (c *Credit) receivedSID(sid []byte, n int, answers bool) (known bool, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	s := c.sessions[string(sid)]
-	err := c.chargeLocked(s, n, answers)
+	err = c.chargeLocked(s, n, answers)
 	if traceOn && err == nil {
 		e := traceEvent{ev: "Recv", t: "data", sid: string(sid), n: n, credit: -1}
 		if s != nil {
@@ -305,7 +321,7 @@ func (c *Credit) receivedSID(sid []byte, n int, answers bool) error {
 		}
 		traceEv(c.tr, e)
 	}
-	return err
+	return s != nil, err
 }
 
 // chargeLocked charges n bytes of data to s (nil: a session this side

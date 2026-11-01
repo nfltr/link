@@ -5,6 +5,7 @@
 # spec.sh check|mutants|traces: the TLA+ model of spec/ (spec/README.md).
 #   check    TLC on spec/Link.cfg and spec/LinkDrain.cfg: every invariant and
 #            liveness property.
+#   invariants  the same, invariants only (about a minute: CI's).
 #   mutants  each Mutant of Link.tla must be caught (a TLC violation).
 #   traces   the tests in TRACE_TESTS and TRACE_DEAD_TESTS run with -tags
 #            linktrace, each connection's trace checked against the model
@@ -41,7 +42,6 @@ CONSTANTS
     NoSid = ""
     Chunk = 0
     Mutant = "none"
-    WriteRace = TRUE
     MaxBytes = 0
     MaxPings = 0
     Crash = 0
@@ -61,11 +61,15 @@ CFG
 }
 
 case ${1:-} in
-check)
+check | invariants)
 	for cfg in Link.cfg LinkDrain.cfg; do
-		echo "== $cfg"
+		echo "== $cfg ($1)"
+		if [ "$1" = invariants ]; then
+			sed '/^PROPERTIES/,$d' "spec/$cfg" >"$work/$cfg"
+			cfg=$work/$cfg
+		fi
 		st=0
-		tlc $cfg MCLink.tla >"$work/check.out" 2>&1 || st=$?
+		tlc "$cfg" MCLink.tla >"$work/check.out" 2>&1 || st=$?
 		grep -E '^[0-9]+ states generated|depth of|Finished in|Error|violated' "$work/check.out"
 		if [ $st != 0 ]; then
 			tail -60 "$work/check.out"
@@ -92,11 +96,11 @@ mutants)
 	mutant Link.cfg 'Mutant = "none"' 'Mutant = "fin-skips-queue"'
 	mutant Link.cfg 'Mutant = "none"' 'Mutant = "grant-early"'
 	mutant LinkDrain.cfg 'Mutant = "none"' 'Mutant = "open-after-goaway"'
-	mutant Link.cfg 'WriteRace = FALSE' 'WriteRace = TRUE'
+	mutant Link.cfg 'Mutant = "none"' 'Mutant = "write-race"'
 	exit $fail
 	;;
 traces)
-	tests=${TRACE_TESTS:-'^(TestSessionCleanEnd|TestSessionReset|TestMuxSlowSessionIsolated|TestGoAwayDrainKeepsTails|TestCrossedOpenRunsOnTheLeavingConnection|TestMuxV2GoAway|TestSessionCutWithItsConnection|TestMuxSessions|TestMuxV2Sessions)$'}
+	tests=${TRACE_TESTS:-'^(TestSessionCleanEnd|TestSessionReset|TestMuxSlowSessionIsolated|TestGoAwayDrainKeepsTails|TestCrossedOpenRunsOnTheLeavingConnection|TestMuxV2GoAway|TestSessionCutWithItsConnection|TestMuxSessions|TestMuxV2Sessions|TestWriteRacingCloseWriteSendsNothingAfterFIN)$'}
 	mkdir -p "$work/traces"
 	LINKTRACE=$work/traces go test -tags linktrace -count=1 -run "$tests" . >"$work/test.out" 2>&1 || {
 		cat "$work/test.out"
@@ -136,7 +140,7 @@ trace)
 	trace "$2"
 	;;
 *)
-	echo "usage: spec.sh check|mutants|traces|trace FILE" >&2
+	echo "usage: spec.sh check|invariants|mutants|traces|trace FILE" >&2
 	exit 2
 	;;
 esac

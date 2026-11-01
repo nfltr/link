@@ -12,7 +12,6 @@ CONSTANTS
     Chain,       \* both sides announced FeatureChain: opens are answered
     NoSid,       \* the sid of frames that carry none
     Mutant,      \* "none", or a bug put back on purpose (README "Mutants")
-    WriteRace,   \* model checking: a Close/CloseWrite may run during a Write
     MaxBytes,    \* model checking: [Sides -> [Sids -> Nat]], bytes each side writes on each session
     Drain,       \* model checking: the sides that may send GOAWAY
     Ends,        \* model checking: the close codes used (Half, Full, RST; ABT: Mux.cut after a GOAWAY)
@@ -125,29 +124,40 @@ Accept(p, s) ==                                  \* Session.autoAccept -> Conn.s
     /\ UNCHANGED <<cr, pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
                    pings, wshut, closed, down, appDone, crashes, err>>
 
+\* Session.acquire looks at halfClosed before it waits, not after: credit
+\* may come after this side's FIN (SendData then refuses it).
 Acquire(p, s, n) ==                              \* Session.acquire -> Credit.acquire
-    /\ ss[p][s].st = "open" /\ ~ss[p][s].wfin /\ pend[p][s] = 0 /\ Answered(p, s)
+    /\ ss[p][s].st = "open" /\ pend[p][s] = 0 /\ Answered(p, s)
     /\ cr[p][s].on /\ n > 0 /\ cr[p][s].n >= n
     /\ cr' = [cr EXCEPT ![p][s].n = @ - n]
     /\ pend' = [pend EXCEPT ![p][s] = n]
     /\ UNCHANGED <<out, ss, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
                    pings, wshut, closed, down, appDone, crashes, err>>
 
+\* Conn.sendData buffers nothing once the write side closed or the credit
+\* ended (checked under wmu); mutant write-race: it did not look.
 SendData(p, s) ==                                \* Conn.sendData -> dataLocked
     /\ pend[p][s] > 0
+    /\ Mutant = "write-race" \/ (~ss[p][s].wfin /\ cr[p][s].on)
     /\ Send(p, Frame("data", s, pend[p][s]))
     /\ sent' = [sent EXCEPT ![p][s] = @ + (IF CanSend(p) THEN pend[p][s] ELSE 0)]
     /\ pend' = [pend EXCEPT ![p][s] = 0]
     /\ UNCHANGED <<cr, ss, gpend, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
                    pings, wshut, closed, down, appDone, crashes, err>>
 
-\* A close during a Write (pend > 0) is the application's race; WriteRace
-\* lets the model take it.
-NoWriteInFlight(p, s) == WriteRace \/ pend[p][s] = 0
+\* A Write gives back the credit it took and sends nothing: the write side
+\* closed or the credit ended meanwhile (Conn.sendData refused it), or its
+\* deadline passed (not modelled otherwise). Credit.refund.
+Refund(p, s) ==
+    /\ pend[p][s] > 0
+    /\ cr' = IF cr[p][s].on THEN [cr EXCEPT ![p][s].n = @ + pend[p][s]] ELSE cr
+    /\ pend' = [pend EXCEPT ![p][s] = 0]
+    /\ UNCHANGED <<out, ss, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
+                   pings, wshut, closed, down, appDone, crashes, err>>
 
 CloseWrite(p, s) ==                              \* Session.CloseWrite
     /\ ss[p][s].st = "open" /\ ~ss[p][s].wfin /\ ss[p][s].closing = 0
-    /\ Answered(p, s) /\ NoWriteInFlight(p, s)
+    /\ Answered(p, s)
     /\ SendClose(p, s, Half)
     /\ IF ss[p][s].rfin                          \* both halves: drop
        THEN /\ ss' = [ss EXCEPT ![p][s].wfin = TRUE, ![p][s].st = "gone", ![p][s].pclosed = TRUE]
@@ -165,7 +175,7 @@ CloseWrite(p, s) ==                              \* Session.CloseWrite
 \* abort: Mux.cut leaves the session to the connection's close).
 Closing(p, s, code) ==
     /\ ss[p][s].st = "open" /\ ss[p][s].closing = 0
-    /\ IF code = ABT THEN cr[p][s].on ELSE Answered(p, s) /\ NoWriteInFlight(p, s)
+    /\ IF code = ABT THEN cr[p][s].on ELSE Answered(p, s)
     /\ cr' = Forget(p, s)
     /\ ss' = [ss EXCEPT ![p][s].closing = code + 1]
     /\ appDone' = [appDone EXCEPT ![p][s] = @ \/ code # ABT]
@@ -260,7 +270,7 @@ RecvData(p, f) ==                                \* Conn.next charges, Mux.data 
                  /\ UNCHANGED err
             ELSE /\ UNCHANGED <<ss, dlv>>
                  /\ IF ss[p][s].st = "open" THEN Flag("data after FIN") ELSE UNCHANGED err
-    IN IF ~c.on THEN queue /\ UNCHANGED cr               \* not charged
+    IN IF ~c.on THEN UNCHANGED <<cr, ss, dlv, err>>      \* no credit here: dropped, not charged
        ELSE IF Chain /\ Owner[s] = p /\ ~ss[p][s].acc
        THEN Flag("data before ACCEPT") /\ UNCHANGED <<cr, ss, dlv>>
        ELSE IF f.n > Win[p] - c.held
@@ -284,7 +294,7 @@ RecvClose(p, f) ==
         x == ss[p][s]
         cr1 == IF f.n # Half THEN Forget(p, s) ELSE cr  \* Conn.recv
     IN IF x.st # "open" THEN cr' = cr1 /\ UNCHANGED <<ss, err>>
-       ELSE /\ IF dlv[p][s] # f.at THEN Flag("FIN overtook data") ELSE UNCHANGED err
+       ELSE /\ IF dlv[p][s] # f.at /\ cr[p][s].on THEN Flag("FIN overtook data") ELSE UNCHANGED err
             /\ IF f.n # Half
                THEN ss' = [ss EXCEPT ![p][s].st = "gone", ![p][s].pclosed = TRUE] /\ cr' = cr1
                ELSE IF x.wfin
@@ -369,6 +379,7 @@ Next ==
     \/ \E p \in Sides, s \in Sids :
         \/ AppStep(p, s)
         \/ SendData(p, s)
+        \/ Refund(p, s)
         \/ SendWindow(p, s)
         \/ End(p, s)
     \/ \E p \in Sides :
@@ -392,7 +403,8 @@ Fairness ==
         /\ WF_vars(LeaveWhenDrained(p))
         /\ WF_vars(EOFClose(p))
         /\ WF_vars(Down(p))
-        /\ \A s \in Sids : WF_vars(SendData(p, s)) /\ WF_vars(SendWindow(p, s)) /\ WF_vars(End(p, s))
+        /\ \A s \in Sids : WF_vars(SendData(p, s)) /\ WF_vars(Refund(p, s))
+                          /\ WF_vars(SendWindow(p, s)) /\ WF_vars(End(p, s))
 
 Spec == Init /\ [][Next]_vars /\ Fairness
 

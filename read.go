@@ -33,8 +33,9 @@ const (
 // the read buffers, valid until the next read.
 type rframe struct {
 	Frame
-	sid  []byte // a data frame's; nil for other frames
-	view bool
+	sid   []byte // a data frame's; nil for other frames
+	view  bool
+	known bool // a data frame's session has credit here (Credit.receivedSID)
 }
 
 // recvIdle gives the read-ahead buffer back at a frame boundary with

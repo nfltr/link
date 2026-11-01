@@ -8,6 +8,21 @@ version 2 unless an entry says otherwise.
 
 ## Unreleased
 
+- Fixes (the wire and the API unchanged), found by the TLA+ model
+  (`spec/README.md` "Findings"): a `Session.Write` that waited for credit
+  while another goroutine called `CloseWrite` (or `Close`, `Reset`) sent
+  its rest after the FIN and returned its whole length with a nil error,
+  while the peer dropped those bytes; it now sends nothing after this
+  side's CLOSE or ABORT and returns the bytes sent before with
+  `io.ErrClosedPipe`. A `Mux` queued data of a session whose credit had
+  ended (after its own CLOSE or ABORT was decided), readable though never
+  acknowledged; it drops it, as WIRE.md section 5 says. A liveness ping
+  with the GOAWAY's clock reading, buffered before it, could pass as the
+  drain barrier's ping (`Drained` before the peer read the GOAWAY); a
+  ping's time is now read when it is buffered, and only one after the
+  GOAWAY counts. `make ci` runs `make spec-mutants` and
+  `make spec-invariants`; a weekly job runs `make spec` and
+  `make spec-traces`.
 - Added (the wire and the API unchanged): a TLA+ model of the session
   protocol (`spec/`, its design in `spec/README.md`), model checked by
   `make spec` and `make spec-mutants`, and trace mode, the build tag
