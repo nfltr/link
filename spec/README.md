@@ -156,3 +156,68 @@ fast preset) and checks every connection's trace with `Trace.tla`, one TLC
 per trace. `TraceLog.tla` holds the parsed file: TLC evaluates an
 extended module's constants first, so the file is read once (defined in
 `Trace.tla` itself, it was read again for each reference, quadratic).
+
+## Findings
+
+What writing the model and checking it against the code found (the pilot
+of 2026-11-01). None is fixed here.
+
+1. **A Write racing a CloseWrite sends data after the FIN** (code; TLC,
+   `WriteRace`). `Session.Write` checks `halfClosed` in `acquire`, then
+   takes credit and buffers the frame without looking again; a
+   `CloseWrite` from another goroutine in between buffers its CLOSE
+   (code 1) first. The peer drops the bytes (its queue is closed) and
+   still charges them, while the `Write` returns their count and no error.
+   `net.Conn` lets Write and CloseWrite run at once; TCP's answer to that
+   race is EPIPE, not a silent loss. Reproduced deterministically: a
+   `Write` of a window + 1000 bytes waits for credit, `CloseWrite` runs,
+   the peer reads: the `Write` returns 263144, nil; the peer reads 262144
+   bytes, then a clean `io.EOF`. (The waiting `Credit.acquire` returns ok
+   when credit comes, and `Session.acquire` does not look at `halfClosed`
+   again.) `Close` has the same window (the
+   bytes go to a session the peer forgot), where losing them is what
+   closing means. A fix would check `halfClosed` under `wmu` in
+   `sendData`, or let `CloseWrite` wait for a running Write.
+2. **The credit ends before the CLOSE is buffered** (model; a rejected
+   trace of `TestMuxSessions`). `Conn.sendClose` and `Conn.sendAbort`
+   forget the credit, then buffer the frame, which may wait for room in
+   the write buffer; window updates and data that arrive meanwhile meet an
+   unknown session (ignored, and queued uncharged by the `Mux`). Harmless:
+   the session is ending and the peer's sends stay within its credit. The
+   model has the two steps (`Closing`, `End`).
+3. **Data for a session whose credit is gone is still queued** (model,
+   first counterexample). `Mux.data` queues by `Mux.sess`, not by the
+   Credit: after an abort (`Mux.cut`) or during 2, received bytes are
+   readable though never charged or acknowledged. Bounded by the peer's
+   credit; WIRE.md section 5 says such data is dropped, which holds only
+   once the Mux dropped the session.
+4. **`Credit.Consumed`'s comment says half a window** ("a window update
+   goes out once half a window has"); the code and WIRE.md section 7 use a
+   quarter.
+5. **A liveness ping can count as the drain barrier's** (review while
+   mapping `Ping`). `Conn.recv` takes a pong as the barrier's when the
+   ping's time is `>= goAwayAt`. A keepAlive ping timed just before
+   `GoAway` buffers its frame can carry the same clock reading (the
+   monotonic clock's resolution: about 42 ns on Apple silicon, 100 ns on
+   Windows) and be buffered before the GOAWAY; its pong then marks the
+   peer drained before the peer read the GOAWAY, and an OPEN the peer
+   sends after it would be refused. Deciding under `wmu` whether a ping
+   follows the GOAWAY (a counter of pings buffered, say), not by clock
+   readings, closes it. Low odds; not seen in a trace.
+
+## Measurements (2026-11-01)
+
+On a 10-core arm64 laptop already at load 10 to 16 from other work, every
+run under `taskpolicy -b` (background priority), 4 TLC workers:
+
+| target | result | time |
+|---|---|---|
+| `make spec`, `Link.cfg` | 2,362,156 states, 678,327 distinct, depth 35; invariants and liveness hold | 6 min 42 s (invariants alone: 31 s) |
+| `make spec`, `LinkDrain.cfg` | 1,755,547 states, 485,277 distinct, depth 31; invariants and liveness hold | 8 min 49 s (invariants alone: 16 s) |
+| `make spec-mutants` | 4 of 4 caught, 7 to 9 states deep | 6 s |
+| `make spec-traces` | 13 traces (8 to 1,209 lines), 13 accepted | 55 s |
+
+A dead-peer trace's length depends on how much the sessions moved
+before the cut: 115 to 15,068 lines seen; TLC checks about 40 lines a
+second at background priority (400 at normal priority), one state per
+line.
