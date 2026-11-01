@@ -8,6 +8,12 @@ version 2 unless an entry says otherwise.
 
 ## Unreleased
 
+- Added (the wire and the API unchanged): a TLA+ model of the session
+  protocol (`spec/`, its design in `spec/README.md`), model checked by
+  `make spec` and `make spec-mutants`, and trace mode, the build tag
+  `linktrace`: with `LINKTRACE=<dir>` each connection writes the steps it
+  takes, which `make spec-traces` checks against the model. A build
+  without the tag is unchanged (the recorder is a constant false).
 - Added (the wire unchanged): `HopEvent.Moved`, on the HopAnswered of an
   open `Forward` accepted (link's and peerlink's), reads the bytes the
   join moved so far each way, which HopEnded's In and Out report only at
