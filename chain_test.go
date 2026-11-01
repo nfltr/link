@@ -582,7 +582,10 @@ func TestChainDrainMiddleHop(t *testing.T) {
 			if err := held.Answered(context.Background()); err != nil {
 				t.Fatal(err)
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			// The drain's end comes from cancel once running finished, not
+			// from a wall-clock deadline a loaded machine outlasts; the
+			// deadline only bounds a hang.
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()
 			drained := make(chan error, 1)
 			go func() { drained <- r.links[k-1].lm.Drain(ctx) }()
@@ -592,6 +595,7 @@ func TestChainDrainMiddleHop(t *testing.T) {
 				t.Fatalf("new open: %+v", a)
 			}
 			roundTrip(t, running, 1<<20) // finishes intact
+			cancel()                     // the drain's deadline
 			_, err := io.ReadAll(held)
 			a = errAbort(t, err)
 			if a.Code != CodeDrainDeadline || int(a.Hops) != k-1 {
