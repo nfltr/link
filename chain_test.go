@@ -777,3 +777,50 @@ func TestAbortMsgClipped(t *testing.T) {
 		t.Fatalf("%v %d", err, len(a.Msg))
 	}
 }
+
+// TestChainMovedLive: an accepted open's HopAnswered carries Moved, which
+// reads the bytes each hop's join moved while the session is open, and
+// equals HopEnded's In and Out at its end.
+func TestChainMovedLive(t *testing.T) {
+	r := newChainRig(t, rigOpts{n: 3}, farEcho)
+	s := r.open("echo")
+	if err := s.Answered(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	const n = 1000
+	if _, err := s.Write(make([]byte, n)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadFull(s, make([]byte, n)); err != nil {
+		t.Fatal(err)
+	}
+	moved := func(o *hopObserver) func() (int64, int64) {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+		for _, e := range o.events {
+			if e.Kind == HopAnswered {
+				return e.Moved
+			}
+		}
+		return nil
+	}
+	for h, o := range r.obs {
+		waitUntil(t, func() bool { return moved(o) != nil })
+		f := moved(o)
+		waitUntil(t, func() bool { in, out := f(); return in == n && out == n })
+		if k := o.kinds(); len(k) != 2 {
+			t.Fatalf("hop %d: events %v while the session is open", h+1, k)
+		}
+	}
+	_ = s.Close()
+	r.idle()
+	for h, o := range r.obs {
+		waitUntil(t, func() bool { return len(o.kinds()) == 3 })
+		o.mu.Lock()
+		e := o.events[2]
+		o.mu.Unlock()
+		if in, out := moved(o)(); e.In != in || e.Out != out {
+			t.Errorf("hop %d: HopEnded %d/%d, Moved %d/%d", h+1, e.In, e.Out, in, out)
+		}
+	}
+}

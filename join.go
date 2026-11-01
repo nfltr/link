@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -142,7 +143,7 @@ func Forward(route Route, cfg ForwardConfig) func(header []byte, s *Session) {
 		}
 		if err == nil {
 			_ = in.AcceptPath(inc(out.PathLen()))
-			hop(HopEvent{Kind: HopAnswered, Latency: time.Since(t0)})
+			hop(HopEvent{Kind: HopAnswered, Latency: time.Since(t0), Moved: j.movedBytes})
 			j.answered(true)
 			return
 		}
@@ -204,7 +205,11 @@ type joint struct {
 	err     error     // the Abort that ended it; nil: a clean end
 	pending bool      // Forward waits for the onward answer: direction 0's failure waits (held)
 	held    func()
+	moved   [2]atomic.Int64 // bytes written [0]->[1] and [1]->[0] (HopEvent.Moved)
 }
+
+// movedBytes is HopEvent.Moved.
+func (j *joint) movedBytes() (in, out int64) { return j.moved[0].Load(), j.moved[1].Load() }
 
 func newJoint(in, out *Session, obs Observer, done func(error)) *joint {
 	if debugOn { // the joint owns both now: it ends them
@@ -218,9 +223,10 @@ func newJoint(in, out *Session, obs Observer, done func(error)) *joint {
 // toward the origin it notes the first byte written (j: nil after it, and
 // in the other direction): one branch per batch, a lock once a session.
 type joinWriter struct {
-	s   *Session
-	err error
-	j   *joint
+	s     *Session
+	err   error
+	j     *joint
+	moved *atomic.Int64
 }
 
 func (w *joinWriter) Write(p []byte) (int, error) {
@@ -242,6 +248,9 @@ func (w *joinWriter) WriteBuffers(b [][]byte) (int64, error) {
 }
 
 func (w *joinWriter) wrote(n int) {
+	if n > 0 {
+		w.moved.Add(int64(n))
+	}
 	if w.j != nil && n > 0 {
 		w.j.mu.Lock()
 		w.j.first = time.Now()
@@ -252,7 +261,7 @@ func (w *joinWriter) wrote(n int) {
 
 // dir starts direction i: s[i]'s bytes to s[1-i].
 func (j *joint) dir(i int) {
-	w := &joinWriter{s: j.s[1-i]}
+	w := &joinWriter{s: j.s[1-i], moved: &j.moved[i]}
 	if i == 1 {
 		w.j = j
 	}

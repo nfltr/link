@@ -219,6 +219,11 @@ type HopEvent struct {
 	// first byte, which no caller sees when the join moves the bytes
 	// (since v0.12.0).
 	FirstOut time.Time
+	// Moved is, on the HopAnswered of an accepted open, a reading of the
+	// bytes the join moved so far, origin->far and far->origin: what In
+	// and Out will be, live while the session lasts (a meter's flushes).
+	// One atomic add per batch written; nil on a refusal.
+	Moved func() (in, out int64)
 }
 
 // Answers reports whether the session's connection negotiated

@@ -346,3 +346,52 @@ func TestForwardReportsFirstOut(t *testing.T) {
 		}
 	}
 }
+
+// hopMoved records HopAnswered's Moved and sends HopEnded.
+type hopMoved struct {
+	link.NopObserver
+	moved chan func() (int64, int64)
+	ended chan link.HopEvent
+}
+
+func (o hopMoved) Hop(e link.HopEvent) {
+	switch e.Kind {
+	case link.HopAnswered:
+		o.moved <- e.Moved
+	case link.HopEnded:
+		o.ended <- e
+	}
+}
+
+// TestForwardReportsMovedLive: Moved reads the bytes the join moved
+// while the session is open, each way, and equals HopEnded's In and Out.
+func TestForwardReportsMovedLive(t *testing.T) {
+	in, origin := net.Pipe()
+	out, far := net.Pipe()
+	obs := hopMoved{moved: make(chan func() (int64, int64), 1), ended: make(chan link.HopEvent, 1)}
+	peerlink.Forward(func(context.Context, string, []byte, peerlink.Session) (peerlink.Session, error) {
+		return pipeSession{out}, nil
+	}, link.ForwardConfig{Observer: obs})("", nil, pipeSession{in})
+	moved := <-obs.moved
+	go func() { _, _ = origin.Write([]byte("abc")) }()
+	if _, err := io.ReadFull(far, make([]byte, 3)); err != nil {
+		t.Fatal(err)
+	}
+	go func() { _, _ = far.Write([]byte("hello")) }()
+	if _, err := io.ReadFull(origin, make([]byte, 5)); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+		if a, b := moved(); a == 3 && b == 5 {
+			break
+		} else if time.Now().After(deadline) {
+			t.Fatalf("Moved %d/%d while open, want 3/5", a, b)
+		}
+	}
+	_ = far.Close()
+	_ = origin.Close()
+	e := <-obs.ended
+	if a, b := moved(); e.In != a || e.Out != b {
+		t.Fatalf("HopEnded %d/%d, Moved %d/%d", e.In, e.Out, a, b)
+	}
+}

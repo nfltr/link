@@ -1,0 +1,4 @@
+Incompatible changes:
+- HopEvent: old is comparable, new is not
+Compatible changes:
+- HopEvent.Moved: added

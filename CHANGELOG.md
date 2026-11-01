@@ -8,6 +8,12 @@ version 2 unless an entry says otherwise.
 
 ## Unreleased
 
+- Added (the wire unchanged): `HopEvent.Moved`, on the HopAnswered of an
+  open `Forward` accepted (link's and peerlink's), reads the bytes the
+  join moved so far each way, which HopEnded's In and Out report only at
+  the end: a meter reads a long forwarded session's bytes while it lasts.
+  It costs one atomic add per batch a join writes. `HopEvent` is no
+  longer comparable (a func field): a minor release (v0.12.0).
 - Fix (the wire and the API unchanged): peerlink's `Node.Serve` ended on
   any Accept error of `Config.Listener` but a closed listener's; an
   error such as EMFILE (a process at its file descriptor limit) now is

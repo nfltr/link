@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nfltr/link"
@@ -182,7 +183,7 @@ func Forward(route Route, cfg link.ForwardConfig) func(peer string, header []byt
 			if cin != nil {
 				_ = cin.AcceptPath(inc(pathLen))
 			}
-			hop(link.HopEvent{Kind: link.HopAnswered, Latency: time.Since(t0)})
+			hop(link.HopEvent{Kind: link.HopAnswered, Latency: time.Since(t0), Moved: j.movedBytes})
 			j.answered(true)
 			return
 		}
@@ -275,15 +276,20 @@ type joint struct {
 	err     error
 	pending bool // Forward waits for the onward answer: direction 0's failure waits (held)
 	held    func()
+	moved   [2]atomic.Int64 // bytes written [0]->[1] and [1]->[0] (HopEvent.Moved)
 }
+
+// movedBytes is link.HopEvent.Moved.
+func (j *joint) movedBytes() (in, out int64) { return j.moved[0].Load(), j.moved[1].Load() }
 
 // connWriter writes into a joined conn and keeps its write error; a
 // *link.Session takes a batch with one flush. Toward the origin it notes
 // the first byte written (j: nil after it, and in the other direction).
 type connWriter struct {
-	c   net.Conn
-	err error
-	j   *joint
+	c     net.Conn
+	err   error
+	j     *joint
+	moved *atomic.Int64
 }
 
 func (w *connWriter) Write(p []byte) (int, error) {
@@ -296,6 +302,9 @@ func (w *connWriter) Write(p []byte) (int, error) {
 }
 
 func (w *connWriter) wrote(n int64) {
+	if n > 0 {
+		w.moved.Add(n)
+	}
 	if w.j != nil && n > 0 {
 		w.j.mu.Lock()
 		w.j.first = time.Now()
@@ -329,7 +338,7 @@ func (w *connWriter) WriteBuffers(b [][]byte) (int64, error) {
 // dir starts direction i: c[i]'s bytes to c[1-i].
 func (j *joint) dir(i int) {
 	src := j.c[i]
-	w := &connWriter{c: j.c[1-i]}
+	w := &connWriter{c: j.c[1-i], moved: &j.moved[i]}
 	if i == 1 {
 		w.j = j
 	}
