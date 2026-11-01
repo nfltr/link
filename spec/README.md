@@ -288,7 +288,7 @@ background priority; `make spec-traces` ran beside the second check):
 
 | target | result | time |
 |---|---|---|
-| `make spec-invariants` | `Link.cfg` 4,193,746 states, 1,130,912 distinct (the closes during a Write and `Refund` add them), depth 35; `LinkDrain.cfg` as before | 45 s + 21 s (1 min 8 s in all) |
+| `make spec-invariants` | `Link.cfg` 4,230,188 states, 1,130,912 distinct (the closes during a Write and `Refund` add them), depth 35; `LinkDrain.cfg` as before | about 1 min (GitHub's runner: 24 s + 9 s, the job 44 s) |
 | `make spec`, `Link.cfg` | 4,230,188 states, 1,130,912 distinct, depth 35; invariants and liveness hold | 12 min 57 s |
 | `make spec`, `LinkDrain.cfg` | 1,755,547 states, 485,277 distinct, depth 31; invariants and liveness hold | 21 min 41 s |
 | `make spec-mutants` | 5 of 5 caught, 7 to 9 states deep (`write-race`: data after FIN, 8) | 6 s |
