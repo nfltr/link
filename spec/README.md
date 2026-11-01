@@ -280,8 +280,19 @@ run under `taskpolicy -b` (background priority), 4 TLC workers:
 |---|---|---|
 | `make spec`, `Link.cfg` | 2,362,156 states, 678,327 distinct, depth 35; invariants and liveness hold | 6 min 42 s (invariants alone: 31 s) |
 | `make spec`, `LinkDrain.cfg` | 1,755,547 states, 485,277 distinct, depth 31; invariants and liveness hold | 8 min 49 s (invariants alone: 16 s) |
-| `make spec-mutants` | 4 of 4 caught, 7 to 9 states deep | 6 s |
+| `make spec-mutants` | 4 of 4 caught (`WriteRace` then a finding, not a mutant), 7 to 9 states deep | 6 s |
 | `make spec-traces` | 13 traces (8 to 1,209 lines), 13 accepted | 55 s |
+
+After the fixes (2026-11-02, same laptop, load 7 to 11, 4 TLC workers,
+background priority; `make spec-traces` ran beside the second check):
+
+| target | result | time |
+|---|---|---|
+| `make spec-invariants` | `Link.cfg` 4,193,746 states, 1,130,912 distinct (the closes during a Write and `Refund` add them), depth 35; `LinkDrain.cfg` as before | 45 s + 21 s (1 min 8 s in all) |
+| `make spec`, `Link.cfg` | 4,230,188 states, 1,130,912 distinct, depth 35; invariants and liveness hold | 12 min 57 s |
+| `make spec`, `LinkDrain.cfg` | 1,755,547 states, 485,277 distinct, depth 31; invariants and liveness hold | 21 min 41 s |
+| `make spec-mutants` | 5 of 5 caught, 7 to 9 states deep (`write-race`: data after FIN, 8) | 6 s |
+| `make spec-traces` | 14 traces (8 to 15,695 lines), 14 accepted | 16 min 20 s |
 
 A dead-peer trace's length depends on how much the sessions moved
 before the cut: 115 to 15,068 lines seen; TLC checks about 40 lines a

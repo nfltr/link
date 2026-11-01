@@ -70,7 +70,7 @@ check | invariants)
 		fi
 		st=0
 		tlc "$cfg" MCLink.tla >"$work/check.out" 2>&1 || st=$?
-		grep -E '^[0-9]+ states generated|depth of|Finished in|Error|violated' "$work/check.out"
+		grep -E '^[0-9]+ states generated|depth of|Finished in|Error|violated' "$work/check.out" || true
 		if [ $st != 0 ]; then
 			tail -60 "$work/check.out"
 			exit $st
