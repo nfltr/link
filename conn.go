@@ -1173,10 +1173,10 @@ func (c *Conn) recv() (rframe, bool, error) {
 			case <-c.pong:
 			default:
 			}
-			c.pong <- [pingLen]byte(b)
-			if traceOn {
+			if traceOn { // before the send: keepAlive's Pong may log at once
 				traceEv(c.credit.tr, traceEvent{ev: "Recv", t: "ping"})
 			}
+			c.pong <- [pingLen]byte(b)
 		} else {
 			sent := time.Duration(binary.BigEndian.Uint64(b)) // #nosec G115 -- our own ping's time
 			// Past goAwayAt: a ping buffered after our GOAWAY (pingTime).
