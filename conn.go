@@ -236,6 +236,9 @@ func newConnV2(nc net.Conn, cfg Config, peerWindow, peerMaxSessions int, dialer 
 // up records the connection's peer and observer and reports it up.
 // The connection's liveness starts here, once they are set.
 func (c *Conn) up(obs Observer, id Identity) {
+	if traceOn {
+		traceUp(c)
+	}
 	c.id, c.credit.obs = id, obs
 	if obs != nil {
 		obs.ConnUp(id)
@@ -329,6 +332,9 @@ func (c *Conn) dataLocked(sid string, data []byte, wd *writeDeadline) error {
 		if err := c.frameLocked(typeData, sid, data[:n], wd); err != nil {
 			return err
 		}
+		if traceOn {
+			traceEv(c.credit.tr, traceEvent{ev: "SendData", sid: sid, n: n})
+		}
 		data = data[n:]
 	}
 	return nil
@@ -365,12 +371,18 @@ func (c *Conn) sendOpen(sid string, header []byte, ch Chain) error {
 		return ErrFull
 	}
 	c.credit.open(sid, byUs)
+	var err error
 	if c.chain() {
 		b := make([]byte, 0, 1+traceLen+len(header))
 		b = append(append(append(b, ch.Hops), ch.Trace[:]...), header...)
-		return c.frameLocked(typeChainOpen, sid, b, nil)
+		err = c.frameLocked(typeChainOpen, sid, b, nil)
+	} else {
+		err = c.frameLocked(typeOpen, sid, header, nil)
 	}
-	return c.frameLocked(typeOpen, sid, header, nil)
+	if traceOn && err == nil {
+		traceEv(c.credit.tr, traceEvent{ev: "Open", sid: sid})
+	}
+	return err
 }
 
 // sendAccept buffers an ACCEPT frame for sid (FeatureChain): the path
@@ -382,7 +394,11 @@ func (c *Conn) sendAccept(sid string, hops uint8) error {
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
 	c.credit.answering(sid)
-	return c.frameLocked(typeAccept, sid, []byte{hops}, nil)
+	err := c.frameLocked(typeAccept, sid, []byte{hops}, nil)
+	if traceOn && err == nil {
+		traceEv(c.credit.tr, traceEvent{ev: "Accept", sid: sid})
+	}
+	return err
 }
 
 // acceptLocked buffers an ACCEPT for sid before this side's first frame
@@ -392,7 +408,11 @@ func (c *Conn) acceptLocked(sid string, wd *writeDeadline) error {
 	if !c.chain() || !c.credit.answering(sid) {
 		return nil
 	}
-	return c.frameLocked(typeAccept, sid, []byte{0}, wd)
+	err := c.frameLocked(typeAccept, sid, []byte{0}, wd)
+	if traceOn && err == nil {
+		traceEv(c.credit.tr, traceEvent{ev: "Accept", sid: sid})
+	}
+	return err
 }
 
 // sendAbort buffers an ABORT frame for sid (FeatureChain) and ends its
@@ -401,9 +421,16 @@ func (c *Conn) sendAbort(sid string, a *Abort) error {
 	if len(sid) > MaxSID {
 		return errSID
 	}
-	c.credit.Forget(sid)
+	code := 3
+	if a.Refused {
+		code = 4
+	}
+	c.credit.forget(sid, code)
 	c.wmu.Lock()
 	err := c.frameLocked(typeAbort, sid, appendAbort(nil, a), nil)
+	if traceOn && err == nil {
+		traceEv(c.credit.tr, traceEvent{ev: "Close", sid: sid, n: code})
+	}
 	c.wmu.Unlock()
 	if err == nil {
 		c.abort(a, false)
@@ -496,9 +523,13 @@ func (c *Conn) sendClose(sid string, code byte) error {
 		return err
 	}
 	if code != closeHalf {
-		c.credit.Forget(sid)
+		c.credit.forget(sid, int(code))
 	}
-	return c.frameLocked(typeClose, sid, []byte{code}, nil)
+	err := c.frameLocked(typeClose, sid, []byte{code}, nil)
+	if traceOn && err == nil {
+		traceEv(c.credit.tr, traceEvent{ev: "Close", sid: sid, n: int(code)})
+	}
+	return err
 }
 
 // GoAway tells the peer to open no more sessions on this
@@ -514,6 +545,9 @@ func (c *Conn) GoAway(drain time.Duration, reason string) error {
 	defer c.wmu.Unlock()
 	if err := c.frameLocked(typeGoAway, "", append(b, reason...), nil); err != nil {
 		return err
+	}
+	if traceOn {
+		traceEv(c.credit.tr, traceEvent{ev: "GoAway"})
 	}
 	c.goAwayAt.CompareAndSwap(0, int64(time.Since(c.t0)))
 	c.flushLocked()
@@ -559,7 +593,11 @@ func (c *Conn) Err() error {
 func (c *Conn) sendWindow(sid string, n int) {
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
-	if c.frameLocked(typeWindow, "", AppendWindow(make([]byte, 0, 1+len(sid)+4), sid, n), nil) == nil {
+	err := c.frameLocked(typeWindow, "", AppendWindow(make([]byte, 0, 1+len(sid)+4), sid, n), nil)
+	if traceOn { // the grant is spent either way: a closed connection drops the frame
+		traceEv(c.credit.tr, traceEvent{ev: "Window", sid: sid, n: n})
+	}
+	if err == nil {
 		c.flushLocked()
 	}
 }
@@ -1028,6 +1066,9 @@ func (c *Conn) recv() (rframe, bool, error) {
 		}
 		sid := string(b[:l])
 		c.credit.open(sid, byPeer)
+		if traceOn {
+			traceEv(c.credit.tr, traceEvent{ev: "Recv", t: "open", sid: sid})
+		}
 		f := Frame{SID: sid, Open: true, Header: b[l+fixed:]}
 		if fixed > 0 {
 			f.Chain.Hops = b[l]
@@ -1048,6 +1089,9 @@ func (c *Conn) recv() (rframe, bool, error) {
 		}
 		sid := string(b[1 : 1+l])
 		known, err := c.credit.answered(sid)
+		if traceOn && err == nil {
+			traceEv(c.credit.tr, traceEvent{ev: "Recv", t: "accept", sid: sid})
+		}
 		if err != nil || !known {
 			return rframe{}, false, err // an unknown session's: ignored
 		}
@@ -1072,6 +1116,13 @@ func (c *Conn) recv() (rframe, bool, error) {
 			}
 		}
 		c.credit.Forget(sid)
+		if traceOn {
+			code := 3
+			if a.Refused {
+				code = 4
+			}
+			traceEv(c.credit.tr, traceEvent{ev: "Recv", t: "close", sid: sid, n: code})
+		}
 		c.abort(a, true)
 		return rframe{Frame: Frame{SID: sid, Close: true, Reset: true, Abort: a}}, true, nil
 	case typeClose:
@@ -1086,6 +1137,9 @@ func (c *Conn) recv() (rframe, bool, error) {
 		sid, half := string(b[1:1+l]), b[n-1] == closeHalf
 		if !half {
 			c.credit.Forget(sid)
+		}
+		if traceOn {
+			traceEv(c.credit.tr, traceEvent{ev: "Recv", t: "close", sid: sid, n: int(b[n-1])})
 		}
 		return rframe{Frame: Frame{SID: sid, Close: true, Half: half, Reset: b[n-1] == closeReset}}, true, nil
 	case typePing, typePong:
@@ -1102,10 +1156,16 @@ func (c *Conn) recv() (rframe, bool, error) {
 			default:
 			}
 			c.pong <- [pingLen]byte(b)
+			if traceOn {
+				traceEv(c.credit.tr, traceEvent{ev: "Recv", t: "ping"})
+			}
 		} else {
 			sent := time.Duration(binary.BigEndian.Uint64(b)) // #nosec G115 -- our own ping's time
 			if at := c.goAwayAt.Load(); at > 0 && int64(sent) >= at {
 				c.drainedOnce.Do(func() { close(c.drained) })
+			}
+			if traceOn {
+				traceEv(c.credit.tr, traceEvent{ev: "Recv", t: "pong"})
 			}
 			if rtt := time.Since(c.t0) - sent; c.credit.obs != nil && rtt >= 0 && sent > 0 {
 				c.credit.obs.PingRTT(rtt)
@@ -1121,6 +1181,9 @@ func (c *Conn) recv() (rframe, bool, error) {
 			return rframe{}, false, err
 		}
 		c.goingAway.Store(true)
+		if traceOn {
+			traceEv(c.credit.tr, traceEvent{ev: "Recv", t: "goaway"})
+		}
 		c.peerGoAwayOnce.Do(func() {
 			close(c.peerGoAway)
 			if c.credit.obs != nil {
@@ -1200,10 +1263,23 @@ func (c *Conn) control(typ byte, b []byte) {
 	defer c.wmu.Unlock()
 	if typ == typePong && c.wbuf != nil && len(*c.wbuf) == c.pongEnd {
 		copy((*c.wbuf)[c.pongEnd-pingLen:], b)
+		if traceOn {
+			traceEv(c.credit.tr, traceEvent{ev: "Pong", n: 1})
+		}
 		return
 	}
 	if c.frameLocked(typ, "", b, nil) != nil {
 		return
+	}
+	if traceOn {
+		e := traceEvent{ev: "Pong"}
+		if typ == typePing {
+			e.ev = "Ping"
+			if at := c.goAwayAt.Load(); at > 0 && int64(binary.BigEndian.Uint64(b)) >= at { // #nosec G115 -- our own time
+				e.n = 1
+			}
+		}
+		traceEv(c.credit.tr, e)
 	}
 	if typ == typePong {
 		c.pongEnd = len(*c.wbuf)
@@ -1250,6 +1326,9 @@ func (c *Conn) Close() error {
 	c.credit.Close()
 	err := c.nc.Close()
 	c.downOne.Do(func() {
+		if traceOn {
+			traceEv(c.credit.tr, traceEvent{ev: "ConnClose"})
+		}
 		if c.credit.obs != nil {
 			why := c.why()
 			c.credit.cutSessions(why)
@@ -1291,6 +1370,9 @@ func (c *Conn) closeFlushed(wait time.Duration) {
 		c.parkLocked(w) // woken by wroteLocked
 	}
 	c.spareLocked(&w)
+	if traceOn {
+		traceEv(c.credit.tr, traceEvent{ev: "Leave"})
+	}
 	c.wmu.Unlock()
 	if cw, ok := c.nc.(interface{ CloseWrite() error }); ok && cw.CloseWrite() == nil {
 		t := time.AfterFunc(wait, func() { _ = c.Close() })

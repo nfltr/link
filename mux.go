@@ -318,6 +318,9 @@ func (m *Mux) close() {
 	m.sess = nil
 	m.mu.Unlock()
 	_ = m.c.Close() // senders waiting for credit give up
+	if traceOn {
+		traceEv(m.c.credit.tr, traceEvent{ev: "Down"})
+	}
 	err := m.connErr()
 	for _, s := range sess {
 		s.fail(err) // a session cut with its connection never reads a clean end

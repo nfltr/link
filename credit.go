@@ -41,6 +41,7 @@ type Credit struct {
 	grant              func(sid string, n int) // sends a window update
 	flush              func() error            // before Acquire waits; nil: none
 	obs                Observer                // nil: none
+	tr                 traceState              // linktrace builds only (trace_on.go)
 
 	waits     atomic.Uint64 // senders' waits for credit (Stats)
 	waitNanos atomic.Int64  // and how long, in all
@@ -149,8 +150,15 @@ func (c *Credit) cutSessions(err error) {
 }
 
 // Forget ends a session's credit: a sender waiting in Acquire gives up.
-func (c *Credit) Forget(sid string) {
+func (c *Credit) Forget(sid string) { c.forget(sid, -1) }
+
+// forget is Forget; code, when this side ends the session (a CLOSE or
+// ABORT it is about to buffer: 0, 2, 3, 4 for a refusal), goes to the trace.
+func (c *Credit) forget(sid string, code int) {
 	c.mu.Lock()
+	if traceOn && code >= 0 {
+		traceEv(c.tr, traceEvent{ev: "Forget", sid: sid, n: code})
+	}
 	s := c.sessions[sid]
 	if s != nil {
 		close(s.wake)
@@ -198,6 +206,9 @@ func (c *Credit) acquire(sid string, n int, flush func() error, stop <-chan stru
 		}
 		if s.n >= n {
 			s.n -= n
+			if traceOn {
+				traceEv(c.tr, traceEvent{ev: "Acquire", sid: sid, n: n, credit: s.n})
+			}
 			c.mu.Unlock()
 			if !waited.IsZero() {
 				d := time.Since(waited)
@@ -254,11 +265,17 @@ func (c *Credit) Consumed(sid string, n int) {
 	c.queued -= n
 	r := s.consumed
 	if r < c.window/4 {
+		if traceOn {
+			traceEv(c.tr, traceEvent{ev: "Read", sid: sid, n: n, held: s.held})
+		}
 		c.mu.Unlock()
 		return
 	}
 	s.consumed = 0
 	s.held = max(s.held-r, 0) // the peer may send r more from now on
+	if traceOn {
+		traceEv(c.tr, traceEvent{ev: "Read", sid: sid, n: n, held: s.held, grant: r})
+	}
 	c.mu.Unlock()
 	c.grant(sid, r)
 }
@@ -279,7 +296,16 @@ func (c *Credit) Received(sid string, n int) error {
 func (c *Credit) receivedSID(sid []byte, n int, answers bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.chargeLocked(c.sessions[string(sid)], n, answers)
+	s := c.sessions[string(sid)]
+	err := c.chargeLocked(s, n, answers)
+	if traceOn && err == nil {
+		e := traceEvent{ev: "Recv", t: "data", sid: string(sid), n: n, credit: -1}
+		if s != nil {
+			e.credit, e.held = s.n, s.held
+		}
+		traceEv(c.tr, e)
+	}
+	return err
 }
 
 // chargeLocked charges n bytes of data to s (nil: a session this side
@@ -335,6 +361,9 @@ func (c *Credit) Grant(sid string, n int) error {
 	c.mu.Lock()
 	s := c.sessions[sid]
 	if s == nil {
+		if traceOn {
+			traceEv(c.tr, traceEvent{ev: "Recv", t: "win", sid: sid, n: n, credit: -1})
+		}
 		c.mu.Unlock()
 		return nil
 	}
@@ -343,6 +372,9 @@ func (c *Credit) Grant(sid string, n int) error {
 		return ErrCredit
 	}
 	s.n += n
+	if traceOn {
+		traceEv(c.tr, traceEvent{ev: "Recv", t: "win", sid: sid, n: n, credit: s.n})
+	}
 	select {
 	case s.wake <- struct{}{}:
 	default:
