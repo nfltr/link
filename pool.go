@@ -164,12 +164,15 @@ func (p *Pool) stayingLocked() int {
 // (nil when none), and whether to dial another: synchronously when none
 // takes the session, else in the background (growBG). A dial it asks for
 // is reserved (counted against Max) before it returns, so concurrent
-// Opens never dial past Max; the caller makes it with dial.
-func (p *Pool) pick() (best *Mux, grow, growBG bool, err error) {
+// Opens never dial past Max; the caller makes it with dial. changed is
+// p.changed as pick read it: with neither a connection nor a dial, the
+// caller waits on it, so a dial ending after pick wakes it (spec/Pool.tla,
+// H1).
+func (p *Pool) pick() (best *Mux, grow, growBG bool, changed <-chan struct{}, err error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.ctx.Err() != nil {
-		return nil, false, false, net.ErrClosed
+		return nil, false, false, nil, net.ErrClosed
 	}
 	for _, m := range p.conns {
 		if takes(m) && (best == nil || m.Sessions() < best.Sessions()) {
@@ -180,19 +183,19 @@ func (p *Pool) pick() (best *Mux, grow, growBG bool, err error) {
 	room := staying < p.cfg.Max
 	if best == nil {
 		if !room && staying > p.dials {
-			return nil, false, false, ErrFull // every connection carries its most sessions
+			return nil, false, false, nil, ErrFull // every connection carries its most sessions
 		}
 		if room {
 			p.dials++
 		}
-		return nil, room, false, nil
+		return nil, room, false, p.changed, nil
 	}
 	growBG = room && !p.growing && p.cfg.Grow != nil && p.cfg.Grow(p.statsLocked())
 	if growBG {
 		p.growing = true
 		p.dials++
 	}
-	return best, false, growBG, nil
+	return best, false, growBG, nil, nil
 }
 
 // Open opens a session with header on one of the Pool's connections,
@@ -200,7 +203,7 @@ func (p *Pool) pick() (best *Mux, grow, growBG bool, err error) {
 // carries one.
 func (p *Pool) Open(ctx context.Context, header []byte) (*Session, error) {
 	for attempt := 0; ; {
-		m, grow, growBG, err := p.pick()
+		m, grow, growBG, changed, err := p.pick()
 		if err != nil {
 			return nil, err
 		}
@@ -235,7 +238,7 @@ func (p *Pool) Open(ctx context.Context, header []byte) (*Session, error) {
 			m, attempt = nm, 0
 		}
 		if m == nil { // dials in flight hold the room: wait for one
-			if err := p.waitChange(ctx); err != nil {
+			if err := p.waitChange(ctx, changed); err != nil {
 				return nil, err
 			}
 			continue
@@ -284,6 +287,7 @@ func (p *Pool) dial(ctx context.Context) (*Mux, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.dials--
+	p.changedLocked() // its end, failed too: a waiter whose room it held looks again (spec/Pool.tla, H2)
 	if err == nil && p.ctx.Err() != nil {
 		_ = m.Close()
 		err = net.ErrClosed
@@ -292,7 +296,6 @@ func (p *Pool) dial(ctx context.Context) (*Mux, error) {
 		return nil, err
 	}
 	p.conns = append(p.conns, m)
-	p.changedLocked()
 	go func() { // it stops counting toward Min: maintain replaces it now (spec/Pool.tla, P1)
 		select {
 		case <-m.c.PeerGoAway():
@@ -337,10 +340,7 @@ func (p *Pool) changedLocked() {
 	p.changed = make(chan struct{})
 }
 
-func (p *Pool) waitChange(ctx context.Context) error {
-	p.mu.Lock()
-	ch := p.changed
-	p.mu.Unlock()
+func (p *Pool) waitChange(ctx context.Context, ch <-chan struct{}) error {
 	select {
 	case <-ch:
 		return nil

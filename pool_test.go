@@ -213,3 +213,114 @@ func TestPoolDrainStaysWithinMax(t *testing.T) {
 		t.Fatalf("%d dials, %d connections taking sessions; want 2 and Max (1)", n, st.Conns)
 	}
 }
+
+// scriptDial is a Pool's Dial whose n-th call (from 1) does script(n): nil
+// dials the in-process peer of pipeDial, an error fails the dial.
+func scriptDial(dials *atomic.Int32, script func(n int32) error) func(context.Context) (net.Conn, error) {
+	pipe := pipeDial(closedChan(), new(atomic.Int32))
+	return func(ctx context.Context) (net.Conn, error) {
+		if err := script(dials.Add(1)); err != nil {
+			return nil, err
+		}
+		return pipe(ctx)
+	}
+}
+
+func closedChan() chan struct{} {
+	c := make(chan struct{})
+	close(c)
+	return c
+}
+
+var errDialRefused = errors.New("dial: connection refused")
+
+// TestPoolOpenWaitsOnTheChangeItsPickSaw (finding H1, spec/Pool.tla
+// mutant wait-takes-late): pick decides to wait while a dial holds Max's
+// room; that dial ends before Open waits. Open waits on the p.changed pick
+// read under p.mu, which the dial closed, not on the next one, which
+// nothing may ever close.
+func TestPoolOpenWaitsOnTheChangeItsPickSaw(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var dials atomic.Int32
+		p := mustPool(t, PoolConfig{Link: v2cfg, Max: 1, Dial: scriptDial(&dials, func(int32) error { return nil })})
+		defer p.Close() //nolint:errcheck
+		p.reserve()     // a dial in flight holds Max's room
+		m, grow, _, ch, err := p.pick()
+		if m != nil || grow || err != nil {
+			t.Fatalf("pick: %v, %v, %v; want a wait", m, grow, err)
+		}
+		if _, err := p.dial(context.Background()); err != nil { // it ends before Open waits
+			t.Fatal(err)
+		}
+		select {
+		case <-ch:
+		default:
+			t.Fatal("the dial that ended after pick closed no channel Open waits on")
+		}
+	})
+}
+
+// TestPoolOpenFailsWithTheDialErrorWhileMaintainDials (finding H2, mutant
+// no-wake-on-dial-fail): Backoff nil, the peer unreachable, and Open waits
+// for maintain's dial, which holds Max's room. That dial fails: Open looks
+// again, dials itself and fails with the dial's error, not at its ctx.
+func TestPoolOpenFailsWithTheDialErrorWhileMaintainDials(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		gate := make(chan struct{})
+		var dials atomic.Int32
+		p := mustPool(t, PoolConfig{Link: v2cfg, Min: 1, Max: 1, Dial: scriptDial(&dials, func(n int32) error {
+			if n == 1 {
+				<-gate
+			}
+			return errDialRefused
+		})})
+		defer p.Close() //nolint:errcheck
+		synctest.Wait() // maintain's dial in flight
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		opened := make(chan error, 1)
+		go func() { _, err := p.Open(ctx, []byte("x")); opened <- err }()
+		synctest.Wait() // Open waits for it
+		close(gate)
+		if err := <-opened; !errors.Is(err, errDialRefused) {
+			t.Fatalf("Open: %v; want the dial's error", err)
+		}
+	})
+}
+
+// TestPoolMinRedialsAfterAnOpensDialFails (finding H2, mutant
+// no-wake-on-dial-fail): maintain waits because an Open's dial counts
+// toward Min; that dial fails and the Open returns its error (Backoff nil).
+// maintain looks again and dials: the Pool gets back to Min.
+func TestPoolMinRedialsAfterAnOpensDialFails(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		gate := make(chan struct{})
+		var dials atomic.Int32
+		p := mustPool(t, PoolConfig{Link: v2cfg, Min: 1, Max: 1, Dial: scriptDial(&dials, func(n int32) error {
+			switch n {
+			case 1: // maintain's: it sleeps a second
+				return errDialRefused
+			case 2: // the Open's
+				<-gate
+				return errDialRefused
+			}
+			return nil
+		})})
+		defer p.Close() //nolint:errcheck
+		synctest.Wait()
+		opened := make(chan error, 1)
+		go func() { _, err := p.Open(context.Background(), []byte("x")); opened <- err }()
+		synctest.Wait()
+		time.Sleep(2 * time.Second) // maintain wakes, sees the Open's dial, waits
+		synctest.Wait()
+		close(gate)
+		if err := <-opened; !errors.Is(err, errDialRefused) {
+			t.Fatalf("Open: %v; want the dial's error", err)
+		}
+		time.Sleep(time.Minute)
+		synctest.Wait()
+		if st := p.Stats(); st.Conns != 1 {
+			t.Fatalf("%d connections after %d dials; want Min (1)", st.Conns, dials.Load())
+		}
+	})
+}
