@@ -29,6 +29,7 @@ Full == 0
 Half == 1
 RST == 2
 ABT == 3
+NoCode == 4    \* no close sent or received yet
 
 \* at: for a close, the bytes of the session its sender sent before it.
 Frame(t, s, n) == [t |-> t, s |-> s, n |-> n, at |-> 0]
@@ -61,7 +62,10 @@ vars == <<out, cr, ss, pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA,
 
 NoCredit == [on |-> FALSE, n |-> 0, held |-> 0, cons |-> 0]
 \* closing: a Close, Reset or abort that forgot the credit and has yet to buffer its frame (code + 1).
-NoSession == [st |-> "none", wfin |-> FALSE, rfin |-> FALSE, pclosed |-> FALSE, q |-> 0, acc |-> FALSE, closing |-> 0]
+\* sent, got: history for the interface (LinkSession.tla): the code of the last close
+\* this side buffered, the first one it received while the session was open (NoCode: none).
+NoSession == [st |-> "none", wfin |-> FALSE, rfin |-> FALSE, pclosed |-> FALSE, q |-> 0, acc |-> FALSE, closing |-> 0,
+              sent |-> NoCode, got |-> NoCode]
 
 Init ==
     /\ out = [p \in Sides |-> <<>>]
@@ -227,9 +231,9 @@ CloseWrite(p, s) ==                              \* Session.CloseWrite
     /\ Answered(p, s)
     /\ SendClose(p, s, Half)
     /\ IF ss[p][s].rfin                          \* both halves: drop
-       THEN /\ ss' = [ss EXCEPT ![p][s].wfin = TRUE, ![p][s].st = "gone", ![p][s].pclosed = TRUE]
+       THEN /\ ss' = [ss EXCEPT ![p][s].wfin = TRUE, ![p][s].st = "gone", ![p][s].pclosed = TRUE, ![p][s].sent = IF @ = ABT THEN @ ELSE Half]
             /\ cr' = Forget(p, s)
-       ELSE /\ ss' = [ss EXCEPT ![p][s].wfin = TRUE]
+       ELSE /\ ss' = [ss EXCEPT ![p][s].wfin = TRUE, ![p][s].sent = IF @ = ABT THEN @ ELSE Half]
             /\ UNCHANGED cr
     /\ appDone' = [appDone EXCEPT ![p][s] = TRUE]
     /\ UNCHANGED <<pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
@@ -249,11 +253,14 @@ Closing(p, s, code) ==
     /\ UNCHANGED <<out, pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
                    pings, wshut, closed, down, crashes, err, wt>>
 
+\* Mutant abort-as-fin: a Reset or Abort goes out as a Close (the peer
+\* reads io.EOF, not the reset).
 End(p, s) ==
     LET code == ss[p][s].closing - 1 IN
     /\ ss[p][s].closing # 0
-    /\ SendClose(p, s, code)
-    /\ ss' = [ss EXCEPT ![p][s].closing = 0, ![p][s].st = IF code = ABT THEN @ ELSE "gone"]
+    /\ SendClose(p, s, IF Mutant = "abort-as-fin" /\ code \in {RST, ABT} THEN Full ELSE code)
+    /\ ss' = [ss EXCEPT ![p][s].closing = 0, ![p][s].st = IF code = ABT THEN @ ELSE "gone",
+                                 ![p][s].sent = IF @ \in {RST, ABT} THEN @ ELSE code]   \* a Close after Mux.cut's abort
     /\ UNCHANGED <<cr, pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
                    pings, wshut, closed, down, appDone, crashes, err, wt>>
 
@@ -366,12 +373,13 @@ RecvClose(p, f) ==
         cr1 == IF f.n # Half THEN Forget(p, s) ELSE cr  \* Conn.recv
     IN IF x.st # "open" THEN cr' = cr1 /\ UNCHANGED <<ss, err>>
        ELSE /\ IF dlv[p][s] # f.at /\ cr[p][s].on THEN Flag("FIN overtook data") ELSE UNCHANGED err
-            /\ IF f.n # Half
-               THEN ss' = [ss EXCEPT ![p][s].st = "gone", ![p][s].pclosed = TRUE] /\ cr' = cr1
+            /\ LET g == IF x.got = NoCode THEN f.n ELSE x.got IN
+               IF f.n # Half
+               THEN ss' = [ss EXCEPT ![p][s].st = "gone", ![p][s].pclosed = TRUE, ![p][s].got = g] /\ cr' = cr1
                ELSE IF x.wfin
-               THEN /\ ss' = [ss EXCEPT ![p][s].rfin = TRUE, ![p][s].st = "gone", ![p][s].pclosed = TRUE]
+               THEN /\ ss' = [ss EXCEPT ![p][s].rfin = TRUE, ![p][s].st = "gone", ![p][s].pclosed = TRUE, ![p][s].got = g]
                     /\ cr' = Forget(p, s)
-               ELSE ss' = [ss EXCEPT ![p][s].rfin = TRUE] /\ cr' = cr1
+               ELSE ss' = [ss EXCEPT ![p][s].rfin = TRUE, ![p][s].got = g] /\ cr' = cr1
 
 Recv(p) ==
     LET q == Peer(p)
@@ -411,10 +419,16 @@ CloseConn(p, k) ==
     /\ UNCHANGED <<cr, ss, pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained,
                    pong, pings, wshut, down, appDone, crashes, err, wt>>
 
+\* Mutant lost-as-eof: a session the connection's end cut reads io.EOF
+\* (as if the peer had closed it), not ErrConnClosed.
 Down(p) ==                                       \* Mux.close: every session at p cut
     /\ closed[p] /\ ~down[p]
     /\ down' = [down EXCEPT ![p] = TRUE]
-    /\ ss' = [ss EXCEPT ![p] = [s \in Sids |-> IF @[s].st = "open" THEN [@[s] EXCEPT !.st = "gone"] ELSE @[s]]]
+    /\ ss' = [ss EXCEPT ![p] = [s \in Sids |->
+                IF @[s].st = "open"
+                THEN [@[s] EXCEPT !.st = "gone",
+                                  !.got = IF Mutant = "lost-as-eof" /\ @ = NoCode THEN Full ELSE @]
+                ELSE @[s]]]
     /\ UNCHANGED <<out, cr, pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained,
                    pong, pings, wshut, closed, appDone, crashes, err, wt>>
 

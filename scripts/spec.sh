@@ -8,7 +8,9 @@
 #   invariants  the same, Link's invariants only (about a minute: CI's;
 #            Pool's liveness is checked too, seconds).
 #   mutants  each Mutant of Link.tla, Pool.tla and Liveness.tla must be
-#            caught (a TLC violation).
+#            caught (a TLC violation); each Mutant of Link.tla must also
+#            fail the session interface alone (Refines, LinkSession.tla),
+#            and each witness of the interface must be violated.
 #   traces   the tests in TRACE_TESTS and TRACE_DEAD_TESTS run with -tags
 #            linktrace, each connection's trace checked against the model
 #            (spec/Trace.tla).
@@ -120,7 +122,7 @@ mutants)
 		if tlc "$work/Mutant.cfg" "$mod" $dl >"$work/m.out" 2>&1; then
 			echo "$3: not caught"
 			fail=1
-		elif grep -q '^Error: \(Invariant\|Temporal property\) .* violated' "$work/m.out"; then
+		elif grep -q '^Error: \(Invariant\|Temporal property\|Action property\) .* violated' "$work/m.out"; then
 			echo "$3: caught: $(grep '/\\ err = ' "$work/m.out" | tail -1 | sed 's/.*err = //') ($(grep -m1 -E '^Error: (Invariant|Temporal property)' "$work/m.out" | sed -E 's/^Error: (Invariant|Temporal property) ([A-Za-z]+).*/\2/'), $(grep -c '^State [0-9]*:' "$work/m.out") states deep)"
 		else
 			echo "$3: TLC failed:"
@@ -128,6 +130,46 @@ mutants)
 			fail=1
 		fi
 	}
+	# iface CFG MUTANT: Link with MUTANT fails the session interface
+	# (Refines, LinkSession.tla) with every invariant of Link left out.
+	iface() {
+		sed -e "s/Mutant = \"none\"/Mutant = \"$2\"/" -e '/^INVARIANTS/,$d' "spec/$1" >"$work/Mutant.cfg"
+		if tlc "$work/Mutant.cfg" MCLink.tla >"$work/m.out" 2>&1; then
+			echo "$2: not caught by the interface"
+			fail=1
+		elif grep -q '^Error: Action property .* of module LinkSession is violated' "$work/m.out"; then
+			echo "$2: fails the interface ($(grep -c '^State [0-9]*:' "$work/m.out") states deep)"
+		else
+			echo "$2: TLC failed:"
+			tail -20 "$work/m.out"
+			fail=1
+		fi
+	}
+	# witness CFG NAME: the interface's witness NAME must be violated.
+	witness() {
+		sed -e '/^PROPERTY/,$d' "spec/$1" >"$work/Witness.cfg"
+		printf 'INVARIANT %s\n' "$2" >>"$work/Witness.cfg"
+		if tlc "$work/Witness.cfg" MCLink.tla >"$work/m.out" 2>&1; then
+			echo "$2: never violated (vacuous)"
+			fail=1
+		elif grep -q "^Error: Invariant $2 is violated" "$work/m.out"; then
+			echo "$2: violated, as it must be ($(grep -c '^State [0-9]*:' "$work/m.out") states deep)"
+		else
+			echo "$2: TLC failed:"
+			tail -20 "$work/m.out"
+			fail=1
+		fi
+	}
+	for m in fin-skips-queue grant-early write-race turns-no-recheck release-early abort-as-fin lost-as-eof; do
+		iface Link.cfg $m
+	done
+	for m in open-after-goaway open-no-recheck; do iface LinkDrain.cfg $m; done
+	for m in abort-forget-early reopen-known; do iface LinkSess.cfg $m; done
+	for w in WitnessEof WitnessReset WitnessLost WitnessCredit; do witness Link.cfg $w; done
+	witness LinkDrain.cfg WitnessRefused
+	# Not a guarantee: a clean end at one side while its FIN is lost
+	# with the connection (spec/README.md "The session interface").
+	witness Link.cfg CleanEndReceived
 	mutant Link.cfg 'Mutant = "none"' 'Mutant = "fin-skips-queue"'
 	mutant Link.cfg 'Mutant = "none"' 'Mutant = "grant-early"'
 	mutant LinkDrain.cfg 'Mutant = "none"' 'Mutant = "open-after-goaway"'

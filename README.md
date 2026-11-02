@@ -390,6 +390,35 @@ Constructors check their configuration and name the field to fix
 [pkg.go.dev](https://pkg.go.dev/github.com/nfltr/link)) has an Example for
 each common use.
 
+## What a session guarantees
+
+What your code may rely on, for the sessions of one connection between two
+link peers (`Mux`, and so `Pool`, `Node` and `peerlink.Link`, which carry
+sessions on such connections). `spec/LinkSession.tla` states each line as
+a formula, and TLC checks that the protocol as the code implements it
+(`spec/Link.tla`) never breaks one ([spec/README.md](spec/README.md),
+"The session interface").
+
+| guarantee | what it means for you |
+|---|---|
+| ordered | a Read returns the peer's bytes in the order it wrote them, none lost, repeated or skipped while the session lives |
+| credited | the bytes the peer wrote that your reader has not taken are at most your window (`Config.Window`): a slow reader holds back its own session's writer and no other session |
+| half close | after `CloseWrite` nothing more of yours is sent; the peer reads `io.EOF` only after every byte you wrote before it, and you keep reading the peer's bytes |
+| typed ends | a reader learns how the peer's side ended: `io.EOF` (its `CloseWrite` or `Close`), `ErrReset` or `*Abort` (its `Reset` or `Abort`), `link.ErrConnClosed` (the connection ended: a dead peer, the network, the peer's process). A reset never reads as `io.EOF`, nor a lost connection |
+| GOAWAY | once either side sent GOAWAY, `Open` returns `ErrGoAway` (the open is refused, never half done); sessions already open finish |
+| ids | a session id is never reused on its connection: a late frame never reaches a newer session |
+| dead peer | a silent peer is reported (`ErrDeadPeer`) within Interval + Timeout + twice the lateness of the process's timers after its last frame; a peer that answers within Timeout never is (`spec/Liveness.tla`, "Liveness and deadlines") |
+| no protocol error | two link peers never end their connection with `ErrFrame` or `ErrCredit` |
+
+Not guaranteed: that the peer's application read your bytes when the
+session ended at your side. `CloseWrite` on both sides ends the session
+once the peer's FIN arrived, while your last bytes and your FIN may still
+be on their way; if the connection dies then, the peer reads
+`ErrConnClosed` and your side saw a clean end, as with TCP's close. If
+you need to know, wait for an answer from the peer's application (a
+reply, or the window updates `OnGrant` reports as its reader takes your
+bytes).
+
 ## Errors
 
 Test errors with `errors.Is` (or `errors.As` for `*link.VersionError`);

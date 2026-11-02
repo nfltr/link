@@ -156,6 +156,71 @@ violation for each:
   `reopen-known`, `release-early`: the review's F1, F2, F3, F5 and F6
   ("Review findings").
 
+## The session interface (LinkSession.tla, 2026-11-02, lane LINKIFACE)
+
+`LinkSession.tla` is what a layer above link may assume of its sessions
+(the guarantees the README's "What a session guarantees" lists), small
+enough to read in a minute; `Link.tla` refines it. A layer above (`Pool.tla`
+here, relay-core's specs) models link only by these guarantees, never by
+`Link.tla`'s frames. The interface is a transition constraint: its `Next`
+allows any step in which every guarantee holds, so one step of `Link`
+(a receive that ends a session and types its end) is one step of it.
+
+| guarantee (`LinkSession.tla`) | what it says | broken in Link.tla by (`make spec-mutants`, refinement only) |
+|---|---|---|
+| `GSessions` | an id goes none, open, gone, once (never reused); the opener opens only before GOAWAY (else refused: none to gone); the peer's end opens only an id its opener opened; a session ends with a reason (its own whole close, a FIN each way, the peer's Close or reset, the connection's end) | `open-after-goaway`, `open-no-recheck` |
+| `GWrites` | writes only on a session opened here whose write side is not ended (no data after FIN, Close or reset); credit: the bytes written that the peer's reader has not taken are at most the peer's window | `write-race`, `turns-no-recheck` (data after FIN); `grant-early`, `release-early` (past the window) |
+| `GReads` | a reader gets a prefix of what the peer wrote (in order), at most its window unread, nothing after its end | (a consequence of `GWrites` in Link) |
+| `GEnds` | a writer's end is typed once (`fin`, then perhaps `close` or `reset`); a reader's end is `eof` only after every byte the peer wrote before its FIN or Close, `reset` only from the peer's Reset or Abort, `lost` only with the connection's end | `fin-skips-queue` (EOF before the data), `abort-as-fin` (a reset read as EOF), `lost-as-eof` (a cut session read as EOF) |
+| `GConn` | GOAWAY and the connection's end are final; the end ends every session at that side; no protocol error | `abort-forget-early` (open past max_sessions), `reopen-known` (open of an id in use): both only as a protocol error |
+
+The mapping (`MCLink.tla`, `LS`): `st` is `Mux.sess`'s state, `w` the
+bytes buffered (`sent`), `d` the bytes queued for the reader (`dlv`), `c`
+those it took (`dlv - q`); `wend`, `shut` and `rend` come from two history
+fields of a session (`sent`: the code of this side's last close, a reset
+kept over a later Close; `got`: the first close received while it was
+open) and `down`; `fault` is `err # {}`. History only: no action of Link
+reads them, so they change no behaviour (the state count grows by the
+states they tell apart).
+
+`make spec` and `make spec-invariants` check `Refines` (`PROPERTY
+Refines`) on `Link.cfg`, `LinkDrain.cfg` and `LinkSess.cfg`. `make
+spec-mutants` checks each mutant above with `Refines` alone (every
+invariant of Link left out), the two mutants that exist only for the
+interface (`abort-as-fin`: `End` sends a Reset or Abort as a Close;
+`lost-as-eof`: `Down` hands a cut session's reader `io.EOF`), and the
+witnesses (each must be violated, so the guarantees constrain steps Link
+takes): `WitnessEof`, `WitnessReset`, `WitnessLost` and `WitnessCredit`
+(a writer past one window: credit came back) on `Link.cfg`,
+`WitnessRefused` (an open refused by GOAWAY) on `LinkDrain.cfg`.
+
+Timed and liveness guarantees are not in the transition constraint:
+the dead-peer bound is `Liveness.tla`'s `DetectBound` (Interval + Timeout
++ 2 x Late, tight) and `NoFalseDead`, and the ends of sessions and
+connections are `Link.tla`'s `SessionsEnd`, `ConnEnds` and `DrainEnds`
+(`make spec`). The interface sees their effect: a connection that ends
+ends its sessions `lost`.
+
+What `Pool.tla` assumes is this interface: a connection's end ends its
+sessions with an error (`GConn`, `rend = "lost"`), an open is refused once
+either side sent GOAWAY (`GSessions`), and the side that sent GOAWAY closes
+the connection once its sessions ended (`DrainEnds`).
+
+Not in the interface, on purpose: that a session that ended cleanly at a
+side (both halves closed) had its tail received by the peer. `CloseWrite`
+after the peer's FIN ends the session at once (`Mux.drop`) while this
+side's CLOSE and the bytes before it may still be in the write buffer;
+a connection that dies then cuts the peer's end (`lost`) after this
+side's application saw a clean end, as TCP's close does. relay-core's
+frame streams give that guarantee (`NoSilentLoss`, their end
+acknowledgement); a layer that needs it over link waits for an answer of
+the peer's application.
+
+A Close after `Mux.cut`'s abort (the drain deadline) sends a CLOSE after
+the ABORT and a CloseWrite a half CLOSE (`Session.Close`'s `once` and `halfClosed` are not spent by `cut`); the peer
+ignores it (the session is gone there) and the writer's end stays typed
+as the reset. Harmless; the model has it (`End` and `CloseWrite` keep `sent`).
+
 ## Review findings (2026-11-02, lane LINKREVIEW)
 
 The independent review of this model against the code
