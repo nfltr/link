@@ -62,11 +62,11 @@ vars == <<out, cr, ss, pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA,
 
 NoCredit == [on |-> FALSE, n |-> 0, held |-> 0, cons |-> 0]
 \* closing: a Close, Reset or abort that forgot the credit and has yet to buffer its frame (code + 1).
-\* sent, got, fin: history for the interface (LinkSession.tla): the code of the last close
+\* code, got, fin: history for the interface (LinkSession.tla): the code of the last close
 \* this side buffered (a reset kept), the first one it received while the session was
 \* open (NoCode: none), and whether it buffered a FIN (code Half or Full).
 NoSession == [st |-> "none", wfin |-> FALSE, rfin |-> FALSE, pclosed |-> FALSE, q |-> 0, acc |-> FALSE, closing |-> 0,
-              sent |-> NoCode, got |-> NoCode, fin |-> FALSE]
+              code |-> NoCode, got |-> NoCode, fin |-> FALSE]
 
 Init ==
     /\ out = [p \in Sides |-> <<>>]
@@ -232,9 +232,9 @@ CloseWrite(p, s) ==                              \* Session.CloseWrite
     /\ Answered(p, s)
     /\ SendClose(p, s, Half)
     /\ IF ss[p][s].rfin                          \* both halves: drop
-       THEN /\ ss' = [ss EXCEPT ![p][s].wfin = TRUE, ![p][s].st = "gone", ![p][s].pclosed = TRUE, ![p][s].sent = IF @ = ABT THEN @ ELSE Half, ![p][s].fin = TRUE]
+       THEN /\ ss' = [ss EXCEPT ![p][s].wfin = TRUE, ![p][s].st = "gone", ![p][s].pclosed = TRUE, ![p][s].code = IF @ = ABT THEN @ ELSE Half, ![p][s].fin = TRUE]
             /\ cr' = Forget(p, s)
-       ELSE /\ ss' = [ss EXCEPT ![p][s].wfin = TRUE, ![p][s].sent = IF @ = ABT THEN @ ELSE Half, ![p][s].fin = TRUE]
+       ELSE /\ ss' = [ss EXCEPT ![p][s].wfin = TRUE, ![p][s].code = IF @ = ABT THEN @ ELSE Half, ![p][s].fin = TRUE]
             /\ UNCHANGED cr
     /\ appDone' = [appDone EXCEPT ![p][s] = TRUE]
     /\ UNCHANGED <<pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
@@ -261,7 +261,7 @@ End(p, s) ==
     /\ ss[p][s].closing # 0
     /\ SendClose(p, s, IF Mutant = "abort-as-fin" /\ code \in {RST, ABT} THEN Full ELSE code)
     /\ ss' = [ss EXCEPT ![p][s].closing = 0, ![p][s].st = IF code = ABT THEN @ ELSE "gone",
-                                 ![p][s].sent = IF @ \in {RST, ABT} THEN @ ELSE code,
+                                 ![p][s].code = IF @ \in {RST, ABT} THEN @ ELSE code,
                                  ![p][s].fin = @ \/ code = Full]   \* a Close after Mux.cut's abort
     /\ UNCHANGED <<cr, pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
                    pings, wshut, closed, down, appDone, crashes, err, wt>>
@@ -413,13 +413,16 @@ Leave(p) ==                                      \* closeFlushed: every frame ou
                    drained, pong, pings, closed, down, appDone, crashes, err, wt>>
 
 \* Conn.Close: the peer reads the first k frames p sent (all after Leave).
-CloseConn(p, k) ==
+CloseAt(p, k) ==
     /\ ~closed[p]
     /\ k \in (IF wshut[p] THEN {Len(out[p])} ELSE 0..Len(out[p]))
     /\ closed' = [closed EXCEPT ![p] = TRUE]
     /\ out' = [out EXCEPT ![p] = SubSeq(@, 1, k)]
     /\ UNCHANGED <<cr, ss, pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained,
-                   pong, pings, wshut, down, appDone, crashes, err, wt>>
+                   pong, pings, wshut, down, appDone, err, wt>>
+\* Crashed counts its closes: CloseConn left crashes unchanged once, so no
+\* crash was ever taken (WitnessLost, MCLink.tla, now guards it).
+CloseConn(p, k) == CloseAt(p, k) /\ UNCHANGED crashes
 
 \* Mutant lost-as-eof: a session the connection's end cut reads io.EOF
 \* (as if the peer had closed it), not ErrConnClosed.
@@ -446,7 +449,7 @@ LeaveWhenDrained(p) == sentGA[p] /\ drained[p] /\ OpenAt(p) = {} /\ Leave(p)
 \* The peer's end reached p: its read sees EOF once it read every frame.
 EOFClose(p) == (closed[Peer(p)] \/ wshut[Peer(p)]) /\ out[Peer(p)] = <<>> /\ CloseConn(p, Len(out[p]))
 DrainPing(p) == sentGA[p] /\ ~gaPinged[p] /\ Ping(p, 1)
-Crashed(p) == crashes < Crash /\ \E k \in 0..Len(out[p]) : CloseConn(p, k) /\ crashes' = crashes + 1
+Crashed(p) == crashes < Crash /\ \E k \in 0..Len(out[p]) : CloseAt(p, k) /\ crashes' = crashes + 1
 \* The ends TLC's deadlock check allows: both sides down, or an idle
 \* connection (no session open, nothing on the way, nothing to answer).
 Idle == \A p \in Sides : OpenAt(p) = {} /\ out[p] = <<>> /\ pong[p] = 0

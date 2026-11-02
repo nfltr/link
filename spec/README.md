@@ -177,7 +177,7 @@ allows any step in which every guarantee holds, so one step of `Link`
 The mapping (`MCLink.tla`, `LS`): `st` is `Mux.sess`'s state, `w` the
 bytes buffered (`sent`), `d` the bytes queued for the reader (`dlv`), `c`
 those it took (`dlv - q`); `wend`, `shut` and `rend` come from two history
-fields of a session (`sent`: the code of this side's last close, a reset
+fields of a session (`code`: the code of this side's last close, a reset
 kept over a later Close; `got`: the first close received while it was
 open) and `down`; `fault` is `err # {}`. History only: no action of Link
 reads them, so they change no behaviour (the state count grows by the
@@ -235,6 +235,17 @@ A Close after `Mux.cut`'s abort (the drain deadline) sends a CLOSE after
 the ABORT and a CloseWrite a half CLOSE (`Session.Close`'s `once` and `halfClosed` are not spent by `cut`); the peer
 ignores it (the session is gone there) and the writer's end stays typed
 as the reset. Harmless; the model has it (`End` and `CloseWrite` keep `sent`).
+
+**Finding I1 (spec, lane LINKIFACE): `Link.cfg`'s crash was never
+taken.** `Crashed` set `crashes' = crashes + 1` while `CloseConn`, which
+it called, left `crashes` unchanged: the conjunction was never true, so
+no connection ever closed in `Link.cfg` (it has no GOAWAY, the other way
+to an end) and its invariants, `ConnEnds` and `SessionsEnd` were checked
+only on connections that never end. Found by the interface's witness
+`WitnessLost` (never violated: no session ever ended `lost`). Fixed:
+`Crashed` counts on `CloseAt`, the close itself; `WitnessLost` guards it.
+Severity: medium (a vacuous part of the model, not a code bug: the
+connection's end was checked by `LinkDrain.cfg`'s drain and the traces).
 
 ## Review findings (2026-11-02, lane LINKREVIEW)
 

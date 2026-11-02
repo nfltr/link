@@ -28,9 +28,9 @@ LS == INSTANCE LinkSession WITH
     w <- sent,
     d <- dlv,
     c <- [p \in Sides |-> [s \in Sids |-> dlv[p][s] - ss[p][s].q]],
-    wend <- [p \in Sides |-> [s \in Sids |-> WEnd(ss[p][s].sent)]],
+    wend <- [p \in Sides |-> [s \in Sids |-> WEnd(ss[p][s].code)]],
     fin <- [p \in Sides |-> [s \in Sids |-> ss[p][s].fin]],
-    shut <- [p \in Sides |-> [s \in Sids |-> ss[p][s].closing # 0 \/ ss[p][s].sent \in {Full, RST, ABT}]],
+    shut <- [p \in Sides |-> [s \in Sids |-> ss[p][s].closing # 0 \/ ss[p][s].code \in {Full, RST, ABT}]],
     rend <- [p \in Sides |-> [s \in Sids |-> REnd(p, s)]],
     up <- [p \in Sides |-> ~down[p]],
     fault <- err # {}
@@ -50,7 +50,7 @@ WitnessCredit == \A p \in Sides, s \in Sids : sent[p][s] <= Win[Peer(p)]
 \* breaks it (make spec-mutants expects the violation: race:clean-end-tail-lost).
 CleanEndReceived ==
     \A p \in Sides, s \in Sids :
-        (down["d"] /\ down["l"] /\ ss[p][s].sent = Half /\ ss[p][s].got = Half) =>
+        (down["d"] /\ down["l"] /\ ss[p][s].code = Half /\ ss[p][s].got = Half) =>
             ss[Peer(p)][s].got \in {Half, Full}
-WitnessRefused == \A p \in Sides, s \in Sids : ~(ga[p] /\ ss[p][s].st = "gone" /\ sent[p][s] = 0 /\ ss[p][s].sent = NoCode /\ ss[p][s].got = NoCode /\ ~down[p])
+WitnessRefused == \A p \in Sides, s \in Sids : ~(ga[p] /\ ss[p][s].st = "gone" /\ sent[p][s] = 0 /\ ss[p][s].code = NoCode /\ ss[p][s].got = NoCode /\ ~down[p])
 =============================================================================
