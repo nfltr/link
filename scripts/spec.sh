@@ -133,7 +133,7 @@ mutants)
 	for m in no-wake-on-goaway drain-past-max open-on-goaway maintain-no-recheck; do
 		mutant Pool.cfg 'Mutant = "none"' "Mutant = \"$m\"" Pool.tla
 	done
-	for m in rearm-timeout deadline-from-rx; do
+	for m in rearm-timeout deadline-from-rx reader-writes; do
 		mutant Liveness.cfg 'Mutant = "none"' "Mutant = \"$m\"" Liveness.tla
 	done
 	# keepAlive traces put wrong: TraceLive.tla must reject each.

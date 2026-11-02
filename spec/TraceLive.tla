@@ -13,8 +13,8 @@ CONSTANT Side
 SLog == SelectSeq(Log, LAMBDA e : e.side = Side)
 LiveLine == SLog[CHOOSE i \in DOMAIN SLog : SLog[i].ev = "Live"]
 
-VARIABLES now, rx, pingAt, timer, alive, dead, l
-traceVars == <<now, rx, pingAt, timer, alive, dead, l>>
+VARIABLES now, rx, pingAt, timer, alive, dead, stuck, l
+traceVars == <<now, rx, pingAt, timer, alive, dead, stuck, l>>
 
 LV == INSTANCE Liveness WITH Iv <- LiveLine.n, To <- LiveLine.credit,
     Late <- 0, Rtt <- 0, Horizon <- 0, Mutant <- "none"
@@ -22,9 +22,9 @@ LV == INSTANCE Liveness WITH Iv <- LiveLine.n, To <- LiveLine.credit,
 E == SLog[l]
 
 Step ==
-    CASE E.ev = "Live" -> UNCHANGED <<now, rx, pingAt, timer, alive, dead>>
+    CASE E.ev = "Live" -> UNCHANGED <<now, rx, pingAt, timer, alive, dead, stuck>>
       [] E.ev = "Fire" -> pingAt = E.held /\ E.n >= now /\ E.credit >= rx /\ LV!FireAt(E.n, E.credit)
-      [] E.ev = "Dead" -> dead /\ UNCHANGED <<now, rx, pingAt, timer, alive, dead>>
+      [] E.ev = "Dead" -> dead /\ UNCHANGED <<now, rx, pingAt, timer, alive, dead, stuck>>
       [] OTHER -> Print(<<"unknown event", E>>, FALSE)
 
 \* A Fire the model ends the connection on must be followed by Dead (or end

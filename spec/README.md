@@ -353,7 +353,25 @@ second.
 - Mutants: `rearm-timeout` (after the ping the timer looks again Timeout
   on, not Interval: the next ping goes late, `DetectBound` breaks),
   `deadline-from-rx` (the verdict at `rxAt + Interval + Timeout` whatever
-  the ping's time: `NoFalseDead` breaks once a fire is late).
+  the ping's time: `NoFalseDead` breaks once a fire is late),
+  `reader-writes` (finding F7 of the spec review, the code today: the
+  receive loop waits on a write, `NoFalseDead` breaks).
+- Assumption: the receive loop never waits on the network, so a live
+  peer's frames are read as they arrive. **Not yet true (F7, open,
+  lane LINKREVIEW)**: `Mux.serve` buffers an OPEN's refusal itself
+  (`sendAbort`/`SendReset`, which wait for room in a full write buffer)
+  and `Flush`es inline; two sides refusing while both directions are
+  full stop reading, and each takes the other for dead. Design for the
+  fix: the receive loop hands refusals to a queue a writer goroutine
+  sends from; the queue holds at most `MaxSessions` (a peer has at most
+  that many sessions open, a refused one counting until it reads the
+  refusal), and an OPEN past it fails the connection as a protocol
+  error, so memory stays bounded against a peer that opens without
+  reading. That moves the refusal's CLOSE/ABORT out of `Recv`'s step in
+  `Link.tla` (a check, then a send later): the review's F1-F3 area.
+  Related: `rxAt` is set per frame header, so one frame slower to read
+  than Interval + Timeout reads as a dead peer (64 KiB from a `Mux`, up
+  to 1 MiB on the wire).
 
 **`TraceLive.tla`** checks keepAlive's recorded steps against
 `Liveness.tla`: with `-tags linktrace` each connection also writes

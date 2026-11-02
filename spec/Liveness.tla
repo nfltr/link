@@ -19,33 +19,43 @@ VARIABLES
     pingAt,  \* keepAlive's pingAt (-1: no ping waiting for an answer)
     timer,   \* when the timer is due
     alive,   \* the peer and the path: FALSE once the path died
-    dead     \* keepAlive ended the connection (ErrDeadPeer)
+    dead,    \* keepAlive ended the connection (ErrDeadPeer)
+    stuck    \* the receive loop waits on a write (finding F7, open)
 
-vars == <<now, rx, pingAt, timer, alive, dead>>
+vars == <<now, rx, pingAt, timer, alive, dead, stuck>>
 
 Init ==
     /\ now = 0 /\ rx = 0 /\ pingAt = -1 /\ timer = Iv
-    /\ alive = TRUE /\ dead = FALSE
+    /\ alive = TRUE /\ dead = FALSE /\ stuck = FALSE
 
 \* Time passes, but not past a due timer by more than Late, and not past a
 \* live peer's pong.
 Tick ==
     /\ ~dead /\ now < Horizon
     /\ now + 1 <= timer + Late
-    /\ ~(alive /\ pingAt >= 0 /\ rx < pingAt /\ now + 1 > pingAt + Rtt)
+    /\ ~(alive /\ ~stuck /\ pingAt >= 0 /\ rx < pingAt /\ now + 1 > pingAt + Rtt)
     /\ now' = now + 1
-    /\ UNCHANGED <<rx, pingAt, timer, alive, dead>>
+    /\ UNCHANGED <<rx, pingAt, timer, alive, dead, stuck>>
 
 \* A frame arrives (data, a ping, a pong): Conn.next stores rxAt.
 Recv ==
-    /\ alive /\ ~dead /\ rx < now
+    /\ alive /\ ~dead /\ ~stuck /\ rx < now
     /\ rx' = now
-    /\ UNCHANGED <<now, pingAt, timer, alive, dead>>
+    /\ UNCHANGED <<now, pingAt, timer, alive, dead, stuck>>
 
 Die ==
     /\ alive /\ ~dead
     /\ alive' = FALSE
-    /\ UNCHANGED <<now, rx, pingAt, timer, dead>>
+    /\ UNCHANGED <<now, rx, pingAt, timer, dead, stuck>>
+
+\* reader-writes (finding F7, the code today): the receive loop writes a
+\* refusal itself and waits for room; with both sides refusing and both
+\* directions full, neither reads again, though both are alive. The model
+\* (the design) is that the receive loop never waits on the network.
+Stall ==
+    /\ Mutant = "reader-writes" /\ alive /\ ~dead /\ ~stuck
+    /\ stuck' = TRUE
+    /\ UNCHANGED <<now, rx, pingAt, timer, alive, dead>>
 
 \* The timer fires at n, the last frame at r: keepAlive's loop, one pass.
 \* (TraceLive.tla gives n and r from a recorded run.)
@@ -62,7 +72,7 @@ FireAt(n, r) ==
             /\ timer' = n + (IF Mutant = "rearm-timeout" THEN To ELSE Iv)
             /\ UNCHANGED dead
     /\ now' = n /\ rx' = r
-    /\ UNCHANGED alive
+    /\ UNCHANGED <<alive, stuck>>
 
 Fire == FireAt(now, rx)
 
@@ -73,9 +83,9 @@ FireMutant ==
     /\ ~dead /\ now >= timer /\ pingAt >= 0 /\ rx < pingAt
     /\ now - rx >= Iv + To
     /\ dead' = TRUE
-    /\ UNCHANGED <<now, rx, pingAt, timer, alive>>
+    /\ UNCHANGED <<now, rx, pingAt, timer, alive, stuck>>
 
-Next == Tick \/ Recv \/ Die \/ Fire \/ FireMutant
+Next == Tick \/ Recv \/ Die \/ Stall \/ Fire \/ FireMutant
 
 Spec == Init /\ [][Next]_vars
 
