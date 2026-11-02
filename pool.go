@@ -293,6 +293,15 @@ func (p *Pool) dial(ctx context.Context) (*Mux, error) {
 	}
 	p.conns = append(p.conns, m)
 	p.changedLocked()
+	go func() { // it stops counting toward Min: maintain replaces it now (spec/Pool.tla, P1)
+		select {
+		case <-m.c.PeerGoAway():
+			p.mu.Lock()
+			p.changedLocked()
+			p.mu.Unlock()
+		case <-m.c.Done():
+		}
+	}()
 	go func() {
 		up := time.Now()
 		_ = m.Serve(p.cfg.Accept)
@@ -398,20 +407,27 @@ func (p *Pool) backoff(attempt int) time.Duration {
 	return p.cfg.Backoff(attempt)
 }
 
-// Drain replaces the Pool's connections make-before-break: it dials a
-// replacement (Min of them, at least one) first, then sends GOAWAY on
-// every old connection, which then takes no new session and closes once
-// its open sessions ended, at ctx's deadline at the latest. It returns
-// once they all closed. A replacement that cannot be dialled leaves the
-// old connections as they were.
+// Drain replaces the Pool's connections make-before-break: it dials
+// replacements first (Min of them, at least one, but no more than the old
+// connections that take sessions: one already going away counts against
+// nothing), then sends GOAWAY on every old connection, which then takes no
+// new session and closes once its open sessions ended, at ctx's deadline
+// at the latest. It returns once they all closed. A replacement that
+// cannot be dialled leaves the old connections as they were.
 func (p *Pool) Drain(ctx context.Context) error {
 	p.mu.Lock()
 	old := slices.Clone(p.conns)
+	taking := 0
+	for _, m := range old {
+		if takes(m) {
+			taking++
+		}
+	}
 	p.mu.Unlock()
 	if len(old) == 0 {
 		return nil
 	}
-	for range max(p.cfg.Min, 1) {
+	for range min(max(p.cfg.Min, 1), taking) { // past Max only by what the GOAWAYs free (spec/Pool.tla, P2)
 		p.reserve()
 		if _, err := p.dial(ctx); err != nil { // past Max: the old ones are about to go
 			return err
@@ -421,6 +437,9 @@ func (p *Pool) Drain(ctx context.Context) error {
 	for _, m := range old {
 		_ = m.goAway(deadline)
 	}
+	p.mu.Lock() // they stop counting toward Min
+	p.changedLocked()
+	p.mu.Unlock()
 	for _, m := range old {
 		select {
 		case <-m.c.Done():

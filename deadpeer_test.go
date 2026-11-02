@@ -103,19 +103,77 @@ func livePair(t *testing.T, l Liveness, dobs, lobs Observer) (dialer, listener *
 	return c, s, cut
 }
 
-// waitDead waits for c to end with ErrDeadPeer and returns how long after
-// start it did.
-func waitDead(t *testing.T, who string, c *Conn, start time.Time, bound time.Duration) time.Duration {
+// deadAt returns when c ends (it must end with ErrDeadPeer), observed
+// from the moment it is called, so that two ends are timed each on its own.
+func deadAt(t *testing.T, who string, c *Conn) <-chan time.Time {
 	t.Helper()
+	at := make(chan time.Time, 1)
+	go func() {
+		<-c.Done()
+		end := time.Now()
+		if !errors.Is(c.Err(), ErrDeadPeer) {
+			t.Errorf("%s: ended with %v", who, c.Err())
+		}
+		at <- end
+	}()
+	return at
+}
+
+// lateProbe measures how late this process's timers fire while a test
+// runs: a goroutine sleeps in short steps and keeps the worst lateness. On
+// a starved machine (load, -race, background priority) keepAlive's timers
+// are as late as its own; that is Late of spec/Liveness.tla.
+type lateProbe struct{ worst atomic.Int64 }
+
+func startLateProbe(t *testing.T) *lateProbe {
+	p := &lateProbe{}
+	stop := make(chan struct{})
+	t.Cleanup(func() { close(stop) })
+	go func() {
+		const step = 10 * time.Millisecond
+		for {
+			t0 := time.Now()
+			select {
+			case <-stop:
+				return
+			case <-time.After(step):
+			}
+			if late := int64(time.Since(t0) - step); late > p.worst.Load() {
+				p.worst.Store(late)
+			}
+		}
+	}()
+	return p
+}
+
+func (p *lateProbe) late() time.Duration { return time.Duration(p.worst.Load()) }
+
+// checkDeadAfter checks when c ended against spec/Liveness.tla, from the
+// last frame c received (rxAt), not from when the test cut the path:
+// never sooner than Interval + Timeout (NeverEarly), and no later than
+// that plus the lateness of the two timer fires that decide it (the
+// ping's and the verdict's, DetectBound), a third for the goroutine that
+// observes the end, and deadPeerSlack. The lateness is the probe's,
+// measured during the run: a starved machine makes the bound longer, a
+// wrong mechanism (a ping never sent, a verdict anchored wrong, a timer
+// not re-armed) still fails. It returns the silence before the end.
+func checkDeadAfter(t *testing.T, who string, c *Conn, l Liveness, at <-chan time.Time, probe *lateProbe) time.Duration {
+	t.Helper()
+	bound := l.Interval + l.Timeout
+	var end time.Time
 	select {
-	case <-c.Done():
-	case <-time.After(time.Until(start.Add(3 * bound))):
+	case end = <-at:
+	case <-time.After(3*bound + 3*probe.late()):
 		t.Fatalf("%s: dead peer not detected", who)
 	}
-	if !errors.Is(c.Err(), ErrDeadPeer) {
-		t.Fatalf("%s: ended with %v", who, c.Err())
+	silent := end.Sub(c.t0.Add(time.Duration(c.rxAt.Load())))
+	if silent < bound {
+		t.Fatalf("%s: dead %v after its last frame, under Interval + Timeout (%v)", who, silent, bound)
 	}
-	return time.Since(start)
+	if most := bound + 3*probe.late() + deadPeerSlack; silent > most {
+		t.Fatalf("%s: dead %v after its last frame, past %v (Interval + Timeout %v, timers up to %v late)", who, silent, most, bound, probe.late())
+	}
+	return silent
 }
 
 // testPresets is fast and default; LINK_ALL_PRESETS=1 every preset.
@@ -126,7 +184,9 @@ func testPresets() []string {
 	return []string{"fast", "default"}
 }
 
-// deadPeerSlack is the scheduling slack over Interval + Timeout.
+// deadPeerSlack is what the bound allows beyond Interval + Timeout and
+// the timers' measured lateness: the frames still on the way when the path
+// died, and wakeups between the probe's 10 ms samples.
 const deadPeerSlack = 300 * time.Millisecond
 
 // pongCut runs its armed func at the next pong its side receives.
@@ -143,7 +203,8 @@ func (o *pongCut) PingRTT(time.Duration) {
 
 // TestDeadPeerWorstCaseIdle: an idle connection's path dies right after
 // one side's ping was answered (the latest that side hears anything):
-// both ends end it within Interval + Timeout.
+// both ends end it Interval + Timeout after the last frame each received,
+// plus their timers' lateness (checkDeadAfter, spec/Liveness.tla).
 func TestDeadPeerWorstCaseIdle(t *testing.T) {
 	for _, name := range testPresets() {
 		for _, side := range []string{"dialer", "listener"} {
@@ -152,6 +213,7 @@ func TestDeadPeerWorstCaseIdle(t *testing.T) {
 				l := livenessByName[name]
 				do, lo := &pongCut{}, &pongCut{}
 				c, s, cut := livePair(t, l, do, lo)
+				probe := startLateProbe(t)
 				go func() { _, _ = c.Recv() }()
 				go func() { _, _ = s.Recv() }()
 				started := make(chan time.Time, 1)
@@ -169,25 +231,21 @@ func TestDeadPeerWorstCaseIdle(t *testing.T) {
 				// load), so after two intervals the armed side pings once
 				// itself. Its pong is then the last frame it hears either
 				// way.
-				var start time.Time
 				select {
-				case start = <-started:
+				case <-started:
 				case <-time.After(2 * l.Interval):
 					t.Logf("no pong in two intervals: the %s pings", side)
 					armed.ping()
 					select {
-					case start = <-started:
+					case <-started:
 					case <-time.After(3 * (l.Interval + l.Timeout)):
 						t.Fatal("no pong")
 					}
 				}
-				bound := l.Interval + l.Timeout
-				d := waitDead(t, "dialer", c, start, bound)
-				ls := waitDead(t, "listener", s, start, bound)
-				t.Logf("%s, cut after the %s's pong: dialer %v, listener %v, bound %v", name, side, d.Round(time.Millisecond), ls.Round(time.Millisecond), bound)
-				if d > bound+deadPeerSlack || ls > bound+deadPeerSlack {
-					t.Fatalf("detected after %v / %v, bound %v", d, ls, bound)
-				}
+				dat, lat := deadAt(t, "dialer", c), deadAt(t, "listener", s)
+				d := checkDeadAfter(t, "dialer", c, l, dat, probe)
+				ls := checkDeadAfter(t, "listener", s, l, lat, probe)
+				t.Logf("%s, cut after the %s's pong: silent before the end: dialer %v, listener %v; Interval + Timeout %v, timers up to %v late", name, side, d.Round(time.Millisecond), ls.Round(time.Millisecond), l.Interval+l.Timeout, probe.late().Round(time.Millisecond))
 			})
 		}
 	}
@@ -195,7 +253,11 @@ func TestDeadPeerWorstCaseIdle(t *testing.T) {
 
 // TestDeadPeerBusy: sessions stream one way when the path dies; the
 // sender's writes block (the network takes nothing more), and both ends
-// still end the connection within Interval + Timeout.
+// still end the connection Interval + Timeout after the last frame each
+// received, plus their timers' lateness (checkDeadAfter,
+// spec/Liveness.tla). It failed in promote with "dialer 15.517s, bound
+// 15s" on a loaded Mac under -race: the timers' lateness, which the bound
+// now states.
 func TestDeadPeerBusy(t *testing.T) {
 	for _, name := range testPresets() {
 		for _, dir := range []string{"down", "up"} { // down: the listener sends
@@ -203,6 +265,7 @@ func TestDeadPeerBusy(t *testing.T) {
 				t.Parallel()
 				l := livenessByName[name]
 				c, s, cut := livePair(t, l, nil, nil)
+				probe := startLateProbe(t)
 				stream := func(s *Session) {
 					b := make([]byte, 64<<10)
 					for {
@@ -235,15 +298,11 @@ func TestDeadPeerBusy(t *testing.T) {
 					}
 				}
 				time.Sleep(300 * time.Millisecond)
+				dat, lat := deadAt(t, "dialer", c), deadAt(t, "listener", s)
 				cut()
-				start := time.Now()
-				bound := l.Interval + l.Timeout
-				d := waitDead(t, "dialer", c, start, bound)
-				ls := waitDead(t, "listener", s, start, bound)
-				t.Logf("%s, %s: dialer %v, listener %v, bound %v", name, dir, d.Round(time.Millisecond), ls.Round(time.Millisecond), bound)
-				if d > bound+deadPeerSlack || ls > bound+deadPeerSlack {
-					t.Fatalf("detected after %v / %v, bound %v", d, ls, bound)
-				}
+				d := checkDeadAfter(t, "dialer", c, l, dat, probe)
+				ls := checkDeadAfter(t, "listener", s, l, lat, probe)
+				t.Logf("%s, %s: silent before the end: dialer %v, listener %v; Interval + Timeout %v, timers up to %v late", name, dir, d.Round(time.Millisecond), ls.Round(time.Millisecond), l.Interval+l.Timeout, probe.late().Round(time.Millisecond))
 			})
 		}
 	}
