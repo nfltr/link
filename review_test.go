@@ -328,3 +328,30 @@ func TestGrantCountsCreditInAWrite(t *testing.T) {
 		t.Fatalf("a grant past the window after the refund: %v, want ErrCredit", err)
 	}
 }
+
+// F5 kept Credit.Open's order: a Conn caller opens a session's credit, then
+// sends its OPEN (relay-core's data connections). That id is not in use:
+// SendOpen takes the caller's credit over, bytes acquired meanwhile still
+// counted. An id the link opened stays refused, even after the caller's
+// Open of it.
+func TestSendOpenAfterCreditOpen(t *testing.T) {
+	c, l := v2pair(t, v2cfg, v2cfg)
+	c.Credit().Open("1")
+	if !c.Credit().Acquire("1", c.Credit().PeerWindow()) {
+		t.Fatal("Acquire of the caller's credit")
+	}
+	if err := c.SendOpen("1", nil); err != nil {
+		t.Fatalf("SendOpen after the caller's Credit.Open: %v", err)
+	}
+	if n := c.credit.sessions["1"].n; n != 0 {
+		t.Fatalf("credit after SendOpen = %d, want 0: the acquired window still counts", n)
+	}
+	_ = c.Flush()
+	if f, err := l.Recv(); err != nil || !f.Open {
+		t.Fatalf("open: %+v, %v", f, err)
+	}
+	c.Credit().Open("1")
+	if err := c.SendOpen("1", nil); !errors.Is(err, errSIDInUse) {
+		t.Fatalf("SendOpen of a link-opened id after Credit.Open: %v, want errSIDInUse", err)
+	}
+}

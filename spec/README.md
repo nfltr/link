@@ -48,6 +48,9 @@ Per side `p` and session `s`:
   uvarints); `Owner[s]` is the side that opens `s` (odd ids the dialer's).
   An open of an id the receiver keeps credit for is a protocol error
   (WIRE.md section 5; `reopen-known` puts the sender's reuse back).
+  A `Conn` caller's own `Credit.Open` before its `SendOpen` is no session
+  (`ss` stays `none` until the OPEN): the code's check is `Credit.inUse`,
+  credit the link opened, not any credit (lane LINKBUMP).
 - `max_sessions` (`MaxSess`, the same both ways): a side counts its own
   sessions by their credit; `RecvOpen` flags an open past it (`ErrFull`).
   The write scheduler's tickets are not modelled: a frame that waits may be

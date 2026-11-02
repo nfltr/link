@@ -359,7 +359,9 @@ func (c *Conn) dataLocked(sid string, data []byte, wd *writeDeadline, recheck fu
 }
 
 // SendOpen buffers an OPEN frame for session sid, with header
-// (the opener's bytes, at most 64 KiB), and starts the session's credit.
+// (the opener's bytes, at most 64 KiB), and starts the session's credit
+// (or takes over the credit its caller opened with Credit.Open). It
+// refuses an id the link opened whose credit lives (WIRE.md section 5).
 // It refuses a session past the peer's max sessions (ErrFull) and any on a
 // connection that is going away (ErrGoAway). On a FeatureChain
 // connection the frame is a CHAIN-OPEN with a zero Chain.
@@ -397,7 +399,7 @@ func (c *Conn) sendOpen(sid string, header []byte, ch Chain) error {
 	if err := goingAway(); err != nil {
 		return err
 	}
-	if c.credit.known(sid) {
+	if c.credit.inUse(sid) {
 		return errSIDInUse
 	}
 	if c.credit.count(byUs) >= c.peerMaxSessions {
@@ -1153,7 +1155,7 @@ func (c *Conn) recv() (rframe, bool, error) {
 			return rframe{}, false, err
 		}
 		sid := string(b[:l])
-		if c.credit.known(sid) {
+		if c.credit.inUse(sid) {
 			return rframe{}, false, ErrFrame // an id in use (WIRE.md section 5)
 		}
 		if c.credit.count(byPeer) >= c.maxSessions {

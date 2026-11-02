@@ -105,6 +105,19 @@ func (c *Credit) Open(sid string) { c.open(sid, byCaller) }
 func (c *Credit) open(sid string, by int) {
 	c.mu.Lock()
 	old := c.sessions[sid]
+	if old != nil && old.by == byCaller && by == byUs && !c.cut {
+		// SendOpen of an id whose credit its caller opened first (Open's
+		// order): the link takes that credit over, what was acquired of
+		// it still counted.
+		old.by = byUs
+		c.opened[byUs-1]++
+		c.openedN++
+		c.mu.Unlock()
+		if c.obs != nil {
+			c.obs.SessionOpen()
+		}
+		return
+	}
 	if old != nil {
 		close(old.wake) // a reused id: the old session's sender gives up
 		if by == byCaller {
@@ -318,6 +331,16 @@ func (c *Credit) known(sid string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.sessions[sid] != nil
+}
+
+// inUse reports whether sid is a session the link opened (an OPEN sent or
+// received) whose credit lives: its id is not free (WIRE.md section 5).
+// A caller's own Credit.Open, before its SendOpen, is no session yet.
+func (c *Credit) inUse(sid string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	s := c.sessions[sid]
+	return s != nil && s.by != byCaller
 }
 
 // receivedSID is Received of a received frame's sid (no copy of it);

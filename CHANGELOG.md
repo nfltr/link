@@ -8,6 +8,12 @@ version 2 unless an entry says otherwise.
 
 ## Unreleased
 
+- `Conn.SendOpen` of an id whose credit its caller opened first
+  (`Credit.Open`, the order its doc gives) works again: the id is not in
+  use until an OPEN of it is sent or received, and the link takes that
+  credit over, bytes acquired of it still counted (it used to start a
+  fresh window). The review's F5 check refused it (`errSIDInUse`), which
+  broke relay-core's data connections (lane LINKBUMP).
 - Fixes from the independent review of the TLA+ model (`spec/README.md`
   "Review findings", lane LINKREVIEW), each modelled first and caught by
   a mutant: a `Session.Write` parked for its turn in the write scheduler
