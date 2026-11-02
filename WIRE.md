@@ -111,8 +111,12 @@ A session is a pair of byte streams identified by its sid.
   opener's bytes (what the session is for). The open starts the session's
   credit on both sides (section 7). An open past the receiver's
   max_sessions (sessions opened by the peer and not yet closed) is a
-  protocol error (`ErrFull`). An open of an id that is already open starts
-  it again: the old session ends.
+  protocol error (`ErrFull`). An open of an id whose session the receiver
+  still keeps credit for is a protocol error (`ErrFrame`): an id is free
+  again only once its credit ended on both sides (a close code 0 or 2, an
+  abort, or, for a `Conn` caller, `Credit.Forget` after both half-closes).
+  A side counts a session against the peer's max_sessions until its close
+  or abort of it is on the wire, so an open never overtakes it.
 - **Data.** Data frames carry a session's bytes in order, on credit.
   Data for a session the receiver does not know, or whose credit ended
   there (it sent a close or abort of it), is dropped and not charged (it

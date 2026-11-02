@@ -292,7 +292,7 @@ func (c *Conn) SendData(sid string, data []byte) error {
 	if err := c.acceptLocked(sid, nil); err != nil {
 		return err
 	}
-	return c.dataLocked(sid, data, nil)
+	return c.dataLocked(sid, data, nil, nil)
 }
 
 // writeDeadline is a session's write deadline as its sends see it: set,
@@ -313,19 +313,28 @@ func (wd *writeDeadline) expired() bool { return wd != nil && wd.past.Load() }
 // It buffers nothing once the session's write side closed (wclosed, set
 // before CloseWrite buffers its CLOSE) or its credit ended (before every
 // other CLOSE or ABORT is buffered): checked under wmu, so no data
-// follows this side's FIN (spec/README.md "Design of the fixes").
+// follows this side's FIN (spec/README.md "Design of the fixes"); and
+// again just before the frame is buffered when frameLocked waited for
+// room or its turn (wmu let go meanwhile: review F1).
 func (c *Conn) sendData(sid string, data []byte, wd *writeDeadline, wclosed *atomic.Bool, flush bool) (flushErr, err error) {
 	if len(sid) > MaxSID {
 		return nil, errSID
 	}
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
-	if wclosed.Load() || !c.credit.known(sid) {
-		return nil, io.ErrClosedPipe
+	open := func() error {
+		if wclosed.Load() || !c.credit.known(sid) {
+			return io.ErrClosedPipe
+		}
+		return nil
 	}
-	if err := c.dataLocked(sid, data, wd); err != nil {
+	if err := open(); err != nil {
 		return nil, err
 	}
+	if err := c.dataLocked(sid, data, wd, open); err != nil {
+		return nil, err
+	}
+	c.credit.sent(sid, len(data))
 	if flush {
 		c.flushLocked()
 		return c.werr, nil
@@ -333,11 +342,12 @@ func (c *Conn) sendData(sid string, data []byte, wd *writeDeadline, wclosed *ato
 	return nil, nil
 }
 
-// dataLocked buffers data frames of at most maxData bytes each.
-func (c *Conn) dataLocked(sid string, data []byte, wd *writeDeadline) error {
+// dataLocked buffers data frames of at most maxData bytes each; recheck
+// (nil: none) as frameWaitLocked's.
+func (c *Conn) dataLocked(sid string, data []byte, wd *writeDeadline, recheck func() error) error {
 	for len(data) > 0 {
 		n := min(len(data), maxData)
-		if err := c.frameLocked(typeData, sid, data[:n], wd); err != nil {
+		if err := c.frameWaitLocked(typeData, sid, data[:n], wd, recheck); err != nil {
 			return err
 		}
 		if traceOn {
@@ -372,8 +382,23 @@ func (c *Conn) sendOpen(sid string, header []byte, ch Chain) error {
 	// pong that ends the peer's drain barrier, GoAway); and two opens at
 	// the peer's max sessions never both pass (byUs sessions open only
 	// here, under wmu).
-	if c.goingAway.Load() {
-		return ErrGoAway
+	// The OPEN may wait for its turn (wmu let go): the GOAWAY is looked at
+	// again just before it is buffered, after a pong that never waits
+	// (review F2). A session whose CLOSE or ABORT is not buffered yet still
+	// counts: its credit is forgotten under wmu, after that frame took its
+	// place in line (review F3). An id whose credit lives is refused
+	// (WIRE.md section 5, review F5).
+	goingAway := func() error {
+		if c.goingAway.Load() {
+			return ErrGoAway
+		}
+		return nil
+	}
+	if err := goingAway(); err != nil {
+		return err
+	}
+	if c.credit.known(sid) {
+		return errSIDInUse
 	}
 	if c.credit.count(byUs) >= c.peerMaxSessions {
 		return ErrFull
@@ -383,14 +408,21 @@ func (c *Conn) sendOpen(sid string, header []byte, ch Chain) error {
 	if c.chain() {
 		b := make([]byte, 0, 1+traceLen+len(header))
 		b = append(append(append(b, ch.Hops), ch.Trace[:]...), header...)
-		err = c.frameLocked(typeChainOpen, sid, b, nil)
+		err = c.frameWaitLocked(typeChainOpen, sid, b, nil, goingAway)
 	} else {
-		err = c.frameLocked(typeOpen, sid, header, nil)
+		err = c.frameWaitLocked(typeOpen, sid, header, nil, goingAway)
 	}
-	if traceOn && err == nil {
+	if err != nil {
+		c.credit.forget(sid, -1) // the peer never heard of it
+		if traceOn && err == ErrGoAway {
+			traceEv(c.credit.tr, traceEvent{ev: "OpenRefused", sid: sid})
+		}
+		return err
+	}
+	if traceOn {
 		traceEv(c.credit.tr, traceEvent{ev: "Open", sid: sid})
 	}
-	return err
+	return nil
 }
 
 // sendAccept buffers an ACCEPT frame for sid (FeatureChain): the path
@@ -423,6 +455,14 @@ func (c *Conn) acceptLocked(sid string, wd *writeDeadline) error {
 	return err
 }
 
+// errSIDInUse is SendOpen's refusal of an id whose session's credit
+// lives (WIRE.md section 5).
+var errSIDInUse = errors.New("link: session id in use")
+
+// testHookAbortForgot, set by a test, runs in sendAbort once the
+// session's credit is forgotten.
+var testHookAbortForgot func()
+
 // sendAbort buffers an ABORT frame for sid (FeatureChain) and ends its
 // credit, as a reset does.
 func (c *Conn) sendAbort(sid string, a *Abort) error {
@@ -433,8 +473,13 @@ func (c *Conn) sendAbort(sid string, a *Abort) error {
 	if a.Refused {
 		code = 4
 	}
-	c.credit.forget(sid, code)
+	// Forgotten under wmu, as sendClose does: an OPEN checked against the
+	// peer's max sessions goes after this frame (review F3).
 	c.wmu.Lock()
+	c.credit.forget(sid, code)
+	if testHookAbortForgot != nil {
+		testHookAbortForgot()
+	}
 	err := c.frameLocked(typeAbort, sid, appendAbort(nil, a), nil)
 	if traceOn && err == nil {
 		traceEv(c.credit.tr, traceEvent{ev: "Close", sid: sid, n: code})
@@ -622,6 +667,27 @@ func (c *Conn) sendWindow(sid string, n int) {
 // its turn until the deadline, then returns os.ErrDeadlineExceeded; it
 // then leaves the network writes to a goroutine.
 func (c *Conn) frameLocked(typ byte, sid string, body []byte, wd *writeDeadline) error {
+	return c.frameWaitLocked(typ, sid, body, wd, nil)
+}
+
+// frameWaitLocked is frameLocked with recheck (nil: none), which runs just
+// before the frame is buffered when the frame waited (for room or its
+// turn, wmu let go meanwhile): its error is returned and nothing is
+// buffered. A sender checks its frame's preconditions under wmu before
+// it calls this; recheck is that check again, for what changed while it
+// waited (spec/Link.tla SendCheck/SendBuffer, OpenCheck/OpenBuffer).
+func (c *Conn) frameWaitLocked(typ byte, sid string, body []byte, wd *writeDeadline, recheck func() error) error {
+	waited := false
+	wait := func() { // before wmu is let go
+		if !waited && traceOn && recheck != nil {
+			ev := "SendWait"
+			if typ != typeData {
+				ev = "OpenWait"
+			}
+			traceEv(c.credit.tr, traceEvent{ev: ev, sid: sid})
+		}
+		waited = true
+	}
 	n := len(body)
 	withSID := typ == typeData || typ == typeOpen || typ == typeClose || typ >= typeAccept
 	if withSID {
@@ -649,6 +715,7 @@ func (c *Conn) frameLocked(typ byte, sid string, body []byte, wd *writeDeadline)
 				c.leaveTurns(w)
 				return os.ErrDeadlineExceeded
 			}
+			wait()
 			if !c.writing { // no write to wait for: this sender writes the buffer
 				c.writeOrDrainLocked(wd)
 				continue
@@ -682,6 +749,7 @@ func (c *Conn) frameLocked(typ byte, sid string, body []byte, wd *writeDeadline)
 				}
 				return os.ErrDeadlineExceeded
 			}
+			wait()
 			if my == c.serving && !c.writing {
 				c.writeOrDrainLocked(wd)
 				continue
@@ -698,6 +766,11 @@ func (c *Conn) frameLocked(typ byte, sid string, body []byte, wd *writeDeadline)
 	}
 	if c.werr != nil {
 		return c.werr
+	}
+	if waited && recheck != nil {
+		if err := recheck(); err != nil {
+			return err
+		}
 	}
 	if c.wbuf == nil {
 		c.wbuf = writeBufs.Get().(*[]byte)
@@ -1079,10 +1152,13 @@ func (c *Conn) recv() (rframe, bool, error) {
 		if err := c.readFull(b); err != nil {
 			return rframe{}, false, err
 		}
+		sid := string(b[:l])
+		if c.credit.known(sid) {
+			return rframe{}, false, ErrFrame // an id in use (WIRE.md section 5)
+		}
 		if c.credit.count(byPeer) >= c.maxSessions {
 			return rframe{}, false, ErrFull // the peer ignored this side's max sessions
 		}
-		sid := string(b[:l])
 		c.credit.open(sid, byPeer)
 		if traceOn {
 			traceEv(c.credit.tr, traceEvent{ev: "Recv", t: "open", sid: sid})

@@ -19,9 +19,10 @@ import (
 	"github.com/nfltr/link/internal/bytequeue"
 )
 
-// MaxSessions is the most sessions one Mux carries at once by default:
-// Open refuses more (ErrFull), Serve closes a session the peer opens past
-// it. The peer's hello sets the limit toward it.
+// MaxSessions is Config.MaxSessions's default: the most sessions the
+// peer may have open toward this side at once. Open refuses more toward
+// the peer than its hello allows (ErrFull); a peer that opens more than
+// this side's ends the connection (ErrFull).
 const MaxSessions = 1024
 
 // ErrFull is Open's refusal of a session past the most sessions allowed.
@@ -53,6 +54,9 @@ type Mux struct {
 	leaving bool
 	left    bool // the close began
 	cutting bool // a drain's deadline cut the sessions
+	// refusals of the peer's opens, sent by a goroutine while refusing.
+	refusals []refusal
+	refusing bool
 }
 
 // NewMux returns a Mux over c. Call Serve on it: Serve is the receive
@@ -129,8 +133,8 @@ func (m *Mux) add(sid string, header []byte, c Chain, accepter bool) (*Session, 
 	if m.done {
 		return nil, net.ErrClosed
 	}
-	if len(m.sess) >= MaxSessions {
-		return nil, ErrFull
+	if m.sess[sid] != nil { // the Conn refuses a peer's open of an id in use
+		return nil, errSIDInUse
 	}
 	s := &Session{m: m, id: sid, q: bytequeue.New(m.c.credit.window), header: header, done: make(chan struct{}),
 		chain: c, answers: m.c.chain(), accepter: accepter}
@@ -138,9 +142,6 @@ func (m *Mux) add(sid string, header []byte, c Chain, accepter bool) (*Session, 
 		s.answered = make(chan struct{})
 	}
 	s.q.OnPop(func(n int) { m.c.credit.Consumed(sid, n) })
-	if old := m.sess[sid]; old != nil { // a peer reusing an id ends the old session
-		old.ended()
-	}
 	m.sess[sid] = s
 	m.used.Store(true)
 	if debugOn {
@@ -268,15 +269,7 @@ func (m *Mux) serve(f Frame, accept func([]byte, *Session)) {
 			s, _ = m.add(f.SID, f.Header, f.Chain, true)
 		}
 		if s == nil { // refused: the opener reads a refusal or a reset, never a clean end
-			var err error
-			if m.c.chain() {
-				err = m.c.sendAbort(f.SID, refusal)
-			} else {
-				err = m.c.SendReset(f.SID)
-			}
-			if err == nil {
-				_ = m.c.Flush()
-			}
+			m.refuse(f.SID, refusal)
 			return
 		}
 		go accept(f.Header, s)
@@ -307,6 +300,52 @@ func (m *Mux) serve(f Frame, accept func([]byte, *Session)) {
 		if s.halfClosed.Load() {
 			s.peerClosed.Store(true)
 			m.drop(s) // both sides stopped sending
+		}
+	}
+}
+
+// refuse queues the refusal of the peer's open of sid; a goroutine sends
+// it, so the receive loop never waits on a write (review F7: two sides
+// refusing while both directions are full read nothing more, and each
+// took the other for dead). The queue is bounded by this side's max
+// sessions: a refused session keeps its credit, and counts, until its
+// refusal is buffered, and an open past the max ends the connection.
+func (m *Mux) refuse(sid string, a *Abort) {
+	m.mu.Lock()
+	m.refusals = append(m.refusals, refusal{sid, a})
+	start := !m.refusing
+	m.refusing = true
+	m.mu.Unlock()
+	if start {
+		go m.sendRefusals()
+	}
+}
+
+type refusal struct {
+	sid string
+	a   *Abort
+}
+
+// sendRefusals sends the queued refusals, then ends.
+func (m *Mux) sendRefusals() {
+	for {
+		m.mu.Lock()
+		if len(m.refusals) == 0 {
+			m.refusals, m.refusing = nil, false
+			m.mu.Unlock()
+			return
+		}
+		r := m.refusals[0]
+		m.refusals = m.refusals[1:]
+		m.mu.Unlock()
+		var err error
+		if m.c.chain() {
+			err = m.c.sendAbort(r.sid, r.a)
+		} else {
+			err = m.c.SendReset(r.sid)
+		}
+		if err == nil {
+			_ = m.c.Flush()
 		}
 	}
 }
@@ -891,7 +930,7 @@ func (s *Session) acquire(n int) error {
 		if s.wd.past.Load() {
 			return os.ErrDeadlineExceeded
 		}
-		ok, stopped := s.m.c.credit.acquire(s.id, n, s.flush, stop)
+		ok, stopped := s.m.c.credit.acquire(s.id, n, s.flush, stop, true)
 		if ok {
 			return nil
 		}

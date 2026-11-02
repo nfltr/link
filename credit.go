@@ -66,6 +66,7 @@ const (
 
 type sessionCredit struct {
 	n        int           // bytes this side may still send
+	pend     int           // taken by a Session's Write, not yet buffered (Grant's bound)
 	wake     chan struct{} // signalled when n grows; closed when forgotten
 	held     int           // received and not yet acknowledged: at most the window
 	consumed int           // left the buffer, not yet acknowledged
@@ -189,13 +190,14 @@ func (c *Credit) count(by int) int {
 // received, so a sender waiting with its own frames still buffered (a
 // Session.Write of several chunks) would wait for good.
 func (c *Credit) Acquire(sid string, n int) bool {
-	ok, _ := c.acquire(sid, n, c.flush, nil)
+	ok, _ := c.acquire(sid, n, c.flush, nil, false)
 	return ok
 }
 
 // acquire is Acquire flushing with flush, and giving up (stopped) once
-// stop is closed.
-func (c *Credit) acquire(sid string, n int, flush func() error, stop <-chan struct{}) (ok, stopped bool) {
+// stop is closed. With track the bytes count as pending until sent or
+// refund (a Session's Write).
+func (c *Credit) acquire(sid string, n int, flush func() error, stop <-chan struct{}, track bool) (ok, stopped bool) {
 	var waited time.Time
 	for {
 		c.mu.Lock()
@@ -206,6 +208,9 @@ func (c *Credit) acquire(sid string, n int, flush func() error, stop <-chan stru
 		}
 		if s.n >= n {
 			s.n -= n
+			if track {
+				s.pend += n
+			}
 			if traceOn {
 				traceEv(c.tr, traceEvent{ev: "Acquire", sid: sid, n: n, credit: s.n})
 			}
@@ -238,8 +243,17 @@ func (c *Credit) acquire(sid string, n int, flush func() error, stop <-chan stru
 	}
 }
 
-// refund gives back n bytes of sid's credit that were acquired and not
-// sent.
+// sent records n bytes a Session's Write acquired as buffered.
+func (c *Credit) sent(sid string, n int) {
+	c.mu.Lock()
+	if s := c.sessions[sid]; s != nil {
+		s.pend -= n
+	}
+	c.mu.Unlock()
+}
+
+// refund gives back n bytes of sid's credit that a Session's Write
+// acquired and did not send.
 func (c *Credit) refund(sid string, n int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -253,6 +267,7 @@ func (c *Credit) refund(sid string, n int) {
 	}
 	if s != nil {
 		s.n += n
+		s.pend -= n
 		select {
 		case s.wake <- struct{}{}:
 		default:
@@ -372,7 +387,8 @@ func (c *Credit) answering(sid string) bool {
 }
 
 // Grant adds a window update's bytes to sid's credit, which never exceeds
-// the peer's window.
+// the peer's window, counting the credit a Write took and has not sent
+// yet (WIRE.md section 7, review F8).
 func (c *Credit) Grant(sid string, n int) error {
 	c.mu.Lock()
 	s := c.sessions[sid]
@@ -383,7 +399,7 @@ func (c *Credit) Grant(sid string, n int) error {
 		c.mu.Unlock()
 		return nil
 	}
-	if n < 0 || n > c.peerWindow-s.n {
+	if n < 0 || n > c.peerWindow-s.n-s.pend {
 		c.mu.Unlock()
 		return ErrCredit
 	}

@@ -60,7 +60,9 @@ func traceLive(c *Conn, ev string, now, rx, pingAt time.Duration) {
 //	Up        n: this side's window, credit: the peer's, held: 1 with FeatureChain
 //	Open, Accept, GoAway, Leave, ConnClose, Down
 //	Acquire   n: taken, credit: the session's credit after
+//	SendWait  a data frame checked waits for room or its turn (wmu let go)
 //	SendData  n: bytes (one data frame)
+//	OpenWait  an OPEN checked waits for its turn; OpenRefused: the GOAWAY came meanwhile
 //	Close     n: close code (3: an ABORT)
 //	Read      n: bytes read, held: Credit.held after, grant: the window update decided (0 none)
 //	Window    n: the update

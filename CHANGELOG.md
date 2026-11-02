@@ -8,6 +8,25 @@ version 2 unless an entry says otherwise.
 
 ## Unreleased
 
+- Fixes from the independent review of the TLA+ model (`spec/README.md`
+  "Review findings", lane LINKREVIEW), each modelled first and caught by
+  a mutant: a `Session.Write` parked for its turn in the write scheduler
+  no longer sends after a `CloseWrite` (or `Close`, `Reset`, `Abort`)
+  that went out meanwhile (it returns `io.ErrClosedPipe`); an `Open`
+  parked for its turn returns `ErrGoAway` when the peer's GOAWAY arrived
+  meanwhile, instead of sending an OPEN the peer refuses as a broken
+  drain; an `Abort` racing an `Open` at the peer's max sessions no longer
+  ends the connection (`ErrFull`); a `Mux` takes as many sessions each
+  way as `Config.MaxSessions` allows (it capped both directions together
+  at 1024); refusals of the peer's opens go out from a goroutine, so the
+  receive loop never waits on a write; a window update is bounded by the
+  credit a Write took and has not sent yet as well (WIRE.md section 7).
+  **Wire:** an open of an id whose session the receiver still keeps credit
+  for is now a protocol error (`ErrFrame`, WIRE.md section 5), and
+  `Conn.SendOpen` refuses one; it used to restart the session, and the
+  old session's bytes in flight were charged to the new one. A `Mux`
+  never reuses an id, so only `Conn` callers that reopened a live id see
+  the change.
 - Fixes in `Pool` (the wire and the API unchanged), found by its TLA+
   model (`spec/Pool.tla`, `spec/README.md` "The Pool and liveness"): a
   Pool whose connection the peer sent GOAWAY on stayed below `Min` for as
