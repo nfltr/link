@@ -247,9 +247,10 @@ only on connections that never end. Found by the interface's witness
 Severity: medium (a vacuous part of the model, not a code bug: the
 connection's end was checked by `LinkDrain.cfg`'s drain and the traces).
 Open: `make spec` and `make spec-invariants` still run `Link.cfg` with
-`Crash = 0`. With the crash taken its states pass 12 million distinct
-(invariants and `Refines`, still growing after half an hour here), past
-the nightly job's bound with liveness; the crash is checked by the
+`Crash = 0`. With the crash taken, invariants and `Refines` hold on
+`Link.cfg` (checked once, 2026-11-02: 87,768,000 states, 20,031,413
+distinct, depth 43, 51 min with 3 workers on a loaded Mac), past the
+nightly job's bound with liveness; in CI the crash is checked by the
 mutants and witnesses (`WitnessLost`, `CleanEndReceived`,
 `lost-as-eof`). Next: a smaller crash configuration in `make spec`.
 
