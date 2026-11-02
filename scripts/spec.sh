@@ -117,12 +117,18 @@ check | invariants)
 		[ $cfg != LinkCrash.cfg ] || cp spec/$cfg "$work/$cfg"
 		tlcrun "$work/$cfg"
 	done
-	for m in Pool Liveness Join; do
+	# PoolDrain (Min 2: a Drain failing halfway) only in full: its
+	# mutant is CI's.
+	pools="Pool Liveness Join"
+	[ "$1" = invariants ] || pools="$pools PoolDrain"
+	for m in $pools; do
 		echo "== $m.cfg"
 		st=0
-		# Liveness explores a horizon of ticks, Join one session: their last states end there.
+		# Liveness explores a horizon of ticks, Join one session: their last
+		# states end there; PoolDrain has no Open to keep it going.
 		dl=; [ $m = Pool ] || dl=-deadlock
-		tlc "$m.cfg" "$m.tla" $dl >"$work/check.out" 2>&1 || st=$?
+		mod=$m.tla; [ $m != PoolDrain ] || mod=Pool.tla
+		tlc "$m.cfg" "$mod" $dl >"$work/check.out" 2>&1 || st=$?
 		grep -E '^[0-9]+ states generated|depth of|Finished in|Error|violated' "$work/check.out" || true
 		[ $st = 0 ] || exit $st
 	done
@@ -141,7 +147,7 @@ mutants)
 		else
 			sed -e "s/$2/$3/" "spec/$1" >"$jw/Mutant.cfg"
 		fi
-		dl=; [ "$mod" != Liveness.tla ] && [ "$mod" != Join.tla ] || dl=-deadlock
+		dl=; [ "$mod" != Liveness.tla ] && [ "$mod" != Join.tla ] && [ "$1" != PoolDrain.cfg ] || dl=-deadlock
 		if tlc "$jw/Mutant.cfg" "$mod" $dl >"$jw/m.out" 2>&1; then
 			echo "$3: not caught"
 			return 1
@@ -222,9 +228,11 @@ mutants)
 	for m in abort-forget-early reopen-known; do
 		job mutant LinkSess.cfg 'Mutant = "none"' "Mutant = \"$m\""
 	done
-	for m in no-wake-on-goaway drain-past-max open-on-goaway maintain-no-recheck wait-takes-late no-wake-on-dial-fail; do
+	for m in no-wake-on-goaway drain-past-max open-on-goaway maintain-no-recheck wait-takes-late no-wake-on-dial-fail drain-counts-takes dial-no-closed-check snapshot-before-cancel; do
 		job mutant Pool.cfg 'Mutant = "none"' "Mutant = \"$m\"" Pool.tla
 	done
+	job mutant PoolDrain.cfg 'Mutant = "none"' 'Mutant = "drain-fail-keeps"' Pool.tla
+	for w in WitnessOpen WitnessWait WitnessReplaced WitnessPastMax WitnessClosed; do job witness Pool.cfg $w Pool.tla; done
 	for m in rearm-timeout deadline-from-rx reader-writes; do
 		job mutant Liveness.cfg 'Mutant = "none"' "Mutant = \"$m\"" Liveness.tla
 	done

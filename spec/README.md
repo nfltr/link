@@ -544,6 +544,24 @@ racing `maintain`, three connection slots, two environment events; about
   `no-wake-on-dial-fail` (finding H2: a failed dial leaves `p.changed`
   open). An `Open` whose dial failed picks again (Backoff) or returns the
   dial's error (Backoff nil, its ctx ended); `OpensOpen` counts both.
+- Since lane POOLFIX (review r2 M1-M4) the model has a session cap per
+  connection (`Cap`, the peer's max_sessions: a full connection counts
+  against Max but takes no session; `Open` fails `ErrFull` when such ones
+  hold the room), `Close` (cancel `p.ctx`, then close a snapshot of the
+  connections; a dial ending after the cancel closes its own) and these
+  checks: `MakeBeforeBreak` (a Drain whose old connections counted against
+  Max has a replacement before its GOAWAYs), `NoLeak` (no connection open
+  once `Close` returned), `CloseEnds` (after `Close` every connection ends
+  and is dropped); `MinHeld` holds until `Close`. Mutants
+  `drain-counts-takes` (M1), `drain-fail-keeps` (M2, on `PoolDrain.cfg`:
+  Min = Max = 2, no `Open`, invariants only, full run in `make spec`),
+  `dial-no-closed-check`, `snapshot-before-cancel` (M3). Witnesses, each
+  violated by TLC (`make spec-mutants`): `WitnessOpen`, `WitnessWait`,
+  `WitnessReplaced`, `WitnessPastMax`, `WitnessClosed`. `-coverage 1` on
+  `Pool.cfg`: every action taken but the mutants' own (`MaintainReserve`,
+  `OpenTakeLate`). Not modelled yet (review r2): background growth (M5),
+  concurrent Drains (L1), Drain's deadline cut (L2), the refused backoff
+  (L4), sessions the peer opens (L7).
 
 **`Liveness.tla`** (`Conn.keepAlive`) in discrete time: the last frame
 received (`rxAt`), the ping waiting for an answer (`pingAt`), the one
@@ -656,3 +674,17 @@ mechanism's own lateness, not a fault.
   again. **Fixed**: every dial's end closes `p.changed`. Tests:
   `TestPoolOpenFailsWithTheDialErrorWhileMaintainDials`,
   `TestPoolMinRedialsAfterAnOpensDialFails`.
+- **M1. `Drain` broke before it made when the old connections were full**
+  (review r2, `MakeBeforeBreak` with `drain-counts-takes`; medium). It
+  counted replacements by `takes`, which excludes a connection at its most
+  sessions, yet such one counts against Max and got its GOAWAY: a busy
+  Pool got no replacement. **Fixed**: replacements are counted by what
+  counts against Max. Test: `TestPoolDrainReplacesAFullConnectionFirst`.
+- **M2. A `Drain` failing halfway left the Pool above Max** (review r2,
+  `MaxHolds` on `PoolDrain.cfg` with `drain-fail-keeps`; medium). The
+  replacements already dialled stayed beside the old connections.
+  **Fixed**: they get GOAWAY. Test: `TestPoolDrainFailingHalfwayStaysWithinMax`.
+- **M3. `Close` was not modelled** (review r2; medium): now `NoLeak` and
+  `CloseEnds`; the code held (no change).
+- **M4. `Open`'s error exits were not modelled** (review r2; medium): an
+  `Open` now ends with its dial's error, `ErrFull` or `net.ErrClosed`.

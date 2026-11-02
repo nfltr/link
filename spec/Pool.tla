@@ -1,19 +1,20 @@
 -------------------------------- MODULE Pool --------------------------------
 (* A model of pool.go: the connections a Pool keeps to one peer, the       *)
-(* sessions Open places on them, maintain's Min, Drain, and what the peer  *)
-(* and the network do to them (GOAWAY, a dead path). Sessions are modelled *)
-(* only by what Link.tla guarantees of them: a connection that ends ends   *)
-(* its sessions with an error, an OPEN after the opener read the peer's    *)
-(* GOAWAY never goes out (ErrGoAway), and a side that sent GOAWAY closes   *)
-(* the connection once its sessions ended. A dead path is detected within  *)
-(* the liveness bound (Liveness.tla): here, eventually. spec/README.md,    *)
-(* "The Pool".                                                             *)
+(* sessions Open places on them, maintain's Min, Drain, Close, and what    *)
+(* the peer and the network do to them (GOAWAY, a dead path). Sessions are *)
+(* modelled only by what Link.tla guarantees of them: a connection that    *)
+(* ends ends its sessions with an error, an OPEN after the opener read the *)
+(* peer's GOAWAY never goes out (ErrGoAway), one past the peer's max is    *)
+(* refused (ErrFull), and a side that sent GOAWAY closes the connection    *)
+(* once its sessions ended. A dead path is detected within the liveness    *)
+(* bound (Liveness.tla): here, eventually. spec/README.md, "The Pool".     *)
 EXTENDS Naturals, FiniteSets
 
 CONSTANTS
     Ids,        \* connection slots (a removed connection's slot is reused)
     Opens,      \* the application's concurrent Open calls
     Min, Max,   \* PoolConfig.Min, Max (Max already max(Max, Min, 1))
+    Cap,        \* sessions a connection takes (the peer's max_sessions)
     MaxEnv,     \* GOAWAYs, path deaths, failed dials and Drains, in total
     Mutant      \* "none" or a bug put back (spec-mutants)
 
@@ -24,23 +25,29 @@ VARIABLES
     sess,    \* sess[c]: sessions open on c
     dials,   \* Pool.dials: dials reserved or in flight
     mtw,     \* p.changed was closed since maintain took it
-    mt,      \* maintain: "check" | "wait" | "dial"
+    mt,      \* maintain: "check" | "wait" | "dial" | "stopped"
     op,      \* op[o]: an Open: [st, c] st "idle" | "pick" | "place" | "dial" | "wait" | "open"
              \* (| "late": wait-takes-late's decided wait, p.changed not yet taken)
     opw,     \* opw[o]: p.changed was closed since Open o took it (waitChange)
-    dr,      \* Drain: [st |-> "idle" | "dial" | "goaway" | "done", old, left]
+    dr,      \* Drain: [st |-> "idle" | "dial" | "goaway" | "done", old, left,
+             \*   rep: its replacements so far, stay: old ones counted against Max]
+    pc,      \* Close: "open" | "cancelled" (p.ctx) | "done" (conns closed)
+             \* (| "snapped": snapshot-before-cancel's snapshot taken first)
     env,     \* environment events so far (bounded by MaxEnv)
     bad      \* a session placed on a connection already going away or closed
 
-vars == <<cs, ga, dead, sess, dials, mtw, opw, mt, op, dr, env, bad>>
+vars == <<cs, ga, dead, sess, dials, mtw, opw, mt, op, dr, pc, env, bad>>
 
 Up(c) == cs[c] = "up"
-\* takes (pool.go): open, its writes not failed, no GOAWAY. Sessions per
-\* connection are not bounded here (Opens < MaxSessions).
-Takes(c) == Up(c) /\ ~ga[c]
+\* counts against Max (stayingLocked): open, its writes not failed, no GOAWAY.
+Stays(c) == Up(c) /\ ~ga[c]
+\* takes (pool.go): one that stays, below the peer's max sessions.
+Takes(c) == Stays(c) /\ sess[c] < Cap
 Taking == Cardinality({c \in Ids : Takes(c)})
 \* stayingLocked: connections that count against Max, and dials.
-Staying == dials + Taking
+Staying == dials + Cardinality({c \in Ids : Stays(c)})
+\* p.ctx is cancelled: Open fails with net.ErrClosed, maintain stops.
+Closed == pc \in {"cancelled", "done"}
 \* p.changed is closed: every goroutine waiting on it wakes.
 Changed == mtw' = TRUE /\ opw' = [o \in Opens |-> TRUE]
 
@@ -54,7 +61,8 @@ Init ==
     /\ mt = "check"
     /\ op = [o \in Opens |-> [st |-> "idle", c |-> 0]]
     /\ opw = [o \in Opens |-> FALSE]
-    /\ dr = [st |-> "idle", old |-> {}, left |-> 0]
+    /\ dr = [st |-> "idle", old |-> {}, left |-> 0, rep |-> {}, stay |-> 0]
+    /\ pc = "open"
     /\ env = 0
     /\ bad = FALSE
 
@@ -68,7 +76,8 @@ Need == Taking + dials < Min /\ Staying < Max
 \* The loop's check under p.mu: reserve a dial, or wait on p.changed.
 MaintainCheck ==
     /\ mt = "check"
-    /\ IF Need /\ FreeId # {}
+    /\ IF Closed THEN mt' = "stopped" /\ UNCHANGED <<dials, mtw>>
+       ELSE IF Need /\ FreeId # {}
        THEN /\ IF Mutant = "maintain-no-recheck"
                THEN mt' = "reserve" /\ UNCHANGED dials \* decided, the lock let go
                ELSE mt' = "dial" /\ dials' = dials + 1
@@ -76,24 +85,29 @@ MaintainCheck ==
        ELSE /\ mt' = "wait"
             /\ mtw' = FALSE
             /\ UNCHANGED dials
-    /\ UNCHANGED <<cs, ga, dead, sess, opw, op, dr, env, bad>>
+    /\ UNCHANGED <<cs, ga, dead, sess, opw, op, dr, pc, env, bad>>
 
 \* maintain-no-recheck: it reserves what it decided before (pool.go takes
 \* p.mu again and re-checks Need: an Open may have dialled meanwhile).
 MaintainReserve ==
     /\ mt = "reserve"
     /\ mt' = "dial" /\ dials' = dials + 1
-    /\ UNCHANGED <<cs, ga, dead, sess, mtw, opw, op, dr, env, bad>>
+    /\ UNCHANGED <<cs, ga, dead, sess, mtw, opw, op, dr, pc, env, bad>>
 
+\* p.changed closed, or p.ctx done.
 MaintainWake ==
-    /\ mt = "wait" /\ mtw
+    /\ mt = "wait" /\ (mtw \/ Closed)
     /\ mt' = "check"
-    /\ UNCHANGED <<cs, ga, dead, sess, dials, mtw, opw, op, dr, env, bad>>
+    /\ UNCHANGED <<cs, ga, dead, sess, dials, mtw, opw, op, dr, pc, env, bad>>
 
 \* dial: the connection comes up (or fails) and dials ends its reservation.
+\* Once p.ctx is cancelled it closes the new connection under p.mu, so
+\* Close's snapshot misses none (dial-no-closed-check drops that).
+NewConn(c) == cs' = [cs EXCEPT ![c] = IF Closed /\ Mutant # "dial-no-closed-check" THEN "closed" ELSE "up"]
+
 DialUp(c) ==
     /\ cs[c] = "free"
-    /\ cs' = [cs EXCEPT ![c] = "up"]
+    /\ NewConn(c)
     /\ dials' = dials - 1
     /\ Changed
     /\ UNCHANGED env
@@ -112,7 +126,7 @@ MaintainDial ==
     /\ \/ \E c \in FreeId : DialUp(c)
        \/ DialFails
     /\ mt' = "check"
-    /\ UNCHANGED <<ga, dead, sess, op, dr, bad>>
+    /\ UNCHANGED <<ga, dead, sess, op, dr, pc, bad>>
 
 (***************************************************************************)
 (* Open (one per o): pick, then OpenChain on the pick, or dial and wait    *)
@@ -120,37 +134,41 @@ MaintainDial ==
 OpenStart(o) ==
     /\ op[o].st = "idle"
     /\ op' = [op EXCEPT ![o].st = "pick"]
-    /\ UNCHANGED <<cs, ga, dead, sess, dials, mtw, opw, mt, dr, env, bad>>
+    /\ UNCHANGED <<cs, ga, dead, sess, dials, mtw, opw, mt, dr, pc, env, bad>>
 
 Pick(o) ==
     /\ op[o].st = "pick"
-    /\ IF \E c \in Ids : Takes(c)
+    /\ IF Closed \* net.ErrClosed
+       THEN op' = [op EXCEPT ![o] = [st |-> "idle", c |-> 0]] /\ UNCHANGED <<dials, opw>>
+       ELSE IF \E c \in Ids : Takes(c)
        THEN /\ \E c \in Ids : Takes(c) /\ op' = [op EXCEPT ![o] = [st |-> "place", c |-> c]]
             /\ UNCHANGED <<dials, opw>>
        ELSE IF Staying < Max /\ FreeId # {}
        THEN /\ dials' = dials + 1
             /\ op' = [op EXCEPT ![o].st = "dial"]
             /\ UNCHANGED opw
-       ELSE \* every room held by dials in flight (ErrFull needs a full one):
-            \* pick returns the p.changed it read under p.mu, and Open waits
-            \* on that one (finding H1).
+       ELSE IF Staying > dials \* ErrFull: a connection at its most sessions holds the room
+       THEN op' = [op EXCEPT ![o] = [st |-> "idle", c |-> 0]] /\ UNCHANGED <<dials, opw>>
+       ELSE \* every room held by dials in flight: pick returns the
+            \* p.changed it read under p.mu, and Open waits on that one
+            \* (finding H1).
             /\ IF Mutant = "wait-takes-late"
                THEN op' = [op EXCEPT ![o].st = "late"] /\ UNCHANGED opw
                ELSE op' = [op EXCEPT ![o].st = "wait"] /\ opw' = [opw EXCEPT ![o] = FALSE]
             /\ UNCHANGED dials
-    /\ UNCHANGED <<cs, ga, dead, sess, mtw, mt, dr, env, bad>>
+    /\ UNCHANGED <<cs, ga, dead, sess, mtw, mt, dr, pc, env, bad>>
 
-\* OpenChain: ErrGoAway or net.ErrClosed send the Open back to pick.
+\* OpenChain: ErrGoAway, ErrFull or net.ErrClosed send the Open back to pick.
 Place(o) ==
     /\ op[o].st = "place"
     /\ LET c == op[o].c IN
-       IF Up(c) /\ (~ga[c] \/ Mutant = "open-on-goaway")
+       IF Up(c) /\ (~ga[c] \/ Mutant = "open-on-goaway") /\ sess[c] < Cap
        THEN /\ sess' = [sess EXCEPT ![c] = @ + 1]
             /\ op' = [op EXCEPT ![o].st = "open"]
             /\ bad' = (bad \/ ga[c])
        ELSE /\ op' = [op EXCEPT ![o].st = "pick"]
             /\ UNCHANGED <<sess, bad>>
-    /\ UNCHANGED <<cs, ga, dead, dials, mtw, opw, mt, dr, env>>
+    /\ UNCHANGED <<cs, ga, dead, dials, mtw, opw, mt, dr, pc, env>>
 
 \* wait-takes-late (the code before): waitChange takes p.changed after pick
 \* let go of p.mu; a dial that ended in between closed the one before.
@@ -158,7 +176,7 @@ OpenTakeLate(o) ==
     /\ op[o].st = "late"
     /\ op' = [op EXCEPT ![o].st = "wait"]
     /\ opw' = [opw EXCEPT ![o] = FALSE]
-    /\ UNCHANGED <<cs, ga, dead, sess, dials, mtw, mt, dr, env, bad>>
+    /\ UNCHANGED <<cs, ga, dead, sess, dials, mtw, mt, dr, pc, env, bad>>
 
 \* A failed dial: Open sleeps Backoff and picks again, or returns the dial's
 \* error (Backoff nil, or its ctx ended).
@@ -168,56 +186,90 @@ OpenDial(o) ==
             /\ DialUp(c)
             /\ op' = [op EXCEPT ![o] = [st |-> "place", c |-> c]]
        \/ DialFails /\ \E st \in {"pick", "idle"} : op' = [op EXCEPT ![o].st = st]
-    /\ UNCHANGED <<ga, dead, sess, mt, dr, bad>>
+    /\ UNCHANGED <<ga, dead, sess, mt, dr, pc, bad>>
 
+\* p.changed closed, or p.ctx done.
 OpenWake(o) ==
-    /\ op[o].st = "wait" /\ opw[o]
+    /\ op[o].st = "wait" /\ (opw[o] \/ Closed)
     /\ op' = [op EXCEPT ![o].st = "pick"]
-    /\ UNCHANGED <<cs, ga, dead, sess, dials, mtw, opw, mt, dr, env, bad>>
+    /\ UNCHANGED <<cs, ga, dead, sess, dials, mtw, opw, mt, dr, pc, env, bad>>
 
 \* The application ends its session; it may also keep it forever.
 SessionClose(o) ==
     /\ op[o].st = "open"
     /\ sess' = [sess EXCEPT ![op[o].c] = @ - 1]
     /\ op' = [op EXCEPT ![o] = [st |-> "idle", c |-> 0]]
-    /\ UNCHANGED <<cs, ga, dead, dials, mtw, opw, mt, dr, env, bad>>
+    /\ UNCHANGED <<cs, ga, dead, dials, mtw, opw, mt, dr, pc, env, bad>>
 
 (***************************************************************************)
 (* Drain: dial replacements (past Max), then GOAWAY the old ones          *)
 (***************************************************************************)
-\* The old connections are those that take sessions: one already going
-\* away counts against nothing, and replacing it would dial past Max.
-\* Replacements: max(Min, 1), at most one per old connection.
-DrainOld == IF Mutant = "drain-past-max" THEN {c \in Ids : cs[c] # "free"} ELSE {c \in Ids : Takes(c)}
-DrainN == IF Mutant = "drain-past-max" THEN IF Min > 1 THEN Min ELSE 1
-          ELSE LET k == IF Min > 1 THEN Min ELSE 1 IN IF k < Cardinality(DrainOld) THEN k ELSE Cardinality(DrainOld)
+\* The old connections: all of them. Replacements: max(Min, 1), at most one
+\* per old connection that counts against Max (one at its most sessions
+\* included: finding M1); one already going away counts against nothing,
+\* and replacing it would dial past Max.
+DrainOld == {c \in Ids : cs[c] # "free"}
+DrainStay == Cardinality({c \in DrainOld : IF Mutant = "drain-counts-takes" THEN Takes(c) ELSE Stays(c)})
+DrainN == LET k == IF Min > 1 THEN Min ELSE 1 IN
+          IF Mutant = "drain-past-max" \/ k < DrainStay THEN k ELSE DrainStay
 
 DrainStart ==
     /\ dr.st = "idle" /\ env < MaxEnv
     /\ DrainOld # {}
     /\ env' = env + 1
-    /\ dials' = dials + 1 \* reserve, one replacement at a time
-    /\ dr' = [st |-> "dial", old |-> DrainOld, left |-> DrainN - 1]
-    /\ UNCHANGED <<cs, ga, dead, sess, mtw, opw, mt, op, bad>>
+    /\ dials' = IF DrainN > 0 THEN dials + 1 ELSE dials \* reserve, one replacement at a time
+    /\ dr' = [st |-> IF DrainN > 0 THEN "dial" ELSE "goaway", old |-> DrainOld, left |-> DrainN - 1,
+              rep |-> {}, stay |-> Cardinality({c \in DrainOld : Stays(c)})]
+    /\ UNCHANGED <<cs, ga, dead, sess, mtw, opw, mt, op, pc, bad>>
 
+\* A failed replacement: the old ones stay, and those already dialled go
+\* away, so the Pool is back within Max (finding M2; drain-fail-keeps is
+\* the code before).
 DrainDial ==
     /\ dr.st = "dial"
     /\ \/ \E c \in FreeId :
-            /\ cs' = [cs EXCEPT ![c] = "up"]
+            /\ NewConn(c)
             /\ Changed
             /\ IF dr.left > 0 \* the next replacement reserved as this one ends
-               THEN dr' = [dr EXCEPT !.left = @ - 1] /\ UNCHANGED dials
-               ELSE dr' = [dr EXCEPT !.st = "goaway"] /\ dials' = dials - 1
-            /\ UNCHANGED env
-       \/ DialFails /\ dr' = [dr EXCEPT !.st = "done"] \* the old ones stay
-    /\ UNCHANGED <<ga, dead, sess, mt, op, bad>>
+               THEN dr' = [dr EXCEPT !.left = @ - 1, !.rep = @ \cup {c}] /\ UNCHANGED dials
+               ELSE dr' = [dr EXCEPT !.st = "goaway", !.rep = @ \cup {c}] /\ dials' = dials - 1
+            /\ UNCHANGED <<ga, env>>
+       \/ /\ DialFails
+          /\ dr' = [dr EXCEPT !.st = "done"]
+          /\ IF Mutant = "drain-fail-keeps" THEN UNCHANGED ga
+             ELSE ga' = [c \in Ids |-> ga[c] \/ (c \in dr.rep /\ Up(c))]
+    /\ UNCHANGED <<dead, sess, mt, op, pc, bad>>
 
 DrainGoAway ==
     /\ dr.st = "goaway"
     /\ ga' = [c \in Ids |-> ga[c] \/ (c \in dr.old /\ Up(c))]
     /\ dr' = [dr EXCEPT !.st = "done"]
     /\ IF Mutant = "no-wake-on-goaway" THEN UNCHANGED <<mtw, opw>> ELSE Changed
-    /\ UNCHANGED <<cs, dead, sess, dials, mt, op, env, bad>>
+    /\ UNCHANGED <<cs, dead, sess, dials, mt, op, pc, env, bad>>
+
+(***************************************************************************)
+(* Close: cancel p.ctx, then close every connection of a snapshot          *)
+(***************************************************************************)
+\* closeIdle on each: the connection closes, its sessions end.
+CloseSnap ==
+    /\ cs' = [c \in Ids |-> IF Up(c) THEN "closed" ELSE cs[c]]
+    /\ sess' = [c \in Ids |-> IF Up(c) THEN 0 ELSE sess[c]]
+    /\ op' = [o \in Opens |-> IF op[o].st = "open" /\ Up(op[o].c) THEN [st |-> "idle", c |-> 0] ELSE op[o]]
+
+\* The application calls Close (once). snapshot-before-cancel takes the
+\* snapshot first: a dial ending in between adds a connection that no one
+\* closes.
+CloseStart ==
+    /\ pc = "open"
+    /\ pc' = IF Mutant = "snapshot-before-cancel" THEN "snapped" ELSE "cancelled"
+    /\ IF Mutant = "snapshot-before-cancel" THEN CloseSnap ELSE UNCHANGED <<cs, sess, op>>
+    /\ UNCHANGED <<ga, dead, dials, mtw, opw, mt, dr, env, bad>>
+
+CloseEnd ==
+    /\ pc \in {"cancelled", "snapped"}
+    /\ pc' = "done"
+    /\ IF pc = "cancelled" THEN CloseSnap ELSE UNCHANGED <<cs, sess, op>>
+    /\ UNCHANGED <<ga, dead, dials, mtw, opw, mt, dr, env, bad>>
 
 (***************************************************************************)
 (* The peer and the network                                                *)
@@ -230,13 +282,13 @@ PeerGoAway(c) ==
     /\ env' = env + 1
     /\ ga' = [ga EXCEPT ![c] = TRUE]
     /\ IF Mutant = "no-wake-on-goaway" THEN UNCHANGED <<mtw, opw>> ELSE Changed
-    /\ UNCHANGED <<cs, dead, sess, dials, mt, op, dr, bad>>
+    /\ UNCHANGED <<cs, dead, sess, dials, mt, op, dr, pc, bad>>
 
 PathDies(c) ==
     /\ Up(c) /\ ~dead[c] /\ env < MaxEnv
     /\ env' = env + 1
     /\ dead' = [dead EXCEPT ![c] = TRUE]
-    /\ UNCHANGED <<cs, ga, sess, dials, mtw, opw, mt, op, dr, bad>>
+    /\ UNCHANGED <<cs, ga, sess, dials, mtw, opw, mt, op, dr, pc, bad>>
 
 \* The connection closes: liveness noticed the dead path, or the side that
 \* sent GOAWAY closes it once its sessions ended. Its sessions end with it.
@@ -246,7 +298,7 @@ CloseConn(c) ==
     /\ cs' = [cs EXCEPT ![c] = "closed"]
     /\ sess' = [sess EXCEPT ![c] = 0]
     /\ op' = [o \in Opens |-> IF op[o].st = "open" /\ op[o].c = c THEN [st |-> "idle", c |-> 0] ELSE op[o]]
-    /\ UNCHANGED <<ga, dead, dials, mtw, opw, mt, dr, env, bad>>
+    /\ UNCHANGED <<ga, dead, dials, mtw, opw, mt, dr, pc, env, bad>>
 
 \* Serve returned: the Pool drops it and closes p.changed.
 Remove(c) ==
@@ -255,17 +307,17 @@ Remove(c) ==
     /\ ga' = [ga EXCEPT ![c] = FALSE]
     /\ dead' = [dead EXCEPT ![c] = FALSE]
     /\ Changed
-    /\ UNCHANGED <<sess, dials, mt, op, dr, env, bad>>
+    /\ UNCHANGED <<sess, dials, mt, op, dr, pc, env, bad>>
 
 Pool ==
     \/ MaintainCheck \/ MaintainReserve \/ MaintainWake \/ MaintainDial
     \/ \E o \in Opens : Pick(o) \/ Place(o) \/ OpenDial(o) \/ OpenWake(o) \/ OpenTakeLate(o)
-    \/ DrainDial \/ DrainGoAway
+    \/ DrainDial \/ DrainGoAway \/ CloseEnd
     \/ \E c \in Ids : CloseConn(c) \/ Remove(c)
 
 App ==
     \/ \E o \in Opens : OpenStart(o) \/ SessionClose(o)
-    \/ DrainStart
+    \/ DrainStart \/ CloseStart
     \/ \E c \in Ids : PeerGoAway(c) \/ PathDies(c)
 
 Next == Pool \/ App
@@ -275,7 +327,7 @@ Next == Pool \/ App
 \* forever). A dial that can succeed eventually does (failures are bounded).
 Fairness ==
     /\ WF_vars(MaintainCheck) /\ WF_vars(MaintainReserve) /\ WF_vars(MaintainWake) /\ WF_vars(MaintainDial)
-    /\ WF_vars(DrainDial) /\ WF_vars(DrainGoAway)
+    /\ WF_vars(DrainDial) /\ WF_vars(DrainGoAway) /\ WF_vars(CloseEnd)
     /\ \A o \in Opens : WF_vars(Pick(o)) /\ WF_vars(Place(o)) /\ WF_vars(OpenDial(o)) /\ WF_vars(OpenWake(o)) /\ WF_vars(OpenTakeLate(o))
     /\ \A c \in Ids : WF_vars(CloseConn(c)) /\ WF_vars(Remove(c))
 
@@ -292,14 +344,34 @@ TypeOK ==
 NoSessionOnLeaving == ~bad
 
 \* Concurrent Opens and maintain never dial past Max; only Drain's
-\* replacements do, until it sent its GOAWAYs.
+\* replacements do, until it sent its GOAWAYs (or, failing, sent them on
+\* the replacements).
 MaxHolds == dr.st \notin {"dial", "goaway"} => Staying <= Max
 
-\* Min: once the environment stops, the Pool has Min connections that take
-\* sessions, whatever sessions run on the ones going away.
-MinHeld == <>[](Taking >= Min)
+\* Make before break: a Drain whose old connections counted against Max
+\* has a replacement before it sends them GOAWAY.
+MakeBeforeBreak == dr.st = "goaway" => dr.stay = 0 \/ dr.rep # {}
 
-\* Every Open ends: with a session (the peer keeps accepting dials) or the
-\* error of its own failed dial.
+\* No connection is left open once Close returned.
+NoLeak == pc = "done" => \A c \in Ids : ~Up(c)
+
+\* Min: once the environment stops, the Pool has Min connections that take
+\* sessions, whatever sessions run on the ones going away, until Close.
+\* Sessions held open forever may fill them (Cap): those count as taking.
+MinHeld == <>[](Cardinality({c \in Ids : Stays(c)}) >= Min \/ Closed)
+
+\* Every Open ends: with a session (the peer keeps accepting dials) or an
+\* error (its own failed dial, ErrFull, net.ErrClosed).
 OpensOpen == \A o \in Opens : op[o].st \in {"pick", "dial", "wait", "late", "place"} ~> op[o].st \in {"open", "idle"}
+
+\* After Close, every connection ends and is dropped.
+CloseEnds == Closed ~> \A c \in Ids : cs[c] = "free"
+
+\* Witnesses (make spec-mutants): each must be violated, so the invariant
+\* or path it names is reached, not vacuous.
+WitnessOpen == \A o \in Opens : op[o].st # "open"           \* a session is placed
+WitnessWait == \A o \in Opens : op[o].st # "wait"           \* an Open waits on dials (H1, H2)
+WitnessReplaced == ~(dr.st = "goaway" /\ dr.stay > 0)       \* MakeBeforeBreak's case
+WitnessPastMax == ~(dr.st = "goaway" /\ Staying > Max)      \* MaxHolds' exception
+WitnessClosed == ~(pc = "done" /\ \E c \in Ids : cs[c] = "closed") \* NoLeak with a connection Close closed
 =============================================================================
