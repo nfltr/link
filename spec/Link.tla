@@ -62,10 +62,11 @@ vars == <<out, cr, ss, pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA,
 
 NoCredit == [on |-> FALSE, n |-> 0, held |-> 0, cons |-> 0]
 \* closing: a Close, Reset or abort that forgot the credit and has yet to buffer its frame (code + 1).
-\* sent, got: history for the interface (LinkSession.tla): the code of the last close
-\* this side buffered, the first one it received while the session was open (NoCode: none).
+\* sent, got, fin: history for the interface (LinkSession.tla): the code of the last close
+\* this side buffered (a reset kept), the first one it received while the session was
+\* open (NoCode: none), and whether it buffered a FIN (code Half or Full).
 NoSession == [st |-> "none", wfin |-> FALSE, rfin |-> FALSE, pclosed |-> FALSE, q |-> 0, acc |-> FALSE, closing |-> 0,
-              sent |-> NoCode, got |-> NoCode]
+              sent |-> NoCode, got |-> NoCode, fin |-> FALSE]
 
 Init ==
     /\ out = [p \in Sides |-> <<>>]
@@ -231,9 +232,9 @@ CloseWrite(p, s) ==                              \* Session.CloseWrite
     /\ Answered(p, s)
     /\ SendClose(p, s, Half)
     /\ IF ss[p][s].rfin                          \* both halves: drop
-       THEN /\ ss' = [ss EXCEPT ![p][s].wfin = TRUE, ![p][s].st = "gone", ![p][s].pclosed = TRUE, ![p][s].sent = IF @ = ABT THEN @ ELSE Half]
+       THEN /\ ss' = [ss EXCEPT ![p][s].wfin = TRUE, ![p][s].st = "gone", ![p][s].pclosed = TRUE, ![p][s].sent = IF @ = ABT THEN @ ELSE Half, ![p][s].fin = TRUE]
             /\ cr' = Forget(p, s)
-       ELSE /\ ss' = [ss EXCEPT ![p][s].wfin = TRUE, ![p][s].sent = IF @ = ABT THEN @ ELSE Half]
+       ELSE /\ ss' = [ss EXCEPT ![p][s].wfin = TRUE, ![p][s].sent = IF @ = ABT THEN @ ELSE Half, ![p][s].fin = TRUE]
             /\ UNCHANGED cr
     /\ appDone' = [appDone EXCEPT ![p][s] = TRUE]
     /\ UNCHANGED <<pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
@@ -260,7 +261,8 @@ End(p, s) ==
     /\ ss[p][s].closing # 0
     /\ SendClose(p, s, IF Mutant = "abort-as-fin" /\ code \in {RST, ABT} THEN Full ELSE code)
     /\ ss' = [ss EXCEPT ![p][s].closing = 0, ![p][s].st = IF code = ABT THEN @ ELSE "gone",
-                                 ![p][s].sent = IF @ \in {RST, ABT} THEN @ ELSE code]   \* a Close after Mux.cut's abort
+                                 ![p][s].sent = IF @ \in {RST, ABT} THEN @ ELSE code,
+                                 ![p][s].fin = @ \/ code = Full]   \* a Close after Mux.cut's abort
     /\ UNCHANGED <<cr, pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
                    pings, wshut, closed, down, appDone, crashes, err, wt>>
 

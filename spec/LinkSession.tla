@@ -34,6 +34,7 @@ VARIABLES
     c,      \* [Sides -> [Sids -> Nat]]: bytes p's reader took
     wend,   \* [Sides -> [Sids -> {"", "fin", "close", "reset"}]]: how p ended its writes:
             \*   CloseWrite ("fin"), Close ("close": both ways), Reset or Abort ("reset")
+    fin,    \* [Sides -> [Sids -> BOOLEAN]]: p sent its FIN (CloseWrite or Close), perhaps reset after
     shut,   \* [Sides -> [Sids -> BOOLEAN]]: p ended its own reads (Close, Reset, Abort)
     rend,   \* [Sides -> [Sids -> {"", "eof", "reset", "lost"}]]: how p's reader learned
             \*   the peer's end: io.EOF, ErrReset or *Abort, ErrConnClosed
@@ -41,7 +42,7 @@ VARIABLES
     up,     \* [Sides -> BOOLEAN]: p's connection serves (Mux.Serve has not returned)
     fault   \* the connection failed on a protocol error (ErrFrame, ErrCredit)
 
-ivars == <<st, w, d, c, wend, shut, rend, ga, up, fault>>
+ivars == <<st, w, d, c, wend, fin, shut, rend, ga, up, fault>>
 
 Init ==
     /\ st = [p \in Sides |-> [s \in Sids |-> "none"]]
@@ -49,6 +50,7 @@ Init ==
     /\ d = [p \in Sides |-> [s \in Sids |-> 0]]
     /\ c = [p \in Sides |-> [s \in Sids |-> 0]]
     /\ wend = [p \in Sides |-> [s \in Sids |-> ""]]
+    /\ fin = [p \in Sides |-> [s \in Sids |-> FALSE]]
     /\ shut = [p \in Sides |-> [s \in Sids |-> FALSE]]
     /\ rend = [p \in Sides |-> [s \in Sids |-> ""]]
     /\ ga = [p \in Sides |-> FALSE]
@@ -98,9 +100,11 @@ GReads ==
 
 \* 4. Ends, typed. p ends its writes once (a CloseWrite may be followed by
 \* a Close or a Reset); a reader's end is typed by the peer's: io.EOF only
-\* after every byte the peer wrote before its FIN or Close (unless this
-\* side dropped them: its own whole close), a reset only from the peer's
-\* Reset or Abort, lost only with the connection's end.
+\* after the peer's FIN (CloseWrite or Close) and every byte it wrote
+\* before (unless this side dropped them: its own whole close), a reset
+\* only from the peer's Reset or Abort, lost only with the connection's
+\* end. The first end a reader learns is its end (a FIN then a reset
+\* reads io.EOF).
 GEnds ==
     \A p \in Sides, s \in Sids :
         /\ Changed(wend, p, s) =>
@@ -111,7 +115,7 @@ GEnds ==
         /\ Changed(rend, p, s) =>
             /\ rend[p][s] = ""
             /\ CASE rend'[p][s] = "eof" ->
-                      /\ wend[Peer(p)][s] \in {"fin", "close"}
+                      /\ fin[Peer(p)][s]
                       /\ shut[p][s] \/ d[p][s] = w[Peer(p)][s]
                  [] rend'[p][s] = "reset" -> wend[Peer(p)][s] = "reset"
                  [] rend'[p][s] = "lost" -> ~up'[p]

@@ -29,6 +29,7 @@ LS == INSTANCE LinkSession WITH
     d <- dlv,
     c <- [p \in Sides |-> [s \in Sids |-> dlv[p][s] - ss[p][s].q]],
     wend <- [p \in Sides |-> [s \in Sids |-> WEnd(ss[p][s].sent)]],
+    fin <- [p \in Sides |-> [s \in Sids |-> ss[p][s].fin]],
     shut <- [p \in Sides |-> [s \in Sids |-> ss[p][s].closing # 0 \/ ss[p][s].sent \in {Full, RST, ABT}]],
     rend <- [p \in Sides |-> [s \in Sids |-> REnd(p, s)]],
     up <- [p \in Sides |-> ~down[p]],
