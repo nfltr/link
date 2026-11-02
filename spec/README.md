@@ -194,6 +194,21 @@ takes): `WitnessEof`, `WitnessReset`, `WitnessLost` and `WitnessCredit`
 (a writer past one window: credit came back) on `Link.cfg`,
 `WitnessRefused` (an open refused by GOAWAY) on `LinkDrain.cfg`.
 
+Assumptions and code (the drift check's table for this interface):
+
+| assumption | source |
+|---|---|
+| a connection is one ordered, reliable byte stream each way until it ends (TCP, TLS over it, QUIC's stream in quiclink) | RFC 9293 section 3.1; WIRE.md section 1 |
+| a process that dies ends its connections (its peer reads an error or nothing: the dead-peer bound) | `Liveness.tla` |
+
+| guarantee | Go |
+|---|---|
+| ordered, reads | `mux.go` (`Session.Read`, `Mux.data`), `internal/bytequeue` |
+| credit | `credit.go` (`Credit`), `conn.go` (`sendData`, `frameWaitLocked`) |
+| ends | `mux.go` (`CloseWrite`, `Close`, `Reset`, `end`, `Mux.close`), `chain.go` (`AbortWith`), `conn.go` (`sendClose`, `sendAbort`, `recv`) |
+| GOAWAY, ids | `conn.go` (`sendOpen`, `GoAway`), `mux.go` (`Mux.Open`) |
+| dead peer | `conn.go` (`keepAlive`) |
+
 Timed and liveness guarantees are not in the transition constraint:
 the dead-peer bound is `Liveness.tla`'s `DetectBound` (Interval + Timeout
 + 2 x Late, tight) and `NoFalseDead`, and the ends of sessions and

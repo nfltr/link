@@ -62,13 +62,14 @@ Changed(v, p, s) == v'[p][s] # v[p][s]
 \* 1. Sessions. An id goes none -> open -> gone once: it is never reused.
 \* The opener opens only before GOAWAY (after it, Open returns ErrGoAway:
 \* none -> gone); the peer's end opens only an id its opener opened. A
-\* session ends with a typed reason: its own whole close, the connection's
-\* end, the peer's reset, or a FIN each way (or the peer's Close).
+\* session ends with a reason: its own whole close, the connection's end,
+\* or the peer's end read here and either a FIN each way or the peer's
+\* Close, Reset or Abort.
 Opened(p, s) ==
     IF Owner[s] = p THEN ~ga[p] ELSE st[Peer(p)][s] # "none"
 Reason(p, s) ==
-    \/ shut'[p][s] \/ ~up'[p] \/ rend'[p][s] = "reset"
-    \/ rend'[p][s] = "eof" /\ (wend'[p][s] # "" \/ wend'[Peer(p)][s] = "close")
+    \/ shut'[p][s] \/ ~up'[p]
+    \/ rend'[p][s] # "" /\ (wend'[p][s] # "" \/ wend'[Peer(p)][s] \in {"close", "reset"})
 GSessions ==
     \A p \in Sides, s \in Sids : Changed(st, p, s) =>
         \/ st[p][s] = "none" /\ st'[p][s] = "open" /\ Opened(p, s)
