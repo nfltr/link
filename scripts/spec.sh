@@ -86,7 +86,10 @@ check | invariants)
 	for cfg in Link.cfg LinkDrain.cfg LinkSess.cfg; do
 		echo "== $cfg ($1)"
 		if [ "$1" = invariants ]; then
-			sed '/^PROPERTIES/,$d' "spec/$cfg" >"$work/$cfg"
+			# CI: no crash (Link.cfg's crash, taken since finding I1, is
+			# make spec's: its states take minutes; the mutants and
+			# witnesses that need it find it in seconds).
+			sed -e '/^PROPERTIES/,$d' -e 's/Crash = 1/Crash = 0/' "spec/$cfg" >"$work/$cfg"
 			cfg=$work/$cfg
 		fi
 		st=0
