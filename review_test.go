@@ -62,8 +62,9 @@ func waitConn(t *testing.T, c *Conn, what string, cond func() bool) {
 
 // stuckWriter fills c's write buffer behind a stuck network: s's frames
 // are in the buffer and a write of b's waits for room with a ticket. It
-// returns when b's write is parked; b's Write returns once the gate opens.
-func stuckWriter(t *testing.T, g *gateConn, s, b *Session) {
+// returns when b's write is parked, and a channel closed when b's Write
+// returned (once the gate opens and the peer reads).
+func stuckWriter(t *testing.T, g *gateConn, s, b *Session) <-chan struct{} {
 	t.Helper()
 	c := s.m.c
 	_ = s.SetWriteDeadline(time.Now().Add(time.Minute)) // its flushes go to a goroutine
@@ -74,8 +75,10 @@ func stuckWriter(t *testing.T, g *gateConn, s, b *Session) {
 	if _, err := s.Write([]byte("y")); err != nil { // in the next buffer
 		t.Fatal(err)
 	}
-	go func() { _, _ = b.Write(make([]byte, 2*writeBuf)) }()
+	done := make(chan struct{})
+	go func() { _, _ = b.Write(make([]byte, 2*writeBuf)); close(done) }()
 	waitConn(t, c, "a sender waiting for room", func() bool { return len(c.waiters) == 1 })
+	return done
 }
 
 // F1: a Write parked for its turn (frameLocked's turns) while CloseWrite
@@ -102,7 +105,7 @@ func TestWriteParkedForItsTurnSendsNothingAfterFIN(t *testing.T) {
 	}
 	c := dm.c
 	g.mu.Lock() // the network takes nothing from here
-	stuckWriter(t, g, sa, sb)
+	bdone := stuckWriter(t, g, sa, sb)
 	wrote := make(chan error, 1)
 	go func() {
 		_, err := sa.Write([]byte("z"))
@@ -118,6 +121,8 @@ func TestWriteParkedForItsTurnSendsNothingAfterFIN(t *testing.T) {
 	if b := <-read; string(b) != "xy" {
 		t.Fatalf("peer read %q, want \"xy\"", b)
 	}
+	<-bdone // the trace ends with the sessions, not under them
+	_ = sb.Close()
 }
 
 // F2: an OPEN waiting for its turn when the peer's GOAWAY and drain ping
@@ -136,7 +141,7 @@ func TestOpenParkedPastPeerGoAwayIsNotSent(t *testing.T) {
 	}
 	c := dm.c
 	g.mu.Lock()
-	stuckWriter(t, g, sa, sb)
+	bdone := stuckWriter(t, g, sa, sb)
 	opened := make(chan error, 1)
 	go func() {
 		_, err := dm.Open([]byte("late"))
@@ -153,6 +158,7 @@ func TestOpenParkedPastPeerGoAwayIsNotSent(t *testing.T) {
 	}
 	// The drain ends the connection once the sessions ended (a clean
 	// trace: no close under the leaving side).
+	<-bdone
 	_, _ = sa.Close(), sb.Close()
 	select {
 	case <-c.Done():
