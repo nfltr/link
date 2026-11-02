@@ -1236,6 +1236,9 @@ func (c *Conn) keepAlive() {
 	t := time.NewTimer(iv)
 	defer t.Stop()
 	pingAt := time.Duration(-1)
+	if traceOn {
+		traceLive(c, "Live", 0, 0, -1)
+	}
 	for {
 		select {
 		case <-c.credit.closed:
@@ -1247,8 +1250,14 @@ func (c *Conn) keepAlive() {
 		}
 		now := time.Since(c.t0)
 		rx := time.Duration(c.rxAt.Load())
+		if traceOn {
+			traceLive(c, "Fire", now, rx, pingAt)
+		}
 		if pingAt >= 0 && rx < pingAt { // nothing since the ping
 			if now-pingAt >= to {
+				if traceOn {
+					traceLive(c, "Dead", now, rx, pingAt)
+				}
 				c.fail(ErrDeadPeer)
 				return
 			}

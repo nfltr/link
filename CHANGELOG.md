@@ -18,7 +18,10 @@ version 2 unless an entry says otherwise.
   each at most. `keepAlive` is modelled too (`spec/Liveness.tla`): it ends
   a silent peer's connection by Interval + Timeout + twice its timer's
   lateness, never sooner than Interval + Timeout, and never one whose
-  peer answers; the dead-peer tests state that bound.
+  peer answers; the dead-peer tests state that bound. With
+  `-tags linktrace` each connection also writes keepAlive's timer fires
+  (`<trace>.ndjson.live`), which `make spec-traces` checks against that
+  model (`spec/TraceLive.tla`).
 - Fixes (the wire and the API unchanged), found by the TLA+ model
   (`spec/README.md` "Findings"): a `Session.Write` that waited for credit
   while another goroutine called `CloseWrite` (or `Close`, `Reset`) sent

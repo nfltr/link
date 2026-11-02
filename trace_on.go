@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Trace mode (go test -tags linktrace, LINKTRACE=<dir>) writes one JSON
@@ -31,6 +32,27 @@ type traceState = *traceConn
 type traceConn struct {
 	side string // "d" (dialer) or "l"
 	path string
+}
+
+// traceLive writes one step of spec/Liveness.tla that keepAlive takes, to
+// the connection's file + ".live" (spec/TraceLive.tla checks it, times in
+// microseconds since the Conn's t0):
+//
+//	Live  n: Interval, credit: Timeout
+//	Fire  n: now, credit: rxAt, held: pingAt (-1: none), as the timer fired
+//	Dead  keepAlive ends the connection (ErrDeadPeer)
+func traceLive(c *Conn, ev string, now, rx, pingAt time.Duration) {
+	if t := c.credit.tr; t != nil {
+		us := func(d time.Duration) int { return int(d / time.Microsecond) }
+		if ev == "Live" {
+			now, rx = c.live.Interval, c.live.Timeout
+		}
+		held := -1
+		if pingAt >= 0 {
+			held = us(pingAt)
+		}
+		traceWrite(t.path+".live", map[string]any{"ev": ev, "side": t.side, "n": us(now), "credit": us(rx), "held": held})
+	}
 }
 
 // traceEvent is one line. Fields an event does not use are 0 or "".
@@ -87,21 +109,25 @@ func traceEv(t *traceConn, e traceEvent) {
 	if t == nil {
 		return
 	}
-	b, err := json.Marshal(map[string]any{
+	traceWrite(t.path, map[string]any{
 		"ev": e.ev, "side": t.side, "sid": hex.EncodeToString([]byte(e.sid)), "t": e.t,
 		"n": e.n, "credit": e.credit, "held": e.held, "grant": e.grant,
 	})
+}
+
+func traceWrite(path string, line map[string]any) {
+	b, err := json.Marshal(line)
 	if err != nil {
 		panic(err)
 	}
 	traceMu.Lock()
 	defer traceMu.Unlock()
-	f := traceFiles[t.path]
+	f := traceFiles[path]
 	if f == nil {
-		if f, err = os.OpenFile(t.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err != nil { // #nosec G304 -- the tester's LINKTRACE
+		if f, err = os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err != nil { // #nosec G304 -- the tester's LINKTRACE
 			panic(err)
 		}
-		traceFiles[t.path] = f
+		traceFiles[path] = f
 	}
 	if _, err := f.Write(append(b, '\n')); err != nil {
 		panic(err)

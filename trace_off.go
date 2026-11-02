@@ -5,6 +5,8 @@
 
 package link
 
+import "time"
+
 // traceOn is false without the linktrace tag: every trace call sits behind
 // `if traceOn`, so the compiler drops it with its arguments, and a Credit's
 // traceState has no size (trace_on.go has the recorder; spec/README.md
@@ -20,5 +22,6 @@ type traceEvent struct {
 	grant           int
 }
 
-func traceUp(*Conn)                  {}
-func traceEv(traceState, traceEvent) {}
+func traceUp(*Conn)                                                        {}
+func traceLive(*Conn, string, time.Duration, time.Duration, time.Duration) {}
+func traceEv(traceState, traceEvent)                                       {}
