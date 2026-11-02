@@ -182,6 +182,7 @@ func TestPoolDrainStaysWithinMax(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	echoOK(t, s1) // the listener's Mux serves it: muxes() has it
 	for _, m := range muxes() {
 		_ = m.goAway(time.Now().Add(time.Minute))
 	}
