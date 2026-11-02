@@ -186,8 +186,11 @@ open) and `down`; `fault` is `err # {}`. History only: no action of Link
 reads them, so they change no behaviour (the state count grows by the
 states they tell apart).
 
-`make spec` and `make spec-invariants` check `Refines` (`PROPERTY
-Refines`) on `Link.cfg`, `LinkDrain.cfg` and `LinkSess.cfg`. `make
+`make spec` checks `Refines` (`PROPERTY Refines`) on `Link.cfg`,
+`LinkDrain.cfg` and `LinkSess.cfg` (`Crash = 0`) and on `LinkCrash.cfg`;
+`make spec-invariants` (CI) only on `LinkCrash.cfg`, where it costs
+seconds (on the three it tripled CI's run, lane SPECTRIM); `make
+spec-nightly` on `Link.cfg` with its crash. `make
 spec-mutants` checks each mutant above with `Refines` alone (every
 invariant of Link left out), the two mutants that exist only for the
 interface (`abort-as-fin`: `End` sends a Reset or Abort as a Close;
@@ -232,7 +235,9 @@ a connection that dies then cuts the peer's end (`lost`) after this
 side's application saw a clean end, as TCP's close does. relay-core's
 frame streams give that guarantee (`NoSilentLoss`, their end
 acknowledgement); a layer that needs it over link waits for an answer of
-the peer's application.
+the peer's application, or syncs after its CloseWrite (`Session.Sync`: a
+ping after the FIN, answered: the peer's Mux read it), as `peerlink.Join`
+does ("Join's clean end" below).
 
 A Close after `Mux.cut`'s abort (the drain deadline) sends a CLOSE after
 the ABORT and a CloseWrite a half CLOSE (`Session.Close`'s `once` and `halfClosed` are not spent by `cut`); the peer
@@ -249,13 +254,13 @@ only on connections that never end. Found by the interface's witness
 `Crashed` counts on `CloseAt`, the close itself; `WitnessLost` guards it.
 Severity: medium (a vacuous part of the model, not a code bug: the
 connection's end was checked by `LinkDrain.cfg`'s drain and the traces).
-Open: `make spec` and `make spec-invariants` still run `Link.cfg` with
-`Crash = 0`. With the crash taken, invariants and `Refines` hold on
-`Link.cfg` (checked once, 2026-11-02: 87,768,000 states, 20,031,413
-distinct, depth 43, 51 min with 3 workers on a loaded Mac), past the
-nightly job's bound with liveness; in CI the crash is checked by the
-mutants and witnesses (`WitnessLost`, `CleanEndReceived`,
-`lost-as-eof`). Next: a smaller crash configuration in `make spec`.
+`make spec` and `make spec-invariants` run `Link.cfg` with `Crash = 0`.
+With the crash taken, invariants and `Refines` hold on `Link.cfg`
+(checked once, 2026-11-02: 87,768,000 states, 20,031,413 distinct, depth
+43, 51 min with 3 workers on a loaded Mac): `make spec-nightly` (the Linux
+runner's nightly, `CI_NIGHTLY`). In CI the crash is `LinkCrash.cfg`'s (one
+byte, invariants and `Refines`, 143,610 states, lane SPECTRIM) and the mutants' and
+witnesses' (`WitnessLost`, `CleanEndReceived`, `lost-as-eof`).
 
 **Finding I2 (model, lane LINKIFACE): an OPEN that waited its turn could
 open its session after the connection ended.** With I1 fixed, TLC found
@@ -268,6 +273,50 @@ connection open; `OpenRefused` also takes a closed one; `Trace.tla` maps
 an `Open` logged after the close to the refusal). The interface's refused
 open is any failed Open (ErrGoAway, the connection's end), before any
 byte. Severity: low (model only).
+
+## Join's clean end (Join.tla, 2026-11-03, lane SPECTRIM)
+
+relay-core finding 23: `peerlink.Join` of a client's TCP conn and a link
+session ended the client cleanly once both directions ended, while the
+client's tail and FIN could still be in the link connection's write buffer;
+a connection that died then cut the peer (`lost`) after the client saw a
+clean end. The same holds at an agent, its target joined to the session.
+
+Design: a direction that ends with the session's `CloseWrite` then syncs
+(`Session.Sync`: `Conn.sync` registers a wait for every ping from here on,
+buffers a ping; a pong of one of them answers it; pings carry strictly
+growing times, `lastPing`, so a pong says which frames the peer read:
+every frame before its ping, WIRE.md section 8, no wire change). The
+joint ends that direction only after the sync; the other direction's clean
+end (the peer's FIN to the client) is held meanwhile, so the client reads
+no EOF while its own tail may still be lost; a connection that ends first
+fails the sync and the joint aborts the client (an RST: `abort`). A FIN
+that crosses the client's own on the way is no end the joint can type (a
+TCP proxy's limit): the model's clean end is the joint's clean close, or
+an EOF given after it read the client's FIN. Bound: one round trip plus
+the write buffer; the connection's liveness bounds a dead peer.
+
+`Join.tla` (`Join.cfg`, `make spec` and `make spec-invariants`, 306
+states): the client (`CWrite`, `CFin`), the joint (`Copy`, `CloseWrite`,
+`RRecv`, `Finish`, `Lost`), the peer's Mux (`ARecv`, `AFin`) and the
+connection as two FIFOs that a `Crash` empties. Invariant `NoSilentLoss`:
+a client given a clean end had every byte and its FIN read by the peer
+once the connection is gone. Mutants (`make spec-mutants`): `no-sync`
+(the code before: the end once the FIN is buffered) and `no-hold` (the
+peer's FIN passed on while the sync waits), both caught by
+`NoSilentLoss`. Witnesses: `WitnessClean`, `WitnessReset`, `WitnessHeld`.
+Guard: `peerlink` `TestJoinCleanEndOnlyOnceThePeerReadTheFIN` (failed
+before: Join returned nil with the tail in the dead connection's buffer).
+Open: `link.Join` (two link sessions: a relay's forwarding hop) passes a
+FIN on without a sync; end to end over several hops the last hop's sync
+answers only for its own connection. No trace recorder for `Join.tla` yet
+(the joint logs nothing under `linktrace`): next.
+
+| model | Go |
+|---|---|
+| `CloseWrite`, `RRecv` (pong), `Finish`, `Lost` | `peerlink/chain.go` (`joint.ended`, `sync`, `hold`, `finish`, `abort`) |
+| the ping and its pong | `mux.go` (`Session.Sync`), `conn.go` (`sync`, `synced`, `pingTime`, `keepAlive`) |
+| `ARecv` | `conn.go` (`recv`: a ping handed to `keepAlive` after every frame before it) |
 
 ## Review findings (2026-11-02, lane LINKREVIEW)
 

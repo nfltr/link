@@ -3,11 +3,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # spec.sh check|mutants|traces: the TLA+ model of spec/ (spec/README.md).
-#   check    TLC on spec/Link.cfg, LinkDrain.cfg and LinkSess.cfg, then spec/Pool.cfg
-#            and spec/Liveness.cfg: every invariant and liveness property.
-#   invariants  the same, Link's invariants only (about a minute: CI's;
-#            Pool's liveness is checked too, seconds).
-#   mutants  each Mutant of Link.tla, Pool.tla and Liveness.tla must be
+#   check    TLC on spec/Link.cfg, LinkDrain.cfg and LinkSess.cfg (no crash),
+#            LinkCrash.cfg, then spec/Pool.cfg, Liveness.cfg and Join.cfg:
+#            every invariant and liveness property, and Refines.
+#   invariants  the same, Link's invariants only, Refines only on
+#            LinkCrash.cfg (CI's; Pool's liveness is checked too, seconds).
+#   nightly  Link.cfg with its crash: invariants and Refines.
+#   mutants  each Mutant of Link.tla, Pool.tla, Liveness.tla and Join.tla must be
 #            caught (a TLC violation); each Mutant of Link.tla must also
 #            fail the session interface alone (Refines, LinkSession.tla),
 #            and each witness of the interface must be violated.
@@ -36,7 +38,7 @@ tlc() {
 # live FILE SIDE: TLC on one side's keepAlive steps (spec/TraceLive.tla);
 # it fails unless the trace is accepted.
 live() {
-	cat >"$work/live.cfg" <<CFG
+	cat >"${jw:-$work}/live.cfg" <<CFG
 CONSTANTS
     TraceFile = "$1"
     Side = "$2"
@@ -45,7 +47,7 @@ NEXT TraceNext
 POSTCONDITION TraceAccepted
 INVARIANT TraceNeverEarly
 CFG
-	META=$work/states-live-$(basename "$1")-$2 TLC_WORKERS=1 tlc "$work/live.cfg" TraceLive.tla -deadlock
+	META=$work/states-live-$(basename "$1")-$2 TLC_WORKERS=1 tlc "${jw:-$work}/live.cfg" TraceLive.tla -deadlock
 }
 
 # trace FILE: TLC on one recorded trace (spec/Trace.tla).
@@ -81,31 +83,44 @@ CFG
 	META=$work/states-$(basename "$1") tlc "$cfg" Trace.tla -deadlock
 }
 
+# tlcrun CFG: TLC on MCLink.tla with CFG, which must pass.
+tlcrun() {
+	st=0
+	tlc "$1" MCLink.tla >"$work/check.out" 2>&1 || st=$?
+	grep -E '^[0-9]+ states generated|depth of|Finished in|Error|violated' "$work/check.out" || true
+	if [ $st != 0 ]; then
+		tail -60 "$work/check.out"
+		exit $st
+	fi
+}
+
 case ${1:-} in
+nightly)
+	# Link.cfg with its crash: invariants and Refines (20 million states;
+	# its liveness with the crash is past any bound here).
+	echo "== Link.cfg (crash, invariants and Refines)"
+	sed -e '/^PROPERTIES/,$d' spec/Link.cfg >"$work/Link.cfg"
+	tlcrun "$work/Link.cfg"
+	;;
 check | invariants)
-	for cfg in Link.cfg LinkDrain.cfg LinkSess.cfg; do
+	for cfg in Link.cfg LinkDrain.cfg LinkSess.cfg LinkCrash.cfg; do
 		echo "== $cfg ($1)"
-		# No crash here: Link.cfg's crash, taken since finding I1, grows
-		# its states past 12 million (an hour and more); the mutants and
-		# witnesses that need it find it in seconds.
-		if [ "$1" = invariants ]; then
-			sed -e '/^PROPERTIES/,$d' -e 's/Crash = 1/Crash = 0/' "spec/$cfg" >"$work/$cfg"
+		# No crash in the first three: Link.cfg's crash grows its states past
+		# 20 million (spec-nightly); LinkCrash.cfg takes it on fewer bytes.
+		# invariants (CI) checks Refines only on LinkCrash.cfg: the
+		# interface's mutants and witnesses (spec-mutants) are CI's too.
+		if [ "$1" = invariants ] && [ $cfg != LinkCrash.cfg ]; then
+			sed -e '/^PROPERTY Refines/d' -e '/^PROPERTIES/,$d' -e 's/Crash = 1/Crash = 0/' "spec/$cfg" >"$work/$cfg"
 		else
 			sed -e 's/Crash = 1/Crash = 0/' "spec/$cfg" >"$work/$cfg"
 		fi
-		cfg=$work/$cfg
-		st=0
-		tlc "$cfg" MCLink.tla >"$work/check.out" 2>&1 || st=$?
-		grep -E '^[0-9]+ states generated|depth of|Finished in|Error|violated' "$work/check.out" || true
-		if [ $st != 0 ]; then
-			tail -60 "$work/check.out"
-			exit $st
-		fi
+		[ $cfg != LinkCrash.cfg ] || cp spec/$cfg "$work/$cfg"
+		tlcrun "$work/$cfg"
 	done
-	for m in Pool Liveness; do
+	for m in Pool Liveness Join; do
 		echo "== $m.cfg"
 		st=0
-		# Liveness explores a horizon of ticks: its last states end there.
+		# Liveness explores a horizon of ticks, Join one session: their last states end there.
 		dl=; [ $m = Pool ] || dl=-deadlock
 		tlc "$m.cfg" "$m.tla" $dl >"$work/check.out" 2>&1 || st=$?
 		grep -E '^[0-9]+ states generated|depth of|Finished in|Error|violated' "$work/check.out" || true
@@ -113,95 +128,119 @@ check | invariants)
 	done
 	;;
 mutants)
+	# Each check below runs in a job of its own (SPEC_JOBS at once, one
+	# TLC worker each: a check's cost is mostly the JVM's start); its line
+	# is printed in order once all ran.
 	# mutant CFG NAME [MODULE]: TLC must report a violation (Link: of an
 	# invariant; Pool and Liveness keep their properties).
-	fail=0
 	mutant() {
 		mod=${4:-MCLink.tla}
 		if [ "$mod" = MCLink.tla ]; then
 			# its invariant must catch it (the interface's checks are iface's)
-			sed -e "s/$2/$3/" -e '/^PROPERTY Refines/d' -e '/^PROPERTIES/,$d' "spec/$1" >"$work/Mutant.cfg"
+			sed -e "s/$2/$3/" -e '/^PROPERTY Refines/d' -e '/^PROPERTIES/,$d' "spec/$1" >"$jw/Mutant.cfg"
 		else
-			sed -e "s/$2/$3/" "spec/$1" >"$work/Mutant.cfg"
+			sed -e "s/$2/$3/" "spec/$1" >"$jw/Mutant.cfg"
 		fi
-		dl=; [ "$mod" != Liveness.tla ] || dl=-deadlock
-		if tlc "$work/Mutant.cfg" "$mod" $dl >"$work/m.out" 2>&1; then
+		dl=; [ "$mod" != Liveness.tla ] && [ "$mod" != Join.tla ] || dl=-deadlock
+		if tlc "$jw/Mutant.cfg" "$mod" $dl >"$jw/m.out" 2>&1; then
 			echo "$3: not caught"
-			fail=1
-		elif grep -q '^Error: \(Invariant\|Temporal property\|Action property\) .* violated' "$work/m.out"; then
-			echo "$3: caught: $(grep '/\\ err = ' "$work/m.out" | tail -1 | sed 's/.*err = //') ($(grep -m1 -E '^Error: (Invariant|Temporal property)' "$work/m.out" | sed -E 's/^Error: (Invariant|Temporal property) ([A-Za-z]+).*/\2/'), $(grep -c '^State [0-9]*:' "$work/m.out") states deep)"
+			return 1
+		elif grep -q '^Error: \(Invariant\|Temporal property\|Action property\) .* violated' "$jw/m.out"; then
+			echo "$3: caught: $(grep '/\\ err = ' "$jw/m.out" | tail -1 | sed 's/.*err = //') ($(grep -m1 -E '^Error: (Invariant|Temporal property)' "$jw/m.out" | sed -E 's/^Error: (Invariant|Temporal property) ([A-Za-z]+).*/\2/'), $(grep -c '^State [0-9]*:' "$jw/m.out") states deep)"
 		else
 			echo "$3: TLC failed:"
-			tail -20 "$work/m.out"
-			fail=1
+			tail -20 "$jw/m.out"
+			return 1
 		fi
 	}
 	# iface CFG MUTANT: Link with MUTANT fails the session interface
 	# (Refines, LinkSession.tla) with every invariant of Link left out.
 	iface() {
-		sed -e "s/Mutant = \"none\"/Mutant = \"$2\"/" -e '/^INVARIANTS/,$d' "spec/$1" >"$work/Mutant.cfg"
-		if tlc "$work/Mutant.cfg" MCLink.tla >"$work/m.out" 2>&1; then
+		sed -e "s/Mutant = \"none\"/Mutant = \"$2\"/" -e '/^INVARIANTS/,$d' "spec/$1" >"$jw/Mutant.cfg"
+		if tlc "$jw/Mutant.cfg" MCLink.tla >"$jw/m.out" 2>&1; then
 			echo "$2: not caught by the interface"
-			fail=1
-		elif grep -q '^Error: Action property .* of module LinkSession is violated' "$work/m.out"; then
-			echo "$2: fails the interface ($(grep -c '^State [0-9]*:' "$work/m.out") states deep)"
+			return 1
+		elif grep -q '^Error: Action property .* of module LinkSession is violated' "$jw/m.out"; then
+			echo "$2: fails the interface ($(grep -c '^State [0-9]*:' "$jw/m.out") states deep)"
 		else
 			echo "$2: TLC failed:"
-			tail -20 "$work/m.out"
-			fail=1
+			tail -20 "$jw/m.out"
+			return 1
 		fi
 	}
-	# witness CFG NAME: the interface's witness NAME must be violated.
+	# witness CFG NAME [MODULE]: the witness NAME must be violated.
 	witness() {
-		sed -e '/^PROPERTY/,$d' "spec/$1" >"$work/Witness.cfg"
-		printf 'INVARIANT %s\n' "$2" >>"$work/Witness.cfg"
-		if tlc "$work/Witness.cfg" MCLink.tla >"$work/m.out" 2>&1; then
+		sed -e '/^PROPERTY/,$d' "spec/$1" >"$jw/Witness.cfg"
+		printf 'INVARIANT %s\n' "$2" >>"$jw/Witness.cfg"
+		dl=; [ "${3:-}" != Join.tla ] || dl=-deadlock
+		if tlc "$jw/Witness.cfg" "${3:-MCLink.tla}" $dl >"$jw/m.out" 2>&1; then
 			echo "$2: never violated (vacuous)"
-			fail=1
-		elif grep -q "^Error: Invariant $2 is violated" "$work/m.out"; then
-			echo "$2: violated, as it must be ($(grep -c '^State [0-9]*:' "$work/m.out") states deep)"
+			return 1
+		elif grep -q "^Error: Invariant $2 is violated" "$jw/m.out"; then
+			echo "$2: violated, as it must be ($(grep -c '^State [0-9]*:' "$jw/m.out") states deep)"
 		else
 			echo "$2: TLC failed:"
-			tail -20 "$work/m.out"
-			fail=1
+			tail -20 "$jw/m.out"
+			return 1
 		fi
 	}
-	for m in fin-skips-queue grant-early write-race turns-no-recheck release-early abort-as-fin lost-as-eof; do
-		iface Link.cfg $m
-	done
-	for m in open-after-goaway open-no-recheck; do iface LinkDrain.cfg $m; done
-	for m in abort-forget-early reopen-known; do iface LinkSess.cfg $m; done
-	for w in WitnessEof WitnessReset WitnessLost WitnessCredit; do witness Link.cfg $w; done
-	witness LinkDrain.cfg WitnessRefused
-	# Not a guarantee: a clean end at one side while its FIN is lost
-	# with the connection (spec/README.md "The session interface").
-	witness Link.cfg CleanEndReceived
-	mutant Link.cfg 'Mutant = "none"' 'Mutant = "fin-skips-queue"'
-	mutant Link.cfg 'Mutant = "none"' 'Mutant = "grant-early"'
-	mutant LinkDrain.cfg 'Mutant = "none"' 'Mutant = "open-after-goaway"'
-	mutant Link.cfg 'Mutant = "none"' 'Mutant = "write-race"'
-	mutant Link.cfg 'Mutant = "none"' 'Mutant = "turns-no-recheck"'
-	mutant Link.cfg 'Mutant = "none"' 'Mutant = "release-early"'
-	mutant LinkDrain.cfg 'Mutant = "none"' 'Mutant = "open-no-recheck"'
-	mutant LinkSess.cfg 'Mutant = "none"' 'Mutant = "abort-forget-early"'
-	mutant LinkSess.cfg 'Mutant = "none"' 'Mutant = "reopen-known"'
-	for m in no-wake-on-goaway drain-past-max open-on-goaway maintain-no-recheck; do
-		mutant Pool.cfg 'Mutant = "none"' "Mutant = \"$m\"" Pool.tla
-	done
-	for m in rearm-timeout deadline-from-rx reader-writes; do
-		mutant Liveness.cfg 'Mutant = "none"' "Mutant = \"$m\"" Liveness.tla
-	done
-	# keepAlive traces put wrong: TraceLive.tla must reject each.
-	for f in spec/traces/*.ndjson.live; do
+	# livetrace FILE: keepAlive traces put wrong: TraceLive.tla must reject each.
+	livetrace() {
 		st=0
-		live "$PWD/$f" d >"$work/m.out" 2>&1 || st=$?
-		case $(basename "$f"):$st in
-		live-ok.*:0 | live-*:[1-9]*) echo "$(basename "$f"): as expected" ;;
+		live "$PWD/$1" d >"$jw/m.out" 2>&1 || st=$?
+		case $(basename "$1"):$st in
+		live-ok.*:0 | live-*:[1-9]*) echo "$(basename "$1"): as expected" ;;
 		*)
-			echo "$(basename "$f"): not as expected (exit $st)"
-			fail=1
+			echo "$(basename "$1"): not as expected (exit $st)"
+			return 1
 			;;
 		esac
+	}
+	# job CHECK ARGS: CHECK in the background, SPEC_JOBS at once.
+	n=0
+	job() {
+		n=$((n + 1))
+		(jw=$work/job$n && mkdir -p "$jw" && META=$jw/states TLC_WORKERS=1 "$@" >"$work/job$n.txt" 2>&1 || touch "$work/job$n.fail") &
+		[ $((n % ${SPEC_JOBS:-3})) != 0 ] || wait
+	}
+	for m in fin-skips-queue grant-early write-race turns-no-recheck release-early abort-as-fin lost-as-eof; do
+		job iface Link.cfg $m
+	done
+	for m in open-after-goaway open-no-recheck; do job iface LinkDrain.cfg $m; done
+	for m in abort-forget-early reopen-known; do job iface LinkSess.cfg $m; done
+	for w in WitnessEof WitnessReset WitnessLost WitnessCredit; do job witness Link.cfg $w; done
+	job witness LinkDrain.cfg WitnessRefused
+	# Not a guarantee: a clean end at one side while its FIN is lost
+	# with the connection (spec/README.md "The session interface").
+	job witness Link.cfg CleanEndReceived
+	for m in fin-skips-queue grant-early write-race turns-no-recheck release-early; do
+		job mutant Link.cfg 'Mutant = "none"' "Mutant = \"$m\""
+	done
+	for m in open-after-goaway open-no-recheck; do
+		job mutant LinkDrain.cfg 'Mutant = "none"' "Mutant = \"$m\""
+	done
+	for m in abort-forget-early reopen-known; do
+		job mutant LinkSess.cfg 'Mutant = "none"' "Mutant = \"$m\""
+	done
+	for m in no-wake-on-goaway drain-past-max open-on-goaway maintain-no-recheck; do
+		job mutant Pool.cfg 'Mutant = "none"' "Mutant = \"$m\"" Pool.tla
+	done
+	for m in rearm-timeout deadline-from-rx reader-writes; do
+		job mutant Liveness.cfg 'Mutant = "none"' "Mutant = \"$m\"" Liveness.tla
+	done
+	# peerlink.Join's clean end (Join.tla, relay-core finding 23).
+	for m in no-sync no-hold; do
+		job mutant Join.cfg 'Mutant = "none"' "Mutant = \"$m\"" Join.tla
+	done
+	for w in WitnessClean WitnessReset WitnessHeld; do job witness Join.cfg $w Join.tla; done
+	for f in spec/traces/*.ndjson.live; do job livetrace "$f"; done
+	wait
+	fail=0
+	i=0
+	while [ $i -lt $n ]; do
+		i=$((i + 1))
+		cat "$work/job$i.txt"
+		[ ! -e "$work/job$i.fail" ] || fail=1
 	done
 	exit $fail
 	;;
@@ -260,7 +299,7 @@ trace)
 	trace "$2"
 	;;
 *)
-	echo "usage: spec.sh check|invariants|mutants|traces|trace FILE" >&2
+	echo "usage: spec.sh check|invariants|nightly|mutants|traces|trace FILE" >&2
 	exit 2
 	;;
 esac

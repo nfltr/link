@@ -150,12 +150,12 @@ hooks:
 # configurations, the Pool and keepAlive's liveness; spec-mutants: every bug put back is caught; spec-traces:
 # tests run with -tags linktrace, each trace checked against the model.
 # Java and tla2tools.jar: scripts/fetch-tla.sh (cached, sha256-pinned).
-.PHONY: spec spec-invariants spec-mutants spec-traces
+.PHONY: spec spec-invariants spec-mutants spec-traces spec-nightly
 spec:
 	./scripts/spec.sh check
 
-# spec-invariants: spec without the session protocol's liveness properties
-# (about a minute; CI).
+# spec-invariants: spec without the session protocol's liveness properties,
+# Refines only on LinkCrash.cfg (CI).
 spec-invariants:
 	./scripts/spec.sh invariants
 
@@ -174,3 +174,8 @@ spec-traces:
 check-spec-drift:
 	./scripts/check-spec-drift.sh maps
 	./scripts/check-spec-drift.sh ci
+
+# spec-nightly: spec, then Link.cfg with its crash (invariants and Refines,
+# 20 million states; the Linux runner's CI_NIGHTLY).
+spec-nightly: spec
+	./scripts/spec.sh nightly

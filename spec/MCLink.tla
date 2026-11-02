@@ -9,6 +9,8 @@ MCOwner == 1 :> "d" @@ 2 :> "l" @@ 3 :> "d"
 MCWin == [p \in Sides |-> 4]
 \* Link.cfg: one session, the dialer writes past the window (credit returns).
 MCCredit == [p \in Sides |-> [s \in Sids |-> IF p = "d" THEN 6 ELSE 0]]
+\* LinkCrash.cfg: one byte of the dialer's (the crash on fewer states).
+MCCrash == [p \in Sides |-> [s \in Sids |-> IF p = "d" THEN 1 ELSE 0]]
 \* LinkDrain.cfg: two sessions, no data (Link.cfg checks credit).
 MCDrain == [p \in Sides |-> [s \in Sids |-> 0]]
 
