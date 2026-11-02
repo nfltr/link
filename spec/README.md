@@ -24,6 +24,7 @@ Per side `p` and session `s`:
 | `cr[p][s]` | `Credit.sessions[s]` (`sessionCredit`) | `on` (known to the Credit), `n` (send credit), `held`, `cons` |
 | `ss[p][s]` | `Mux.sess[s]` (`Session`) | `st` (`none`, `open`, `gone`), `wfin` (`halfClosed`), `rfin` (`peerHalf`), `pclosed` (`peerClosed`), `q` (bytes queued unread), `acc` (answered, FeatureChain) |
 | `pend[p][s]` | a `Session.Write` between `acquire` and `sendData` | credit taken, frame not yet buffered |
+| `wt[p][s]` | a frame in `frameWaitLocked`, wmu let go | `data` or `open`: checked by its sender, waiting for room or its turn |
 | `gpend[p][s]` | `Credit.Consumed` between its unlock and `grant` | a window update decided, not yet buffered |
 | `ga`, `sentGA`, `peerGA`, `drained`, `leaving` | `Conn.goingAway`, `goAwayAt`, `peerGoAway`, `drained`, `Mux.leaving` | GOAWAY state |
 | `pong[p]` | `Conn.pong` | the latest ping to answer (0 none, 1 before GOAWAY, 2 after) |
@@ -45,7 +46,17 @@ Per side `p` and session `s`:
   Trace validation runs the same actions with the real sizes (the trace's).
 - Session ids: one per session, never reused (a `Mux` picks fresh
   uvarints); `Owner[s]` is the side that opens `s` (odd ids the dialer's).
-- Not modelled: the handshake, message frames, `max_sessions` (`ErrFull`),
+  An open of an id the receiver keeps credit for is a protocol error
+  (WIRE.md section 5; `reopen-known` puts the sender's reuse back).
+- `max_sessions` (`MaxSess`, the same both ways): a side counts its own
+  sessions by their credit; `RecvOpen` flags an open past it (`ErrFull`).
+  The write scheduler's tickets are not modelled: a frame that waits may be
+  overtaken by any other. Their one order the design relies on, a CLOSE
+  or ABORT that took its place in line before an OPEN goes out before it,
+  is modelled as `OpenCheck` waiting until no close of this side is
+  pending (a trace in which an OPEN checks while a close waits would be
+  rejected: no test does).
+- Not modelled: the handshake, message frames,
   write deadlines (`refund`), `Join`/`Pump`, the chain's hop counts and
   refusals other than GOAWAY's, liveness timers (a ping may be sent at
   any time; a dead peer is the connection closing).
@@ -59,10 +70,14 @@ Per side `p` and session `s`:
 
 | action | Go (where the trace event is written) |
 |---|---|
-| `Open(p, s)` | `Conn.sendOpen` (after the OPEN/CHAIN-OPEN is buffered) |
+| `OpenCheck(p, s)` | `Conn.sendOpen`'s checks (GOAWAY, id, count), the credit started, then the OPEN waits (trace `OpenWait`) |
+| `OpenBuffer(p, s)`, `OpenRefused(p, s)` | the GOAWAY checked again after the wait: the OPEN buffered (trace `Open`), or `ErrGoAway` and the credit undone (trace `OpenRefused`) |
+| `Open(p, s)` | the check and the OPEN at once, one that did not wait (Trace.tla only) |
 | `Accept(p, s)` | `Conn.sendAccept`, `Conn.acceptLocked` |
 | `Acquire(p, s, n)` | `Credit.acquire` (credit taken) |
-| `SendData(p, s)` | `Conn.dataLocked` (a data frame buffered; `Conn.sendData` checks the write side and the credit first) |
+| `SendCheck(p, s)` | `Conn.sendData`'s check of the write side and the credit, then the frame waits (trace `SendWait`) |
+| `SendBuffer(p, s)` | `Conn.frameWaitLocked`: the check again after the wait, the frame buffered (trace `SendData`) |
+| `SendData(p, s)` | the two at once, a frame that did not wait (Trace.tla only) |
 | `Refund(p, s)` | `Credit.refund` (a `Write`'s credit given back, nothing sent: its write side closed, its credit ended or its deadline passed) |
 | `CloseWrite(p, s)` | `Session.CloseWrite` -> `Conn.sendClose` code 1 |
 | `Closing(p, s, code)` | `Conn.sendClose` (code 0 from `Session.Close`, 2 from `Session.Reset`) and `Conn.sendAbort` (3, from `Mux.cut`): the credit forgotten (`Credit.forget`) |
@@ -101,7 +116,9 @@ they can in Go.
    open that arrives after the receiver's drain barrier (the pong of the
    ping it sent after its GOAWAY) or after the peer's GOAWAY never happens
    (the code refuses it with a reset: a refused crossed open is an error).
-5. **Buffers.** A session's queue holds at most the receiver's window.
+5. **Buffers.** A session's queue holds at most the receiver's window,
+   and at most the bytes still charged to it (`QueueWithinHeld`): why
+   `bytequeue.Push` never waits in the receive loop.
 6. **FeatureChain answers.** The opener never receives the accepter's
    data before its ACCEPT, nor a second ACCEPT.
 7. **Deadlock.** TLC's deadlock check: a state with nothing enabled is
@@ -135,6 +152,37 @@ violation for each:
   credit, so a `Write` that took credit before a `CloseWrite` or `Close`
   of another goroutine sends after its FIN (finding 1, the code before
   its fix).
+- `turns-no-recheck`, `open-no-recheck`, `abort-forget-early`,
+  `reopen-known`, `release-early`: the review's F1, F2, F3, F5 and F6
+  ("Review findings").
+
+## Review findings (2026-11-02, lane LINKREVIEW)
+
+The independent review of this model against the code
+(`~/nfltr-evidence/specreview/Link.md`) found the model weaker than the
+code in four places: check and send were one step (the write
+scheduler's waits not modelled), one session at a time, no
+`max_sessions`, ids that could not be reused. The model now has them
+(`wt`, `LinkSess.cfg`: two sessions of one side, `MaxSess` 1, opens
+racing Close and `Session.Abort`), and TLC finds each finding as a
+counterexample of the code before its fix (`make spec-mutants`):
+
+| finding | severity | mutant (the code before) | caught | fix |
+|---|---|---|---|---|
+| F1 a Write parked for its turn sends after the FIN | high | `turns-no-recheck` | data after FIN, 10 states | `frameWaitLocked` checks again before the frame is buffered (`TestWriteParkedForItsTurnSendsNothingAfterFIN`) |
+| F2 an OPEN parked for its turn goes after the drain's pong | medium | `open-no-recheck` (`LinkDrain.cfg`) | open after GOAWAY, 10 | the GOAWAY checked again: `ErrGoAway`, credit undone (`TestOpenParkedPastPeerGoAwayIsNotSent`) |
+| F3 an Abort racing an Open at max_sessions ends the connection | medium | `abort-forget-early` (`LinkSess.cfg`) | open past max_sessions, 8 | `sendAbort` forgets under wmu (`TestAbortAtMaxSessionsRacingOpenKeepsTheConnection`) |
+| F4 the Mux capped both directions at 1024 | medium | (no state machine: a constant) | | the cap removed, the Conn's per-direction counts rule (`TestMuxHonoursConfigMaxSessions`) |
+| F5 an open of an id in use restarted the session | medium | `reopen-known` (`LinkSess.cfg`) | open of an id in use, 7 | a protocol error (`ErrFrame`), `SendOpen` refuses it; WIRE.md section 5 says so (`TestOpenOfAnOpenIDIsRefused`) |
+| F6 no invariant said why the receive loop never waits | low | `release-early` | `QueueWithinHeld`, 9 | the invariant |
+| F7 the receive loop wrote refusals inline | low | `reader-writes` (`Liveness.tla`, lane LINKPOOL) | `NoFalseDead`, 9 | `Mux.refuse`: a goroutine sends them, the queue bounded by max_sessions (`TestReceiveLoopReadsWhileARefusalWaits`); `Liveness.tla`'s assumption now holds |
+| F8 a grant was bounded loosely | low | (a faulty peer: not modelled) | | `Grant` counts a Write's credit not yet sent (`TestGrantCountsCreditInAWrite`) |
+
+Each test failed on the code before its fix. Left open: F7's related
+note (`rxAt` per frame header: one frame slower to read than
+Interval + Timeout reads as a dead peer) and a `Mux` refusing a peer's
+open of an id of its own parity (a hostile peer only: the id is refused
+when it is in use either way).
 
 ## Trace validation
 
@@ -357,21 +405,14 @@ second.
   `reader-writes` (finding F7 of the spec review, the code today: the
   receive loop waits on a write, `NoFalseDead` breaks).
 - Assumption: the receive loop never waits on the network, so a live
-  peer's frames are read as they arrive. **Not yet true (F7, open,
-  lane LINKREVIEW)**: `Mux.serve` buffers an OPEN's refusal itself
-  (`sendAbort`/`SendReset`, which wait for room in a full write buffer)
-  and `Flush`es inline; two sides refusing while both directions are
-  full stop reading, and each takes the other for dead. Design for the
-  fix: the receive loop hands refusals to a queue a writer goroutine
-  sends from; the queue holds at most `MaxSessions` (a peer has at most
-  that many sessions open, a refused one counting until it reads the
-  refusal), and an OPEN past it fails the connection as a protocol
-  error, so memory stays bounded against a peer that opens without
-  reading. That moves the refusal's CLOSE/ABORT out of `Recv`'s step in
-  `Link.tla` (a check, then a send later): the review's F1-F3 area.
-  Related: `rxAt` is set per frame header, so one frame slower to read
-  than Interval + Timeout reads as a dead peer (64 KiB from a `Mux`, up
-  to 1 MiB on the wire).
+  peer's frames are read as they arrive. True since lane LINKREVIEW
+  (review F7, "Review findings"): `Mux.serve` hands an OPEN's refusal to
+  `Mux.refuse`, whose goroutine buffers and flushes it; the queue is
+  bounded by `max_sessions` (a refused session keeps its credit, and
+  counts, until its refusal is buffered; an OPEN past the max ends the
+  connection, `ErrFull`). Related, still open: `rxAt` is set per frame
+  header, so one frame slower to read than Interval + Timeout reads as a
+  dead peer (64 KiB from a `Mux`, up to 1 MiB on the wire).
 
 **`TraceLive.tla`** checks keepAlive's recorded steps against
 `Liveness.tla`: with `-tags linktrace` each connection also writes

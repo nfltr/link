@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # spec.sh check|mutants|traces: the TLA+ model of spec/ (spec/README.md).
-#   check    TLC on spec/Link.cfg and spec/LinkDrain.cfg, then spec/Pool.cfg
+#   check    TLC on spec/Link.cfg, LinkDrain.cfg and LinkSess.cfg, then spec/Pool.cfg
 #            and spec/Liveness.cfg: every invariant and liveness property.
 #   invariants  the same, Link's invariants only (about a minute: CI's;
 #            Pool's liveness is checked too, seconds).
@@ -65,6 +65,7 @@ CONSTANTS
     Drain = {"d", "l"}
     Ends = {0, 1, 2, 3}
     MaxOut = 0
+    MaxSess = 1048576
 INIT TraceInit
 NEXT TraceNext
 POSTCONDITION TraceAccepted
@@ -73,13 +74,14 @@ INVARIANTS
     CreditBounds
     BufferBound
     Conservation
+    QueueWithinHeld
 CFG
 	META=$work/states-$(basename "$1") tlc "$cfg" Trace.tla -deadlock
 }
 
 case ${1:-} in
 check | invariants)
-	for cfg in Link.cfg LinkDrain.cfg; do
+	for cfg in Link.cfg LinkDrain.cfg LinkSess.cfg; do
 		echo "== $cfg ($1)"
 		if [ "$1" = invariants ]; then
 			sed '/^PROPERTIES/,$d' "spec/$cfg" >"$work/$cfg"
@@ -130,6 +132,11 @@ mutants)
 	mutant Link.cfg 'Mutant = "none"' 'Mutant = "grant-early"'
 	mutant LinkDrain.cfg 'Mutant = "none"' 'Mutant = "open-after-goaway"'
 	mutant Link.cfg 'Mutant = "none"' 'Mutant = "write-race"'
+	mutant Link.cfg 'Mutant = "none"' 'Mutant = "turns-no-recheck"'
+	mutant Link.cfg 'Mutant = "none"' 'Mutant = "release-early"'
+	mutant LinkDrain.cfg 'Mutant = "none"' 'Mutant = "open-no-recheck"'
+	mutant LinkSess.cfg 'Mutant = "none"' 'Mutant = "abort-forget-early"'
+	mutant LinkSess.cfg 'Mutant = "none"' 'Mutant = "reopen-known"'
 	for m in no-wake-on-goaway drain-past-max open-on-goaway maintain-no-recheck; do
 		mutant Pool.cfg 'Mutant = "none"' "Mutant = \"$m\"" Pool.tla
 	done
@@ -151,7 +158,7 @@ mutants)
 	exit $fail
 	;;
 traces)
-	tests=${TRACE_TESTS:-'^(TestSessionCleanEnd|TestSessionReset|TestMuxSlowSessionIsolated|TestGoAwayDrainKeepsTails|TestCrossedOpenRunsOnTheLeavingConnection|TestMuxV2GoAway|TestSessionCutWithItsConnection|TestMuxSessions|TestMuxV2Sessions|TestWriteRacingCloseWriteSendsNothingAfterFIN)$'}
+	tests=${TRACE_TESTS:-'^(TestSessionCleanEnd|TestSessionReset|TestMuxSlowSessionIsolated|TestGoAwayDrainKeepsTails|TestCrossedOpenRunsOnTheLeavingConnection|TestMuxV2GoAway|TestSessionCutWithItsConnection|TestMuxSessions|TestMuxV2Sessions|TestWriteRacingCloseWriteSendsNothingAfterFIN|TestWriteParkedForItsTurnSendsNothingAfterFIN|TestOpenParkedPastPeerGoAwayIsNotSent|TestAbortAtMaxSessionsRacingOpenKeepsTheConnection)$'}
 	mkdir -p "$work/traces"
 	LINKTRACE=$work/traces go test -tags linktrace -count=1 -run "$tests" . >"$work/test.out" 2>&1 || {
 		cat "$work/test.out"

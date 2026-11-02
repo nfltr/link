@@ -12,8 +12,8 @@ UpOf(p) == Log[CHOOSE i \in DOMAIN Log : Log[i].ev = "Up" /\ Log[i].side = p]
 TraceWin == [p \in Sides |-> UpOf(p).n]
 TraceChain == UpOf("d").held = 1
 TraceOwner == [s \in TraceSids |->
-    IF \E i \in DOMAIN Log : Log[i].ev = "Open" /\ Log[i].sid = s
-    THEN Log[CHOOSE i \in DOMAIN Log : Log[i].ev = "Open" /\ Log[i].sid = s].side
+    IF \E i \in DOMAIN Log : Log[i].ev \in {"Open", "OpenWait"} /\ Log[i].sid = s
+    THEN Log[CHOOSE i \in DOMAIN Log : Log[i].ev \in {"Open", "OpenWait"} /\ Log[i].sid = s].side
     ELSE "?"]
 
 VARIABLE l
@@ -37,10 +37,13 @@ RecvStep ==
 
 Step ==
     CASE E.ev = "Up" -> UNCHANGED vars
-      [] E.ev = "Open" -> Open(P, S)
+      [] E.ev = "OpenWait" -> OpenCheck(P, S)
+      [] E.ev = "Open" -> IF wt[P][S] = "open" THEN OpenBuffer(P, S) ELSE Open(P, S)
+      [] E.ev = "OpenRefused" -> OpenRefused(P, S)
       [] E.ev = "Accept" -> Accept(P, S)
       [] E.ev = "Acquire" -> Acquire(P, S, E.n) /\ cr'[P][S].n = E.credit
-      [] E.ev = "SendData" -> pend[P][S] = E.n /\ SendData(P, S)
+      [] E.ev = "SendWait" -> SendCheck(P, S)
+      [] E.ev = "SendData" -> pend[P][S] = E.n /\ IF wt[P][S] = "data" THEN SendBuffer(P, S) ELSE SendData(P, S)
       [] E.ev = "Refund" -> pend[P][S] = E.n /\ Refund(P, S) /\ (E.credit >= 0 => cr'[P][S].n = E.credit)
       [] E.ev = "Forget" -> Closing(P, S, E.n)
       [] E.ev = "Close" /\ E.n = Half -> CloseWrite(P, S)

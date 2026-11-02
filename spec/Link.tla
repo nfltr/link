@@ -17,7 +17,8 @@ CONSTANTS
     Ends,        \* model checking: the close codes used (Half, Full, RST; ABT: Mux.cut after a GOAWAY)
     MaxOut,      \* model checking: frames on the way each way
     MaxPings,    \* model checking: pings per side
-    Crash        \* model checking: a side may close its connection abruptly
+    Crash,       \* model checking: a side may close its connection abruptly
+    MaxSess      \* each side's max_sessions (WIRE.md section 5): sessions the peer opened, not yet closed
 
 Sides == {"d", "l"}
 Peer(p) == IF p = "d" THEN "l" ELSE "d"
@@ -52,10 +53,11 @@ VARIABLES
     down,     \* Mux.close ran at p (Serve returned)
     appDone,  \* p's application ended s (Close, Reset or CloseWrite)
     crashes,  \* abrupt closes so far
-    err       \* the protocol errors and broken invariants seen by receivers
+    err,      \* the protocol errors and broken invariants seen by receivers
+    wt        \* [Sides -> [Sids -> {"no", "data", "open"}]]: a frame checked, waiting in frameLocked (wmu let go)
 
 vars == <<out, cr, ss, pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA,
-          drained, pong, pings, wshut, closed, down, appDone, crashes, err>>
+          drained, pong, pings, wshut, closed, down, appDone, crashes, err, wt>>
 
 NoCredit == [on |-> FALSE, n |-> 0, held |-> 0, cons |-> 0]
 \* closing: a Close, Reset or abort that forgot the credit and has yet to buffer its frame (code + 1).
@@ -82,6 +84,7 @@ Init ==
     /\ appDone = [p \in Sides |-> [s \in Sids |-> FALSE]]
     /\ crashes = 0
     /\ err = {}
+    /\ wt = [p \in Sides |-> [s \in Sids |-> "no"]]
 
 -----------------------------------------------------------------------------
 (* Sending: a frame joins out[p] unless p's connection is closed or its     *)
@@ -107,22 +110,61 @@ Answered(p, s) == ~Chain \/ Owner[s] = p \/ ss[p][s].acc   \* autoAccept ran
 -----------------------------------------------------------------------------
 (* The application's steps.                                                 *)
 
-Open(p, s) ==                                    \* Mux.OpenChain -> Conn.sendOpen
-    /\ Owner[s] = p /\ ss[p][s].st = "none" /\ ~down[p]
-    /\ \/ ~ga[p]
-       \/ Mutant = "open-after-goaway" /\ ~sentGA[p]
+\* Conn.sendOpen checks under wmu, then frameLocked may wait for its turn
+\* (a ticket: wmu let go) and checks again just before the OPEN is buffered
+\* (review F2: a pong that never waits goes out meanwhile). The count of
+\* this side's sessions includes one whose CLOSE or ABORT is not buffered
+\* yet: its credit is forgotten under wmu, after its frame took its place
+\* in line (review F3; mutant abort-forget-early: Conn.sendAbort forgot
+\* before it took wmu). A Mux never reuses an id; a Conn refuses one its
+\* Credit knows (review F5; mutant reopen-known: it did not look).
+Count(p, o) == Cardinality({x \in Sids : cr[p][x].on /\ Owner[x] = o})
+OpenOK(p) == ~ga[p] \/ (Mutant = "open-after-goaway" /\ ~sentGA[p])
+OpenCheck(p, s) ==
+    /\ Owner[s] = p /\ ~down[p] /\ wt[p][s] = "no" /\ OpenOK(p)
+    /\ \/ ss[p][s].st = "none" /\ Count(p, p) < MaxSess
+       \/ Mutant = "reopen-known" /\ ss[p][s].st = "open" /\ cr[p][s].on
+    /\ Mutant = "abort-forget-early" \/ \A x \in Sids : ss[p][x].closing = 0
+    /\ cr' = [cr EXCEPT ![p][s] = [NoCredit EXCEPT !.on = TRUE, !.n = Win[Peer(p)]]]
+    /\ wt' = [wt EXCEPT ![p][s] = "open"]
+    /\ UNCHANGED <<out, ss, pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
+                   pings, wshut, closed, down, appDone, crashes, err>>
+
+OpenBuffer(p, s) ==
+    /\ wt[p][s] = "open"
+    /\ Mutant = "open-no-recheck" \/ OpenOK(p)
+    /\ ss' = [ss EXCEPT ![p][s] = [NoSession EXCEPT !.st = "open"]]
+    /\ Send(p, Frame("open", s, 0))
+    /\ wt' = [wt EXCEPT ![p][s] = "no"]
+    /\ UNCHANGED <<cr, pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
+                   pings, wshut, closed, down, appDone, crashes, err>>
+
+\* The check after the wait failed: ErrGoAway, the credit undone (Mux.drop).
+OpenRefused(p, s) ==
+    /\ wt[p][s] = "open" /\ ~OpenOK(p) /\ Mutant # "open-no-recheck"
+    /\ cr' = Forget(p, s)
+    /\ ss' = [ss EXCEPT ![p][s].st = "gone"]
+    /\ wt' = [wt EXCEPT ![p][s] = "no"]
+    /\ UNCHANGED <<out, pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
+                   pings, wshut, closed, down, appDone, crashes, err>>
+
+\* Trace.tla: an open whose frame did not wait (OpenCheck, OpenBuffer at once).
+Open(p, s) ==
+    /\ Owner[s] = p /\ ~down[p] /\ wt[p][s] = "no" /\ OpenOK(p)
+    /\ ss[p][s].st = "none" /\ Count(p, p) < MaxSess
+    /\ \A x \in Sids : ss[p][x].closing = 0
     /\ cr' = [cr EXCEPT ![p][s] = [NoCredit EXCEPT !.on = TRUE, !.n = Win[Peer(p)]]]
     /\ ss' = [ss EXCEPT ![p][s].st = "open"]
     /\ Send(p, Frame("open", s, 0))
     /\ UNCHANGED <<pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
-                   pings, wshut, closed, down, appDone, crashes, err>>
+                   pings, wshut, closed, down, appDone, crashes, err, wt>>
 
 Accept(p, s) ==                                  \* Session.autoAccept -> Conn.sendAccept
     /\ Chain /\ Owner[s] # p /\ ss[p][s].st = "open" /\ ~ss[p][s].acc
     /\ ss' = [ss EXCEPT ![p][s].acc = TRUE]
     /\ Send(p, Frame("accept", s, 0))
     /\ UNCHANGED <<cr, pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
-                   pings, wshut, closed, down, appDone, crashes, err>>
+                   pings, wshut, closed, down, appDone, crashes, err, wt>>
 
 \* Session.acquire looks at halfClosed before it waits, not after: credit
 \* may come after this side's FIN (SendData then refuses it).
@@ -132,26 +174,51 @@ Acquire(p, s, n) ==                              \* Session.acquire -> Credit.ac
     /\ cr' = [cr EXCEPT ![p][s].n = @ - n]
     /\ pend' = [pend EXCEPT ![p][s] = n]
     /\ UNCHANGED <<out, ss, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
-                   pings, wshut, closed, down, appDone, crashes, err>>
+                   pings, wshut, closed, down, appDone, crashes, err, wt>>
 
 \* Conn.sendData buffers nothing once the write side closed or the credit
-\* ended (checked under wmu); mutant write-race: it did not look.
-SendData(p, s) ==                                \* Conn.sendData -> dataLocked
-    /\ pend[p][s] > 0
-    /\ Mutant = "write-race" \/ (~ss[p][s].wfin /\ cr[p][s].on)
+\* ended, checked under wmu; frameLocked may then wait (turns or a ticket:
+\* wmu let go) while a CloseWrite, Close, Reset or Abort buffers its frame,
+\* so it checks again just before the frame is buffered. Mutants:
+\* write-race, no check at all (finding 1); turns-no-recheck, the first
+\* check only (review F1).
+DataOK(p, s) == ~ss[p][s].wfin /\ cr[p][s].on
+SendCheck(p, s) ==                               \* Conn.sendData, then frameLocked waits
+    /\ pend[p][s] > 0 /\ wt[p][s] = "no"
+    /\ Mutant = "write-race" \/ DataOK(p, s)
+    /\ wt' = [wt EXCEPT ![p][s] = "data"]
+    /\ UNCHANGED <<out, cr, ss, pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
+                   pings, wshut, closed, down, appDone, crashes, err>>
+
+Buffer(p, s) ==
     /\ Send(p, Frame("data", s, pend[p][s]))
     /\ sent' = [sent EXCEPT ![p][s] = @ + (IF CanSend(p) THEN pend[p][s] ELSE 0)]
     /\ pend' = [pend EXCEPT ![p][s] = 0]
+
+SendBuffer(p, s) ==                              \* frameLocked -> dataLocked
+    /\ wt[p][s] = "data"
+    /\ Mutant \in {"write-race", "turns-no-recheck"} \/ DataOK(p, s)
+    /\ Buffer(p, s)
+    /\ wt' = [wt EXCEPT ![p][s] = "no"]
     /\ UNCHANGED <<cr, ss, gpend, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
                    pings, wshut, closed, down, appDone, crashes, err>>
 
+\* Trace.tla: a data frame that did not wait (SendCheck, SendBuffer at once).
+SendData(p, s) ==
+    /\ pend[p][s] > 0 /\ wt[p][s] = "no" /\ DataOK(p, s)
+    /\ Buffer(p, s)
+    /\ UNCHANGED <<cr, ss, gpend, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
+                   pings, wshut, closed, down, appDone, crashes, err, wt>>
+
 \* A Write gives back the credit it took and sends nothing: the write side
-\* closed or the credit ended meanwhile (Conn.sendData refused it), or its
-\* deadline passed (not modelled otherwise). Credit.refund.
+\* closed or the credit ended meanwhile (Conn.sendData refused it, before
+\* or after a wait), or its deadline passed (not modelled otherwise).
+\* Credit.refund.
 Refund(p, s) ==
     /\ pend[p][s] > 0
     /\ cr' = IF cr[p][s].on THEN [cr EXCEPT ![p][s].n = @ + pend[p][s]] ELSE cr
     /\ pend' = [pend EXCEPT ![p][s] = 0]
+    /\ wt' = [wt EXCEPT ![p][s] = "no"]
     /\ UNCHANGED <<out, ss, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
                    pings, wshut, closed, down, appDone, crashes, err>>
 
@@ -166,7 +233,7 @@ CloseWrite(p, s) ==                              \* Session.CloseWrite
             /\ UNCHANGED cr
     /\ appDone' = [appDone EXCEPT ![p][s] = TRUE]
     /\ UNCHANGED <<pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
-                   pings, wshut, closed, down, crashes, err>>
+                   pings, wshut, closed, down, crashes, err, wt>>
 
 \* Session.Close (code Full), Session.Reset (RST) and Mux.cut's abort
 \* (ABT, Conn.sendAbort: no answer first) end a session in two steps:
@@ -180,7 +247,7 @@ Closing(p, s, code) ==
     /\ ss' = [ss EXCEPT ![p][s].closing = code + 1]
     /\ appDone' = [appDone EXCEPT ![p][s] = @ \/ code # ABT]
     /\ UNCHANGED <<out, pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
-                   pings, wshut, closed, down, crashes, err>>
+                   pings, wshut, closed, down, crashes, err, wt>>
 
 End(p, s) ==
     LET code == ss[p][s].closing - 1 IN
@@ -188,7 +255,7 @@ End(p, s) ==
     /\ SendClose(p, s, code)
     /\ ss' = [ss EXCEPT ![p][s].closing = 0, ![p][s].st = IF code = ABT THEN @ ELSE "gone"]
     /\ UNCHANGED <<cr, pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
-                   pings, wshut, closed, down, appDone, crashes, err>>
+                   pings, wshut, closed, down, appDone, crashes, err, wt>>
 
 \* A read takes k bytes off the session's queue (bytequeue's OnPop ->
 \* Credit.Consumed): a quarter window read is granted back (gpend).
@@ -197,22 +264,24 @@ Read(p, s, k) ==
     /\ ss' = [ss EXCEPT ![p][s].q = @ - k]
     /\ IF cr[p][s].on
        THEN LET c == cr[p][s].cons + k
-                r == IF Mutant = "grant-early" THEN c + 1 ELSE c
+                r == IF Mutant = "grant-early" \/ (Mutant = "release-early" /\ cr[p][s].held > c)
+                     THEN c + 1 ELSE c
+                h == IF Mutant = "release-early" THEN r ELSE c   \* a byte still queued released
             IN IF c >= Thr(p)
-               THEN /\ cr' = [cr EXCEPT ![p][s].cons = 0, ![p][s].held = IF @ > c THEN @ - c ELSE 0]
+               THEN /\ cr' = [cr EXCEPT ![p][s].cons = 0, ![p][s].held = IF @ > h THEN @ - h ELSE 0]
                     /\ gpend' = [gpend EXCEPT ![p][s] = r]
                ELSE /\ cr' = [cr EXCEPT ![p][s].cons = c]
                     /\ UNCHANGED gpend
        ELSE UNCHANGED <<cr, gpend>>
     /\ UNCHANGED <<out, pend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
-                   pings, wshut, closed, down, appDone, crashes, err>>
+                   pings, wshut, closed, down, appDone, crashes, err, wt>>
 
 SendWindow(p, s) ==                              \* Credit.grant -> Conn.sendWindow
     /\ gpend[p][s] > 0
     /\ Send(p, Frame("win", s, gpend[p][s]))
     /\ gpend' = [gpend EXCEPT ![p][s] = 0]
     /\ UNCHANGED <<cr, ss, pend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
-                   pings, wshut, closed, down, appDone, crashes, err>>
+                   pings, wshut, closed, down, appDone, crashes, err, wt>>
 
 GoAway(p) ==                                     \* Mux.goAway -> Conn.GoAway
     /\ ~down[p]
@@ -220,7 +289,7 @@ GoAway(p) ==                                     \* Mux.goAway -> Conn.GoAway
     /\ sentGA' = [sentGA EXCEPT ![p] = TRUE]
     /\ Send(p, Frame("goaway", NoSid, 0))
     /\ UNCHANGED <<cr, ss, pend, gpend, sent, dlv, gaPinged, peerGA, drained, pong,
-                   pings, wshut, closed, down, appDone, crashes, err>>
+                   pings, wshut, closed, down, appDone, crashes, err, wt>>
 
 \* Conn.ping: g is 1 when the ping's time is past goAwayAt (it counts for
 \* the drain barrier); a ping timed before the GOAWAY went out may be
@@ -231,7 +300,7 @@ Ping(p, g) ==
     /\ pings' = [pings EXCEPT ![p] = @ + 1]
     /\ gaPinged' = [gaPinged EXCEPT ![p] = @ \/ g = 1]
     /\ UNCHANGED <<cr, ss, pend, gpend, sent, dlv, ga, sentGA, peerGA, drained, pong,
-                   wshut, closed, down, appDone, crashes, err>>
+                   wshut, closed, down, appDone, crashes, err, wt>>
 
 \* keepAlive answers the latest ping (Conn.control); a pong still last in
 \* the write buffer is overwritten in place (rep) rather than followed.
@@ -243,7 +312,7 @@ Pong(p, rep) ==
        ELSE Send(p, Frame("pong", NoSid, pong[p] - 1))
     /\ pong' = [pong EXCEPT ![p] = 0]
     /\ UNCHANGED <<cr, ss, pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained,
-                   pings, wshut, closed, down, appDone, crashes, err>>
+                   pings, wshut, closed, down, appDone, crashes, err, wt>>
 
 -----------------------------------------------------------------------------
 (* The receive loop of p applies the peer's next frame (Conn.recv, then     *)
@@ -256,6 +325,8 @@ RecvOpen(p, f) ==
     IF ss[p][s].st # "none" THEN Flag("open of an id in use") /\ UNCHANGED <<cr, ss>>
     ELSE IF peerGA[p] \/ drained[p]
     THEN Flag("open after GOAWAY") /\ UNCHANGED <<cr, ss>>   \* the code refuses it with a reset
+    ELSE IF Count(p, Peer(p)) >= MaxSess
+    THEN Flag("open past max_sessions") /\ UNCHANGED <<cr, ss>>   \* ErrFull
     ELSE /\ cr' = [cr EXCEPT ![p][s] = [NoCredit EXCEPT !.on = TRUE, !.n = Win[Peer(p)]]]
          /\ ss' = [ss EXCEPT ![p][s].st = "open"]
          /\ UNCHANGED err
@@ -320,7 +391,7 @@ Recv(p) ==
             [] f.t = "pong" -> /\ drained' = [drained EXCEPT ![p] = @ \/ (f.n = 1 /\ sentGA[p])]
                                /\ UNCHANGED <<cr, ss, dlv, ga, peerGA, pong, err>>
        /\ UNCHANGED <<pend, gpend, sent, sentGA, gaPinged, pings, wshut, closed, down,
-                      appDone, crashes>>
+                      appDone, crashes, wt>>
 
 -----------------------------------------------------------------------------
 (* The connection's end.                                                    *)
@@ -329,7 +400,7 @@ Leave(p) ==                                      \* closeFlushed: every frame ou
     /\ ~wshut[p] /\ ~closed[p]
     /\ wshut' = [wshut EXCEPT ![p] = TRUE]
     /\ UNCHANGED <<out, cr, ss, pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA,
-                   drained, pong, pings, closed, down, appDone, crashes, err>>
+                   drained, pong, pings, closed, down, appDone, crashes, err, wt>>
 
 \* Conn.Close: the peer reads the first k frames p sent (all after Leave).
 CloseConn(p, k) ==
@@ -338,14 +409,14 @@ CloseConn(p, k) ==
     /\ closed' = [closed EXCEPT ![p] = TRUE]
     /\ out' = [out EXCEPT ![p] = SubSeq(@, 1, k)]
     /\ UNCHANGED <<cr, ss, pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained,
-                   pong, pings, wshut, down, appDone, crashes, err>>
+                   pong, pings, wshut, down, appDone, crashes, err, wt>>
 
 Down(p) ==                                       \* Mux.close: every session at p cut
     /\ closed[p] /\ ~down[p]
     /\ down' = [down EXCEPT ![p] = TRUE]
     /\ ss' = [ss EXCEPT ![p] = [s \in Sids |-> IF @[s].st = "open" THEN [@[s] EXCEPT !.st = "gone"] ELSE @[s]]]
     /\ UNCHANGED <<out, cr, pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained,
-                   pong, pings, wshut, closed, appDone, crashes, err>>
+                   pong, pings, wshut, closed, appDone, crashes, err, wt>>
 
 -----------------------------------------------------------------------------
 (* Model checking: the steps above, bounded, with the Mux's own guards on   *)
@@ -364,21 +435,27 @@ Crashed(p) == crashes < Crash /\ \E k \in 0..Len(out[p]) : CloseConn(p, k) /\ cr
 \* connection (no session open, nothing on the way, nothing to answer).
 Idle == \A p \in Sides : OpenAt(p) = {} /\ out[p] = <<>> /\ pong[p] = 0
                          /\ \A s \in Sids : pend[p][s] = 0 /\ gpend[p][s] = 0 /\ ss[p][s].closing = 0
+                                                 /\ wt[p][s] = "no"
 Terminated == ((down["d"] /\ down["l"]) \/ Idle) /\ UNCHANGED vars
 
 AppStep(p, s) ==
-    \/ Open(p, s)
+    \/ OpenCheck(p, s)
     \/ Accept(p, s)
     \/ \E n \in 1..Chunk : sent[p][s] + pend[p][s] + n <= MaxBytes[p][s] /\ Acquire(p, s, n)
     \/ Half \in Ends /\ CloseWrite(p, s)
     \/ \E code \in Ends \ {Half, ABT} : Closing(p, s, code)
-    \/ ABT \in Ends /\ sentGA[p] /\ Closing(p, s, ABT)
+    \* Mux.cut's abort after a GOAWAY; Session.Abort any time where no side
+    \* drains (LinkSess.cfg: LinkDrain.cfg's state space stays small).
+    \/ ABT \in Ends /\ (sentGA[p] \/ Drain = {}) /\ Closing(p, s, ABT)
     \/ \E k \in 1..ss[p][s].q : Read(p, s, k)
 
 Next ==
     \/ \E p \in Sides, s \in Sids :
         \/ AppStep(p, s)
-        \/ SendData(p, s)
+        \/ SendCheck(p, s)
+        \/ SendBuffer(p, s)
+        \/ OpenBuffer(p, s)
+        \/ OpenRefused(p, s)
         \/ Refund(p, s)
         \/ SendWindow(p, s)
         \/ End(p, s)
@@ -403,7 +480,9 @@ Fairness ==
         /\ WF_vars(LeaveWhenDrained(p))
         /\ WF_vars(EOFClose(p))
         /\ WF_vars(Down(p))
-        /\ \A s \in Sids : WF_vars(SendData(p, s)) /\ WF_vars(Refund(p, s))
+        /\ \A s \in Sids : WF_vars(SendCheck(p, s)) /\ WF_vars(SendBuffer(p, s))
+                          /\ WF_vars(OpenBuffer(p, s)) /\ WF_vars(OpenRefused(p, s))
+                          /\ WF_vars(Refund(p, s))
                           /\ WF_vars(SendWindow(p, s)) /\ WF_vars(End(p, s))
 
 Spec == Init /\ [][Next]_vars /\ Fairness
@@ -416,6 +495,11 @@ NoProtocolError == err = {}
 CreditBounds == \A p \in Sides, s \in Sids : cr[p][s].n >= 0 /\ cr[p][s].n <= Win[Peer(p)]
 
 BufferBound == \A p \in Sides, s \in Sids : ss[p][s].q <= Win[p] /\ cr[p][s].held <= Win[p]
+
+\* Why the receive loop never waits on a session's full queue (review F6):
+\* the queue holds only bytes still charged, and the charge stays within
+\* the window (bytequeue.Push waits only past the window).
+QueueWithinHeld == \A p \in Sides, s \in Sids : cr[p][s].on => ss[p][s].q <= cr[p][s].held
 
 RECURSIVE SumFrom(_, _, _, _)
 SumFrom(seq, i, t, s) ==                          \* by index: Tail copies the sequence
@@ -436,6 +520,7 @@ TypeOK ==
     /\ \A p \in Sides, s \in Sids : ss[p][s].st \in {"none", "open", "gone"}
     /\ \A p \in Sides : pong[p] \in 0..2
     /\ \A p \in Sides, s \in Sids : ss[p][s].closing \in 0..ABT + 1
+    /\ \A p \in Sides, s \in Sids : wt[p][s] \in {"no", "data", "open"}
 
 \* Liveness (README "Liveness").
 SessionsEnd == \A s \in Sids : (appDone["d"][s] /\ appDone["l"][s]) ~> Ended(s)
