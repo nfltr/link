@@ -68,8 +68,11 @@ func main() {
 	}
 	go a.Serve(reply("a"))
 
-	fmt.Println(ask(a, "b")) // a opens a session to b
-	fmt.Println(ask(b, "a")) // b opens one to a, on the connection a dialled
+	// b first: it waits for a's connection, which a.Serve dials (Connect)
+	// once it takes sessions. An a.Open before a.Serve ran would dial it
+	// first, and b's session on it would be refused ("not serving").
+	fmt.Println(ask(b, "a")) // b opens a session to a, on the connection a dialled
+	fmt.Println(ask(a, "b")) // a opens one to b
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

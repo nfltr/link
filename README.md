@@ -78,8 +78,11 @@ func main() {
 	}
 	go a.Serve(reply("a"))
 
-	fmt.Println(ask(a, "b")) // a opens a session to b
-	fmt.Println(ask(b, "a")) // b opens one to a, on the connection a dialled
+	// b first: it waits for a's connection, which a.Serve dials (Connect)
+	// once it takes sessions. An a.Open before a.Serve ran would dial it
+	// first, and b's session on it would be refused ("not serving").
+	fmt.Println(ask(b, "a")) // b opens a session to a, on the connection a dialled
+	fmt.Println(ask(a, "b")) // a opens one to b
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -124,8 +127,8 @@ func ask(l peerlink.Link, peer string) string {
 It prints:
 
 ```
-b got "hello" (greeting) from a
 a got "hello" (greeting) from b
+b got "hello" (greeting) from a
 ```
 
 In two processes, one runs `b`'s half (`net.Listen`, a Node with

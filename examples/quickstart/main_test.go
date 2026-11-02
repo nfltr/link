@@ -6,6 +6,6 @@ package main
 func Example() {
 	main()
 	// Output:
-	// b got "hello" (greeting) from a
 	// a got "hello" (greeting) from b
+	// b got "hello" (greeting) from a
 }

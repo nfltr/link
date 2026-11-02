@@ -321,7 +321,10 @@ func (s *session) AbortWith(a *link.Abort) error {
 // handshake closes that connection only (Config.HandshakeError hears of
 // it). A closed listener other than by Drain ends Serve with its error;
 // any other Accept error (EMFILE, ECONNABORTED) is retried after a backoff
-// of 5 ms doubling to 1 s, as net/http does.
+// of 5 ms doubling to 1 s, as net/http does. Until Serve began, a session
+// a peer opens on a connection Open dialled is refused (link.CodeRefused,
+// "not serving"): when peers open sessions back, let Serve dial them
+// (Connect) before this Node opens any.
 func (n *Node) Serve(accept func(peer string, header []byte, s Session)) error {
 	n.mu.Lock()
 	n.accept = accept
