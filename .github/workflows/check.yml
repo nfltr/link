@@ -64,6 +64,7 @@ jobs:
           path: ~/.cache/link-tla
           key: link-tla-${{ hashFiles('scripts/fetch-tla.sh') }}
       - run: make spec-mutants
+      - run: make check-spec-drift
       - run: make spec-invariants
   spec-full:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
