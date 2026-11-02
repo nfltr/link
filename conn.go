@@ -208,6 +208,12 @@ type Conn struct {
 	goAwayAt    atomic.Int64
 	drained     chan struct{}
 	drainedOnce sync.Once
+	// lastPing is the time of the latest ping buffered (wmu): pings carry
+	// strictly growing times, so a pong tells which frames the peer read
+	// (Session.Sync's waits, syncs, under smu).
+	lastPing int64
+	smu      sync.Mutex
+	syncs    []syncWait
 
 	rx, tx  atomic.Uint64 // bytes read and written after the handshake (Stats)
 	aborted atomic.Uint64 // ABORT frames sent and received (Stats)
@@ -618,11 +624,48 @@ func (c *Conn) ping() { c.control(typePing, nil) }
 // goAwayAt + 1, whatever the clock's resolution) for one after, so only
 // the latter's pong closes Drained (spec/README.md, finding 5).
 func (c *Conn) pingTime() []byte {
-	t := int64(time.Since(c.t0))
+	t := max(int64(time.Since(c.t0)), c.lastPing+1)
 	if at := c.goAwayAt.Load(); at > 0 {
 		t = max(t, at+1)
 	}
+	c.lastPing = t
 	return binary.BigEndian.AppendUint64(make([]byte, 0, pingLen), uint64(t)) // #nosec G115 -- a duration since t0 is positive
+}
+
+// syncWait is a Sync waiting for the pong of its ping (time at).
+type syncWait struct {
+	at   int64
+	done chan struct{}
+}
+
+// sync buffers a ping after every frame buffered so far and returns a
+// channel closed once its pong (or a later one's) came: the peer read
+// those frames (a pong answers a ping after reading every frame before it).
+func (c *Conn) sync() <-chan struct{} {
+	c.wmu.Lock()
+	w := syncWait{at: c.lastPing + 1, done: make(chan struct{})} // every ping from here on
+	c.smu.Lock()
+	c.syncs = append(c.syncs, w)
+	c.smu.Unlock()
+	c.wmu.Unlock()
+	c.control(typePing, nil)
+	return w.done
+}
+
+// synced ends the Syncs a pong of time t answers.
+func (c *Conn) synced(t int64) {
+	c.smu.Lock()
+	defer c.smu.Unlock()
+	k := 0
+	for _, w := range c.syncs {
+		if w.at <= t {
+			close(w.done)
+		} else {
+			c.syncs[k] = w
+			k++
+		}
+	}
+	c.syncs = c.syncs[:k]
 }
 
 // Drained is closed once the peer answered a ping this side
@@ -1257,6 +1300,7 @@ func (c *Conn) recv() (rframe, bool, error) {
 			c.pong <- [pingLen]byte(b)
 		} else {
 			sent := time.Duration(binary.BigEndian.Uint64(b)) // #nosec G115 -- our own ping's time
+			c.synced(int64(sent))
 			// Past goAwayAt: a ping buffered after our GOAWAY (pingTime).
 			if at := c.goAwayAt.Load(); at > 0 && int64(sent) > at {
 				c.drainedOnce.Do(func() { close(c.drained) })

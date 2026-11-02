@@ -8,6 +8,13 @@ version 2 unless an entry says otherwise.
 
 ## Unreleased
 
+- `peerlink.Join` ends a plain conn (a TCP client, an agent's target)
+  cleanly only once the peer read the FIN it passed onto the link session:
+  it syncs after the session's `CloseWrite` (new `Session.Sync`: a ping
+  after the FIN, answered; no wire change) and holds the peer's FIN from
+  the conn meanwhile; a connection that dies first resets the conn instead
+  of closing it cleanly with its tail lost (relay-core finding 23,
+  `spec/Join.tla`). Pings carry strictly growing times.
 - `Conn.SendOpen` of an id whose credit its caller opened first
   (`Credit.Open`, the order its doc gives) works again: the id is not in
   use until an OPEN of it is sent or received, and the link takes that

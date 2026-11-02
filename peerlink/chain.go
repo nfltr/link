@@ -277,6 +277,10 @@ type joint struct {
 	pending bool // Forward waits for the onward answer: direction 0's failure waits (held)
 	held    func()
 	moved   [2]atomic.Int64 // bytes written [0]->[1] and [1]->[0] (HopEvent.Moved)
+	// syncing: a direction's CloseWrite onto a link session waits for its
+	// Sync; the other direction's clean end waits meanwhile (fin).
+	syncing bool
+	fin     func()
 }
 
 // movedBytes is link.HopEvent.Moved.
@@ -448,13 +452,67 @@ func (j *joint) ended(i int, n int64, err, werr error) {
 	default:
 		if s := native(src); s != nil && isClosed(s.Done()) {
 			_ = dst.Close() // the peer closed it whole
-		} else if cw, ok := dst.(interface{ CloseWrite() error }); ok {
-			_ = cw.CloseWrite()
+		} else if ds := native(dst); ds != nil {
+			j.sync(src, ds)
+			return
+		} else if j.hold(func() { j.closeWrite(dst) }) {
+			return
 		} else {
-			_ = dst.Close()
+			j.closeWrite(dst)
 		}
 	}
 	j.finish()
+}
+
+// closeWrite ends dst's writes: CloseWrite, else Close.
+func (j *joint) closeWrite(dst net.Conn) {
+	if cw, ok := dst.(interface{ CloseWrite() error }); ok {
+		_ = cw.CloseWrite()
+	} else {
+		_ = dst.Close()
+	}
+}
+
+// sync closes ds's writes and ends the direction src -> ds once that
+// CloseWrite reached the peer (Session.Sync): a clean end at src only
+// then; a connection that ends first aborts src (spec/Join.tla, relay-core finding 23). The other
+// direction's clean end waits meanwhile (hold), so src reads no EOF while
+// its own tail may still be lost.
+func (j *joint) sync(src net.Conn, ds *link.Session) {
+	j.mu.Lock()
+	j.syncing = true // before the CloseWrite: the peer's FIN after it is held
+	j.mu.Unlock()
+	_ = ds.CloseWrite()
+	go func() {
+		err := ds.Sync()
+		if err != nil {
+			j.abort(src, abortOf(err))
+		}
+		j.mu.Lock()
+		j.syncing = false
+		fin := j.fin
+		j.fin = nil
+		j.mu.Unlock()
+		if fin != nil {
+			if err == nil {
+				fin()
+			}
+			j.finish()
+		}
+		j.finish()
+	}()
+}
+
+// hold keeps a clean end (end) while the other direction syncs: false
+// when none does.
+func (j *joint) hold(end func()) bool {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if !j.syncing {
+		return false
+	}
+	j.fin = end
+	return true
 }
 
 func (j *joint) finish() {

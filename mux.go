@@ -976,6 +976,33 @@ func (s *Session) CloseWrite() error {
 	return nil
 }
 
+// Sync waits until the peer's Mux read every frame this side buffered
+// on the session's connection before the call (its bytes, its CloseWrite):
+// a ping buffered after them was answered (WIRE.md section 8). It returns
+// the connection's error once the connection ended first. The connection's
+// liveness bounds the wait. peerlink.Join syncs after a CloseWrite before
+// it ends the other side cleanly (spec/Join.tla).
+func (s *Session) Sync() error {
+	c := s.m.c
+	ended := func() error {
+		if err := c.Err(); err != nil {
+			return err
+		}
+		return ErrConnClosed
+	}
+	select {
+	case <-c.Done():
+		return ended()
+	default:
+	}
+	select {
+	case <-c.sync():
+		return nil
+	case <-c.Done():
+		return ended()
+	}
+}
+
 // endErr is WriteTo's error once the session ended: nil at a clean end
 // (io.Copy's contract), else why it was cut.
 func (s *Session) endErr() error {
