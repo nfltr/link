@@ -355,6 +355,22 @@ second.
   `deadline-from-rx` (the verdict at `rxAt + Interval + Timeout` whatever
   the ping's time: `NoFalseDead` breaks once a fire is late).
 
+**`TraceLive.tla`** checks keepAlive's recorded steps against
+`Liveness.tla`: with `-tags linktrace` each connection also writes
+`<trace>.ndjson.live`, one line at keepAlive's start (`Live`: Interval,
+Timeout), one per timer fire (`Fire`: now, `rxAt`, `pingAt`, as read) and
+one when it ends the connection (`Dead`), times in microseconds since the
+Conn's `t0`, floored (a deadline fires at or after it, so every
+comparison keeps its outcome). Each side's steps must be `FireAt` steps
+of the model: no fire before the model's deadline, the model's `pingAt`
+at each, `Dead` exactly when the model ends the connection, and
+`NeverEarly`. `make spec-traces` checks every `.live` file the traced
+tests write (the dead-peer tests' take each `FireAt` branch);
+`make spec-mutants` checks the fixtures in `spec/traces/`: `live-ok`
+accepted, `live-dead-early` (dead before Timeout after the ping) and
+`live-fire-early` (a fire before its deadline) rejected. The Pool has no
+recorder yet (left: `maintain`, `Open`'s pick and dial, `Drain`).
+
 ### What this means for the tests (finding P3)
 
 The product promises detection within Interval + Timeout of the peer's

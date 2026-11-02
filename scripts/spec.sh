@@ -31,6 +31,21 @@ tlc() {
 		-noGenerateSpecTE -metadir "${META:-$work/states}" -config "$c" "$@" "$mod")
 }
 
+# live FILE SIDE: TLC on one side's keepAlive steps (spec/TraceLive.tla);
+# it fails unless the trace is accepted.
+live() {
+	cat >"$work/live.cfg" <<CFG
+CONSTANTS
+    TraceFile = "$1"
+    Side = "$2"
+INIT TraceInit
+NEXT TraceNext
+POSTCONDITION TraceAccepted
+INVARIANT TraceNeverEarly
+CFG
+	META=$work/states-live-$(basename "$1")-$2 TLC_WORKERS=1 tlc "$work/live.cfg" TraceLive.tla -deadlock
+}
+
 # trace FILE: TLC on one recorded trace (spec/Trace.tla).
 trace() {
 	cfg=$work/$(basename "$1").cfg
@@ -121,6 +136,18 @@ mutants)
 	for m in rearm-timeout deadline-from-rx; do
 		mutant Liveness.cfg 'Mutant = "none"' "Mutant = \"$m\"" Liveness.tla
 	done
+	# keepAlive traces put wrong: TraceLive.tla must reject each.
+	for f in spec/traces/*.ndjson.live; do
+		st=0
+		live "$PWD/$f" d >"$work/m.out" 2>&1 || st=$?
+		case $(basename "$f"):$st in
+		live-ok.*:0 | live-*:[1-9]*) echo "$(basename "$f"): as expected" ;;
+		*)
+			echo "$(basename "$f"): not as expected (exit $st)"
+			fail=1
+			;;
+		esac
+	done
 	exit $fail
 	;;
 traces)
@@ -137,6 +164,20 @@ traces)
 			cat "$work/test.out"
 			exit 1
 		}
+	done
+	# keepAlive's steps (<trace>.ndjson.live), each side's.
+	for t in "$work"/traces/*.ndjson.live; do
+		[ -e "$t" ] || continue
+		for side in d l; do
+			grep -q "\"side\":\"$side\"" "$t" || continue
+			if live "$t" $side >"$t.$side.out" 2>&1; then
+				echo "live $(basename "$t") $side: $(grep -c "\"side\":\"$side\"" "$t") lines: accepted"
+			else
+				echo "live $(basename "$t") $side: REJECTED"
+				grep -E -A6 'rejected at|Error' "$t.$side.out" | head -12
+				exit 1
+			fi
+		done
 	done
 	# TLC_WORKERS traces at once, one TLC worker each.
 	n=0

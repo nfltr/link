@@ -47,20 +47,24 @@ Die ==
     /\ alive' = FALSE
     /\ UNCHANGED <<now, rx, pingAt, timer, dead>>
 
-\* The timer fires: keepAlive's loop, one pass.
-Fire ==
-    /\ ~dead /\ now >= timer
-    /\ IF pingAt >= 0 /\ rx < pingAt \* nothing since the ping
-       THEN IF now - pingAt >= To
+\* The timer fires at n, the last frame at r: keepAlive's loop, one pass.
+\* (TraceLive.tla gives n and r from a recorded run.)
+FireAt(n, r) ==
+    /\ ~dead /\ n >= timer
+    /\ IF pingAt >= 0 /\ r < pingAt \* nothing since the ping
+       THEN IF n - pingAt >= To
             THEN dead' = TRUE /\ UNCHANGED <<pingAt, timer>>
             ELSE timer' = pingAt + To /\ UNCHANGED <<pingAt, dead>>
-       ELSE IF now - rx < Iv
-       THEN timer' = rx + Iv /\ pingAt' = -1 /\ UNCHANGED dead
+       ELSE IF n - r < Iv
+       THEN timer' = r + Iv /\ pingAt' = -1 /\ UNCHANGED dead
        ELSE \* ping, and look again an interval on
-            /\ pingAt' = now
-            /\ timer' = now + (IF Mutant = "rearm-timeout" THEN To ELSE Iv)
+            /\ pingAt' = n
+            /\ timer' = n + (IF Mutant = "rearm-timeout" THEN To ELSE Iv)
             /\ UNCHANGED dead
-    /\ UNCHANGED <<now, rx, alive>>
+    /\ now' = n /\ rx' = r
+    /\ UNCHANGED alive
+
+Fire == FireAt(now, rx)
 
 \* deadline-from-rx: dead once Iv + To passed since the last frame, however
 \* late the ping went out (its pong had less than Timeout to come).
