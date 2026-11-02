@@ -222,7 +222,7 @@ mutants)
 	for m in abort-forget-early reopen-known; do
 		job mutant LinkSess.cfg 'Mutant = "none"' "Mutant = \"$m\""
 	done
-	for m in no-wake-on-goaway drain-past-max open-on-goaway maintain-no-recheck; do
+	for m in no-wake-on-goaway drain-past-max open-on-goaway maintain-no-recheck wait-takes-late no-wake-on-dial-fail; do
 		job mutant Pool.cfg 'Mutant = "none"' "Mutant = \"$m\"" Pool.tla
 	done
 	for m in rearm-timeout deadline-from-rx reader-writes; do

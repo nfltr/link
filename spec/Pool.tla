@@ -26,6 +26,7 @@ VARIABLES
     mtw,     \* p.changed was closed since maintain took it
     mt,      \* maintain: "check" | "wait" | "dial"
     op,      \* op[o]: an Open: [st, c] st "idle" | "pick" | "place" | "dial" | "wait" | "open"
+             \* (| "late": wait-takes-late's decided wait, p.changed not yet taken)
     opw,     \* opw[o]: p.changed was closed since Open o took it (waitChange)
     dr,      \* Drain: [st |-> "idle" | "dial" | "goaway" | "done", old, left]
     env,     \* environment events so far (bounded by MaxEnv)
@@ -97,11 +98,14 @@ DialUp(c) ==
     /\ Changed
     /\ UNCHANGED env
 
+\* A failed dial closes p.changed too: a waiter whose room that dial held
+\* (maintain below Min, an Open at Max) looks again (finding H2).
 DialFails ==
     /\ env < MaxEnv
     /\ env' = env + 1
     /\ dials' = dials - 1
-    /\ UNCHANGED <<cs, mtw, opw>>
+    /\ IF Mutant = "no-wake-on-dial-fail" THEN UNCHANGED <<mtw, opw>> ELSE Changed
+    /\ UNCHANGED cs
 
 MaintainDial ==
     /\ mt = "dial"
@@ -127,9 +131,12 @@ Pick(o) ==
        THEN /\ dials' = dials + 1
             /\ op' = [op EXCEPT ![o].st = "dial"]
             /\ UNCHANGED opw
-       ELSE \* every room held by dials in flight (ErrFull needs a full one)
-            /\ op' = [op EXCEPT ![o].st = "wait"]
-            /\ opw' = [opw EXCEPT ![o] = FALSE]
+       ELSE \* every room held by dials in flight (ErrFull needs a full one):
+            \* pick returns the p.changed it read under p.mu, and Open waits
+            \* on that one (finding H1).
+            /\ IF Mutant = "wait-takes-late"
+               THEN op' = [op EXCEPT ![o].st = "late"] /\ UNCHANGED opw
+               ELSE op' = [op EXCEPT ![o].st = "wait"] /\ opw' = [opw EXCEPT ![o] = FALSE]
             /\ UNCHANGED dials
     /\ UNCHANGED <<cs, ga, dead, sess, mtw, mt, dr, env, bad>>
 
@@ -145,12 +152,22 @@ Place(o) ==
             /\ UNCHANGED <<sess, bad>>
     /\ UNCHANGED <<cs, ga, dead, dials, mtw, opw, mt, dr, env>>
 
+\* wait-takes-late (the code before): waitChange takes p.changed after pick
+\* let go of p.mu; a dial that ended in between closed the one before.
+OpenTakeLate(o) ==
+    /\ op[o].st = "late"
+    /\ op' = [op EXCEPT ![o].st = "wait"]
+    /\ opw' = [opw EXCEPT ![o] = FALSE]
+    /\ UNCHANGED <<cs, ga, dead, sess, dials, mtw, mt, dr, env, bad>>
+
+\* A failed dial: Open sleeps Backoff and picks again, or returns the dial's
+\* error (Backoff nil, or its ctx ended).
 OpenDial(o) ==
     /\ op[o].st = "dial"
     /\ \/ \E c \in FreeId :
             /\ DialUp(c)
             /\ op' = [op EXCEPT ![o] = [st |-> "place", c |-> c]]
-       \/ DialFails /\ op' = [op EXCEPT ![o].st = "pick"] \* Backoff, again
+       \/ DialFails /\ \E st \in {"pick", "idle"} : op' = [op EXCEPT ![o].st = st]
     /\ UNCHANGED <<ga, dead, sess, mt, dr, bad>>
 
 OpenWake(o) ==
@@ -242,7 +259,7 @@ Remove(c) ==
 
 Pool ==
     \/ MaintainCheck \/ MaintainReserve \/ MaintainWake \/ MaintainDial
-    \/ \E o \in Opens : Pick(o) \/ Place(o) \/ OpenDial(o) \/ OpenWake(o)
+    \/ \E o \in Opens : Pick(o) \/ Place(o) \/ OpenDial(o) \/ OpenWake(o) \/ OpenTakeLate(o)
     \/ DrainDial \/ DrainGoAway
     \/ \E c \in Ids : CloseConn(c) \/ Remove(c)
 
@@ -259,7 +276,7 @@ Next == Pool \/ App
 Fairness ==
     /\ WF_vars(MaintainCheck) /\ WF_vars(MaintainReserve) /\ WF_vars(MaintainWake) /\ WF_vars(MaintainDial)
     /\ WF_vars(DrainDial) /\ WF_vars(DrainGoAway)
-    /\ \A o \in Opens : WF_vars(Pick(o)) /\ WF_vars(Place(o)) /\ WF_vars(OpenDial(o)) /\ WF_vars(OpenWake(o))
+    /\ \A o \in Opens : WF_vars(Pick(o)) /\ WF_vars(Place(o)) /\ WF_vars(OpenDial(o)) /\ WF_vars(OpenWake(o)) /\ WF_vars(OpenTakeLate(o))
     /\ \A c \in Ids : WF_vars(CloseConn(c)) /\ WF_vars(Remove(c))
 
 Spec == Init /\ [][Next]_vars /\ Fairness
@@ -282,6 +299,7 @@ MaxHolds == dr.st \notin {"dial", "goaway"} => Staying <= Max
 \* sessions, whatever sessions run on the ones going away.
 MinHeld == <>[](Taking >= Min)
 
-\* Every Open ends up with a session (the peer keeps accepting dials).
-OpensOpen == \A o \in Opens : op[o].st \in {"pick", "dial", "wait", "place"} ~> op[o].st \in {"open", "idle"}
+\* Every Open ends: with a session (the peer keeps accepting dials) or the
+\* error of its own failed dial.
+OpensOpen == \A o \in Opens : op[o].st \in {"pick", "dial", "wait", "late", "place"} ~> op[o].st \in {"open", "idle"}
 =============================================================================

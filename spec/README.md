@@ -539,7 +539,11 @@ racing `maintain`, three connection slots, two environment events; about
   `drain-past-max` (finding P2, the code before), `open-on-goaway`
   (`OpenChain` without its GOAWAY check), `maintain-no-recheck`
   (`maintain` reserves its dial on what it decided before letting go of
-  `p.mu`: an `Open` dialled meanwhile, past Max).
+  `p.mu`: an `Open` dialled meanwhile, past Max), `wait-takes-late`
+  (finding H1: `Pick`'s wait split from the step that takes `p.changed`),
+  `no-wake-on-dial-fail` (finding H2: a failed dial leaves `p.changed`
+  open). An `Open` whose dial failed picks again (Backoff) or returns the
+  dial's error (Backoff nil, its ctx ended); `OpensOpen` counts both.
 
 **`Liveness.tla`** (`Conn.keepAlive`) in discrete time: the last frame
 received (`rxAt`), the ping waiting for an answer (`pingAt`), the one
@@ -634,3 +638,21 @@ mechanism's own lateness, not a fault.
 - **P3. The dead-peer tests failed on a starved machine** (test; see
   above). **Fixed** in the tests; `keepAlive` is unchanged (`Liveness.tla`
   holds for it).
+- **H1. `Open` could wait forever after a dial it waited for had ended**
+  (review r2 of `Pool.tla`, TLC `OpensOpen` with `wait-takes-late`; high).
+  `pick` decided to wait under `p.mu`, let it go, and `waitChange` took
+  `p.changed` later: a dial ending in between closed the channel before,
+  so `Open` waited on the next one (with a background ctx, for ever). The
+  model took the channel in `Pick`'s step, so it was stronger than the
+  code. **Fixed**: `pick` returns the `p.changed` it read under `p.mu`
+  and `Open` waits on that one. Test: `TestPoolOpenWaitsOnTheChangeItsPickSaw`.
+- **H2. A failed dial woke no one** (review r2, TLC `MinHeld` and
+  `OpensOpen` with `no-wake-on-dial-fail`; high). `dial` closed
+  `p.changed` only when a connection came up. `maintain`, waiting because
+  an `Open`'s (or a growth) dial counted toward Min, stayed below Min
+  once that dial failed and its `Open` returned; an `Open` waiting for
+  `maintain`'s dial never failed with the dial's error (Backoff nil) and
+  waited for its ctx. The model hid it: a failed `Open` dial always picked
+  again. **Fixed**: every dial's end closes `p.changed`. Tests:
+  `TestPoolOpenFailsWithTheDialErrorWhileMaintainDials`,
+  `TestPoolMinRedialsAfterAnOpensDialFails`.
