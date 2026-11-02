@@ -298,3 +298,102 @@ A dead-peer trace's length depends on how much the sessions moved
 before the cut: 115 to 15,068 lines seen; TLC checks about 40 lines a
 second at background priority (400 at normal priority), one state per
 line.
+
+## The Pool and liveness (2026-11-02, lane LINKPOOL)
+
+Two more models, each small enough for CI (`make spec-invariants` checks
+both in full, liveness included; `make spec-mutants` their mutants).
+
+**`Pool.tla`** (`pool.go`): the connections a Pool keeps to one peer, the
+sessions `Open` places on them, `maintain`'s Min, `Drain`, and what the
+peer and the network do (GOAWAY, a dead path, a failed dial). Sessions
+are modelled only by what `Link.tla` guarantees: a connection that ends
+ends its sessions with an error, `OpenChain` refuses once either side
+sent GOAWAY (`ErrGoAway`) or the connection closed, and the side that
+sent GOAWAY closes the connection once its sessions ended. A dead path is
+detected eventually (the bound is `Liveness.tla`'s). `p.changed` is a wake
+flag per waiter (`maintain`, each `Open`'s `waitChange`), not a counter,
+so the state space is finite. `Pool.cfg`: Min 1, Max 1, one `Open`
+racing `maintain`, three connection slots, two environment events; about
+7 s.
+
+- Invariants: no session goes on a connection going away or closed
+  (`NoSessionOnLeaving`); concurrent `Open`s and `maintain` never dial
+  past Max, only `Drain`'s replacements do until its GOAWAYs (`MaxHolds`).
+- Liveness (weak fairness on the Pool's goroutines and the connections'
+  ends, none on the application or the environment, so a session may
+  stay open forever): once the environment stops, the Pool has Min
+  connections that take sessions (`MinHeld`); every `Open` ends with a
+  session (`OpensOpen`).
+- Mutants: `no-wake-on-goaway` (finding P1, the code before),
+  `drain-past-max` (finding P2, the code before), `open-on-goaway`
+  (`OpenChain` without its GOAWAY check), `maintain-no-recheck`
+  (`maintain` reserves its dial on what it decided before letting go of
+  `p.mu`: an `Open` dialled meanwhile, past Max).
+
+**`Liveness.tla`** (`Conn.keepAlive`) in discrete time: the last frame
+received (`rxAt`), the ping waiting for an answer (`pingAt`), the one
+timer, which fires at its deadline or up to `Late` ticks after (a starved
+process: the Go timer and the goroutine that reads it), a peer that
+answers a ping within `Rtt < Timeout` while alive and goes silent at any
+time. `Liveness.cfg`: Interval 2, Timeout 3, Late 1, Rtt 2; under a
+second.
+
+- `NoFalseDead`: a peer that answers within Timeout is never taken for
+  dead, however late the timer fires. The verdict is anchored at the
+  ping (`now - pingAt >= Timeout`), not at the last frame: a ping that
+  went out late still gets its full Timeout.
+- `NeverEarly`: never sooner than Interval + Timeout after the last frame.
+- `DetectBound`: a silent peer is declared dead by Interval + Timeout +
+  2 x Late after its last frame, and that bound is tight (TLC finds a
+  behaviour that needs all of it). Only two fires add their lateness:
+  the ping's (each earlier fire re-arms at `rxAt + Interval`, anchored at
+  the frame, so their lateness does not add up) and the verdict's
+  (anchored at the ping).
+- Mutants: `rearm-timeout` (after the ping the timer looks again Timeout
+  on, not Interval: the next ping goes late, `DetectBound` breaks),
+  `deadline-from-rx` (the verdict at `rxAt + Interval + Timeout` whatever
+  the ping's time: `NoFalseDead` breaks once a fire is late).
+
+### What this means for the tests (finding P3)
+
+The product promises detection within Interval + Timeout of the peer's
+last frame, on a process that runs when its timers are due. The
+dead-peer tests (`deadpeer_test.go`) measure from the last frame the
+connection received (`rxAt`), check `NeverEarly` exactly, and allow
+`DetectBound`'s lateness as measured during the run: a probe goroutine
+sleeps in short steps beside the connection and records how late its own
+timers fire; the bound is Interval + Timeout + 3 x that (the ping's fire,
+the verdict's, and the wake of the goroutine that observes the end) +
+a fixed allowance for the frames and wakeups of the path. On a starved
+machine the probe is late too, so the test fails only when the mechanism
+is wrong: a ping that never went out, a verdict anchored wrong, a timer
+never re-armed. `TestDeadPeerBusy` failed in promote with
+`dialer 15.517s, bound 15s` on a loaded Mac under `-race`: the
+mechanism's own lateness, not a fault.
+
+### Findings
+
+- **P1. A Pool stays below Min while a connection the peer sent GOAWAY on
+  carries sessions** (TLC, `MinHeld`; medium). `maintain` sleeps on
+  `p.changed`, which closes when a connection is added or removed, not
+  when one stops taking sessions; a connection going away no longer
+  counts toward Min (nor against Max), so with a session that runs on
+  (a tunnel open for days) the Pool keeps fewer than Min connections,
+  and each `Open` dials in its own time. **Fixed**: the Pool closes
+  `p.changed` when the peer's GOAWAY arrives on one of its connections
+  and after `Drain` sent its GOAWAYs. Test:
+  `TestPoolMinReplacesAConnectionGoingAway` (fails before: no second
+  connection in 5 s).
+- **P2. `Drain` dials past Max** (TLC, `MaxHolds`; low). It dialled
+  max(Min, 1) replacements whatever the old connections were: when they
+  were already going away (they count against nothing) or fewer than
+  Min, the replacements and the dials in flight ended above Max for as
+  long as they lived. **Fixed**: `Drain` replaces the connections that
+  take sessions, at most one replacement each (`maintain` brings the
+  Pool back to Min); it still sends GOAWAY on, and waits for, every old
+  connection. Test: `TestPoolDrainStaysWithinMax` (fails before: 3 dials,
+  2 connections at Max 1).
+- **P3. The dead-peer tests failed on a starved machine** (test; see
+  above). **Fixed** in the tests; `keepAlive` is unchanged (`Liveness.tla`
+  holds for it).

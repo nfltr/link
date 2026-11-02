@@ -3,10 +3,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # spec.sh check|mutants|traces: the TLA+ model of spec/ (spec/README.md).
-#   check    TLC on spec/Link.cfg and spec/LinkDrain.cfg: every invariant and
-#            liveness property.
-#   invariants  the same, invariants only (about a minute: CI's).
-#   mutants  each Mutant of Link.tla must be caught (a TLC violation).
+#   check    TLC on spec/Link.cfg and spec/LinkDrain.cfg, then spec/Pool.cfg
+#            and spec/Liveness.cfg: every invariant and liveness property.
+#   invariants  the same, Link's invariants only (about a minute: CI's;
+#            Pool's liveness is checked too, seconds).
+#   mutants  each Mutant of Link.tla, Pool.tla and Liveness.tla must be
+#            caught (a TLC violation).
 #   traces   the tests in TRACE_TESTS and TRACE_DEAD_TESTS run with -tags
 #            linktrace, each connection's trace checked against the model
 #            (spec/Trace.tla).
@@ -76,17 +78,33 @@ check | invariants)
 			exit $st
 		fi
 	done
+	for m in Pool Liveness; do
+		echo "== $m.cfg"
+		st=0
+		# Liveness explores a horizon of ticks: its last states end there.
+		dl=; [ $m = Pool ] || dl=-deadlock
+		tlc "$m.cfg" "$m.tla" $dl >"$work/check.out" 2>&1 || st=$?
+		grep -E '^[0-9]+ states generated|depth of|Finished in|Error|violated' "$work/check.out" || true
+		[ $st = 0 ] || exit $st
+	done
 	;;
 mutants)
-	# mutant CFG NAME: TLC must report an invariant violation.
+	# mutant CFG NAME [MODULE]: TLC must report a violation (Link: of an
+	# invariant; Pool and Liveness keep their properties).
 	fail=0
 	mutant() {
-		sed -e "s/$2/$3/" -e '/^PROPERTIES/,$d' "spec/$1" >"$work/Mutant.cfg"
-		if tlc "$work/Mutant.cfg" MCLink.tla >"$work/m.out" 2>&1; then
+		mod=${4:-MCLink.tla}
+		if [ "$mod" = MCLink.tla ]; then
+			sed -e "s/$2/$3/" -e '/^PROPERTIES/,$d' "spec/$1" >"$work/Mutant.cfg"
+		else
+			sed -e "s/$2/$3/" "spec/$1" >"$work/Mutant.cfg"
+		fi
+		dl=; [ "$mod" != Liveness.tla ] || dl=-deadlock
+		if tlc "$work/Mutant.cfg" "$mod" $dl >"$work/m.out" 2>&1; then
 			echo "$3: not caught"
 			fail=1
-		elif grep -q '^Error: Invariant .* is violated' "$work/m.out"; then
-			echo "$3: caught: $(grep '/\\ err = ' "$work/m.out" | tail -1 | sed 's/.*err = //') ($(grep -m1 '^Error: Invariant' "$work/m.out" | cut -d' ' -f3), $(grep -c '^State [0-9]*:' "$work/m.out") states deep)"
+		elif grep -q '^Error: \(Invariant\|Temporal property\) .* violated' "$work/m.out"; then
+			echo "$3: caught: $(grep '/\\ err = ' "$work/m.out" | tail -1 | sed 's/.*err = //') ($(grep -m1 -E '^Error: (Invariant|Temporal property)' "$work/m.out" | sed -E 's/^Error: (Invariant|Temporal property) ([A-Za-z]+).*/\2/'), $(grep -c '^State [0-9]*:' "$work/m.out") states deep)"
 		else
 			echo "$3: TLC failed:"
 			tail -20 "$work/m.out"
@@ -97,6 +115,12 @@ mutants)
 	mutant Link.cfg 'Mutant = "none"' 'Mutant = "grant-early"'
 	mutant LinkDrain.cfg 'Mutant = "none"' 'Mutant = "open-after-goaway"'
 	mutant Link.cfg 'Mutant = "none"' 'Mutant = "write-race"'
+	for m in no-wake-on-goaway drain-past-max open-on-goaway maintain-no-recheck; do
+		mutant Pool.cfg 'Mutant = "none"' "Mutant = \"$m\"" Pool.tla
+	done
+	for m in rearm-timeout deadline-from-rx; do
+		mutant Liveness.cfg 'Mutant = "none"' "Mutant = \"$m\"" Liveness.tla
+	done
 	exit $fail
 	;;
 traces)

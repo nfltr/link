@@ -146,15 +146,16 @@ hooks:
 	if [ -e "$$h" ] && ! grep -q 'scripts/pre-push' "$$h"; then echo "hooks: $$h exists and is not this one; move it away first" >&2; exit 1; fi; \
 	printf '#!/bin/sh\n# make hooks: scripts/pre-push of the checkout pushing (else of %s)\ns="$$(git rev-parse --show-toplevel)/scripts/pre-push"\n[ -x "$$s" ] || s=%s/scripts/pre-push\nexec "$$s" "$$@"\n' "$(CURDIR)" "$(CURDIR)" >"$$h" && chmod +x "$$h" && echo "hooks: installed $$h"
 
-# The TLA+ model of the session protocol (spec/README.md): TLC on its two
-# configurations; spec-mutants: every bug put back is caught; spec-traces:
+# The TLA+ models (spec/README.md): the session protocol on its two
+# configurations, the Pool and keepAlive's liveness; spec-mutants: every bug put back is caught; spec-traces:
 # tests run with -tags linktrace, each trace checked against the model.
 # Java and tla2tools.jar: scripts/fetch-tla.sh (cached, sha256-pinned).
 .PHONY: spec spec-invariants spec-mutants spec-traces
 spec:
 	./scripts/spec.sh check
 
-# spec-invariants: spec without the liveness properties (about a minute; CI).
+# spec-invariants: spec without the session protocol's liveness properties
+# (about a minute; CI).
 spec-invariants:
 	./scripts/spec.sh invariants
 
