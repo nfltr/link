@@ -409,37 +409,38 @@ func (p *Pool) backoff(attempt int) time.Duration {
 
 // Drain replaces the Pool's connections make-before-break: it dials
 // replacements first (Min of them, at least one, but no more than the old
-// connections that take sessions: one already going away counts against
-// nothing), then sends GOAWAY on every old connection, which then takes no
-// new session and closes once its open sessions ended, at ctx's deadline
-// at the latest. It returns once they all closed. A replacement that
-// cannot be dialled leaves the old connections as they were.
+// connections that count against Max, full ones included: one already
+// going away counts against nothing), then sends GOAWAY on every old
+// connection, which then takes no new session and closes once its open
+// sessions ended, at ctx's deadline at the latest. It returns once they
+// all closed. A replacement that cannot be dialled leaves the old
+// connections as they were and sends GOAWAY on the replacements already
+// dialled, so the Pool is back within Max.
 func (p *Pool) Drain(ctx context.Context) error {
 	p.mu.Lock()
 	old := slices.Clone(p.conns)
-	taking := 0
+	staying := 0
 	for _, m := range old {
-		if takes(m) {
-			taking++
+		if !m.c.GoingAway() && !ended(m) { // full ones too (spec/Pool.tla, M1)
+			staying++
 		}
 	}
 	p.mu.Unlock()
 	if len(old) == 0 {
 		return nil
 	}
-	for range min(max(p.cfg.Min, 1), taking) { // past Max only by what the GOAWAYs free (spec/Pool.tla, P2)
+	deadline, _ := ctx.Deadline()
+	var reps []*Mux
+	for range min(max(p.cfg.Min, 1), staying) { // past Max only by what the GOAWAYs free (spec/Pool.tla, P2)
 		p.reserve()
-		if _, err := p.dial(ctx); err != nil { // past Max: the old ones are about to go
+		m, err := p.dial(ctx) // past Max: the old ones are about to go
+		if err != nil {
+			p.goAway(reps, deadline) // back within Max (spec/Pool.tla, M2)
 			return err
 		}
+		reps = append(reps, m)
 	}
-	deadline, _ := ctx.Deadline()
-	for _, m := range old {
-		_ = m.goAway(deadline)
-	}
-	p.mu.Lock() // they stop counting toward Min
-	p.changedLocked()
-	p.mu.Unlock()
+	p.goAway(old, deadline)
 	for _, m := range old {
 		select {
 		case <-m.c.Done():
@@ -451,6 +452,16 @@ func (p *Pool) Drain(ctx context.Context) error {
 		}
 	}
 	return lateErr(ctx)
+}
+
+// goAway sends GOAWAY on ms; they stop counting toward Min and Max.
+func (p *Pool) goAway(ms []*Mux, deadline time.Time) {
+	for _, m := range ms {
+		_ = m.goAway(deadline)
+	}
+	p.mu.Lock()
+	p.changedLocked()
+	p.mu.Unlock()
 }
 
 // Close closes every connection; Open fails from then on. A connection

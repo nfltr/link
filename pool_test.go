@@ -6,6 +6,7 @@ package link
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -321,6 +322,91 @@ func TestPoolMinRedialsAfterAnOpensDialFails(t *testing.T) {
 		synctest.Wait()
 		if st := p.Stats(); st.Conns != 1 {
 			t.Fatalf("%d connections after %d dials; want Min (1)", st.Conns, dials.Load())
+		}
+	})
+}
+
+// fullPeerDial is a Pool's Dial to an in-process peer that takes one
+// session per connection (max_sessions 1) and keeps it until the Pool's
+// side ends it.
+func fullPeerDial(ctx context.Context) (net.Conn, error) {
+	a, b := net.Pipe()
+	go func() {
+		c, _, err := Server(context.Background(), b, Config{Window: testWindow, Auth: testToken, MaxSessions: 1})
+		if err != nil {
+			_ = b.Close()
+			return
+		}
+		_ = NewMux(c).Serve(func(_ []byte, s *Session) {
+			go func() { _, _ = io.Copy(io.Discard, s); _ = s.Close() }()
+		})
+	}()
+	return a, nil
+}
+
+// TestPoolDrainReplacesAFullConnectionFirst (finding M1, mutant
+// drain-counts-takes): the Pool's only connection carries its most
+// sessions. It counts against Max all the same, so Drain dials its
+// replacement before the GOAWAY: make before break.
+func TestPoolDrainReplacesAFullConnectionFirst(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var p *Pool
+		var dials atomic.Int32
+		var brokeFirst atomic.Bool // the old connection went away before the second dial
+		p = mustPool(t, PoolConfig{Link: v2cfg, Max: 1, Dial: func(ctx context.Context) (net.Conn, error) {
+			if dials.Add(1) == 2 {
+				p.mu.Lock()
+				brokeFirst.Store(p.conns[0].c.GoingAway())
+				p.mu.Unlock()
+			}
+			return fullPeerDial(ctx)
+		}})
+		defer p.Close() //nolint:errcheck
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		s, err := p.Open(ctx, []byte("x"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st := p.Stats(); st.Conns != 0 {
+			t.Fatalf("%d connections take a session; want 0 (the only one is full)", st.Conns)
+		}
+		dctx, dcancel := context.WithTimeout(ctx, time.Second) // its end is not this test's
+		defer dcancel()
+		_ = p.Drain(dctx)
+		_ = s.Close()
+		if n := dials.Load(); n != 2 || brokeFirst.Load() {
+			t.Fatalf("%d dials, old connection away before its replacement: %v; want a replacement first", n, brokeFirst.Load())
+		}
+	})
+}
+
+// TestPoolDrainFailingHalfwayStaysWithinMax (finding M2, mutant
+// drain-fail-keeps): Min = Max = 2, Drain's first replacement comes up,
+// its second fails. The old connections stay and the replacement goes
+// away: the Pool is back within Max.
+func TestPoolDrainFailingHalfwayStaysWithinMax(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var dials atomic.Int32
+		p := mustPool(t, PoolConfig{Link: v2cfg, Min: 2, Max: 2, Dial: scriptDial(&dials, func(n int32) error {
+			if n == 4 {
+				return errDialRefused
+			}
+			return nil
+		})})
+		defer p.Close() //nolint:errcheck
+		synctest.Wait() // maintain's two
+		if st := p.Stats(); st.Conns != 2 {
+			t.Fatalf("%d connections; want Min (2)", st.Conns)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		if err := p.Drain(ctx); !errors.Is(err, errDialRefused) {
+			t.Fatalf("Drain: %v; want the dial's error", err)
+		}
+		synctest.Wait()
+		if st := p.Stats(); st.Conns != 2 {
+			t.Fatalf("%d connections take sessions after a Drain failed halfway; want Max (2)", st.Conns)
 		}
 	})
 }
