@@ -114,7 +114,8 @@ mutants)
 	mutant() {
 		mod=${4:-MCLink.tla}
 		if [ "$mod" = MCLink.tla ]; then
-			sed -e "s/$2/$3/" -e '/^PROPERTIES/,$d' "spec/$1" >"$work/Mutant.cfg"
+			# its invariant must catch it (the interface's checks are iface's)
+			sed -e "s/$2/$3/" -e '/^PROPERTY Refines/d' -e '/^PROPERTIES/,$d' "spec/$1" >"$work/Mutant.cfg"
 		else
 			sed -e "s/$2/$3/" "spec/$1" >"$work/Mutant.cfg"
 		fi
