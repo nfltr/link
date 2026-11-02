@@ -85,13 +85,15 @@ case ${1:-} in
 check | invariants)
 	for cfg in Link.cfg LinkDrain.cfg LinkSess.cfg; do
 		echo "== $cfg ($1)"
+		# No crash here: Link.cfg's crash, taken since finding I1, grows
+		# its states past 12 million (an hour and more); the mutants and
+		# witnesses that need it find it in seconds.
 		if [ "$1" = invariants ]; then
-			# CI: no crash (Link.cfg's crash, taken since finding I1, is
-			# make spec's: its states take minutes; the mutants and
-			# witnesses that need it find it in seconds).
 			sed -e '/^PROPERTIES/,$d' -e 's/Crash = 1/Crash = 0/' "spec/$cfg" >"$work/$cfg"
-			cfg=$work/$cfg
+		else
+			sed -e 's/Crash = 1/Crash = 0/' "spec/$cfg" >"$work/$cfg"
 		fi
+		cfg=$work/$cfg
 		st=0
 		tlc "$cfg" MCLink.tla >"$work/check.out" 2>&1 || st=$?
 		grep -E '^[0-9]+ states generated|depth of|Finished in|Error|violated' "$work/check.out" || true

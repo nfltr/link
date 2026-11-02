@@ -234,7 +234,7 @@ the peer's application.
 A Close after `Mux.cut`'s abort (the drain deadline) sends a CLOSE after
 the ABORT and a CloseWrite a half CLOSE (`Session.Close`'s `once` and `halfClosed` are not spent by `cut`); the peer
 ignores it (the session is gone there) and the writer's end stays typed
-as the reset. Harmless; the model has it (`End` and `CloseWrite` keep `sent`).
+as the reset. Harmless; the model has it (`End` and `CloseWrite` keep `code`).
 
 **Finding I1 (spec, lane LINKIFACE): `Link.cfg`'s crash was never
 taken.** `Crashed` set `crashes' = crashes + 1` while `CloseConn`, which
@@ -246,6 +246,12 @@ only on connections that never end. Found by the interface's witness
 `Crashed` counts on `CloseAt`, the close itself; `WitnessLost` guards it.
 Severity: medium (a vacuous part of the model, not a code bug: the
 connection's end was checked by `LinkDrain.cfg`'s drain and the traces).
+Open: `make spec` and `make spec-invariants` still run `Link.cfg` with
+`Crash = 0`. With the crash taken its states pass 12 million distinct
+(invariants and `Refines`, still growing after half an hour here), past
+the nightly job's bound with liveness; the crash is checked by the
+mutants and witnesses (`WitnessLost`, `CleanEndReceived`,
+`lost-as-eof`). Next: a smaller crash configuration in `make spec`.
 
 **Finding I2 (model, lane LINKIFACE): an OPEN that waited its turn could
 open its session after the connection ended.** With I1 fixed, TLC found
