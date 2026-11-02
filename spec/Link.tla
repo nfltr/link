@@ -149,7 +149,7 @@ OpenBuffer(p, s) ==
 \* The check after the wait failed: ErrGoAway, the credit undone (Mux.drop);
 \* or the connection closed meanwhile.
 OpenRefused(p, s) ==
-    /\ wt[p][s] = "open" /\ (~OpenOK(p) /\ Mutant # "open-no-recheck" \/ closed[p])
+    /\ wt[p][s] = "open" /\ ((~OpenOK(p) /\ Mutant # "open-no-recheck") \/ closed[p])
     /\ cr' = Forget(p, s)
     /\ ss' = [ss EXCEPT ![p][s].st = "gone"]
     /\ wt' = [wt EXCEPT ![p][s] = "no"]
