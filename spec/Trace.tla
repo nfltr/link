@@ -38,7 +38,8 @@ RecvStep ==
 Step ==
     CASE E.ev = "Up" -> UNCHANGED vars
       [] E.ev = "OpenWait" -> OpenCheck(P, S)
-      [] E.ev = "Open" -> IF wt[P][S] = "open" THEN OpenBuffer(P, S) ELSE Open(P, S)
+      \* An OPEN buffered after Conn.Close is logged, then undone (its Flush fails).
+      [] E.ev = "Open" -> IF wt[P][S] = "open" THEN OpenBuffer(P, S) \/ (closed[P] /\ OpenRefused(P, S)) ELSE Open(P, S)
       [] E.ev = "OpenRefused" -> OpenRefused(P, S)
       [] E.ev = "Accept" -> Accept(P, S)
       [] E.ev = "Acquire" -> Acquire(P, S, E.n) /\ cr'[P][S].n = E.credit

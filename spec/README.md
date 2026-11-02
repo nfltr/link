@@ -168,7 +168,7 @@ allows any step in which every guarantee holds, so one step of `Link`
 
 | guarantee (`LinkSession.tla`) | what it says | broken in Link.tla by (`make spec-mutants`, refinement only) |
 |---|---|---|
-| `GSessions` | an id goes none, open, gone, once (never reused); the opener opens only before GOAWAY (else refused: none to gone); the peer's end opens only an id its opener opened; a session ends with a reason (its own whole close, a FIN each way, the peer's Close or reset, the connection's end) | `open-after-goaway`, `open-no-recheck` |
+| `GSessions` | an id goes none, open, gone, once (never reused); the opener opens only before GOAWAY (a failed Open, ErrGoAway or the connection's end, is none to gone); the peer's end opens only an id its opener opened; a session ends with a reason (its own whole close, a FIN each way, the peer's Close or reset, the connection's end) | `open-after-goaway`, `open-no-recheck` |
 | `GWrites` | writes only on a session opened here whose write side is not ended (no data after FIN, Close or reset); credit: the bytes written that the peer's reader has not taken are at most the peer's window | `write-race`, `turns-no-recheck` (data after FIN); `grant-early`, `release-early` (past the window) |
 | `GReads` | a reader gets a prefix of what the peer wrote (in order), at most its window unread, nothing after its end | (a consequence of `GWrites` in Link) |
 | `GEnds` | a writer's end is typed once (`fin`, then perhaps `close` or `reset`); a reader's end is `eof` only after every byte the peer wrote before its FIN or Close, `reset` only from the peer's Reset or Abort, `lost` only with the connection's end | `fin-skips-queue` (EOF before the data), `abort-as-fin` (a reset read as EOF), `lost-as-eof` (a cut session read as EOF) |
@@ -246,6 +246,18 @@ only on connections that never end. Found by the interface's witness
 `Crashed` counts on `CloseAt`, the close itself; `WitnessLost` guards it.
 Severity: medium (a vacuous part of the model, not a code bug: the
 connection's end was checked by `LinkDrain.cfg`'s drain and the traces).
+
+**Finding I2 (model, lane LINKIFACE): an OPEN that waited its turn could
+open its session after the connection ended.** With I1 fixed, TLC found
+`OpenCheck`, a crash, `Down`, then `OpenBuffer`: a session open at a side
+whose Mux had stopped (the interface: a connection's end ends every
+session). The code does not: `Mux.add` refuses once the Mux is done, and
+an OPEN buffered after `Conn.Close` fails at `OpenChain`'s Flush, which
+drops the session. The model now refuses it (`OpenBuffer` needs the
+connection open; `OpenRefused` also takes a closed one; `Trace.tla` maps
+an `Open` logged after the close to the refusal). The interface's refused
+open is any failed Open (ErrGoAway, the connection's end), before any
+byte. Severity: low (model only).
 
 ## Review findings (2026-11-02, lane LINKREVIEW)
 

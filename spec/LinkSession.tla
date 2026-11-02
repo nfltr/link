@@ -60,8 +60,9 @@ Init ==
 Changed(v, p, s) == v'[p][s] # v[p][s]
 
 \* 1. Sessions. An id goes none -> open -> gone once: it is never reused.
-\* The opener opens only before GOAWAY (after it, Open returns ErrGoAway:
-\* none -> gone); the peer's end opens only an id its opener opened. A
+\* The opener opens only before GOAWAY; an Open that fails (ErrGoAway,
+\* the connection's end) is none -> gone, before any byte; the peer's end
+\* opens only an id its opener opened. A
 \* session ends with a reason: its own whole close, the connection's end,
 \* or the peer's end read here and either a FIN each way or the peer's
 \* Close, Reset or Abort.
@@ -73,7 +74,7 @@ Reason(p, s) ==
 GSessions ==
     \A p \in Sides, s \in Sids : Changed(st, p, s) =>
         \/ st[p][s] = "none" /\ st'[p][s] = "open" /\ Opened(p, s)
-        \/ st[p][s] = "none" /\ st'[p][s] = "gone" /\ Owner[s] = p /\ ga'[p]   \* ErrGoAway
+        \/ st[p][s] = "none" /\ st'[p][s] = "gone" /\ Owner[s] = p   \* Open failed
         \/ st[p][s] = "open" /\ st'[p][s] = "gone" /\ Reason(p, s)
 
 \* 2. Writes: only on a session p opened or accepted whose write side p

@@ -135,8 +135,10 @@ OpenCheck(p, s) ==
     /\ UNCHANGED <<out, ss, pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
                    pings, wshut, closed, down, appDone, crashes, err>>
 
+\* An OPEN buffered once the connection closed never goes out: Mux.OpenChain's
+\* Flush fails and the open is undone, as OpenRefused (finding I2).
 OpenBuffer(p, s) ==
-    /\ wt[p][s] = "open"
+    /\ wt[p][s] = "open" /\ ~closed[p]
     /\ Mutant = "open-no-recheck" \/ OpenOK(p)
     /\ ss' = [ss EXCEPT ![p][s] = [NoSession EXCEPT !.st = "open"]]
     /\ Send(p, Frame("open", s, 0))
@@ -144,9 +146,10 @@ OpenBuffer(p, s) ==
     /\ UNCHANGED <<cr, pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
                    pings, wshut, closed, down, appDone, crashes, err>>
 
-\* The check after the wait failed: ErrGoAway, the credit undone (Mux.drop).
+\* The check after the wait failed: ErrGoAway, the credit undone (Mux.drop);
+\* or the connection closed meanwhile.
 OpenRefused(p, s) ==
-    /\ wt[p][s] = "open" /\ ~OpenOK(p) /\ Mutant # "open-no-recheck"
+    /\ wt[p][s] = "open" /\ (~OpenOK(p) /\ Mutant # "open-no-recheck" \/ closed[p])
     /\ cr' = Forget(p, s)
     /\ ss' = [ss EXCEPT ![p][s].st = "gone"]
     /\ wt' = [wt EXCEPT ![p][s] = "no"]
