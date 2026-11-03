@@ -29,7 +29,7 @@ RecvStep ==
     /\ out[Peer(P)] # <<>>
     /\ f.t = E.t
     /\ E.t \in {"open", "data", "win", "accept", "close"} => f.s = S
-    /\ E.t \in {"data", "win", "close"} => f.n = E.n
+    /\ E.t \in {"data", "win", "close"} => f.n = (IF E.t = "close" /\ E.n = 4 THEN ABT ELSE E.n)  \* 4: a refusal's ABORT
     /\ Recv(P)
     /\ E.t \in {"data", "win"} /\ E.credit >= 0 =>
         cr'[P][S].on /\ cr'[P][S].n = E.credit /\ (E.t = "data" => cr'[P][S].held = E.held)
@@ -46,9 +46,16 @@ Step ==
       [] E.ev = "SendWait" -> SendCheck(P, S)
       [] E.ev = "SendData" -> pend[P][S] = E.n /\ IF wt[P][S] = "data" THEN SendBuffer(P, S) ELSE SendData(P, S)
       [] E.ev = "Refund" -> pend[P][S] = E.n /\ Refund(P, S) /\ (E.credit >= 0 => cr'[P][S].n = E.credit)
-      [] E.ev = "Forget" -> Closing(P, S, E.n)
+      \* A refusal (code 4): the answer taken (RefuseMark, not logged), its ABORT forgets.
+      [] E.ev = "Forget" /\ E.n = 4 -> RefuseMark(P, S)
+      [] E.ev = "Close" /\ E.n = 4 -> ss[P][S].closing = ABT + 1 /\ End(P, S)
+      [] E.ev = "Forget" /\ E.n # 4 -> Closing(P, S, E.n)
+      \* FinBeforeShut at a trace's grain (the mark is not logged): no FIN goes
+      \* after this side's write side shut while the peer still reads, but
+      \* after an abort (Mux.cut).
       [] E.ev = "Close" /\ E.n = Half -> CloseWrite(P, S)
-      [] E.ev = "Close" /\ E.n # Half -> ss[P][S].closing = E.n + 1 /\ End(P, S)
+                                         /\ (wshut[P] => ss[P][S].code = ABT \/ ss[Peer(P)][S].st # "open")
+      [] E.ev = "Close" /\ E.n \notin {Half, 4} -> ss[P][S].closing = E.n + 1 /\ End(P, S)
       [] E.ev = "Read" -> Read(P, S, E.n) /\ cr'[P][S].held = E.held /\ gpend'[P][S] = E.grant
       [] E.ev = "Window" -> gpend[P][S] = E.n /\ SendWindow(P, S)
       [] E.ev = "GoAway" -> GoAway(P)

@@ -327,6 +327,34 @@ answers only for its own connection. No trace recorder for `Join.tla` yet
 | the ping and its pong | `mux.go` (`Session.Sync`), `conn.go` (`sync`, `synced`, `pingTime`, `keepAlive`) |
 | `ARecv` | `conn.go` (`recv`: a ping handed to `keepAlive` after every frame before it) |
 
+## Code map (lane W5-LINK)
+
+The files each model stands for (`scripts/check-spec-drift.sh`: a commit
+range that changes one changes `spec/` too, or says why the spec still
+holds in a `Spec-Reviewed:` trailer).
+
+| model | what | files |
+|---|---|---|
+| `Link.tla`, `MCLink.tla`, `Trace.tla` | frames, credit, ends, GOAWAY, ids, the write scheduler's waits | `conn.go`, `credit.go`, `mux.go`, `chain.go`, `read.go`, `internal/bytequeue/`, `trace_on.go` |
+| `LinkSession.tla` | the interface: what a session guarantees | `mux.go`, `chain.go`, `conn.go` |
+| `Liveness.tla`, `TraceLive.tla` | `keepAlive`, the dead-peer bound, `rxAt` | `conn.go`, `read.go`, `liveness.go` |
+| `Pool.tla` | `Pool`: Min, Max, `Open`'s pick and dial, `Drain`, `Close` | `pool.go` |
+| `Join.tla` | `peerlink.Join`'s clean end (`Session.Sync`, hold) | `peerlink/chain.go`, `join.go` |
+
+## Environment assumptions (lane W5-LINK)
+
+What the models take of the world below link, and where that is stated.
+
+| assumption | models | source |
+|---|---|---|
+| a connection is one ordered, reliable byte stream each way until it ends; a frame either arrives whole and in order or the stream ends | `Link`, `Join` (FIFOs), `Pool` | RFC 9293 section 3.1 (TCP); RFC 8446 section 5 (TLS records over it); RFC 9000 section 2.2 (a QUIC stream, quiclink) |
+| a connection that ends loses what is on the way: any suffix of the frames sent (`CloseAt`'s `k`, `Crash`) | `Link`, `Join` | RFC 9293 section 3.6 (an abort: RST discards queued data); WIRE.md section 1 |
+| a process that dies or a path that breaks ends nothing by itself: the peer learns only by silence (the liveness bound) | `Liveness`, `Pool` (`dead`) | RFC 9293 section 3.8.4 (keep-alives are optional, off by default); WIRE.md section 8 |
+| timers fire at or after their deadline, late by a bounded amount on a loaded machine (`Late`) | `Liveness` | Go `time.Timer` docs ("at least duration d"); `TraceLive.tla` checks the real fires |
+| the monotonic clock never goes back (`now`, `rxAt`, ping times) | `Liveness`, `Link` (drain barrier) | Go `time` package docs, "Monotonic Clocks" |
+| a goroutine may pause between any two steps (the scheduler): steps under one lock are atomic, nothing else is | every model | Go memory model (sync.Mutex, sync/atomic: sequentially consistent) |
+| a dial may fail or hang; the peer may refuse (end a connection early) or send GOAWAY at any time | `Pool` | `pool.go` (`Dial`), WIRE.md section 9 |
+
 ## Review findings (2026-11-02, lane LINKREVIEW)
 
 The independent review of this model against the code
@@ -367,6 +395,38 @@ at once), all on `Link.cfg` but the first; `Liveness.tla` `WitnessDead`,
 (`NoSessionOnLeaving`: a session placed while a connection going away is
 up), `WitnessAtMax` (`MaxHolds`); `Join.tla` `WitnessCleanDown`
 (`NoSilentLoss`: a clean end, then the connection gone).
+
+## Review r2 (2026-11-03, lane W5-LINK)
+
+The round-2 reviews of `LinkSession.tla` and `Join.tla`
+(`~/nfltr-evidence/specreview/r2-link-LinkSession.md`, `r2-link-Join.md`)
+and the leftovers of LINKREVIEW, LINKPOOL and LINKIFACE. Each fixed one has
+a test that failed on the code before and a mutant that `make spec-mutants`
+requires TLC to catch.
+
+| item | severity | outcome |
+|---|---|---|
+| Join 1: the peer's FIN during the sync ended the session whole and reached the client outside the hold | high | **fixed** (`done-skips-hold`, `TestJoinPeerFinDuringSyncIsHeld`; "Join's clean end") |
+| LinkSession 1: the peer's FIN applied between `CloseWrite`'s `halfClosed` and its CLOSE dropped the session; a leaving connection then shut its write side before the CLOSE, and the peer read a graceful end as lost | medium | **fixed**: `CloseWriteMark`/`CloseWriteSend`, the drop on `finSent` (Dekker with `peerHalf`); invariant `FinBeforeShut` (`LinkDrain.cfg`), mutant `drop-on-mark`, witness `WitnessFinRace`; `TestCloseWriteRacingThePeersFINDropsAfterItsCLOSE` |
+| LinkSession 2: a `Refuse` racing a `Write` sent data before any answer; the opener ended the whole connection (`ErrFrame`) | medium | **fixed**: `sendData` sends only on credit `sendable` (an ACCEPT went for a session the peer opened); `RefuseMark` and `Refusing` in `Link.tla`, `LinkRefuse.cfg` (invariants, liveness and `Refines` in CI, seconds), mutant `refuse-then-write`, witness `WitnessRefusing`; `TestWriteAfterRefuseSendsNoData` |
+| LinkSession 3: the interface states no answer, no Sync guarantee, no liveness | medium | **open**: design work (`GAnswers`, `GSync` with a `Sync` action and waiter in `Link.tla`, weak fairness in the interface, `Join.tla` over the interface); until then `Join.tla` states Sync's guarantee as its assumption and `TestJoin*` guard it |
+| LinkSession 4: an application's `Abort` modelled as `Mux.cut`'s (kept open) | low | **partly fixed**: a refusal now drops (`End`); `Session.Abort`'s drop stays unmodelled (open, low: the interface allows both) |
+| LinkSession 5: data after the peer's FIN is a protocol error in the model, dropped (and its charge kept) in the code | low | **decided**: keep both. The model's flag is how `write-race` and `turns-no-recheck` are caught (this side never sends it); the code tolerates a faulty or older peer (link before the F1 fix could send it in a race) rather than end every session on the connection; the charge it keeps is on a session whose reads have ended |
+| LinkSession 6: `GReads` allowed bytes at a side whose session is `none` | low | **fixed**: `GReads` requires the session not `none` |
+| LinkSession 7: configurations miss a listener-opened session, crossed opens, data both ways | low | **open**: a `LinkBoth.cfg` for the nightly run (next) |
+| LinkSession 8: traces cover no answers (refusal code 4, `Drop`) | low | **open**: map code 4 to `RefuseMark`/`End` in `Trace.tla` and add `TestRefuse*` to the traced tests (next) |
+| Join 2: a dead link connection does not end the joint while the client is idle | medium | **open**: the code needs a watcher of the session's end for a plain source; `Lost` in `Join.tla` assumes one. Bounded today by the client's next write or close |
+| Join 3: `link.Join` (two sessions, a forwarding hop) passes a FIN on without a sync | medium | **decided**: a clean end is per link: `Join.tla` models one link, `link.Join`'s doc says so; end to end over several hops needs the far end's answer (an application acknowledgement), not a sync per hop |
+| Join 4: no trace recorder for the joint | medium | **open** (next: `JoinCloseWrite`, `JoinSynced`, `JoinEOF`, `JoinFinish`, `JoinAbort` and a `TraceJoin.tla`) |
+| Join 5: steps the code takes that `Join.tla` does not model | low | **open** with 4 |
+| Join 6: a peer's whole close during the client's tail ends the client cleanly | low | **decided**: as WIRE.md section 5 says, a whole close (code 0) is "neither sends nor reads more": bytes after it are dropped by the peer's choice, not lost; `NoSilentLoss` is stated for a peer that reads to the FIN |
+| Join 7: Sync's guarantee assumed, not tied to `Link.tla` | low | **open** with LinkSession 3 |
+| LINKREVIEW: one frame slower than Interval + Timeout read as a dead peer | low | **fixed** (`Conn.read`, `TestSlowFrameIsNoDeadPeer`; "The Pool and liveness") |
+| LINKREVIEW: a `Mux` takes a peer's open of an id of its own parity | low | **decided and fixed**: a `Conn` peer picks its own ids (WIRE.md section 5), so the `Mux` keeps taking them and `Open` skips an id the peer took instead of failing (`TestMuxOpenSkipsAnIDThePeerTook`, failed before: `session id in use`) |
+| LINKREVIEW: the model's OPEN waits for no pending close, stricter than the code's ticket order | low | **decided**: a sound reduction. The code's OPEN may check while a close waits its turn, but that close's ticket is earlier, its credit is already forgotten (the count the check reads is the same) and it goes out first: the same frames in the same order. A trace with `OpenWait` between a `Forget` and its `Close` would be rejected (a false alarm, never a missed bug); no test logs one |
+| LINKREVIEW: the recorder logs steps the model lacks when a test closes mid-write | low | **open**: the traced tests end with their sessions (lane LINKREVIEW); a `Close` racing a `Write`'s buffer is logged after `ConnClose` |
+| LINKIFACE: a small crash config in CI | | **done** before this lane (`LinkCrash.cfg`, lane SPECTRIM) |
+| LOADTESTS: nfltr's `TestRelayDrain` saw `connection lost` instead of the drain deadline's ABORT | | **decided**: link's guarantee is the interface's: a session cut at the drain deadline ends `reset` (the ABORT read) or `lost` (the connection's end) (`GEnds`). `Mux.cut` writes the ABORTs, half-closes and closes within 2 s: a deadline must end, and a peer too starved to read for 2 s reads the end of the connection instead. The test (nfltr) should accept `lost` past the drain's deadline; no link change |
 
 ## Trace validation
 
@@ -638,8 +698,15 @@ at each, `Dead` exactly when the model ends the connection, and
 tests write (the dead-peer tests' take each `FireAt` branch);
 `make spec-mutants` checks the fixtures in `spec/traces/`: `live-ok`
 accepted, `live-dead-early` (dead before Timeout after the ping) and
-`live-fire-early` (a fire before its deadline) rejected. The Pool has no
-recorder yet (left: `maintain`, `Open`'s pick and dial, `Drain`).
+`live-fire-early` (a fire before its deadline) rejected; and the session
+trace `link-ok` (TestSessionCleanEnd's) accepted by Trace.tla, each
+`link-*` beside it rejected: a bug put in per invariant of Link
+(`link-credit-not-taken` CreditBounds, `link-charge-past-window`
+BufferBound, `link-read-past-queue` QueueWithinHeld,
+`link-grant-from-nothing` Conservation, `link-reused-id`
+NoProtocolError, `link-fin-after-shut` FinBeforeShut,
+`link-data-after-fin` GWrites, `link-unknown-step` an unmodelled
+event). The Pool has no recorder yet (left: `maintain`, `Open`'s pick and dial, `Drain`).
 
 ### What this means for the tests (finding P3)
 

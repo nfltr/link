@@ -98,6 +98,7 @@ GReads ==
             /\ d'[p][s] > d[p][s] /\ d'[p][s] <= w[Peer(p)][s]
             /\ d'[p][s] - c[p][s] <= Win[p]
             /\ rend[p][s] = "" /\ ~shut[p][s]
+            /\ st[p][s] # "none"
         /\ Changed(c, p, s) => c'[p][s] > c[p][s] /\ c'[p][s] <= d'[p][s]
 
 \* 4. Ends, typed. p ends its writes once (a CloseWrite may be followed by

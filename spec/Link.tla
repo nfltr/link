@@ -111,6 +111,12 @@ SendClose(p, s, code) ==
 
 Forget(p, s) == [cr EXCEPT ![p][s] = NoCredit]
 Answered(p, s) == ~Chain \/ Owner[s] = p \/ ss[p][s].acc   \* autoAccept ran
+\* A Refuse took the session's answer (Session.ans) and its ABORT is not
+\* buffered yet (its credit lives): review r2 of LinkSession, finding 2.
+\* Refuse is checked where Session.Abort is (ABT in Ends, no drain:
+\* LinkSess.cfg, LinkRefuse.cfg).
+Refuse == Drain = {}
+Refusing(p, s) == ss[p][s].closing = ABT + 1 /\ cr[p][s].on
 
 -----------------------------------------------------------------------------
 (* The application's steps.                                                 *)
@@ -169,6 +175,7 @@ Open(p, s) ==
 
 Accept(p, s) ==                                  \* Session.autoAccept -> Conn.sendAccept
     /\ Chain /\ Owner[s] # p /\ ss[p][s].st = "open" /\ ~ss[p][s].acc
+    /\ ~Refusing(p, s)                            \* ansOnce: the refusal answered it
     /\ ss' = [ss EXCEPT ![p][s].acc = TRUE]
     /\ Send(p, Frame("accept", s, 0))
     /\ UNCHANGED <<cr, pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
@@ -177,7 +184,7 @@ Accept(p, s) ==                                  \* Session.autoAccept -> Conn.s
 \* Session.acquire looks at halfClosed before it waits, not after: credit
 \* may come after this side's FIN (SendData then refuses it).
 Acquire(p, s, n) ==                              \* Session.acquire -> Credit.acquire
-    /\ ss[p][s].st = "open" /\ pend[p][s] = 0 /\ Answered(p, s)
+    /\ ss[p][s].st = "open" /\ pend[p][s] = 0 /\ (Answered(p, s) \/ Refusing(p, s))
     /\ cr[p][s].on /\ n > 0 /\ cr[p][s].n >= n
     /\ cr' = [cr EXCEPT ![p][s].n = @ - n]
     /\ pend' = [pend EXCEPT ![p][s] = n]
@@ -190,7 +197,12 @@ Acquire(p, s, n) ==                              \* Session.acquire -> Credit.ac
 \* so it checks again just before the frame is buffered. Mutants:
 \* write-race, no check at all (finding 1); turns-no-recheck, the first
 \* check only (review F1).
-DataOK(p, s) == ~ss[p][s].wfin /\ cr[p][s].on
+\* On FeatureChain, no data of a session the peer opened before its ACCEPT:
+\* Credit.unanswered, which a Refuse's taken answer does not pass (review
+\* r2 of LinkSession, finding 2; mutant refuse-then-write: the check left
+\* out, the code before: the opener's Credit took the data for a protocol
+\* error and the whole connection ended).
+DataOK(p, s) == ~ss[p][s].wfin /\ cr[p][s].on /\ (Answered(p, s) \/ Mutant = "refuse-then-write")
 SendCheck(p, s) ==                               \* Conn.sendData, then frameLocked waits
     /\ pend[p][s] > 0 /\ wt[p][s] = "no"
     /\ Mutant = "write-race" \/ DataOK(p, s)
@@ -230,7 +242,33 @@ Refund(p, s) ==
     /\ UNCHANGED <<out, ss, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
                    pings, wshut, closed, down, appDone, crashes, err>>
 
-CloseWrite(p, s) ==                              \* Session.CloseWrite
+\* Session.CloseWrite in two steps, as the code takes them (review r2 of
+\* LinkSession, finding 1): halfClosed set (Mark: no data after it), then
+\* the CLOSE buffered (Send, finSent); the session is dropped once both
+\* halves are closed and this side's CLOSE is buffered, by whichever of
+\* Send and the receive of the peer's FIN comes second. Mutant
+\* drop-on-mark (the code before): the receive dropped it on the mark, and
+\* a leaving connection then shut its write side before the CLOSE.
+CloseWriteMark(p, s) ==
+    /\ ss[p][s].st = "open" /\ ~ss[p][s].wfin /\ ss[p][s].closing = 0
+    /\ Answered(p, s)
+    /\ ss' = [ss EXCEPT ![p][s].wfin = TRUE, ![p][s].code = IF @ = ABT THEN @ ELSE Half]
+    /\ appDone' = [appDone EXCEPT ![p][s] = TRUE]
+    /\ UNCHANGED <<out, cr, pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
+                   pings, wshut, closed, down, crashes, err, wt>>
+CloseWriteSend(p, s) ==
+    /\ ss[p][s].wfin /\ ~ss[p][s].fin
+    /\ SendClose(p, s, Half)
+    /\ IF ss[p][s].rfin /\ ss[p][s].st = "open"   \* both halves: drop
+       THEN /\ ss' = [ss EXCEPT ![p][s].st = "gone", ![p][s].pclosed = TRUE, ![p][s].fin = TRUE]
+            /\ cr' = Forget(p, s)
+       ELSE /\ ss' = [ss EXCEPT ![p][s].fin = TRUE]
+            /\ UNCHANGED cr
+    /\ UNCHANGED <<pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
+                   pings, wshut, closed, down, appDone, crashes, err, wt>>
+
+\* The two at once (Trace.tla: the recorder logs the CLOSE, not the mark).
+CloseWrite(p, s) ==
     /\ ss[p][s].st = "open" /\ ~ss[p][s].wfin /\ ss[p][s].closing = 0
     /\ Answered(p, s)
     /\ SendClose(p, s, Half)
@@ -257,16 +295,28 @@ Closing(p, s, code) ==
     /\ UNCHANGED <<out, pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
                    pings, wshut, closed, down, crashes, err, wt>>
 
+\* Session.Refuse (AbortWith, Refused) of a session the peer opened, not
+\* answered: the answer taken (ansOnce), then the ABORT (End, which forgets
+\* the credit as Conn.sendAbort does, under wmu, and drops the session).
+RefuseMark(p, s) ==
+    /\ Chain /\ Owner[s] # p /\ ss[p][s].st = "open" /\ ~ss[p][s].acc /\ ss[p][s].closing = 0
+    /\ ~ss[p][s].wfin
+    /\ ss' = [ss EXCEPT ![p][s].closing = ABT + 1]
+    /\ appDone' = [appDone EXCEPT ![p][s] = TRUE]
+    /\ UNCHANGED <<out, cr, pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
+                   pings, wshut, closed, down, crashes, err, wt>>
+
 \* Mutant abort-as-fin: a Reset or Abort goes out as a Close (the peer
 \* reads io.EOF, not the reset).
 End(p, s) ==
     LET code == ss[p][s].closing - 1 IN
     /\ ss[p][s].closing # 0
     /\ SendClose(p, s, IF Mutant = "abort-as-fin" /\ code \in {RST, ABT} THEN Full ELSE code)
-    /\ ss' = [ss EXCEPT ![p][s].closing = 0, ![p][s].st = IF code = ABT THEN @ ELSE "gone",
+    /\ ss' = [ss EXCEPT ![p][s].closing = 0, ![p][s].st = IF code = ABT /\ ~cr[p][s].on THEN @ ELSE "gone",
                                  ![p][s].code = IF @ \in {RST, ABT} THEN @ ELSE code,
                                  ![p][s].fin = @ \/ code = Full]   \* a Close after Mux.cut's abort
-    /\ UNCHANGED <<cr, pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
+    /\ cr' = IF cr[p][s].on THEN Forget(p, s) ELSE cr   \* a refusal's (RefuseMark)
+    /\ UNCHANGED <<pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
                    pings, wshut, closed, down, appDone, crashes, err, wt>>
 
 \* A read takes k bytes off the session's queue (bytequeue's OnPop ->
@@ -381,7 +431,7 @@ RecvClose(p, f) ==
             /\ LET g == IF x.got = NoCode THEN f.n ELSE x.got IN
                IF f.n # Half
                THEN ss' = [ss EXCEPT ![p][s].st = "gone", ![p][s].pclosed = TRUE, ![p][s].got = g] /\ cr' = cr1
-               ELSE IF x.wfin
+               ELSE IF x.wfin /\ (x.fin \/ Mutant = "drop-on-mark")
                THEN /\ ss' = [ss EXCEPT ![p][s].rfin = TRUE, ![p][s].st = "gone", ![p][s].pclosed = TRUE, ![p][s].got = g]
                     /\ cr' = Forget(p, s)
                ELSE ss' = [ss EXCEPT ![p][s].rfin = TRUE, ![p][s].got = g] /\ cr' = cr1
@@ -457,6 +507,7 @@ Crashed(p) == crashes < Crash /\ \E k \in 0..Len(out[p]) : CloseAt(p, k) /\ cras
 \* connection (no session open, nothing on the way, nothing to answer).
 Idle == \A p \in Sides : OpenAt(p) = {} /\ out[p] = <<>> /\ pong[p] = 0
                          /\ \A s \in Sids : pend[p][s] = 0 /\ gpend[p][s] = 0 /\ ss[p][s].closing = 0
+                                                 /\ (ss[p][s].wfin => ss[p][s].fin)
                                                  /\ wt[p][s] = "no"
 Terminated == ((down["d"] /\ down["l"]) \/ Idle) /\ UNCHANGED vars
 
@@ -464,11 +515,12 @@ AppStep(p, s) ==
     \/ OpenCheck(p, s)
     \/ Accept(p, s)
     \/ \E n \in 1..Chunk : sent[p][s] + pend[p][s] + n <= MaxBytes[p][s] /\ Acquire(p, s, n)
-    \/ Half \in Ends /\ CloseWrite(p, s)
+    \/ Half \in Ends /\ CloseWriteMark(p, s)
     \/ \E code \in Ends \ {Half, ABT} : Closing(p, s, code)
     \* Mux.cut's abort after a GOAWAY; Session.Abort any time where no side
     \* drains (LinkSess.cfg: LinkDrain.cfg's state space stays small).
     \/ ABT \in Ends /\ (sentGA[p] \/ Drain = {}) /\ Closing(p, s, ABT)
+    \/ ABT \in Ends /\ Refuse /\ RefuseMark(p, s)
     \/ \E k \in 1..ss[p][s].q : Read(p, s, k)
 
 Next ==
@@ -481,6 +533,7 @@ Next ==
         \/ Refund(p, s)
         \/ SendWindow(p, s)
         \/ End(p, s)
+        \/ CloseWriteSend(p, s)
     \/ \E p \in Sides :
         \/ p \in Drain /\ ~sentGA[p] /\ GoAway(p)
         \/ pings[p] < MaxPings /\ Ping(p, 0)
@@ -506,6 +559,7 @@ Fairness ==
                           /\ WF_vars(OpenBuffer(p, s)) /\ WF_vars(OpenRefused(p, s))
                           /\ WF_vars(Refund(p, s))
                           /\ WF_vars(SendWindow(p, s)) /\ WF_vars(End(p, s))
+                          /\ WF_vars(CloseWriteSend(p, s))
 
 Spec == Init /\ [][Next]_vars /\ Fairness
 
@@ -513,6 +567,15 @@ Spec == Init /\ [][Next]_vars /\ Fairness
 (* Invariants (README "Invariants").                                        *)
 
 NoProtocolError == err = {}
+
+\* The write side shuts (closeFlushed) only after every CloseWrite's CLOSE
+\* is buffered while the peer still reads the session (review r2 of
+\* LinkSession, finding 1): a graceful end is never read as lost. A CLOSE
+\* still due after this side's reset or abort is no FIN (the peer reads the
+\* reset), nor one to a peer that closed the session whole.
+FinBeforeShut ==
+    \A p \in Sides, s \in Sids :
+        (wshut[p] /\ ss[p][s].wfin /\ ~ss[p][s].fin /\ ss[p][s].code = Half) => ss[Peer(p)][s].st # "open"
 
 CreditBounds == \A p \in Sides, s \in Sids : cr[p][s].n >= 0 /\ cr[p][s].n <= Win[Peer(p)]
 

@@ -11,6 +11,8 @@ MCWin == [p \in Sides |-> 4]
 MCCredit == [p \in Sides |-> [s \in Sids |-> IF p = "d" THEN 6 ELSE 0]]
 \* LinkCrash.cfg: one byte of the dialer's (the crash on fewer states).
 MCCrash == [p \in Sides |-> [s \in Sids |-> IF p = "d" THEN 1 ELSE 0]]
+\* LinkRefuse.cfg: the accepter writes 2 bytes (a Refuse racing a Write).
+MCRefuse == [p \in Sides |-> [s \in Sids |-> IF p = "l" THEN 2 ELSE 0]]
 \* LinkDrain.cfg: two sessions, no data (Link.cfg checks credit).
 MCDrain == [p \in Sides |-> [s \in Sids |-> 0]]
 
@@ -67,5 +69,9 @@ WitnessOpenAtMax ==
 WitnessNoCredit == \A p \in Sides, s \in Sids : ~(ss[p][s].st = "open" /\ cr[p][s].on /\ cr[p][s].n = 0)
 WitnessWindowFull == \A p \in Sides, s \in Sids : cr[p][s].held < Win[p]
 WitnessQueueHeld == \A p \in Sides, s \in Sids : ~(cr[p][s].on /\ ss[p][s].q > 0 /\ ss[p][s].q = cr[p][s].held)
+\* FinBeforeShut: a CloseWrite's CLOSE still due when the peer's FIN came.
+WitnessFinRace == \A p \in Sides, s \in Sids : ~(ss[p][s].wfin /\ ~ss[p][s].fin /\ ss[p][s].rfin)
+\* DataOK's refusal clause: a Write holds credit while a Refuse's ABORT is due.
+WitnessRefusing == \A p \in Sides, s \in Sids : ~(Refusing(p, s) /\ pend[p][s] > 0)
 WitnessInFlight == \A p \in Sides, s \in Sids : ~(SumIn(out[p], "data", s) > 0 /\ SumIn(out[Peer(p)], "win", s) > 0)
 =============================================================================

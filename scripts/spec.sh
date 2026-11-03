@@ -12,7 +12,8 @@
 #   mutants  each Mutant of Link.tla, Pool.tla, Liveness.tla and Join.tla must be
 #            caught (a TLC violation); each Mutant of Link.tla must also
 #            fail the session interface alone (Refines, LinkSession.tla),
-#            and each witness of the interface must be violated.
+#            each witness must be violated, and each trace fixture of
+#            spec/traces/ (a recorded run with a bug put in) rejected.
 #   traces   the tests in TRACE_TESTS and TRACE_DEAD_TESTS run with -tags
 #            linktrace, each connection's trace checked against the model
 #            (spec/Trace.tla).
@@ -79,6 +80,7 @@ INVARIANTS
     BufferBound
     Conservation
     QueueWithinHeld
+    FinBeforeShut
 CFG
 	META=$work/states-$(basename "$1") tlc "$cfg" Trace.tla -deadlock
 }
@@ -103,7 +105,7 @@ nightly)
 	tlcrun "$work/Link.cfg"
 	;;
 check | invariants)
-	for cfg in Link.cfg LinkDrain.cfg LinkSess.cfg LinkCrash.cfg; do
+	for cfg in Link.cfg LinkDrain.cfg LinkSess.cfg LinkCrash.cfg LinkRefuse.cfg; do
 		echo "== $cfg ($1)"
 		# No crash in the first three: Link.cfg's crash grows its states past
 		# 20 million (spec-nightly); LinkCrash.cfg takes it on fewer bytes.
@@ -114,7 +116,8 @@ check | invariants)
 		else
 			sed -e 's/Crash = 1/Crash = 0/' "spec/$cfg" >"$work/$cfg"
 		fi
-		[ $cfg != LinkCrash.cfg ] || cp spec/$cfg "$work/$cfg"
+		# LinkCrash.cfg and LinkRefuse.cfg (seconds): Refines and liveness in CI too.
+		[ $cfg != LinkCrash.cfg ] && [ $cfg != LinkRefuse.cfg ] || cp spec/$cfg "$work/$cfg"
 		tlcrun "$work/$cfg"
 	done
 	# PoolDrain (Min 2: a Drain failing halfway) only in full: its
@@ -202,6 +205,24 @@ mutants)
 			;;
 		esac
 	}
+	# linkfixture FILE: a session trace with a bug put in (spec/traces/link-*):
+	# Trace.tla must accept link-ok and reject each other one.
+	linkfixture() {
+		st=0
+		TLC_WORKERS=1 trace "$PWD/$1" >"$jw/m.out" 2>&1 || st=$?
+		case $(basename "$1"):$st in
+		link-ok.*:0) echo "$(basename "$1"): accepted, as expected" ;;
+		link-ok.*:*) echo "$(basename "$1"): rejected"; grep -E -A6 'rejected at|Error' "$jw/m.out" | head -10; return 1 ;;
+		*:0) echo "$(basename "$1"): accepted (a bug the trace check misses)"; return 1 ;;
+		*)
+			if grep -q 'trace rejected at line\|Invariant .* is violated' "$jw/m.out"; then
+				echo "$(basename "$1"): rejected, as expected"
+			else
+				echo "$(basename "$1"): TLC failed:"; tail -10 "$jw/m.out"; return 1
+			fi
+			;;
+		esac
+	}
 	# job CHECK ARGS: CHECK in the background, SPEC_JOBS at once.
 	n=0
 	job() {
@@ -214,23 +235,27 @@ mutants)
 	done
 	for m in open-after-goaway open-no-recheck; do job iface LinkDrain.cfg $m; done
 	for m in abort-forget-early reopen-known; do job iface LinkSess.cfg $m; done
+	job iface LinkRefuse.cfg refuse-then-write
 	for w in WitnessEof WitnessReset WitnessLost WitnessCredit; do job witness Link.cfg $w; done
 	job witness LinkDrain.cfg WitnessRefused
 	# A witness per invariant of Link (spec/README.md "Witnesses").
 	for w in WitnessNoCredit WitnessWindowFull WitnessQueueHeld WitnessInFlight; do job witness Link.cfg $w; done
 	job witness LinkSess.cfg WitnessOpenAtMax
+	job witness LinkDrain.cfg WitnessFinRace
 	# Not a guarantee: a clean end at one side while its FIN is lost
 	# with the connection (spec/README.md "The session interface").
 	job witness Link.cfg CleanEndReceived
 	for m in fin-skips-queue grant-early write-race turns-no-recheck release-early; do
 		job mutant Link.cfg 'Mutant = "none"' "Mutant = \"$m\""
 	done
-	for m in open-after-goaway open-no-recheck; do
+	for m in open-after-goaway open-no-recheck drop-on-mark; do
 		job mutant LinkDrain.cfg 'Mutant = "none"' "Mutant = \"$m\""
 	done
 	for m in abort-forget-early reopen-known; do
 		job mutant LinkSess.cfg 'Mutant = "none"' "Mutant = \"$m\""
 	done
+	job mutant LinkRefuse.cfg 'Mutant = "none"' 'Mutant = "refuse-then-write"'
+	job witness LinkRefuse.cfg WitnessRefusing
 	for m in no-wake-on-goaway drain-past-max open-on-goaway maintain-no-recheck wait-takes-late no-wake-on-dial-fail drain-counts-takes dial-no-closed-check snapshot-before-cancel; do
 		job mutant Pool.cfg 'Mutant = "none"' "Mutant = \"$m\"" Pool.tla
 	done
@@ -246,6 +271,7 @@ mutants)
 	for w in WitnessDead WitnessLateAlive WitnessTight; do job witness Liveness.cfg $w Liveness.tla; done
 	for w in WitnessClean WitnessReset WitnessHeld WitnessCleanDown; do job witness Join.cfg $w Join.tla; done
 	for f in spec/traces/*.ndjson.live; do job livetrace "$f"; done
+	for f in spec/traces/link-*.ndjson; do job linkfixture "$f"; done
 	wait
 	fail=0
 	i=0
