@@ -55,4 +55,17 @@ CleanEndReceived ==
         (down["d"] /\ down["l"] /\ ss[p][s].code = Half /\ ss[p][s].got = Half) =>
             ss[Peer(p)][s].got \in {Half, Full}
 WitnessRefused == \A p \in Sides, s \in Sids : ~(ga[p] /\ ss[p][s].st = "gone" /\ sent[p][s] = 0 /\ ss[p][s].code = NoCode /\ ss[p][s].got = NoCode /\ ~down[p])
+\* A witness per invariant of Link (make spec-mutants: TLC must violate
+\* each, so the invariant's case is reached, not vacuous):
+\* NoProtocolError: an OPEN on its way to a side at max_sessions (the close
+\* ahead of it frees the count: LinkSess.cfg); CreditBounds: a writer out of
+\* credit; BufferBound: a reader's window full; QueueWithinHeld: a queue as
+\* large as its charge; Conservation: data and a window update of one
+\* session on the wire at once.
+WitnessOpenAtMax ==
+    ~\E p \in Sides : Count(p, Peer(p)) >= MaxSess /\ \E i \in 1..Len(out[Peer(p)]) : out[Peer(p)][i].t = "open"
+WitnessNoCredit == \A p \in Sides, s \in Sids : ~(ss[p][s].st = "open" /\ cr[p][s].on /\ cr[p][s].n = 0)
+WitnessWindowFull == \A p \in Sides, s \in Sids : cr[p][s].held < Win[p]
+WitnessQueueHeld == \A p \in Sides, s \in Sids : ~(cr[p][s].on /\ ss[p][s].q > 0 /\ ss[p][s].q = cr[p][s].held)
+WitnessInFlight == \A p \in Sides, s \in Sids : ~(SumIn(out[p], "data", s) > 0 /\ SumIn(out[Peer(p)], "win", s) > 0)
 =============================================================================

@@ -17,7 +17,11 @@ EXTENDS Naturals, Sequences
 CONSTANTS
     N,       \* the client's bytes
     Mutant   \* "none"; "no-sync": end once the FIN is buffered (the code before);
-             \* "no-hold": pass the peer's FIN on while the sync waits
+             \* "no-hold": pass the peer's FIN on while the sync waits;
+             \* "done-skips-hold": the code before review r2 finding 1: the
+             \* peer's FIN after the joint's CloseWrite drops the session
+             \* (Done: both halves closed) and that branch closed the client
+             \* whole without the hold (the same step as no-hold's)
 
 VARIABLES
     cw,      \* bytes the client wrote
@@ -79,12 +83,15 @@ AFin == ~afs /\ up /\ afs' = TRUE /\ toR' = Append(toR, "fin")
 \* read the client's FIN.
 Eof == ceof' = TRUE /\ clean' = (clean \/ d0 # "run")
 
-\* The joint reads a frame of the session's connection.
+\* The joint reads a frame of the session's connection. A FIN while the
+\* sync waits ends the session at the joint (both halves closed: Mux.drop,
+\* Done); peerlink's ended then closes the client whole, held as the
+\* half close is (review r2 finding 1).
 RRecv ==
     /\ up /\ toR # <<>>
     /\ toR' = Tail(toR)
     /\ IF Head(toR) = "fin"
-       THEN IF d0 = "sync" /\ Mutant # "no-hold"
+       THEN IF d0 = "sync" /\ Mutant \notin {"no-hold", "done-skips-hold"}
             THEN d1' = "held" /\ UNCHANGED <<d0, ceof, clean>>
             ELSE d1' = "done" /\ Eof /\ UNCHANGED d0
        ELSE \* the pong: the peer read the FIN
@@ -129,4 +136,6 @@ NoSilentLoss == clean /\ ~up => arcv = cw /\ afin /\ cfin
 WitnessClean == ~clean
 WitnessReset == cend # "reset"
 WitnessHeld == d1 # "held"
+\* NoSilentLoss's case: a clean end, then the connection gone.
+WitnessCleanDown == ~(clean /\ ~up)
 =============================================================================

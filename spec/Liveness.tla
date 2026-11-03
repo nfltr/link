@@ -103,4 +103,11 @@ DetectBound == ~alive /\ ~dead => now - rx <= Iv + To + 2 * Late
 
 \* Never sooner than Iv + To after the last frame.
 NeverEarly == dead => now - rx >= Iv + To
+
+\* Witnesses (make spec-mutants: TLC must violate each): a dead peer
+\* declared (NoFalseDead's and NeverEarly's case), a live peer's timer
+\* fired late (NoFalseDead's), DetectBound reached exactly (it is tight).
+WitnessDead == ~dead
+WitnessLateAlive == ~(alive /\ pingAt >= 0 /\ now > timer)
+WitnessTight == ~(~alive /\ ~dead /\ now - rx = Iv + To + 2 * Late)
 =============================================================================

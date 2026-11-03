@@ -340,11 +340,24 @@ counterexample of the code before its fix (`make spec-mutants`):
 | F7 the receive loop wrote refusals inline | low | `reader-writes` (`Liveness.tla`, lane LINKPOOL) | `NoFalseDead`, 9 | `Mux.refuse`: a goroutine sends them, the queue bounded by max_sessions (`TestReceiveLoopReadsWhileARefusalWaits`); `Liveness.tla`'s assumption now holds |
 | F8 a grant was bounded loosely | low | (a faulty peer: not modelled) | | `Grant` counts a Write's credit not yet sent (`TestGrantCountsCreditInAWrite`) |
 
-Each test failed on the code before its fix. Left open: F7's related
-note (`rxAt` per frame header: one frame slower to read than
-Interval + Timeout reads as a dead peer) and a `Mux` refusing a peer's
-open of an id of its own parity (a hostile peer only: the id is refused
-when it is in use either way).
+Each test failed on the code before its fix. Left open then: F7's related
+note, the slow frame (fixed, lane W5-LINK: "The Pool and liveness"), and
+a `Mux` refusing a peer's open of an id of its own parity (decided, lane
+W5-LINK, below).
+
+**Witnesses (lane W5-LINK).** Every invariant has a witness that
+`make spec-mutants` requires TLC to violate, so the case the invariant
+guards is reached: `NoProtocolError` `WitnessOpenAtMax` (an OPEN on its
+way to a side at max_sessions, `LinkSess.cfg`), `CreditBounds`
+`WitnessNoCredit` (a writer out of credit), `BufferBound`
+`WitnessWindowFull`, `QueueWithinHeld` `WitnessQueueHeld`, `Conservation`
+`WitnessInFlight` (data and a window update of one session on the wire
+at once), all on `Link.cfg` but the first; `Liveness.tla` `WitnessDead`,
+`WitnessLateAlive` (a live peer's timer fired late), `WitnessTight`
+(`DetectBound` reached exactly); `Pool.tla` `WitnessBesideLeaving`
+(`NoSessionOnLeaving`: a session placed while a connection going away is
+up), `WitnessAtMax` (`MaxHolds`); `Join.tla` `WitnessCleanDown`
+(`NoSilentLoss`: a clean end, then the connection gone).
 
 ## Trace validation
 
@@ -594,9 +607,14 @@ second.
   `Mux.refuse`, whose goroutine buffers and flushes it; the queue is
   bounded by `max_sessions` (a refused session keeps its credit, and
   counts, until its refusal is buffered; an OPEN past the max ends the
-  connection, `ErrFull`). Related, still open: `rxAt` is set per frame
-  header, so one frame slower to read than Interval + Timeout reads as a
-  dead peer (64 KiB from a `Mux`, up to 1 MiB on the wire).
+  connection, `ErrFull`). The slow frame (fixed, lane W5-LINK): `rxAt`
+  was set per frame header, so one frame slower to arrive than Interval +
+  Timeout (64 KiB from a `Mux`, up to 1 MiB on the wire, on a slow path)
+  read as a dead peer. Now every read of the connection that returns bytes
+  sets it (`Conn.read`): the model's "a frame arrives" is any bytes
+  arriving, so `Liveness.tla` is unchanged. Test:
+  `TestSlowFrameIsNoDeadPeer` (failed before: both a read-ahead and a
+  straight read declared the peer dead mid-frame).
 
 **`TraceLive.tla`** checks keepAlive's recorded steps against
 `Liveness.tla`: with `-tags linktrace` each connection also writes

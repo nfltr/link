@@ -374,4 +374,8 @@ WitnessWait == \A o \in Opens : op[o].st # "wait"           \* an Open waits on 
 WitnessReplaced == ~(dr.st = "goaway" /\ dr.stay > 0)       \* MakeBeforeBreak's case
 WitnessPastMax == ~(dr.st = "goaway" /\ Staying > Max)      \* MaxHolds' exception
 WitnessClosed == ~(pc = "done" /\ \E c \in Ids : cs[c] = "closed") \* NoLeak with a connection Close closed
+\* NoSessionOnLeaving's case: a session placed while a connection going
+\* away is still up; MaxHolds': an Open waits with the room full.
+WitnessBesideLeaving == ~\E o \in Opens : op[o].st = "open" /\ \E c \in Ids : Up(c) /\ ga[c]
+WitnessAtMax == ~(Staying = Max /\ \E o \in Opens : op[o].st = "wait")
 =============================================================================

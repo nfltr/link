@@ -178,7 +178,7 @@ mutants)
 	witness() {
 		sed -e '/^PROPERTY/,$d' "spec/$1" >"$jw/Witness.cfg"
 		printf 'INVARIANT %s\n' "$2" >>"$jw/Witness.cfg"
-		dl=; [ "${3:-}" != Join.tla ] || dl=-deadlock
+		dl=; [ "${3:-}" != Join.tla ] && [ "${3:-}" != Liveness.tla ] || dl=-deadlock
 		if tlc "$jw/Witness.cfg" "${3:-MCLink.tla}" $dl >"$jw/m.out" 2>&1; then
 			echo "$2: never violated (vacuous)"
 			return 1
@@ -216,6 +216,9 @@ mutants)
 	for m in abort-forget-early reopen-known; do job iface LinkSess.cfg $m; done
 	for w in WitnessEof WitnessReset WitnessLost WitnessCredit; do job witness Link.cfg $w; done
 	job witness LinkDrain.cfg WitnessRefused
+	# A witness per invariant of Link (spec/README.md "Witnesses").
+	for w in WitnessNoCredit WitnessWindowFull WitnessQueueHeld WitnessInFlight; do job witness Link.cfg $w; done
+	job witness LinkSess.cfg WitnessOpenAtMax
 	# Not a guarantee: a clean end at one side while its FIN is lost
 	# with the connection (spec/README.md "The session interface").
 	job witness Link.cfg CleanEndReceived
@@ -232,15 +235,16 @@ mutants)
 		job mutant Pool.cfg 'Mutant = "none"' "Mutant = \"$m\"" Pool.tla
 	done
 	job mutant PoolDrain.cfg 'Mutant = "none"' 'Mutant = "drain-fail-keeps"' Pool.tla
-	for w in WitnessOpen WitnessWait WitnessReplaced WitnessPastMax WitnessClosed; do job witness Pool.cfg $w Pool.tla; done
+	for w in WitnessOpen WitnessWait WitnessReplaced WitnessPastMax WitnessClosed WitnessBesideLeaving WitnessAtMax; do job witness Pool.cfg $w Pool.tla; done
 	for m in rearm-timeout deadline-from-rx reader-writes; do
 		job mutant Liveness.cfg 'Mutant = "none"' "Mutant = \"$m\"" Liveness.tla
 	done
 	# peerlink.Join's clean end (Join.tla, relay-core finding 23).
-	for m in no-sync no-hold; do
+	for m in no-sync no-hold done-skips-hold; do
 		job mutant Join.cfg 'Mutant = "none"' "Mutant = \"$m\"" Join.tla
 	done
-	for w in WitnessClean WitnessReset WitnessHeld; do job witness Join.cfg $w Join.tla; done
+	for w in WitnessDead WitnessLateAlive WitnessTight; do job witness Liveness.cfg $w Liveness.tla; done
+	for w in WitnessClean WitnessReset WitnessHeld WitnessCleanDown; do job witness Join.cfg $w Join.tla; done
 	for f in spec/traces/*.ndjson.live; do job livetrace "$f"; done
 	wait
 	fail=0
