@@ -5,6 +5,7 @@ package peerlink_test
 
 import (
 	"context"
+	"encoding/binary"
 	"io"
 	"net"
 	"sync"
@@ -24,6 +25,7 @@ type gateConn struct {
 	held    bool
 	blocked chan struct{}
 	once    sync.Once
+	gated   []byte // what it took once held
 }
 
 func (g *gateConn) Write(p []byte) (int, error) {
@@ -31,6 +33,9 @@ func (g *gateConn) Write(p []byte) (int, error) {
 	held := g.held
 	g.mu.Unlock()
 	if held {
+		g.mu.Lock()
+		g.gated = append(g.gated, p...)
+		g.mu.Unlock()
 		g.once.Do(func() { close(g.blocked) })
 		return len(p), nil
 	}
@@ -38,6 +43,30 @@ func (g *gateConn) Write(p []byte) (int, error) {
 }
 
 func (g *gateConn) hold() { g.mu.Lock(); g.held = true; g.mu.Unlock() }
+
+// closeThenPing reports whether the gate took a close frame (WIRE.md
+// type 4) and a ping (5) after it: a CloseWrite and its Sync.
+func (g *gateConn) closeThenPing() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	closed := false
+	for b := g.gated; len(b) >= 5; {
+		n := int(binary.BigEndian.Uint32(b))
+		switch b[4] {
+		case 4:
+			closed = true
+		case 5:
+			if closed {
+				return true
+			}
+		}
+		if len(b) < 5+n {
+			break
+		}
+		b = b[5+n:]
+	}
+	return false
+}
 
 // tcpPair is both ends of a loopback TCP connection.
 func tcpPair(t *testing.T) (*net.TCPConn, *net.TCPConn) {
@@ -132,4 +161,63 @@ func TestJoinCleanEndOnlyOnceThePeerReadTheFIN(t *testing.T) {
 	if b := <-agentGot; len(b) != 0 {
 		t.Fatalf("the agent read %q: the tail was not lost", b)
 	}
+}
+
+// TestJoinPeerFinDuringSyncIsHeld (review r2 of Join.tla, finding 1): the
+// peer's FIN arrives while the joint's Sync waits. The session then ends at
+// the joint (both halves closed), which must not hand the client a clean
+// end before the sync: the link connection then dies with the client's
+// tail in its write buffer, and the client must not have read a clean EOF.
+func TestJoinPeerFinDuringSyncIsHeld(t *testing.T) {
+	ln, rn := tcpPair(t)
+	g := &gateConn{Conn: rn, blocked: make(chan struct{})}
+	ctx := context.Background()
+	finNow := make(chan struct{})
+	srv := make(chan *link.Conn, 1)
+	go func() {
+		c, _, err := link.Server(ctx, ln, link.Config{Auth: link.NoAuth})
+		if err != nil {
+			srv <- nil
+			return
+		}
+		srv <- c
+		_ = link.NewMux(c).Serve(func(_ []byte, s *link.Session) {
+			_ = s.Accept()
+			<-finNow
+			_ = s.CloseWrite()
+			_, _ = io.ReadAll(s)
+		})
+	}()
+	rc, err := link.Client(ctx, g, link.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := <-srv; c == nil {
+		t.Fatal("server handshake failed")
+	}
+	rm := link.NewMux(rc)
+	go func() { _ = rm.Serve(nil) }()
+	s, err := rm.Open([]byte("h"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Answered(ctx); err != nil {
+		t.Fatal(err)
+	}
+	client, relay := tcpPair(t)
+	joinErr := make(chan error, 1)
+	go func() { joinErr <- peerlink.Join(relay, s) }()
+	g.hold()
+	_, _ = client.Write([]byte("tail"))
+	_ = client.CloseWrite()
+	for !g.closeThenPing() { // the joint's CloseWrite and its Sync's ping are in the gate
+		time.Sleep(time.Millisecond)
+	}
+	close(finNow) // the peer's FIN arrives while the sync waits
+	_ = client.SetReadDeadline(time.Now().Add(time.Second))
+	if b, err := io.ReadAll(client); err == nil {
+		t.Fatalf("client read a clean EOF (%q) while its tail is unacknowledged", b)
+	}
+	_ = rn.Close()
+	<-joinErr
 }

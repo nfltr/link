@@ -307,6 +307,15 @@ peer's FIN passed on while the sync waits), both caught by
 `NoSilentLoss`. Witnesses: `WitnessClean`, `WitnessReset`, `WitnessHeld`.
 Guard: `peerlink` `TestJoinCleanEndOnlyOnceThePeerReadTheFIN` (failed
 before: Join returned nil with the tail in the dead connection's buffer).
+Review r2 finding 1 (high, lane W5-LINK): the peer's FIN arriving while
+the sync waits ended the session at the joint (both halves closed:
+`Mux.drop`, `Done`), and `ended`'s branch for a session closed whole
+closed the client at once, outside the hold: a clean end with the tail
+unacknowledged, finding 23 back. The model's `RRecv` held every FIN, so
+the spec was stronger than the code. Fixed: that branch goes through
+`hold` too; mutant `done-skips-hold` (the code before: the same step as
+`no-hold`, caught by `NoSilentLoss`); guard
+`TestJoinPeerFinDuringSyncIsHeld` (failed before, 3 of 3).
 Open: `link.Join` (two link sessions: a relay's forwarding hop) passes a
 FIN on without a sync; end to end over several hops the last hop's sync
 answers only for its own connection. No trace recorder for `Join.tla` yet

@@ -451,7 +451,12 @@ func (j *joint) ended(i int, n int64, err, werr error) {
 	case j.failed():
 	default:
 		if s := native(src); s != nil && isClosed(s.Done()) {
-			_ = dst.Close() // the peer closed it whole
+			// the peer closed it whole, or its FIN ended it after our
+			// CloseWrite: held while that one syncs (review r2 finding 1)
+			if j.hold(func() { _ = dst.Close() }) {
+				return
+			}
+			_ = dst.Close()
 		} else if ds := native(dst); ds != nil {
 			j.sync(src, ds)
 			return
