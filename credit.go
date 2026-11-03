@@ -326,11 +326,15 @@ func (c *Credit) Received(sid string, n int) error {
 	return c.chargeLocked(c.sessions[sid], n, false)
 }
 
-// known reports whether sid's credit lives (not forgotten).
-func (c *Credit) known(sid string) bool {
+// sendable reports whether sid's data may go out: its credit lives and,
+// on a FeatureChain connection, a session the peer opened was answered
+// with an ACCEPT (a Refuse that took the answer sends none: review r2 of
+// LinkSession, finding 2).
+func (c *Credit) sendable(sid string, chain bool) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.sessions[sid] != nil
+	s := c.sessions[sid]
+	return s != nil && (!chain || s.by != byPeer || s.answered)
 }
 
 // inUse reports whether sid is a session the link opened (an OPEN sent or

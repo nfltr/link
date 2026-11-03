@@ -135,7 +135,8 @@ A session is a pair of byte streams identified by its sid.
   `encoding/binary.AppendUvarint`), odd on the dialer and even on the
   listener, so the two sides never pick the same; a `Mux` refuses an open
   it does not take (no accept function, or after GOAWAY) with a reset.
-  A `Conn` without a `Mux` leaves ids to the caller.
+  A `Conn` without a `Mux` leaves ids to the caller, so a `Mux` takes an
+  open of either parity, and skips an id of its own the peer took.
 
 ## 6. Feature bits
 

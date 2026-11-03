@@ -313,3 +313,90 @@ func TestMuxDropsDataOfASessionWithoutCredit(t *testing.T) {
 		t.Fatalf("read %q, %v; want nothing, then io.EOF", b, err)
 	}
 }
+
+// TestCloseWriteRacingThePeersFINDropsAfterItsCLOSE (review r2 of
+// LinkSession, finding 1): the peer's FIN applied while this side's
+// CloseWrite has set halfClosed but not yet buffered its CLOSE must not
+// drop the session there: a leaving connection closes once its last
+// session is dropped, and the CLOSE buffered after that never reaches the
+// peer (its graceful end read as lost). The session is dropped only after
+// its CLOSE is buffered.
+func TestCloseWriteRacingThePeersFINDropsAfterItsCLOSE(t *testing.T) {
+	got := make(chan *Session, 2)
+	dm, _ := v2muxPair(t, func(_ []byte, s *Session) { got <- s }, v2cfg, v2cfg)
+	t.Cleanup(func() { _ = dm.Close() })
+	open := func() (*Session, *Session) {
+		s, err := dm.Open([]byte("h"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s, <-got
+	}
+	a, pa := open()
+	b, pb := open()
+	dm.c.wmu.Lock() // a's CLOSE waits for the write lock
+	done := make(chan error, 1)
+	go func() { done <- a.CloseWrite() }()
+	for !a.halfClosed.Load() {
+		runtime.Gosched()
+	}
+	if err := pa.CloseWrite(); err != nil { // the peer's FIN
+		dm.c.wmu.Unlock()
+		t.Fatal(err)
+	}
+	if _, err := pb.Write([]byte("x")); err != nil {
+		dm.c.wmu.Unlock()
+		t.Fatal(err)
+	}
+	if _, err := io.ReadFull(b, make([]byte, 1)); err != nil { // the FIN was applied before it
+		dm.c.wmu.Unlock()
+		t.Fatal(err)
+	}
+	select {
+	case <-a.Done():
+		dm.c.wmu.Unlock()
+		t.Fatal("the session was dropped before its CLOSE was buffered")
+	default:
+	}
+	dm.c.wmu.Unlock()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	<-a.Done() // dropped once its CLOSE is out
+	if _, err := io.ReadAll(pa); err != nil {
+		t.Fatalf("the peer's end: %v, want io.EOF", err)
+	}
+}
+
+// TestWriteAfterRefuseSendsNoData (review r2 of LinkSession, finding 2):
+// a Refuse has taken the session's answer (ans) but its ABORT is not
+// buffered yet when a Write from another goroutine runs: the Write must not
+// send data before any answer (the opener's Credit takes it for a protocol
+// error and ends the whole connection). It fails as after a close.
+func TestWriteAfterRefuseSendsNoData(t *testing.T) {
+	s, p := openPair(t, v2cfg, v2cfg)
+	if !p.answers {
+		t.Fatal("no FeatureChain")
+	}
+	p.ansOnce.Do(func() { p.ans.Store(true) }) // Refuse's first half
+	// A Write's autoAccept now sends no ACCEPT; its data:
+	if _, err := p.m.c.sendData(p.id, []byte("x"), &p.wd, &p.halfClosed, true); err != io.ErrClosedPipe {
+		t.Fatalf("data after the refusal took the answer: %v, want io.ErrClosedPipe", err)
+	}
+	if err := s.m.c.Flush(); err != nil || s.m.c.Err() != nil {
+		t.Fatalf("the opener's connection: %v %v", err, s.m.c.Err())
+	}
+	p.once.Do(func() { // its second (AbortWith)
+		defer p.m.drop(p)
+		_ = p.m.c.sendAbort(p.id, &Abort{Refused: true, Code: CodeApp, Msg: "no"})
+		_ = p.m.c.Flush()
+	})
+	if err := s.Answered(context.Background()); err == nil {
+		t.Fatal("the opener read no refusal")
+	}
+	select {
+	case <-s.m.c.Done():
+		t.Fatalf("the opener's connection ended: %v", s.m.c.Err())
+	default:
+	}
+}

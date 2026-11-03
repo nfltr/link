@@ -6,6 +6,7 @@ package link
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -438,5 +439,38 @@ func TestWriteDeadlineStuckNetwork(t *testing.T) {
 	r := <-got
 	if !bytes.Equal(r["a"], da) || !bytes.Equal(r["b"], db) || !bytes.Equal(r["c"], dc) {
 		t.Fatalf("peer read %d, %d and %d bytes, want %d, %d and %d intact", len(r["a"]), len(r["b"]), len(r["c"]), len(da), len(db), len(dc))
+	}
+}
+
+// TestMuxOpenSkipsAnIDThePeerTook: a peer driving a Conn picks its own
+// ids (WIRE.md section 5); one that opened an id of this Mux's parity, the
+// next it would pick, makes no Open here fail: the Mux takes the next.
+func TestMuxOpenSkipsAnIDThePeerTook(t *testing.T) {
+	c, raw := v2pair(t, v2cfg, v2cfg)
+	m := NewMux(c)
+	hold := make(chan struct{})
+	t.Cleanup(func() { close(hold); _ = m.Close(); _ = raw.Close() })
+	go func() { _ = m.Serve(func(_ []byte, s *Session) { <-hold }) }()
+	go func() {
+		for {
+			if _, err := raw.Recv(); err != nil {
+				return
+			}
+		}
+	}()
+	taken := string(binary.AppendUvarint(nil, 1)) // the dialer's first id
+	if err := raw.SendOpen(taken, []byte("h")); err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, func() bool { return m.Sessions() == 1 })
+	s, err := m.Open([]byte("h"))
+	if err != nil {
+		t.Fatalf("Open with the peer on this side's next id: %v", err)
+	}
+	if s.id == taken {
+		t.Fatalf("Open took the peer's id %q", taken)
 	}
 }

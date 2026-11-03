@@ -21,7 +21,11 @@ import (
 // Each direction carries the bytes written, in order, intact. A clean end
 // of one side's writes (CloseWrite) becomes CloseWrite on the other once
 // every byte before it was written there, and a full close becomes Close;
-// each direction ends on its own. An error on either side (an Abort or
+// each direction ends on its own. A clean end is per link: the
+// CloseWrite passed on is buffered on the other session's connection, not
+// yet read by its peer (a session's interface, spec/README.md); a caller
+// that needs the far end to have read it waits for its answer, and
+// peerlink.Join, which ends a plain conn, syncs first. An error on either side (an Abort or
 // Reset, its connection's end, a write deadline set on a session that
 // passed) aborts the other: an *Abort received goes on with Hops+1 (a
 // plain reset as CodeUnspecified, Hops 1), a local cause as an Abort with

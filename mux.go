@@ -109,6 +109,10 @@ func (m *Mux) OpenChain(header []byte, c Chain) (*Session, error) {
 	}
 	sid := m.nextSID()
 	s, err := m.add(sid, header, c, false)
+	for err == errSIDInUse { // the peer took it: a Conn picks its own ids (WIRE.md section 5)
+		sid = m.nextSID()
+		s, err = m.add(sid, header, c, false)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -297,7 +301,7 @@ func (m *Mux) serve(f Frame, accept func([]byte, *Session)) {
 		s.peerHalf.Store(true) // before the queue's end: a Pump's done (Join) reads it
 		s.q.Close()            // reads end once the queue drains
 		s.kick()
-		if s.halfClosed.Load() {
+		if s.finSent.Load() { // not halfClosed: its CLOSE may not be buffered yet (review r2 LinkSession finding 1)
 			s.peerClosed.Store(true)
 			m.drop(s) // both sides stopped sending
 		}
@@ -533,6 +537,7 @@ type Session struct {
 	peerClosed atomic.Bool // the peer closed it (or the connection ended): Close sends nothing
 	halfClosed atomic.Bool // CloseWrite called
 	peerHalf   atomic.Bool // the peer closed its write side
+	finSent    atomic.Bool // CloseWrite buffered its CLOSE
 	once       sync.Once
 
 	err     atomic.Pointer[error] // why the session was cut; nil: it ends with io.EOF
@@ -969,6 +974,9 @@ func (s *Session) CloseWrite() error {
 		return nil
 	}
 	s.m.sendClose(s.id, true)
+	// Dekker with the receive of the peer's FIN (peerHalf, then finSent):
+	// one of the two sees both and drops it, after the CLOSE is buffered.
+	s.finSent.Store(true)
 	if s.peerHalf.Load() {
 		s.peerClosed.Store(true) // both halves closed: nothing more to send
 		s.m.drop(s)

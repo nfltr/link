@@ -329,7 +329,7 @@ func (c *Conn) sendData(sid string, data []byte, wd *writeDeadline, wclosed *ato
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
 	open := func() error {
-		if wclosed.Load() || !c.credit.known(sid) {
+		if wclosed.Load() || !c.credit.sendable(sid, c.chain()) {
 			return io.ErrClosedPipe
 		}
 		return nil
