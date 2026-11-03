@@ -4,6 +4,10 @@
 package link
 
 import (
+	"fmt"
+	"io"
+	"net"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -80,5 +84,47 @@ func TestLivenessDeadAfterFollowsTheStatedInterval(t *testing.T) {
 	}
 	if got := LivenessDefault.DeadAfter(0); got != 0 {
 		t.Errorf("no statement: %s, want 0", got)
+	}
+}
+
+// A frame that takes longer to arrive than Interval + Timeout, its bytes
+// coming all along, is no dead peer: the bytes of a frame are as much a
+// sign of life as its header (spec/README.md, "The Pool and liveness",
+// the slow frame).
+func TestSlowFrameIsNoDeadPeer(t *testing.T) {
+	live := Liveness{Interval: time.Second, Timeout: time.Second}
+	for _, size := range []int{viewMax / 2, 4 * viewMax} { // read ahead; read straight into the frame
+		t.Run(strconv.Itoa(size), func(t *testing.T) {
+			t.Parallel()
+			a, raw := net.Pipe()
+			c := newConnV2(a, Config{Window: testWindow, MaxSessions: MaxSessions, Liveness: live}, testWindow, MaxSessions, false)
+			t.Cleanup(func() { _ = c.Close(); _ = raw.Close() })
+			go func() { _, _ = io.Copy(io.Discard, raw) }() // c's pings
+			c.up(nil, Identity{})
+			got := make(chan error, 1)
+			go func() {
+				f, err := c.Recv()
+				if err == nil && len(f.Msg) != size {
+					err = fmt.Errorf("message of %d bytes, want %d", len(f.Msg), size)
+				}
+				got <- err
+			}()
+			// The header, then the body a few bytes at a time over
+			// 3 x (Interval + Timeout); the peer never answers a ping.
+			if _, err := raw.Write(frame(uint32(size), typeMsg)); err != nil {
+				t.Fatal(err)
+			}
+			body := make([]byte, size)
+			step := size / 60
+			for off := 0; off < size; off += step {
+				time.Sleep(100 * time.Millisecond)
+				if _, err := raw.Write(body[off:min(off+step, size)]); err != nil {
+					t.Fatalf("at %d of %d: %v (%v)", off, size, err, c.Err())
+				}
+			}
+			if err := <-got; err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }

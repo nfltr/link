@@ -3,7 +3,10 @@
 
 package link
 
-import "io"
+import (
+	"io"
+	"time"
+)
 
 // The receive loop reads frames through a read-ahead buffer: a burst of
 // small frames costs one read of the connection, not three each (header,
@@ -64,17 +67,36 @@ func (c *Conn) readFull(p []byte) error {
 	if n == len(p) {
 		return nil
 	}
+	var err error
 	// The rest goes straight into p. The next frame's header then goes
 	// into rsmall, not ahead into a buffer, and reads little more than a
 	// header (rheadLen): a long payload after it would be copied twice.
 	c.rfull, c.rlong = false, true
-	if err := c.rerr; err != nil {
+	if err = c.rerr; err != nil {
 		c.rerr = nil
 		return eofIn(err, n)
 	}
-	m, err := io.ReadFull(c.nc, p[n:])
-	c.rx.Add(uint64(m)) // #nosec G115 -- m >= 0
+	for err == nil && n < len(p) {
+		var m int
+		m, err = c.read(p[n:])
+		n += m
+	}
+	if n == len(p) {
+		return nil
+	}
 	return eofIn(err, n)
+}
+
+// read is one read of the connection. Every byte read is a sign of life
+// (rxAt): a frame slower to arrive than Interval + Timeout, its bytes
+// coming all along, is no dead peer (spec/README.md, the slow frame).
+func (c *Conn) read(b []byte) (int, error) {
+	m, err := c.nc.Read(b)
+	if m > 0 {
+		c.rx.Add(uint64(m)) // #nosec G115 -- m > 0
+		c.rxAt.Store(int64(time.Since(c.t0)))
+	}
+	return m, err
 }
 
 // eofIn is a read's error for a call that got n bytes before it: io.EOF
@@ -111,8 +133,7 @@ func (c *Conn) view(n int) ([]byte, error) {
 	c.rerr = nil
 	for got < n && err == nil {
 		var m int
-		m, err = c.nc.Read(buf[got:])
-		c.rx.Add(uint64(m)) // #nosec G115 -- m >= 0
+		m, err = c.read(buf[got:])
 		got += m
 	}
 	if got < n {

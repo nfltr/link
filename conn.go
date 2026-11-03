@@ -197,7 +197,7 @@ type Conn struct {
 	live            Liveness
 	id              Identity
 	t0              time.Time
-	rxAt            atomic.Int64 // time.Since(t0) of the last frame header received
+	rxAt            atomic.Int64 // time.Since(t0) of the last bytes received (Conn.read)
 	pong            chan [pingLen]byte
 	goingAway       atomic.Bool // either side sent GOAWAY
 	peerGoAway      chan struct{}
@@ -1139,7 +1139,6 @@ func (c *Conn) recv() (rframe, bool, error) {
 	if err := c.readFull(c.rhdr[:6]); err != nil {
 		return rframe{}, false, err
 	}
-	c.rxAt.Store(int64(time.Since(c.t0)))
 	n := int(binary.BigEndian.Uint32(c.rhdr[:4]))
 	if n > maxFrame || n < 1 {
 		return rframe{}, false, ErrFrame
