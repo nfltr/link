@@ -344,8 +344,8 @@ holds in a `Spec-Reviewed:` trailer).
 | `Link.tla`, `MCLink.tla`, `Trace.tla` | frames, credit, ends, GOAWAY, ids, the write scheduler's waits | `conn.go`, `credit.go`, `mux.go`, `chain.go`, `read.go`, `internal/bytequeue/`, `trace_on.go` |
 | `LinkSession.tla` | the interface: what a session guarantees | `mux.go`, `chain.go`, `conn.go` |
 | `Liveness.tla`, `TraceLive.tla` | `keepAlive`, the dead-peer bound, `rxAt` | `conn.go`, `read.go`, `liveness.go` |
-| `Pool.tla` | `Pool`: Min, Max, `Open`'s pick and dial, `Drain`, `Close` | `pool.go` |
-| `Join.tla` | `peerlink.Join`'s clean end (`Session.Sync`, hold) | `peerlink/chain.go`, `join.go` |
+| `Pool.tla`, `TracePool.tla` | `Pool`: Min, Max, `Open`'s pick, dial and growth, `Drain`, `Close` | `pool.go`, `trace_pool_on.go` |
+| `Join.tla`, `TraceJoin.tla` | `peerlink.Join`'s clean end (`Session.Sync`, hold, the watch) | `peerlink/chain.go`, `join.go`, `peerlink/trace_on.go` |
 
 ## Action map (lane CONFORM-link)
 
@@ -390,10 +390,10 @@ no longer writes.
 | `Conn.lastPing` (the drain barrier's order) | `Conn.pingTime` | `Ping` |
 | `Conn.closing` (`wshut`) | `Conn.closeFlushed` | `Leave` |
 | `Conn.rxAt` (`Liveness.tla` `rx`) | `Conn.read` | `Liveness.tla` `Recv` |
-| `Pool.dials` (`dials`) | `Pool.pick`, `Pool.reserve`, `Pool.maintain`, `Pool.dial` | `Pick` (room), `DrainStart`/`DrainDial` (reserve), `MaintainCheck`, `DialUp`/`DialFails`; `pick`'s background growth (`growBG`) is unmodelled (M5) |
+| `Pool.dials` (`dials`) | `Pool.pick`, `Pool.maintain`, `Pool.dial`, `Pool.Drain` | `Pick` (room; growth: `gr`), `MaintainCheck`, `DialUp`/`DialFails`, `DrainStart` (the first replacement, under the snapshot's lock: C6) and `DrainDial` (`dial`'s `next`: the next one as this one ends) |
 | `Pool.conns` (`cs`) | `Pool.dial` | `DialUp`; its Serve goroutine's removal is `Remove` |
 | `Pool.changed` (`mtw`, `opw`) | `Pool.changedLocked` | `Changed` in `DialUp`, `DialFails`, `PeerGoAway`, `DrainGoAway`, `Remove` |
-| `Pool.growing` | `Pool.pick`, `Pool.grow` | unmodelled (M5: background growth) |
+| `Pool.growing` (`gr`) | `Pool.pick`, `Pool.grow` | `Pick`'s growth branch, `GrowDial` (M5) |
 | `Pool.refused` | `Pool.dial` | unmodelled (L4: maintain's refused backoff, a delay only) |
 
 **`LinkSession.tla`** has no actions of its own: its `Next` is a
@@ -423,17 +423,22 @@ answered (`Conn.control`) changes no variable of the model.
 | `DialUp(c)`, `DialFails` | `Pool.dial`'s end under `p.mu`: `dials--`, `changedLocked`, the connection added (closed when `p.ctx` ended) or the error |
 | `OpenStart`, `Pick`, `Place`, `OpenDial`, `OpenWake` | `Pool.Open`'s loop: `pick` (best, room, `p.changed` read under `p.mu`), `Mux.OpenChain` (`ErrGoAway`, `ErrFull`, `net.ErrClosed`: pick again), `dial` (Backoff, or its error), `waitChange` |
 | `SessionClose` | the application's `Session.Close` (its end on the Mux) |
-| `DrainStart`, `DrainDial`, `DrainGoAway` | `Pool.Drain`: the snapshot and count, `reserve` + `dial` per replacement (a failure: `goAway(reps)`), `goAway(old)` |
+| `OpenStart`'s growth, `GrowDial` | `pick`'s `growBG` (`PoolConfig.Grow`, room, one at a time: `growing`), `Pool.grow`'s `dial`; `GrowWait`: the Open takes the new connection |
+| `DrainStart`, `DrainDial`, `DrainBack`, `DrainGoAway` | `Pool.Drain`: the snapshot, count and first reservation under one `p.mu`, `dial(ctx, next)` per replacement, a failure's `goAway(reps)`, `goAway(old)` |
 | `CloseStart`, `CloseEnd`, `CloseSnap` | `Pool.Close`: `p.cancel`, the snapshot, `Mux.closeIdle` on each |
 | `PeerGoAway(c)` | the peer's GOAWAY: `Conn.recv`, then `dial`'s watcher goroutine closes `p.changed` |
-| `PathDies(c)`, `CloseConn(c)` | the environment; the connection's end (`Liveness.tla`'s verdict, or `Mux.leave` once drained) |
+| `PathDies(c)`, `CloseConn(c)` | the environment; the connection's end (`Liveness.tla`'s verdict, `Mux.leave` once drained, or `Drain`'s ctx deadline closing it: a path death to the model, L2) |
 | `Remove(c)` | `dial`'s Serve goroutine once `Mux.Serve` returned: removed from `p.conns`, `changedLocked` |
-| `MaintainReserve`, `OpenTakeLate` | mutants only |
+| `MaintainReserve`, `OpenTakeLate`, `DrainReserve` | mutants only |
 
-Unmapped code (open, "Review r2" M5, L2, L4, L7): `pick`'s background
-growth (`growBG`, `grow`, `GrowWait`), `Drain`'s ctx deadline (it closes
-the old connections), `maintain`'s sleep after refused connections
-(`refused`), and sessions the peer opens on a Pool's connection (`Accept`).
+Unmapped code, each decided ("Review r2" L4, L7): `maintain`'s sleep
+after refused connections (`refused`: a delay, no state; untimed here,
+`TestPoolBacksOffRefusingPeer` guards it) and sessions the peer opens on a
+Pool's connection (`Accept`: they count in `takes`; `TestPoolAccept` is
+traced, a pick they changed would be rejected). The recorder
+(`trace_pool_on.go`, M6) logs each step above but the wakes, with the
+Pool's view of its sessions' and connections' ends (`End`, `PeerGoAway`,
+`Down`).
 
 **`Join.tla`** (`peerlink/chain.go`'s joint of a plain conn and a link
 session):
@@ -466,9 +471,10 @@ layer above may assume, and each divergence decided.
 **1. Action map**: "Action map" above, for every model;
 `TestSpecTraceEventsMapped` and `TestSpecWritesMapped` (`spec_map_test.go`)
 fail when a recorder hook point goes or a modelled field gains a writer
-the table does not list. Unmapped, found by the map: `Pool`'s growth,
-Drain's deadline, refused backoff and peer-opened sessions (open: M5, L2,
-L4, L7); `Session.Abort`'s drop (LinkSession 4, low, open).
+the table does not list. Unmapped, found by the map: `Pool`'s growth (now
+modelled, M5), Drain's deadline, refused backoff and peer-opened sessions
+(decided: L2, L4, L7); `Session.Abort`'s drop (LinkSession 4, decided:
+the interface allows a drop or a cut, `Link.tla` models the cut).
 
 **2. Traces** (`make spec-traces`): the session tests named in
 `scripts/spec.sh` (now with the refusals: `TestChainRefuse`,
@@ -485,7 +491,13 @@ peer's and the network's (`CWrite`, `CFin`, `ARecv`, `AFin`, `Crash`) are
 TLC's to find between them. Fixtures (`make spec-mutants`): `join-ok`
 accepted; `join-fin-during-sync` (the peer's FIN passed on while the sync
 waits: `no-hold`), `join-finish-before-synced` (`no-sync`),
-`join-lost-twice` and `join-unknown-step` rejected.
+`join-lost-twice` and `join-unknown-step` rejected. The Pool's recorder
+(`trace_pool_on.go`, M6) logs every Pool test's steps (`TracePool.tla`;
+the run prints each event's count and each pick's outcome: place, dial,
+full, wait, grow, closed all taken); fixtures `pool-ok` accepted,
+`pool-past-max` (a dial past Max), `pool-on-leaving` (a pick of a
+connection going away), `pool-closed-pick` (a session placed after Close)
+and `pool-unknown-step` rejected.
 
 **3. Model-based tests.** `scripts/spec.sh behaviours` has TLC walk the
 models at random (`-simulate`, seeded) and write each walk, one state per
@@ -528,7 +540,7 @@ ended cleanly at one side had its tail read by the peer; a layer that
 needs that syncs (`Session.Sync`) or waits for the peer's answer.
 `Session.Sync`'s own guarantee (its pong answers every frame before its
 ping) is assumed by `Join.tla` and guarded by `TestJoin*`, not yet a
-property of `Link.tla` (LinkSession 3, Join 7: open).
+property of `Link.tla` (LinkSession 3, Join 7: decided, argued below).
 
 **5. Divergences found by this pass**
 
@@ -539,6 +551,9 @@ property of `Link.tla` (LinkSession 3, Join 7: open).
 | C3 | `TestCreditFollowsTheModel`: the model's accepter sends its ACCEPT after its own Abort forgot the credit, where `answering` reports false | neither: `sendAccept` ignores `answering` (the ACCEPT goes, as in the model; the peer then reads the ABORT) | **refuted** (the replay's expectation corrected) |
 | C4 | the recorder: a `Close` racing a `Write`'s buffer is logged after `ConnClose` (LINKREVIEW) | the recorder, not the code: such a test closes mid-write | **decided**: the traced tests end their sessions before the connection; a step after `ConnClose` stays a rejection (it found C1), so a test that closes mid-write is not traced |
 | C5 | LinkSession 5: data after the peer's FIN flagged by the model, dropped by the code | neither (decided in r2) | **decided**, unchanged: the model's flag catches `write-race`/`turns-no-recheck`, which this side never sends |
+| C6 | `TracePool.tla`, splitting `Drain`'s reservation as the code made it: `Drain` took its snapshot under `p.mu` and reserved its first replacement under a second; a connection that ended in between was replaced by maintain too, and the Pool stayed past Max after Drain | the code | **fixed**: the first reservation under the snapshot's lock, the next ones as the previous dial ends (`dial`'s `next`); mutant `drain-reserve-late` (`MaxHolds`), `TestPoolDrainReservesWithItsSnapshot` (failed before: 2 connections, Max 1) |
+| C7 | `TracePool.tla`: a failed replacement's `goAway(reps)` is a second step after the dial's end, with its own wake; the model did both at once | the model, coarser than the code | **fixed in the spec**: `DrainBack`; `MaxHolds` exempts it (the Pool is past Max until the GOAWAYs: as during the dials) |
+| C8 | `TracePool.tla`: `Pool.Close` cancelled `p.ctx` before taking `p.mu`; a pick in between returned `net.ErrClosed` before Close's snapshot | neither: a pick then fails as after Close | **decided**, the code tightened for the recorder: `p.cancel` under `p.mu`, so a pick or dial sees the Pool open or closed with Close's snapshot (`CloseStart`) |
 
 ## Environment assumptions (lane W5-LINK)
 
@@ -608,8 +623,8 @@ requires TLC to catch.
 | Join 1: the peer's FIN during the sync ended the session whole and reached the client outside the hold | high | **fixed** (`done-skips-hold`, `TestJoinPeerFinDuringSyncIsHeld`; "Join's clean end") |
 | LinkSession 1: the peer's FIN applied between `CloseWrite`'s `halfClosed` and its CLOSE dropped the session; a leaving connection then shut its write side before the CLOSE, and the peer read a graceful end as lost | medium | **fixed**: `CloseWriteMark`/`CloseWriteSend`, the drop on `finSent` (Dekker with `peerHalf`); invariant `FinBeforeShut` (`LinkDrain.cfg`), mutant `drop-on-mark`, witness `WitnessFinRace`; `TestCloseWriteRacingThePeersFINDropsAfterItsCLOSE` |
 | LinkSession 2: a `Refuse` racing a `Write` sent data before any answer; the opener ended the whole connection (`ErrFrame`) | medium | **fixed**: `sendData` sends only on credit `sendable` (an ACCEPT went for a session the peer opened); `RefuseMark` and `Refusing` in `Link.tla`, `LinkRefuse.cfg` (invariants, liveness and `Refines` in CI, seconds), mutant `refuse-then-write`, witness `WitnessRefusing`; `TestWriteAfterRefuseSendsNoData` |
-| LinkSession 3: the interface states no answer, no Sync guarantee, no liveness | medium | **open**: design work (`GAnswers`, `GSync` with a `Sync` action and waiter in `Link.tla`, weak fairness in the interface, `Join.tla` over the interface); until then `Join.tla` states Sync's guarantee as its assumption and `TestJoin*` guard it |
-| LinkSession 4: an application's `Abort` modelled as `Mux.cut`'s (kept open) | low | **partly fixed**: a refusal now drops (`End`); `Session.Abort`'s drop stays unmodelled (open, low: the interface allows both) |
+| LinkSession 3: the interface states no answer, no Sync guarantee, no liveness | medium | **decided** (lane CONFORM-link): liveness is `SessionsEnd`/`ConnEnds`/`DrainEnds` and the answer is `Link.tla`'s (`RefuseMark`, `Accept`, traced); Sync's guarantee (its pong answers every frame sent before its ping) follows from what `Link.tla` checks, frames in order on one connection (`GWrites`, `Conservation`) and a pong sent only after the ping is read, and holds with a pong replaced by a later one, since pings carry strictly growing times and `Sync` takes any pong at or past its own. It stays `Join.tla`'s assumption; `TraceJoin.tla` checks the joint takes `Synced` only from a pong. A `Sync` action in `Link.tla` would add ping identities to its largest state space for this argument |
+| LinkSession 4: an application's `Abort` modelled as `Mux.cut`'s (kept open) | low | **decided** (lane CONFORM-link): a refusal drops (`End`); `Session.Abort`'s drop of an accepted session is the interface's either-or (drop or cut, `GEnds`), and `Link.tla` checks the cut, the one with more steps after it |
 | LinkSession 5: data after the peer's FIN is a protocol error in the model, dropped (and its charge kept) in the code | low | **decided**: keep both. The model's flag is how `write-race` and `turns-no-recheck` are caught (this side never sends it); the code tolerates a faulty or older peer (link before the F1 fix could send it in a race) rather than end every session on the connection; the charge it keeps is on a session whose reads have ended |
 | LinkSession 6: `GReads` allowed bytes at a side whose session is `none` | low | **fixed**: `GReads` requires the session not `none` |
 | LinkSession 7: configurations miss a listener-opened session, crossed opens, data both ways | low | **done** (lane CONFORM-link): `LinkBoth.cfg` (a session of each side opened at once, a byte each way on each, a FIN each way; invariants and `Refines`) in `make spec-nightly` |
@@ -619,14 +634,20 @@ requires TLC to catch.
 | Join 4: no trace recorder for the joint | medium | **done** (lane CONFORM-link): `peerlink/trace_on.go`, `TraceJoin.tla`, in `make spec-traces`; fixtures in `make spec-mutants` |
 | Join 5: steps the code takes that `Join.tla` does not model | low | **done**: listed in "Action map" (Forward's answer wait, a write deadline, the peer's whole close: outside the model on purpose); the traced `TestJoin*` take none |
 | Join 6: a peer's whole close during the client's tail ends the client cleanly | low | **decided**: as WIRE.md section 5 says, a whole close (code 0) is "neither sends nor reads more": bytes after it are dropped by the peer's choice, not lost; `NoSilentLoss` is stated for a peer that reads to the FIN |
-| Join 7: Sync's guarantee assumed, not tied to `Link.tla` | low | **open** with LinkSession 3 |
+| Join 7: Sync's guarantee assumed, not tied to `Link.tla` | low | **decided** with LinkSession 3 |
 | LINKREVIEW: one frame slower than Interval + Timeout read as a dead peer | low | **fixed** (`Conn.read`, `TestSlowFrameIsNoDeadPeer`; "The Pool and liveness") |
 | LINKREVIEW: a `Mux` takes a peer's open of an id of its own parity | low | **decided and fixed**: a `Conn` peer picks its own ids (WIRE.md section 5), so the `Mux` keeps taking them and `Open` skips an id the peer took instead of failing (`TestMuxOpenSkipsAnIDThePeerTook`, failed before: `session id in use`) |
 | LINKREVIEW: the model's OPEN waits for no pending close, stricter than the code's ticket order | low | **decided**: a sound reduction. The code's OPEN may check while a close waits its turn, but that close's ticket is earlier, its credit is already forgotten (the count the check reads is the same) and it goes out first: the same frames in the same order. A trace with `OpenWait` between a `Forget` and its `Close` would be rejected (a false alarm, never a missed bug); no test logs one |
 | LINKREVIEW: the recorder logs steps the model lacks when a test closes mid-write | low | **decided** (lane CONFORM-link, C4): such tests are not traced; a step after `ConnClose` stays a rejection |
 | LINKPOOL L1: two Drains at once replace the same connections twice | low | **decided**: one at a time; `Pool.Drain`'s doc says so (a second Drain while one runs holds both sets of replacements beside the old ones) |
 | LINKPOOL L5: `Pool.cfg` is the smallest shape only | low | **done**: `PoolWide.cfg` (two Opens racing for the last of Max 2, Min 1) in `make spec-nightly`. It found that `OpensOpen` does not hold with two Opens: one that closes and opens again can take the room the other picked each time, and the other re-picks forever. **Decided**: the Pool promises progress, not fairness among Opens (`OpensProgress`); a queue of Opens is the fix if a starved Open is ever seen |
-| LINKPOOL M5, M6, L2, L3 (see L5), L4, L6, L7: growth, the Pool's trace recorder, Drain's deadline cut, Open's re-pick spin, refused backoff, slot sizing, peer-opened sessions | medium/low | **open**: Pool.tla has none of these steps; the recorder (M6) needs them first |
+| LINKPOOL M5: background growth not modelled | medium | **done** (lane CONFORM-link): `gr`, `Pick`'s growth, `GrowDial`; `PoolGrow.cfg` in `make spec`, mutant `grow-past-max` |
+| LINKPOOL M6: no trace recorder for the Pool | medium | **done** (lane CONFORM-link): `trace_pool_on.go`, `TracePool.tla`, the Pool tests in `make spec-traces`, fixtures `pool-*` in `make spec-mutants`; it found C6 |
+| LINKPOOL L2: Drain's wait and deadline cut | low | **decided**: the cut is a connection's end with its sessions, which the model has (a path death); Drain's return is bounded by its ctx, no property needed |
+| LINKPOOL L3: Open re-picks at once while `takes` and the Conn disagree | low | **decided**: a short spin, not a hang (the Conn agrees once the dropped session's CLOSE is buffered); `Place`'s retry is fair and `OpensProgress` holds |
+| LINKPOOL L4: refused backoff not modelled | low | **decided**: a delay without state; `TestPoolBacksOffRefusingPeer` |
+| LINKPOOL L6: slot shortage turns a dial into a wait the code never does | low | **decided**: a model artifact of a finite `Ids`; the trace check sizes slots from the trace, one spare, so no traced dial waits on it |
+| LINKPOOL L7: peer-opened sessions not modelled | low | **decided**: outside the model; `TestPoolAccept` traced |
 | LINKIFACE: a small crash config in CI | | **done** before this lane (`LinkCrash.cfg`, lane SPECTRIM) |
 | LOADTESTS: nfltr's `TestRelayDrain` saw `connection lost` instead of the drain deadline's ABORT | | **decided**: link's guarantee is the interface's: a session cut at the drain deadline ends `reset` (the ABORT read) or `lost` (the connection's end) (`GEnds`). `Mux.cut` writes the ABORTs, half-closes and closes within 2 s: a deadline must end, and a peer too starved to read for 2 s reads the end of the connection instead. The test (nfltr) should accept `lost` past the drain's deadline; no link change |
 
@@ -843,9 +864,12 @@ racing `maintain`, three connection slots, two environment events; about
   violated by TLC (`make spec-mutants`): `WitnessOpen`, `WitnessWait`,
   `WitnessReplaced`, `WitnessPastMax`, `WitnessClosed`. `-coverage 1` on
   `Pool.cfg`: every action taken but the mutants' own (`MaintainReserve`,
-  `OpenTakeLate`). Not modelled yet (review r2): background growth (M5),
-  concurrent Drains (L1), Drain's deadline cut (L2), the refused backoff
-  (L4), sessions the peer opens (L7).
+  `OpenTakeLate`, `DrainReserve`) and `GrowDial` (Max 1: no room to
+  grow). `PoolGrow.cfg` (Min 1, Max 2, in `make spec`): background growth
+  (M5), mutant `grow-past-max` caught by `MaxHolds`. `drain-reserve-late`
+  (C6, the code before) caught by `MaxHolds` on `Pool.cfg`. Decided, not
+  modelled: concurrent Drains (L1), the refused backoff (L4), sessions the
+  peer opens (L7).
 
 **`Liveness.tla`** (`Conn.keepAlive`) in discrete time: the last frame
 received (`rxAt`), the ping waiting for an answer (`pingAt`), the one

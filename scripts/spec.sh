@@ -105,6 +105,30 @@ CFG
 	[ $jst != 0 ] && grep -q '^Error: Invariant TraceUnfinished is violated' "$cfg.out"
 }
 
+# ptrace FILE: TLC on one Pool's recorded trace (spec/TracePool.tla); it
+# fails unless TLC reaches the trace's end (TraceUnfinished violated).
+ptrace() {
+	cfg=$work/$(basename "$1").cfg
+	cat >"$cfg" <<CFG
+CONSTANTS
+    TraceFile = "$1"
+    Ids <- TraceIds
+    Opens <- TraceOpens
+    Min <- TraceMin
+    Max <- TraceMax
+    Cap <- TraceCap
+    MaxEnv <- TraceEnv
+    Mutant = "none"
+INIT TraceInit
+NEXT TraceNext
+INVARIANT TraceUnfinished
+CFG
+	pst=0 # not st: the callers'
+	META=$work/states-$(basename "$1") tlc "$cfg" TracePool.tla -deadlock >"$cfg.out" 2>&1 || pst=$?
+	cat "$cfg.out"
+	[ $pst != 0 ] && grep -q '^Error: Invariant TraceUnfinished is violated' "$cfg.out"
+}
+
 # tlcrun CFG: TLC on MCLink.tla with CFG, which must pass.
 tlcrun() {
 	st=0
@@ -129,6 +153,10 @@ nightly)
 	tlc PoolWide.cfg Pool.tla >"$work/check.out" 2>&1 || st=$?
 	grep -E '^[0-9]+ states generated|Finished in|Error|violated' "$work/check.out" || true
 	[ $st = 0 ] || { tail -60 "$work/check.out"; exit $st; }
+	# Sessions of both sides at once, data both ways (review r2 LinkSession
+	# 7): 3.6 million states, about 15 minutes on 4 workers.
+	echo "== LinkBoth.cfg (invariants and Refines)"
+	tlcrun LinkBoth.cfg
 	;;
 check | invariants)
 	for cfg in Link.cfg LinkDrain.cfg LinkSess.cfg LinkCrash.cfg LinkRefuse.cfg; do
@@ -148,15 +176,16 @@ check | invariants)
 	done
 	# PoolDrain (Min 2: a Drain failing halfway) only in full: its
 	# mutant is CI's.
-	pools="Pool Liveness Join"
+	# PoolGrow: background growth (Max above Min).
+	pools="Pool PoolGrow Liveness Join"
 	[ "$1" = invariants ] || pools="$pools PoolDrain"
 	for m in $pools; do
 		echo "== $m.cfg"
 		st=0
 		# Liveness explores a horizon of ticks, Join one session: their last
 		# states end there; PoolDrain has no Open to keep it going.
-		dl=; [ $m = Pool ] || dl=-deadlock
-		mod=$m.tla; [ $m != PoolDrain ] || mod=Pool.tla
+		dl=; [ $m = Pool ] || [ $m = PoolGrow ] || dl=-deadlock
+		mod=$m.tla; case $m in Pool*) mod=Pool.tla ;; esac
 		tlc "$m.cfg" "$mod" $dl >"$work/check.out" 2>&1 || st=$?
 		grep -E '^[0-9]+ states generated|depth of|Finished in|Error|violated' "$work/check.out" || true
 		[ $st = 0 ] || exit $st
@@ -266,6 +295,23 @@ mutants)
 			;;
 		esac
 	}
+	# poolfixture FILE: a Pool's trace with a bug put in (spec/traces/pool-*):
+	# TracePool.tla must accept pool-ok and reject each other one.
+	poolfixture() {
+		st=0
+		TLC_WORKERS=1 ptrace "$PWD/$1" >"$jw/m.out" 2>&1 || st=$?
+		case $(basename "$1"):$st in
+		pool-ok.*:0) echo "$(basename "$1"): accepted, as expected" ;;
+		pool-ok.*:*) echo "$(basename "$1"): rejected"; tail -10 "$jw/m.out"; return 1 ;;
+		*:0) echo "$(basename "$1"): accepted (a bug the trace check misses)"; return 1 ;;
+		*)
+			if grep -q 'Error: TLC threw\|Error: Parsing' "$jw/m.out"; then
+				echo "$(basename "$1"): TLC failed:"; tail -10 "$jw/m.out"; return 1
+			fi
+			echo "$(basename "$1"): rejected, as expected"
+			;;
+		esac
+	}
 	# job CHECK ARGS: CHECK in the background, SPEC_JOBS at once.
 	n=0
 	job() {
@@ -303,6 +349,8 @@ mutants)
 		job mutant Pool.cfg 'Mutant = "none"' "Mutant = \"$m\"" Pool.tla
 	done
 	job mutant PoolDrain.cfg 'Mutant = "none"' 'Mutant = "drain-fail-keeps"' Pool.tla
+	job mutant Pool.cfg 'Mutant = "none"' 'Mutant = "drain-reserve-late"' Pool.tla
+	job mutant PoolGrow.cfg 'Mutant = "none"' 'Mutant = "grow-past-max"' Pool.tla
 	for w in WitnessOpen WitnessWait WitnessReplaced WitnessPastMax WitnessClosed WitnessBesideLeaving WitnessAtMax; do job witness Pool.cfg $w Pool.tla; done
 	for m in rearm-timeout deadline-from-rx reader-writes; do
 		job mutant Liveness.cfg 'Mutant = "none"' "Mutant = \"$m\"" Liveness.tla
@@ -316,6 +364,7 @@ mutants)
 	for f in spec/traces/*.ndjson.live; do job livetrace "$f"; done
 	for f in spec/traces/link-*.ndjson; do job linkfixture "$f"; done
 	for f in spec/traces/join-*.ndjson; do job joinfixture "$f"; done
+	for f in spec/traces/pool-*.ndjson; do job poolfixture "$f"; done
 	wait
 	fail=0
 	i=0
@@ -349,6 +398,7 @@ traces)
 		exit 1
 	}
 	for t in "$work"/ptraces/*; do
+		[ -e "$t" ] || continue
 		case $(basename "$t") in
 		join-*) ;;
 		*) mv "$t" "$work/traces/peerlink-$(basename "$t")" ;;
@@ -366,6 +416,31 @@ traces)
 	done
 	cat "$work"/ptraces/join-*.ndjson >"$work/jall" 2>/dev/null || :
 	for e in Copy CloseWrite Fin Synced Finish Lost; do printf 'join %s %s; ' "$e" "$(grep -c "\"ev\":\"$e\"" "$work/jall" || true)"; done
+	echo
+	# The Pool's steps (spec/TracePool.tla), one test at a time: a test's
+	# Pools are numbered from 1 in its own directory.
+	for t in ${TRACE_POOL_TESTS-TestPoolOpenPassesABrokenConnection TestPoolMinReplacesAConnectionGoingAway TestPoolDrainStaysWithinMax TestPoolOpenFailsWithTheDialErrorWhileMaintainDials TestPoolMinRedialsAfterAnOpensDialFails TestPoolDrainReplacesAFullConnectionFirst TestPoolDrainFailingHalfwayStaysWithinMax TestPoolDrainReservesWithItsSnapshot TestPoolOpenFullAndClosed TestPool TestPoolAccept TestPoolMin ExampleNewPool}; do
+		d=$work/pool-$t
+		mkdir -p "$d"
+		LINKTRACE=$d go test -tags linktrace -count=1 -run "^$t\$" . >"$work/test.out" 2>&1 || {
+			cat "$work/test.out"
+			exit 1
+		}
+		for f in "$d"/pool-*.ndjson; do
+			[ -e "$f" ] || continue
+			if TLC_WORKERS=1 ptrace "$f" >"$f.out" 2>&1; then
+				echo "pool $t $(basename "$f"): $(wc -l <"$f" | tr -d ' ') lines: accepted"
+			else
+				echo "pool $t $(basename "$f"): REJECTED"
+				grep -E -B2 -A6 'unknown|Error' "$f.out" | head -12
+				exit 1
+			fi
+		done
+	done
+	cat "$work"/pool-*/pool-*.ndjson >"$work/pall" 2>/dev/null || :
+	for e in Start Pick Place End MaintainWait MaintainDial Dial PeerGoAway Down Remove DrainStart GoAway CloseStart CloseEnd; do printf 'pool %s %s; ' "$e" "$(grep -c "\"ev\":\"$e\"" "$work/pall" || true)"; done
+	echo
+	for k in place dial full wait grow closed; do printf 'pick %s %s; ' "$k" "$(grep -c "\"ev\":\"Pick\".*\"t\":\"$k\"\|\"t\":\"$k\".*\"ev\":\"Pick\"" "$work/pall" || true)"; done
 	echo
 	# keepAlive's steps (<trace>.ndjson.live), each side's.
 	for t in "$work"/traces/*.ndjson.live; do
