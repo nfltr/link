@@ -221,3 +221,56 @@ func TestJoinPeerFinDuringSyncIsHeld(t *testing.T) {
 	_ = rn.Close()
 	<-joinErr
 }
+
+// TestJoinLostWhileTheClientIsIdle (review r2 of Join.tla, finding 2): the
+// peer's FIN reached the client, which then sits idle (it neither writes
+// nor closes); the link connection dies. The joint must notice the
+// session's end and reset the client (spec/Join.tla Lost, LostEnds), not
+// wait for the client's next write.
+func TestJoinLostWhileTheClientIsIdle(t *testing.T) {
+	ln, rn := tcpPair(t)
+	ctx := context.Background()
+	srv := make(chan *link.Conn, 1)
+	go func() {
+		c, _, err := link.Server(ctx, ln, link.Config{Auth: link.NoAuth})
+		if err != nil {
+			_ = ln.Close()
+			srv <- nil
+			return
+		}
+		srv <- c
+		_ = link.NewMux(c).Serve(func(_ []byte, s *link.Session) {
+			_ = s.CloseWrite() // the agent's target half-closes
+			_, _ = io.Copy(io.Discard, s)
+		})
+	}()
+	rc, err := link.Client(ctx, rn, link.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := <-srv; c == nil {
+		t.Fatal("server handshake failed")
+	}
+	rm := link.NewMux(rc)
+	go func() { _ = rm.Serve(nil) }()
+	s, err := rm.Open([]byte("h"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, relay := tcpPair(t)
+	joinErr := make(chan error, 1)
+	go func() { joinErr <- peerlink.Join(relay, s) }()
+	_ = client.SetReadDeadline(time.Now().Add(10 * time.Second))
+	if b, err := io.ReadAll(client); err != nil || len(b) != 0 {
+		t.Fatalf("client read %q, %v; want EOF", b, err)
+	}
+	_ = ln.Close() // the connection dies; the client stays idle
+	select {
+	case err := <-joinErr:
+		if err == nil {
+			t.Fatal("Join ended the client cleanly after its connection died")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Join did not end the idle client after its link connection died")
+	}
+}
