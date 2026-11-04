@@ -39,9 +39,9 @@ type traceConn struct {
 // microseconds since the Conn's t0):
 //
 //	Live  n: Interval, credit: Timeout
-//	Fire  n: now, credit: rxAt, held: pingAt (-1: none), as the timer fired
+//	Fire  n: now, credit: rxAt, held: pingAt (-1: none), look: looked (0 or 1), as the timer fired
 //	Dead  keepAlive ends the connection (ErrDeadPeer)
-func traceLive(c *Conn, ev string, now, rx, pingAt time.Duration) {
+func traceLive(c *Conn, ev string, now, rx, pingAt time.Duration, looked bool) {
 	if t := c.credit.tr; t != nil {
 		us := func(d time.Duration) int { return int(d / time.Microsecond) }
 		if ev == "Live" {
@@ -51,7 +51,11 @@ func traceLive(c *Conn, ev string, now, rx, pingAt time.Duration) {
 		if pingAt >= 0 {
 			held = us(pingAt)
 		}
-		traceWrite(t.path+".live", map[string]any{"ev": ev, "side": t.side, "n": us(now), "credit": us(rx), "held": held})
+		look := 0
+		if looked {
+			look = 1
+		}
+		traceWrite(t.path+".live", map[string]any{"ev": ev, "side": t.side, "n": us(now), "credit": us(rx), "held": held, "look": look})
 	}
 }
 

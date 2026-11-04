@@ -29,3 +29,13 @@ func Peers(n *Node) int {
 	defer n.mu.Unlock()
 	return len(n.dialled)
 }
+
+// SetWatchTickHook makes f run in each connection's liveness check as a
+// tick came, with the connection's peer; nil removes it.
+func SetWatchTickHook(f func(peer string)) {
+	if f == nil {
+		testHookWatchTick.Store(nil)
+		return
+	}
+	testHookWatchTick.Store(&f)
+}

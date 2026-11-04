@@ -1,0 +1,15 @@
+{"a":"Init","now":0,"rx":0,"pingAt":-1,"looked":false,"timer":2,"dead":false}
+{"a":"Tick","now":1,"rx":0,"pingAt":-1,"looked":false,"timer":2,"dead":false}
+{"a":"Sleep","now":1,"rx":0,"pingAt":-1,"looked":false,"timer":2,"dead":false}
+{"a":"Wake","now":1,"rx":0,"pingAt":-1,"looked":false,"timer":2,"dead":false}
+{"a":"Sleep","now":1,"rx":0,"pingAt":-1,"looked":false,"timer":2,"dead":false}
+{"a":"Die","now":1,"rx":0,"pingAt":-1,"looked":false,"timer":2,"dead":false}
+{"a":"Wake","now":1,"rx":0,"pingAt":-1,"looked":false,"timer":2,"dead":false}
+{"a":"Tick","now":2,"rx":0,"pingAt":-1,"looked":false,"timer":2,"dead":false}
+{"a":"Tick","now":3,"rx":0,"pingAt":-1,"looked":false,"timer":2,"dead":false}
+{"a":"Fire","now":3,"rx":0,"pingAt":3,"looked":false,"timer":5,"dead":false}
+{"a":"Tick","now":4,"rx":0,"pingAt":3,"looked":false,"timer":5,"dead":false}
+{"a":"Tick","now":5,"rx":0,"pingAt":3,"looked":false,"timer":5,"dead":false}
+{"a":"Tick","now":6,"rx":0,"pingAt":3,"looked":false,"timer":5,"dead":false}
+{"a":"Fire","now":6,"rx":0,"pingAt":3,"looked":true,"timer":7,"dead":false}
+{"a":"Tick","now":7,"rx":0,"pingAt":3,"looked":true,"timer":7,"dead":false}

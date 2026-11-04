@@ -32,13 +32,16 @@
 // Handshakes are 1-RTT: 0-RTT is off (its data can be replayed).
 //
 // Liveness comes from a link.Liveness: QUIC keep-alive (a PING) Interval
-// after the last packet received, and QUIC's idle timeout of Timeout,
-// which runs from the first packet sent after the last one received (at
-// most Interval later): a silent peer is dead within Interval + Timeout of
-// its last packet. QUIC's idle timeout is never under three probe timeouts
-// of the path (on a 150 ms path about 1 s, below every preset); its
-// keep-alive never more often than 1.5 of them. DeadAfter states the
-// bound.
+// after the last packet received, and a check of quiclink's own that
+// closes a connection that received no packet for Interval + Timeout/2
+// (conn.watch): a silent peer is dead within Interval + Timeout of its
+// last packet. Silence counts only while the process runs: after a gap in
+// which the check itself did not run (a starved process), its packets
+// waiting in the socket are read before it judges (link's spec/README.md
+// "Starvation"). QUIC's own idle timeout, which judges by the clock alone,
+// is a backstop of 4 x (Interval + Timeout); against a peer that
+// advertises less, QUIC takes the peer's. QUIC's keep-alive is never more
+// often than 1.5 probe timeouts of the path. DeadAfter states the bound.
 //
 // The reverse direction (peerlink's contract): a Node without Config.Dial
 // opens its sessions on the connections its peers dialled in, and a Node
@@ -180,7 +183,7 @@ func New(cfg Config) (*Node, error) {
 	window := uint64(max(cmpOr(cfg.Window, link.DefaultWindow), 1)) // #nosec G115 -- at least 1
 	n.qc = &quic.Config{
 		HandshakeIdleTimeout:           l.Interval + l.Timeout,
-		MaxIdleTimeout:                 l.Timeout, // from the first packet sent after the last received: within Interval of it
+		MaxIdleTimeout:                 idleBackstop * (l.Interval + l.Timeout), // watch judges; this is its backstop
 		KeepAlivePeriod:                l.Interval,
 		InitialStreamReceiveWindow:     window,
 		MaxStreamReceiveWindow:         window,
@@ -194,6 +197,11 @@ func New(cfg Config) (*Node, error) {
 	}
 	return n, nil
 }
+
+// idleBackstop times Interval + Timeout is QUIC's idle timeout: past any
+// verdict of watch, which judges only silence it saw while running (QUIC's
+// idle timer took a starved process's waiting packets for silence).
+const idleBackstop = 4
 
 func cmpOr(v, def int) int {
 	if v == 0 {
@@ -271,19 +279,33 @@ func (c *conn) end() {
 // Sampling every Timeout/4 and closing after Interval + Timeout/2 without
 // a packet keeps the bound (Interval + Timeout) while a live peer's
 // keep-alives (every Interval) arrive within a round trip under Timeout/2.
+//
+// A tick more than 1.25 periods after the one before came to a process
+// that did not run meanwhile: quic-go has not read the packets waiting in
+// the socket yet, so that gap is not silence seen (seen moves on by it) and
+// the next tick judges (link's spec/README.md "Starvation").
 func (c *conn) watch() {
 	l := c.n.liveness()
 	g, quiet := l.Timeout/4, l.Interval+l.Timeout/2
 	tk := time.NewTicker(g)
 	defer tk.Stop()
 	last, seen := c.q.ConnectionStats().PacketsReceived, time.Now()
+	prev := seen
 	for {
 		select {
 		case <-c.q.Context().Done():
 			return
-		case now := <-tk.C:
+		case <-tk.C:
+			if h := testHookWatchTick.Load(); h != nil {
+				(*h)(c.peer)
+			}
+			now := time.Now()
+			gap := now.Sub(prev)
+			prev = now
 			if n := c.q.ConnectionStats().PacketsReceived; n != last {
 				last, seen = n, now
+			} else if gap > g+g/4 {
+				seen = seen.Add(gap)
 			} else if now.Sub(seen) >= quiet {
 				_ = c.q.CloseWithError(CodeDeadPeer, "dead peer")
 				return
@@ -291,6 +313,10 @@ func (c *conn) watch() {
 		}
 	}
 }
+
+// testHookWatchTick, set by a test, runs in watch as a tick came, before
+// it reads the clock, with the connection's peer.
+var testHookWatchTick atomic.Pointer[func(peer string)]
 
 // waitIdle waits until c has no session of this Node's, or ctx ends.
 func (c *conn) waitIdle(ctx context.Context) bool {

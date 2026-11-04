@@ -8,6 +8,18 @@ version 2 unless an entry says otherwise.
 
 ## Unreleased
 
+- A process that did not run for longer than its liveness Timeout (a
+  starved or stopped process) no longer takes a live peer for dead:
+  `keepAlive` declares the peer dead only at a fire after a look (an
+  earlier fire that also found nothing read since the ping), so the
+  receive loop reads what waited in the socket first (finding S1,
+  `spec/Liveness.tla` `LivenessStarve.cfg`, mutants `verdict-unlooked`
+  and `look-no-gap`, `TestStarvedProcessKeepsALivePeer`). Detection on
+  a running process is unchanged for every preset. quiclink: its
+  liveness check does not count a gap in which it did not run as
+  silence, and QUIC's own idle timeout is a backstop of 4 x (Interval +
+  Timeout) instead of Timeout (it judged by the clock alone). The trace
+  recorder logs `looked` with each `Fire`.
 - A Session's data frame is checked against its credit just before it
   is buffered, also when it did not wait: a frame whose check passed
   before the receive loop read the peer's refusal or reset is no longer

@@ -472,6 +472,10 @@ var errSIDInUse = errors.New("link: session id in use")
 // session's credit is forgotten.
 var testHookAbortForgot func()
 
+// testHookLiveFire, set by a test, runs in keepAlive as its timer fired,
+// before it reads the clock, with the ping waiting for its answer.
+var testHookLiveFire atomic.Pointer[func(*Conn, time.Duration)]
+
 // sendAbort buffers an ABORT frame for sid (FeatureChain) and ends its
 // credit, as a reset does.
 func (c *Conn) sendAbort(sid string, a *Abort) error {
@@ -1362,9 +1366,9 @@ func (c *Conn) keepAlive() {
 	iv, to := c.live.Interval, c.live.Timeout
 	t := time.NewTimer(iv)
 	defer t.Stop()
-	pingAt := time.Duration(-1)
+	pingAt, looked := time.Duration(-1), false
 	if traceOn {
-		traceLive(c, "Live", 0, 0, -1)
+		traceLive(c, "Live", 0, 0, -1, false)
 	}
 	for {
 		select {
@@ -1375,15 +1379,18 @@ func (c *Conn) keepAlive() {
 			continue
 		case <-t.C:
 		}
+		if h := testHookLiveFire.Load(); h != nil {
+			(*h)(c, pingAt)
+		}
 		now := time.Since(c.t0)
 		rx := time.Duration(c.rxAt.Load())
 		if traceOn {
-			traceLive(c, "Fire", now, rx, pingAt)
+			traceLive(c, "Fire", now, rx, pingAt, looked)
 		}
-		dead, ping, due, at := liveFire(now, rx, pingAt, iv, to)
+		dead, ping, due, at, look := liveFire(now, rx, pingAt, looked, iv, to, iv/4)
 		if dead {
 			if traceOn {
-				traceLive(c, "Dead", now, rx, pingAt)
+				traceLive(c, "Dead", now, rx, pingAt, looked)
 			}
 			c.fail(ErrDeadPeer)
 			return
@@ -1391,32 +1398,39 @@ func (c *Conn) keepAlive() {
 		if ping {
 			c.ping()
 		}
-		pingAt = at
+		pingAt, looked = at, look
 		t.Reset(due - now)
 	}
 }
 
 // liveFire is one pass of keepAlive's loop once its timer fired at now,
 // the last bytes received at rx, the ping waiting for its answer sent at
-// pingAt (-1: none), all since the Conn's t0 (spec/Liveness.tla FireAt;
+// pingAt (-1: none), looked whether an earlier fire since it found nothing
+// read, all since the Conn's t0 (spec/Liveness.tla FireAt;
 // liveness_mbt_test.go replays the model's steps on it): the peer is dead,
 // or keepAlive pings first (ping), then waits for its timer at due with
-// the ping at at (-1: none).
-func liveFire(now, rx, pingAt, iv, to time.Duration) (dead, ping bool, due, at time.Duration) {
+// the ping at at (-1: none) and look.
+//
+// The verdict needs a look (spec/README.md "Starvation"): a process that
+// did not run for a while has its timer fire before its receive loop read
+// the bytes waiting in the socket, so a fire that finds nothing read is a
+// look first, and the verdict comes at a later fire, gap after the look at
+// the earliest: the receive loop runs meanwhile.
+func liveFire(now, rx, pingAt time.Duration, looked bool, iv, to, gap time.Duration) (dead, ping bool, due, at time.Duration, look bool) {
 	if pingAt >= 0 && rx < pingAt { // nothing since the ping
-		if now-pingAt >= to {
-			return true, false, 0, pingAt
+		if looked && now-pingAt >= to {
+			return true, false, 0, pingAt, true
 		}
-		return false, false, pingAt + to, pingAt
+		return false, false, max(pingAt+to, now+gap), pingAt, true
 	}
 	if rx+iv > now { // idle less than an interval
-		return false, false, rx + iv, -1
+		return false, false, rx + iv, -1, false
 	}
 	// Ping, and look again an interval on (Timeout is at least that): once
 	// the pong came the next ping goes Interval after it, so a peer that
 	// dies right after it is dead Interval + Timeout after its last frame
 	// (not 2 x Timeout).
-	return false, true, now + iv, now
+	return false, true, now + iv, now, false
 }
 
 // control writes a ping or pong at once, from a goroutine of its own when

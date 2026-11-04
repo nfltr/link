@@ -114,11 +114,15 @@ What it costs, and when not to use it:
   accepted one's is `Config.ServedPeer`, else the verified client
   certificate's Subject CommonName (none: the connection is closed).
 - Liveness from a `link.Liveness`: a keep-alive PING `Interval` after the
-  last packet received, QUIC's idle timeout of `Timeout` (from the first
-  packet sent after the last one received), and a check of its own: a
-  connection that received no packet for `Interval + Timeout/2`, sampled
-  every `Timeout/4`, is closed (`CodeDeadPeer`). `DeadAfter` = Interval +
-  Timeout (`LivenessFast`: 4.5 s). The check is needed because QUIC's
+  last packet received and a check of its own: a connection that
+  received no packet for `Interval + Timeout/2`, sampled every
+  `Timeout/4`, is closed (`CodeDeadPeer`). A sample more than 1.25
+  periods after the one before (the process did not run) does not count
+  its gap as silence: the packets waiting in the socket are read first
+  (link's `spec/README.md` "Starvation", `TestStarvedProcessKeepsALivePeer`).
+  QUIC's idle timeout, which judges by the clock alone, is a backstop of
+  4 x (Interval + Timeout); a peer that advertises less gets its own.
+  `DeadAfter` = Interval + Timeout (`LivenessFast`: 4.5 s). The check is needed because QUIC's
   idle timer starts only once a packet is sent: a side that cannot send
   when the path goes silent (writes stalled, congestion window full)
   would time out late by as long as it could not send

@@ -22,6 +22,6 @@ type traceEvent struct {
 	grant           int
 }
 
-func traceUp(*Conn)                                                        {}
-func traceLive(*Conn, string, time.Duration, time.Duration, time.Duration) {}
-func traceEv(traceState, traceEvent)                                       {}
+func traceUp(*Conn)                                                              {}
+func traceLive(*Conn, string, time.Duration, time.Duration, time.Duration, bool) {}
+func traceEv(traceState, traceEvent)                                             {}
