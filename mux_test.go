@@ -332,15 +332,20 @@ func TestWriteDeadline(t *testing.T) {
 	}
 }
 
-// gateConn is a net.Conn whose writes wait while its gate is shut.
+// gateConn is a net.Conn whose writes wait while its gate is shut, and
+// fail once it is broken.
 type gateConn struct {
 	net.Conn
-	mu sync.RWMutex // held for writing while shut
+	mu     sync.RWMutex // held for writing while shut
+	broken atomic.Bool
 }
 
 func (g *gateConn) Write(b []byte) (int, error) {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
+	if g.broken.Load() {
+		return 0, errors.New("gateConn: broken")
+	}
 	return g.Conn.Write(b)
 }
 

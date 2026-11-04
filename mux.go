@@ -194,11 +194,14 @@ func (m *Mux) get(sid string) *Session {
 	return m.sess[sid]
 }
 
-// sendClose sends the frame that closes sid (half: its write side).
-func (m *Mux) sendClose(sid string, half bool) {
-	if m.c.SendClose(sid, half) == nil {
-		_ = m.c.Flush()
+// sendClose sends the frame that closes sid (half: its write side): the
+// error is the frame's or its flush's.
+func (m *Mux) sendClose(sid string, half bool) error {
+	err := m.c.SendClose(sid, half)
+	if err == nil {
+		err = m.c.Flush()
 	}
+	return err
 }
 
 // Serve receives frames until the connection fails, then closes it and
@@ -976,7 +979,12 @@ func (s *Session) writeWait() <-chan struct{} {
 
 // CloseWrite ends the session's write side: the peer reads
 // io.EOF after what was written; this side still reads the peer's bytes.
-// The session ends once both sides closed their write side.
+// The session ends once both sides closed their write side. It returns
+// io.ErrClosedPipe wrapping the connection's end when its CLOSE could not
+// be written (the connection's writes failed or it closed), as Write does
+// for its bytes: the peer then never reads this side's io.EOF. nil says
+// the CLOSE was buffered, not that it arrived (Sync); a session that
+// already ended, or a second CloseWrite, returns nil.
 func (s *Session) CloseWrite() error {
 	if debugOn {
 		debugReleased(s)
@@ -985,13 +993,16 @@ func (s *Session) CloseWrite() error {
 	if s.closed.Load() || s.halfClosed.Swap(true) {
 		return nil
 	}
-	s.m.sendClose(s.id, true)
+	err := s.m.sendClose(s.id, true)
 	// Dekker with the receive of the peer's FIN (peerHalf, then finSent):
 	// one of the two sees both and drops it, after the CLOSE is buffered.
 	s.finSent.Store(true)
 	if s.peerHalf.Load() {
 		s.peerClosed.Store(true) // both halves closed: nothing more to send
 		s.m.drop(s)
+	}
+	if err != nil { // review F9 (lane LINKF7): the code before returned nil
+		return fmt.Errorf("%w: %w", io.ErrClosedPipe, s.m.connErr())
 	}
 	return nil
 }
@@ -1041,7 +1052,7 @@ func (s *Session) Close() error {
 	s.autoAccept()
 	s.once.Do(func() {
 		if !s.peerClosed.Load() {
-			s.m.sendClose(s.id, false) // before drop: a leaving connection closes after it
+			_ = s.m.sendClose(s.id, false) // before drop: a leaving connection closes after it
 		}
 		s.m.drop(s)
 	})

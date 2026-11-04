@@ -13,7 +13,8 @@ import (
 type Session interface {
 	net.Conn
 	// CloseWrite ends this side's writes: the peer reads io.EOF after
-	// them and can still write back.
+	// them and can still write back. An error says the end could not be
+	// sent: the peer never reads that io.EOF.
 	CloseWrite() error
 	// Reset ends the session as failed: the peer reads an error that is
 	// not io.EOF.

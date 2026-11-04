@@ -312,6 +312,25 @@ func TestReceiveLoopReadsWhileARefusalWaits(t *testing.T) {
 	}
 }
 
+// F9 (lane LINKF7, the yamux comparison): CloseWrite reports a FIN it
+// could not write, as Write reports its bytes: the connection's writes
+// failed, so the peer never reads this side's io.EOF. The code before
+// returned nil (Mux.sendClose dropped the error).
+func TestCloseWriteReportsAFailedFIN(t *testing.T) {
+	dm, _, g := gatedMuxPair(t, func(_ []byte, s *Session) { <-s.Done() }, v2cfg, v2cfg)
+	s, err := dm.Open([]byte("fin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.broken.Store(true)
+	if err := s.CloseWrite(); !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("CloseWrite with the connection's writes failing: %v, want io.ErrClosedPipe", err)
+	}
+	if err := s.CloseWrite(); err != nil {
+		t.Fatalf("a second CloseWrite: %v, want nil (the write side is closed)", err)
+	}
+}
+
 // F8: a peer's window update past the peer's window, counting the credit
 // of a Write between its acquire and its frame, is ErrCredit.
 func TestGrantCountsCreditInAWrite(t *testing.T) {
