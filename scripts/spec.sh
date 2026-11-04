@@ -401,6 +401,7 @@ traces)
 		[ -e "$t" ] || continue
 		case $(basename "$t") in
 		join-*) ;;
+		pool-*) mkdir -p "$work/pool-peerlink" && mv "$t" "$work/pool-peerlink/" ;; # TracePool.tla's, below
 		*) mv "$t" "$work/traces/peerlink-$(basename "$t")" ;;
 		esac
 	done
@@ -436,6 +437,16 @@ traces)
 				exit 1
 			fi
 		done
+	done
+	for f in "$work"/pool-peerlink/pool-*.ndjson; do # peerlink's Pools (TestJoin, above)
+		[ -e "$f" ] || continue
+		if TLC_WORKERS=1 ptrace "$f" >"$f.out" 2>&1; then
+			echo "pool peerlink $(basename "$f"): $(wc -l <"$f" | tr -d ' ') lines: accepted"
+		else
+			echo "pool peerlink $(basename "$f"): REJECTED"
+			grep -E -B2 -A6 'unknown|Error' "$f.out" | head -12
+			exit 1
+		fi
 	done
 	cat "$work"/pool-*/pool-*.ndjson >"$work/pall" 2>/dev/null || :
 	for e in Start Pick Place End MaintainWait MaintainDial Dial PeerGoAway Down Remove DrainStart GoAway CloseStart CloseEnd; do printf 'pool %s %s; ' "$e" "$(grep -c "\"ev\":\"$e\"" "$work/pall" || true)"; done

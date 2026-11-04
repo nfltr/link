@@ -53,7 +53,10 @@ Step ==
       \* FinBeforeShut at a trace's grain (the mark is not logged): no FIN goes
       \* after this side's write side shut while the peer still reads, but
       \* after an abort (Mux.cut).
-      [] E.ev = "Close" /\ E.n = Half -> CloseWrite(P, S)
+      \* A CLOSE buffered after the connection's end cut the session (CloseWrite
+      \* checked it open just before): the frame goes nowhere (finding C9).
+      [] E.ev = "Close" /\ E.n = Half -> IF closed[P] /\ ss[P][S].st # "open" THEN UNCHANGED vars
+                                         ELSE CloseWrite(P, S)
                                          /\ (wshut[P] => ss[P][S].code = ABT \/ ss[Peer(P)][S].st # "open")
       [] E.ev = "Close" /\ E.n \notin {Half, 4} -> ss[P][S].closing = E.n + 1 /\ End(P, S)
       [] E.ev = "Read" -> Read(P, S, E.n) /\ cr'[P][S].held = E.held /\ gpend'[P][S] = E.grant
@@ -62,7 +65,9 @@ Step ==
       [] E.ev = "Ping" -> Ping(P, E.n)
       [] E.ev = "Pong" -> Pong(P, E.n = 1)
       [] E.ev = "Recv" -> RecvStep
-      [] E.ev = "Leave" -> Leave(P)
+      \* closeFlushed after Conn.Close (a Node or Pool closing a connection
+      \* that ended meanwhile): nothing left to shut (finding C9).
+      [] E.ev = "Leave" -> IF closed[P] THEN UNCHANGED vars ELSE Leave(P)
       [] E.ev = "ConnClose" -> \E k \in 0..Len(out[P]) : CloseConn(P, k)
       [] E.ev = "Down" -> Down(P)
       [] OTHER -> Print(<<"unknown event", E>>, FALSE)
