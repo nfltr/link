@@ -48,7 +48,8 @@ Die ==
     /\ alive' = FALSE
     /\ UNCHANGED <<now, rx, pingAt, timer, dead, stuck>>
 
-\* reader-writes (finding F7, the code today): the receive loop writes a
+\* reader-writes (finding F7, the code before lane LINKREVIEW; re-checked by
+\* lane LINKF7): the receive loop writes a
 \* refusal itself and waits for room; with both sides refusing and both
 \* directions full, neither reads again, though both are alive. The model
 \* (the design) is that the receive loop never waits on the network.

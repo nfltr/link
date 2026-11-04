@@ -47,8 +47,12 @@ Step ==
       [] E.ev = "SendData" -> pend[P][S] = E.n /\ IF wt[P][S] = "data" THEN SendBuffer(P, S) ELSE SendData(P, S)
       [] E.ev = "Refund" -> pend[P][S] = E.n /\ Refund(P, S) /\ (E.credit >= 0 => cr'[P][S].n = E.credit)
       \* A refusal (code 4): the answer taken (RefuseMark, not logged), its ABORT forgets.
-      [] E.ev = "Forget" /\ E.n = 4 -> RefuseMark(P, S)
-      [] E.ev = "Close" /\ E.n = 4 -> ss[P][S].closing = ABT + 1 /\ End(P, S)
+      \* Mux.refuse's goroutine may run after the connection's end cut the
+      \* session: its ABORT goes nowhere (finding C11, as C9).
+      [] E.ev = "Forget" /\ E.n = 4 -> IF closed[P] /\ Owner[S] # P /\ ss[P][S].st # "open" /\ ss[P][S].closing = 0
+                                       THEN UNCHANGED vars ELSE RefuseMark(P, S)
+      [] E.ev = "Close" /\ E.n = 4 -> IF closed[P] /\ Owner[S] # P /\ ss[P][S].st # "open" /\ ss[P][S].closing = 0
+                                      THEN UNCHANGED vars ELSE ss[P][S].closing = ABT + 1 /\ End(P, S)
       [] E.ev = "Forget" /\ E.n # 4 -> Closing(P, S, E.n)
       \* FinBeforeShut at a trace's grain (the mark is not logged): no FIN goes
       \* after this side's write side shut while the peer still reads, but

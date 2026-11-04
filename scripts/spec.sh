@@ -261,13 +261,13 @@ mutants)
 		esac
 	}
 	# linkfixture FILE: a session trace with a bug put in (spec/traces/link-*):
-	# Trace.tla must accept link-ok and reject each other one.
+	# Trace.tla must accept link-ok* and reject each other one.
 	linkfixture() {
 		st=0
 		TLC_WORKERS=1 trace "$PWD/$1" >"$jw/m.out" 2>&1 || st=$?
 		case $(basename "$1"):$st in
-		link-ok.*:0) echo "$(basename "$1"): accepted, as expected" ;;
-		link-ok.*:*) echo "$(basename "$1"): rejected"; grep -E -A6 'rejected at|Error' "$jw/m.out" | head -10; return 1 ;;
+		link-ok*:0) echo "$(basename "$1"): accepted, as expected" ;;
+		link-ok*:*) echo "$(basename "$1"): rejected"; grep -E -A6 'rejected at|Error' "$jw/m.out" | head -10; return 1 ;;
 		*:0) echo "$(basename "$1"): accepted (a bug the trace check misses)"; return 1 ;;
 		*)
 			if grep -q 'trace rejected at line\|Invariant .* is violated' "$jw/m.out"; then
@@ -376,7 +376,7 @@ mutants)
 	exit $fail
 	;;
 traces)
-	tests=${TRACE_TESTS:-'^(TestSessionCleanEnd|TestSessionReset|TestMuxSlowSessionIsolated|TestGoAwayDrainKeepsTails|TestCrossedOpenRunsOnTheLeavingConnection|TestMuxV2GoAway|TestSessionCutWithItsConnection|TestMuxSessions|TestMuxV2Sessions|TestWriteRacingCloseWriteSendsNothingAfterFIN|TestWriteParkedForItsTurnSendsNothingAfterFIN|TestOpenParkedPastPeerGoAwayIsNotSent|TestAbortAtMaxSessionsRacingOpenKeepsTheConnection|TestChainRefuse|TestRefusedOpenReadsReset|TestWriteAfterRefuseSendsNoData|TestCloseWriteRacingThePeersFINDropsAfterItsCLOSE|TestMuxOpenSkipsAnIDThePeerTook)$'}
+	tests=${TRACE_TESTS:-'^(TestSessionCleanEnd|TestSessionReset|TestMuxSlowSessionIsolated|TestGoAwayDrainKeepsTails|TestCrossedOpenRunsOnTheLeavingConnection|TestMuxV2GoAway|TestSessionCutWithItsConnection|TestMuxSessions|TestMuxV2Sessions|TestWriteRacingCloseWriteSendsNothingAfterFIN|TestWriteParkedForItsTurnSendsNothingAfterFIN|TestOpenParkedPastPeerGoAwayIsNotSent|TestAbortAtMaxSessionsRacingOpenKeepsTheConnection|TestChainRefuse|TestRefusedOpenReadsReset|TestWriteAfterRefuseSendsNoData|TestCloseWriteRacingThePeersFINDropsAfterItsCLOSE|TestMuxOpenSkipsAnIDThePeerTook|TestReceiveLoopReadsWhileARefusalWaits|TestCloseWriteReportsAFailedFIN)$'}
 	mkdir -p "$work/traces"
 	LINKTRACE=$work/traces go test -tags linktrace -count=1 -run "$tests" . >"$work/test.out" 2>&1 || {
 		cat "$work/test.out"

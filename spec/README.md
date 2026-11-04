@@ -240,7 +240,10 @@ frame streams give that guarantee (`NoSilentLoss`, their end
 acknowledgement); a layer that needs it over link waits for an answer of
 the peer's application, or syncs after its CloseWrite (`Session.Sync`: a
 ping after the FIN, answered: the peer's Mux read it), as `peerlink.Join`
-does ("Join's clean end" below).
+does ("Join's clean end" below). `CloseWrite`'s result is not that
+guarantee either: an error says its CLOSE could not be written (the
+connection's writes failed or it closed: the peer reads `lost`), nil only
+that it was buffered (finding F9).
 
 A Close after `Mux.cut`'s abort (the drain deadline) sends a CLOSE after
 the ABORT and a CloseWrite a half CLOSE (`Session.Close`'s `once` and `halfClosed` are not spent by `cut`); the peer
@@ -480,7 +483,9 @@ the interface allows a drop or a cut, `Link.tla` models the cut).
 `scripts/spec.sh` (now with the refusals: `TestChainRefuse`,
 `TestRefusedOpenReadsReset`, `TestWriteAfterRefuseSendsNoData`,
 `TestCloseWriteRacingThePeersFINDropsAfterItsCLOSE`,
-`TestMuxOpenSkipsAnIDThePeerTook`: LinkSession 8), the dead-peer tests,
+`TestMuxOpenSkipsAnIDThePeerTook`: LinkSession 8; lane LINKF7:
+`TestReceiveLoopReadsWhileARefusalWaits`, F7, and
+`TestCloseWriteReportsAFailedFIN`, F9), the dead-peer tests,
 and peerlink's `TestJoin*`: their joints against `TraceJoin.tla` and their
 link connections against `Trace.tla`. The run prints how often the traces
 took each event of `Trace.tla` and of `TraceJoin.tla`; every one is taken
@@ -556,6 +561,8 @@ property of `Link.tla` (LinkSession 3, Join 7: decided, argued below).
 | C8 | `TracePool.tla`: `Pool.Close` cancelled `p.ctx` before taking `p.mu`; a pick in between returned `net.ErrClosed` before Close's snapshot | neither: a pick then fails as after Close | **decided**, the code tightened for the recorder: `p.cancel` under `p.mu`, so a pick or dial sees the Pool open or closed with Close's snapshot (`CloseStart`) |
 | C9 | `Trace.tla`, peerlink traces under load: `Leave` (`closeFlushed`) logged after `ConnClose`, and a `CloseWrite`'s CLOSE buffered after `Down` cut its session (it checked the session open just before) | neither: both act on a closed connection, the frame goes nowhere, nothing changes | **decided**: the trace maps both to a stutter when the side is closed (and the session cut), as C1 does `GoAway`; no code change |
 | C10 | `TracePool.tla`, `TestPool` (3 of 15 runs rejected): a pick saw a connection leaving (the peer's GOAWAY, or Drain's own between its frames and its `GoAway` line) or ended before the watcher, `Serve` or Drain logged it | neither: the trace's order was not the order the Pool acted on | **decided**, the code tightened (as C8): Drain marks its connections leaving under `p.mu` with its `GoAway` line, before the frames; the recorder logs, before each decision under `p.mu`, the ends and GOAWAYs it sees first (their later lines are stutters). 0 of 15 runs rejected after |
+| C11 | `Trace.tla`, `TestReceiveLoopReadsWhileARefusalWaits` (lane LINKF7, 1 of 3 runs rejected): a refusal's `Forget` (code 4) logged after `Down` cut the session: `Mux.refuse`'s goroutine ran after the connection's end | neither: its ABORT goes nowhere, nothing changes | **decided**: as C9, the trace maps a refusal's `Forget` and `Close` (code 4) of a session the peer opened to a stutter when the side is closed and the session cut before its refusal began; no code change. Fixture `link-ok-refuse-after-down` (accepted; rejected before) |
+| C12 | `Trace.tla`, `TestChainRefuse` under load (lane LINKF7, about 1 of 3 runs of the session traces): the opener's `SendData` logged after its `Recv` close 4 (the peer's refusal forgot the credit) | open: `Conn.sendData` checks `sendable` under `wmu`, but the receive loop's `Credit.Forget` does not take `wmu`, so a data frame checked before the refusal was read may be buffered (or only logged) after it; the peer drops it (no credit there, WIRE.md section 5), so nothing reaches its reader. The model makes check and buffer one step against `cr.on`. Next: decide whether `Link.tla` splits them (as `SendCheck`/`SendBuffer`, with the receive's forget between) or the recorder logs at the check; trace kept at `~/nfltr-evidence/LINKF7/c12-chainrefuse-senddata-after-forget.ndjson` |
 
 ## Environment assumptions (lane W5-LINK)
 
@@ -592,8 +599,17 @@ counterexample of the code before its fix (`make spec-mutants`):
 | F6 no invariant said why the receive loop never waits | low | `release-early` | `QueueWithinHeld`, 9 | the invariant |
 | F7 the receive loop wrote refusals inline | low | `reader-writes` (`Liveness.tla`, lane LINKPOOL) | `NoFalseDead`, 9 | `Mux.refuse`: a goroutine sends them, the queue bounded by max_sessions (`TestReceiveLoopReadsWhileARefusalWaits`); `Liveness.tla`'s assumption now holds |
 | F8 a grant was bounded loosely | low | (a faulty peer: not modelled) | | `Grant` counts a Write's credit not yet sent (`TestGrantCountsCreditInAWrite`) |
+| F9 `CloseWrite` returned nil when its CLOSE could not be written (lane LINKF7, the yamux comparison) | low | (a return value: no state changes, so no mutant; `CloseWriteSend` is the same step either way) | | **decided: returned**, as `Write` returns its bytes' failure and `grpclink`/`quiclink` return theirs: `io.ErrClosedPipe` wrapping the connection's end, so a caller knows the peer will never read its `io.EOF`; nil still means buffered, not delivered (`Sync`) (`TestCloseWriteReportsAFailedFIN`) |
 
-Each test failed on the code before its fix. Left open then: F7's related
+Each test failed on the code before its fix. F7 re-checked (lane LINKF7,
+after the yamux comparison read "the code today" in the mutant's note as
+the code now): no step of `Mux.Serve`'s loop (`Conn.recv`, `Mux.data`,
+`Mux.serve`) waits on the network: a pong goes through `keepAlive`, a
+refusal through `Mux.refuse`, `Mux.leave`'s close through `closeFlushed`'s
+goroutine, a window update from the reader's `Consumed`; what runs on the
+loop are `OnGrant` and `Observer` callbacks, documented as not to block.
+`TestReceiveLoopReadsWhileARefusalWaits` fails with the refusal sent
+inline again, and its trace is checked (`make spec-traces`). Left open then: F7's related
 note, the slow frame (fixed, lane W5-LINK: "The Pool and liveness"), and
 a `Mux` refusing a peer's open of an id of its own parity (decided, lane
 W5-LINK, below).
@@ -896,8 +912,8 @@ second.
   on, not Interval: the next ping goes late, `DetectBound` breaks),
   `deadline-from-rx` (the verdict at `rxAt + Interval + Timeout` whatever
   the ping's time: `NoFalseDead` breaks once a fire is late),
-  `reader-writes` (finding F7 of the spec review, the code today: the
-  receive loop waits on a write, `NoFalseDead` breaks).
+  `reader-writes` (finding F7 of the spec review, the code before lane
+  LINKREVIEW: the receive loop waits on a write, `NoFalseDead` breaks).
 - Assumption: the receive loop never waits on the network, so a live
   peer's frames are read as they arrive. True since lane LINKREVIEW
   (review F7, "Review findings"): `Mux.serve` hands an OPEN's refusal to
@@ -927,7 +943,8 @@ tests write (the dead-peer tests' take each `FireAt` branch);
 `make spec-mutants` checks the fixtures in `spec/traces/`: `live-ok`
 accepted, `live-dead-early` (dead before Timeout after the ping) and
 `live-fire-early` (a fire before its deadline) rejected; and the session
-trace `link-ok` (TestSessionCleanEnd's) accepted by Trace.tla, each
+trace `link-ok` (TestSessionCleanEnd's) and `link-ok-refuse-after-down`
+(C11) accepted by Trace.tla, each
 `link-*` beside it rejected: a bug put in per invariant of Link
 (`link-credit-not-taken` CreditBounds, `link-charge-past-window`
 BufferBound, `link-read-past-queue` QueueWithinHeld,
