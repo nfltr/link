@@ -37,7 +37,9 @@
 // connection that received no packet for that keep-alive period +
 // Timeout/2 (conn.watch): a silent peer is dead within Interval + Timeout
 // of its last packet, or 1.5 PTO + Timeout on a path whose PTO is over 2/3
-// of Interval (link's spec/QuicWatch.tla). Silence counts only while the process runs: after a gap in
+// of Interval (link's spec/QuicWatch.tla), and Timeout/2 or more after the
+// keep-alive went out (quic-go's idle timer start: a keep-alive the process
+// sent late moves the verdict with it). Silence counts only while the process runs: after a gap in
 // which the check itself did not run (a starved process), its packets
 // waiting in the socket are read before it judges (link's spec/README.md
 // "Starvation"). QUIC's own idle timeout, which judges by the clock alone,
@@ -281,9 +283,13 @@ func (c *conn) end() {
 // connection that cannot send then (its writes stalled, its congestion
 // window full) sends it late: by as long as it could not send.
 // Sampling every Timeout/4 and closing after keepAliveAfter + Timeout/2
-// without a packet keeps the bound (Interval + Timeout) while a live
+// without a packet, and Timeout/2 after quic-go's idle timer started (the
+// keep-alive sent), keeps the bound (Interval + Timeout) while a live
 // peer's answer to the keep-alive arrives within a round trip under
-// Timeout/2 (spec/QuicWatch.tla).
+// Timeout/2 (spec/QuicWatch.tla). Short stops (under 1.25 periods, unseen
+// in the tick gaps) that delay the keep-alive delay the verdict with it
+// (finding QW2); one that delays reading the answer is tolerated while
+// Rtt + 1.25 periods stays within Timeout/2 (finding QW4).
 //
 // A tick more than 1.25 periods after the one before came to a process
 // that did not run meanwhile: quic-go has not read the packets waiting in
@@ -306,7 +312,7 @@ func (c *conn) watch() {
 			}
 			now := time.Now()
 			st := c.q.ConnectionStats()
-			if w.tick(now, st.PacketsReceived, g, keepAliveAfter(l.Interval, st)+l.Timeout/2) {
+			if w.tick(now, st.PacketsReceived, st.IdleTimeoutStart, g, keepAliveAfter(l.Interval, st)+l.Timeout/2) {
 				_ = c.q.CloseWithError(CodeDeadPeer, "dead peer")
 				return
 			}
@@ -322,9 +328,12 @@ type watchState struct {
 	seen, prev time.Time
 }
 
-// tick is one tick of watch at now, n packets received: true when no
-// packet came for quiet (QuicWatch.tla's WatchAt).
-func (w *watchState) tick(now time.Time, n uint64, g, quiet time.Duration) bool {
+// tick is one tick of watch at now, n packets received, quic-go's idle
+// timer started at idle: true when no packet came for quiet and none for
+// Timeout/2 (2g) since idle (QuicWatch.tla's WatchAt). idle is the
+// keep-alive's send time once it went out: a stop too short to show in the
+// tick gaps that delayed it delays the verdict too (finding QW2).
+func (w *watchState) tick(now time.Time, n uint64, idle time.Time, g, quiet time.Duration) bool {
 	gap := now.Sub(w.prev)
 	w.prev = now
 	switch {
@@ -332,7 +341,7 @@ func (w *watchState) tick(now time.Time, n uint64, g, quiet time.Duration) bool 
 		w.last, w.seen = n, now
 	case gap > g+g/4:
 		w.seen = w.seen.Add(gap)
-	case now.Sub(w.seen) >= quiet:
+	case now.Sub(w.seen) >= quiet && now.Sub(idle) >= 2*g:
 		return true
 	}
 	return false

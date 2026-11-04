@@ -98,7 +98,8 @@ What it costs, and when not to use it:
   bottleneck: 0.7 MB/s before, 17-20 MB/s now). It also fixes a panic
   (`numOutStandingFrames negative`) when a stream was aborted after the
   peer's STOP_SENDING, and a congestion window that stayed cut after a
-  path reordered a burst of more than 64 packets.
+  path reordered a burst of more than 64 packets. It exposes the idle
+  timer's start (`ConnectionStats.IdleTimeoutStart`) for the watch below.
 - **No 0-RTT.** 0-RTT data can be replayed by an attacker; quiclink turns
   it off and every connection pays the 1-RTT handshake.
 
@@ -116,7 +117,10 @@ What it costs, and when not to use it:
 - Liveness from a `link.Liveness`: a keep-alive PING `Interval` after the
   last packet received (quic-go: no sooner than 1.5 probe timeouts) and a
   check of its own: a connection that received no packet for that
-  keep-alive period + `Timeout/2`, sampled every
+  keep-alive period + `Timeout/2`, and for `Timeout/2` since quic-go's
+  idle timer started (`ConnectionStats.IdleTimeoutStart`, nfltr's quic-go:
+  the keep-alive's send, so a keep-alive a short stop delayed moves the
+  verdict with it, finding QW2), sampled every
   `Timeout/4`, is closed (`CodeDeadPeer`). A sample more than 1.25
   periods after the one before (the process did not run) does not count
   its gap as silence: the packets waiting in the socket are read first

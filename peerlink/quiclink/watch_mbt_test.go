@@ -18,26 +18,29 @@ import (
 // watchRow is a state of spec/QuicWatch.tla (spec/MBTWatch.tla) and the
 // action that led to it.
 type watchRow struct {
-	A               string
-	Now, Seen, Prev int
-	Fresh           bool
-	Closed          string
+	A                     string
+	Now, Seen, Prev, Idle int
+	Fresh                 bool
+	Closed                string
 }
 
 // TestWatchFollowsTheModel replays every WatchAt step of the model's
 // behaviours (link's testdata/mbt/qwatch-<cfg>-*.ndjson, written by
 // scripts/spec.sh behaviours; MBT_DIR for another set) on watchState.tick,
-// a model tick a millisecond: the code must reach the model's seen, prev
-// and verdict. G = 4 and Quiet = K + Timeout/2 are each configuration's.
+// a model tick a millisecond, with the model's idle start (IdleStart): the
+// code must reach the model's seen, prev and verdict, including the
+// verdicts the idle start withholds (a keep-alive a stop delayed,
+// QuicWatchStops: finding QW2). G = 4 and Quiet = K + Timeout/2 are each
+// configuration's.
 func TestWatchFollowsTheModel(t *testing.T) {
 	dir := os.Getenv("MBT_DIR")
 	if dir == "" {
 		dir = filepath.Join("..", "..", "testdata", "mbt")
 	}
-	quiet := map[string]int{"QuicWatch": 16, "QuicWatchPTO": 20, "QuicWatchStarve": 16} // spec/QuicWatch*.cfg
+	quiet := map[string]int{"QuicWatch": 16, "QuicWatchPTO": 20, "QuicWatchStarve": 16, "QuicWatchStops": 16} // spec/QuicWatch*.cfg
 	ms := func(n int) time.Duration { return time.Duration(n) * time.Millisecond }
 	t0 := time.Unix(0, 0)
-	steps, verdicts, gaps := 0, 0, 0
+	steps, verdicts, gaps, withheld := 0, 0, 0, 0
 	for cfg, q := range quiet {
 		fs, _ := filepath.Glob(filepath.Join(dir, "qwatch-"+cfg+"-*.ndjson"))
 		if len(fs) == 0 {
@@ -56,7 +59,7 @@ func TestWatchFollowsTheModel(t *testing.T) {
 					n = 1
 				}
 				w := watchState{seen: t0.Add(ms(prev.Seen)), prev: t0.Add(ms(prev.Prev))}
-				dead := w.tick(t0.Add(ms(next.Now)), n, ms(4), ms(q))
+				dead := w.tick(t0.Add(ms(next.Now)), n, t0.Add(ms(next.Idle)), ms(4), ms(q))
 				if dead != (next.Closed == "watch") || w.seen != t0.Add(ms(next.Seen)) || w.prev != t0.Add(ms(next.Now)) {
 					t.Fatalf("%s line %d: tick at %d from seen %d prev %d fresh %v: code dead %v seen %v, model %+v",
 						filepath.Base(f), i+1, next.Now, prev.Seen, prev.Prev, prev.Fresh, dead, w.seen.Sub(t0), next)
@@ -66,14 +69,16 @@ func TestWatchFollowsTheModel(t *testing.T) {
 				}
 				if !prev.Fresh && next.Seen != prev.Seen {
 					gaps++
+				} else if !prev.Fresh && !dead && next.Now-prev.Seen >= q {
+					withheld++
 				}
 			}
 		}
 	}
-	if verdicts == 0 || gaps == 0 {
-		t.Fatalf("the behaviours take no verdict (%d) or no discounted gap (%d)", verdicts, gaps)
+	if verdicts == 0 || gaps == 0 || withheld == 0 {
+		t.Fatalf("the behaviours take no verdict (%d), no discounted gap (%d) or no verdict withheld by the idle start (%d)", verdicts, gaps, withheld)
 	}
-	t.Logf("%d ticks replayed, %d verdicts, %d gaps discounted", steps, verdicts, gaps)
+	t.Logf("%d ticks replayed, %d verdicts, %d gaps discounted, %d verdicts withheld by the idle start", steps, verdicts, gaps, withheld)
 }
 
 func readRows(t *testing.T, f string) []watchRow {
