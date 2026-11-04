@@ -8,6 +8,18 @@ version 2 unless an entry says otherwise.
 
 ## Unreleased
 
+- `peerlink.Join` resets a plain conn whose link session's connection
+  ended, even while the conn is idle; before, it noticed only at the
+  conn's next write (review
+  r2 Join 2, `spec/Join.tla` `LostEnds`, lane CONFORM-link). New
+  `Session.Err`: why a session ended, once `Done` is closed.
+- Conformance of the code to the TLA+ models (`spec/README.md`
+  "Conformance", lane CONFORM-link): an action map checked by
+  `TestSpecTraceEventsMapped` and `TestSpecWritesMapped`, model-based tests
+  replaying TLC's behaviours on the credit (`TestCreditFollowsTheModel`)
+  and on the keepalive's decision (`TestLivenessFollowsTheModel`;
+  `testdata/mbt`), a trace recorder for the joint (`TraceJoin.tla`) and
+  traced refusal tests. No wire change.
 - `peerlink.Join` ends a plain conn (a TCP client, an agent's target)
   cleanly only once the peer read the FIN it passed onto the link session:
   it syncs after the session's `CloseWrite` (new `Session.Sync`: a ping

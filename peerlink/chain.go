@@ -70,6 +70,9 @@ func Join(a, b net.Conn) error {
 	}
 	ch := make(chan error, 1)
 	j := &joint{c: [2]net.Conn{a, b}, left: 2, done: func(err error) { ch <- err }}
+	if traceOn {
+		traceStart(j)
+	}
 	j.dir(0)
 	j.dir(1)
 	return <-ch
@@ -173,6 +176,9 @@ func Forward(route Route, cfg link.ForwardConfig) func(peer string, header []byt
 			return
 		}
 		j := &joint{c: [2]net.Conn{in, out}, left: 2, obs: cfg.Observer, chain: c, pending: true}
+		if traceOn {
+			traceStart(j)
+		}
 		j.dir(0)
 		var pathLen uint8
 		if cout, ok := out.(ChainSession); ok && cout.Answers() {
@@ -281,6 +287,7 @@ type joint struct {
 	// Sync; the other direction's clean end waits meanwhile (fin).
 	syncing bool
 	fin     func()
+	tr      traceState // linktrace builds only (trace_on.go)
 }
 
 // movedBytes is link.HopEvent.Moved.
@@ -294,6 +301,7 @@ type connWriter struct {
 	err   error
 	j     *joint
 	moved *atomic.Int64
+	tj    *joint // linktrace: the client's bytes onto the session, each write a Copy
 }
 
 func (w *connWriter) Write(p []byte) (int, error) {
@@ -308,6 +316,9 @@ func (w *connWriter) Write(p []byte) (int, error) {
 func (w *connWriter) wrote(n int64) {
 	if n > 0 {
 		w.moved.Add(n)
+		if traceOn && w.tj != nil {
+			traceJoin(w.tj, "Copy", 0)
+		}
 	}
 	if w.j != nil && n > 0 {
 		w.j.mu.Lock()
@@ -346,10 +357,16 @@ func (j *joint) dir(i int) {
 	if i == 1 {
 		w.j = j
 	}
+	if traceOn && traceClient(j, src) {
+		w.tj = j
+	}
 	end := func(n int64, err error) { j.ended(i, n, err, w.err) }
 	if s := native(src); s != nil {
 		s.Pump(w, end)
 		return
+	}
+	if ds := native(w.c); ds != nil {
+		go j.watch(src, ds)
 	}
 	go func() {
 		buf := copyBufs.Get().(*[]byte)
@@ -399,6 +416,9 @@ func (j *joint) failed() bool {
 // an RST on a TCP conn, else Close.
 func (j *joint) abort(c net.Conn, a *link.Abort) {
 	j.fail(a)
+	if traceOn && traceClient(j, c) {
+		traceJoin(j, "Lost", 0)
+	}
 	switch v := c.(type) {
 	case ChainSession:
 		_ = v.AbortWith(a)
@@ -469,6 +489,20 @@ func (j *joint) ended(i int, n int64, err, werr error) {
 	j.finish()
 }
 
+// watch aborts src once the connection of the session its bytes go to
+// ended: src's copy may wait on src for ever, an idle client that already
+// read the peer's FIN (spec/Join.tla Lost, LostEnds; review r2 Join 2).
+// The peer's own end of the session (an answer, a refusal, a reset, its
+// close) is not watch's: the direction reading the session ends src for
+// it, or Forward answers it, and a second abort would reset what that
+// sent (relay-core TestChainInbandEdges: an in-band refusal, then EOF).
+func (j *joint) watch(src net.Conn, ds *link.Session) {
+	<-ds.Done()
+	if err := ds.Err(); errors.Is(err, link.ErrConnClosed) {
+		j.abort(src, abortOf(err))
+	}
+}
+
 // closeWrite ends dst's writes: CloseWrite, else Close.
 func (j *joint) closeWrite(dst net.Conn) {
 	if cw, ok := dst.(interface{ CloseWrite() error }); ok {
@@ -486,6 +520,9 @@ func (j *joint) closeWrite(dst net.Conn) {
 func (j *joint) sync(src net.Conn, ds *link.Session) {
 	j.mu.Lock()
 	j.syncing = true // before the CloseWrite: the peer's FIN after it is held
+	if traceOn {
+		traceJoin(j, "CloseWrite", 0)
+	}
 	j.mu.Unlock()
 	_ = ds.CloseWrite()
 	go func() {
@@ -495,6 +532,9 @@ func (j *joint) sync(src net.Conn, ds *link.Session) {
 		}
 		j.mu.Lock()
 		j.syncing = false
+		if traceOn && err == nil {
+			traceJoin(j, "Synced", 0)
+		}
 		fin := j.fin
 		j.fin = nil
 		j.mu.Unlock()
@@ -513,6 +553,13 @@ func (j *joint) sync(src net.Conn, ds *link.Session) {
 func (j *joint) hold(end func()) bool {
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	if traceOn {
+		n := 0
+		if j.syncing {
+			n = 1
+		}
+		traceJoin(j, "Fin", n)
+	}
 	if !j.syncing {
 		return false
 	}
@@ -524,6 +571,9 @@ func (j *joint) finish() {
 	j.mu.Lock()
 	j.left--
 	last, err, n, first := j.left == 0, j.err, j.n, j.first
+	if traceOn && last && err == nil {
+		traceJoin(j, "Finish", 0)
+	}
 	j.mu.Unlock()
 	if !last {
 		return

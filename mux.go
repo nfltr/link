@@ -611,6 +611,18 @@ func (s *Session) end() error {
 // readable.
 func (s *Session) Done() <-chan struct{} { return s.done }
 
+// Err is why the session ended, once Done is closed: nil for a clean end
+// (both sides closed it), else ErrReset (the peer's Reset), the peer's
+// *Abort (FeatureChain), or ErrConnClosed wrapping why the connection
+// ended. A layer that joins the session to another conn watches it with
+// Done and Err (peerlink.Join: an idle client whose connection died).
+func (s *Session) Err() error {
+	if e := s.err.Load(); e != nil {
+		return *e
+	}
+	return nil
+}
+
 // OnGrant sets f to be called with each window update the peer sends for
 // the session: n more bytes of what this side wrote left the peer's
 // receive buffer (its reader took them). The peer sends one per at least a

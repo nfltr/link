@@ -1,2 +1,3 @@
 Compatible changes:
+- (*Session).Err: added
 - (*Session).Sync: added
