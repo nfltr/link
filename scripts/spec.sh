@@ -174,11 +174,11 @@ check | invariants)
 		[ $cfg != LinkCrash.cfg ] && [ $cfg != LinkRefuse.cfg ] || cp spec/$cfg "$work/$cfg"
 		tlcrun "$work/$cfg"
 	done
-	# PoolDrain (Min 2: a Drain failing halfway) only in full: its
-	# mutant is CI's.
+	# PoolDrain (Min 2: a Drain failing halfway) and QuicWatchStops (two
+	# short stops, ~10 s) only in full: their mutants are CI's.
 	# PoolGrow: background growth (Max above Min).
 	pools="Pool PoolGrow Liveness LivenessStarve QuicWatch QuicWatchPTO QuicWatchStarve Join"
-	[ "$1" = invariants ] || pools="$pools PoolDrain"
+	[ "$1" = invariants ] || pools="$pools PoolDrain QuicWatchStops"
 	for m in $pools; do
 		echo "== $m.cfg"
 		st=0
@@ -363,16 +363,19 @@ mutants)
 	# quiclink's watch (QuicWatch.tla, lane QLWATCH): the keep-alive
 	# stretched by the path's PTO (QW1), the starved gap counted (S1), the
 	# idle timeout below the watch's bound (the code before LIVESTARVE),
-	# never closing; and the open QW2: stops under 1.25 ticks counted.
+	# never closing; stops under 1.25 ticks counted (QW2: the watch
+	# without quic-go's idle start) and the open QW4 (a slower path).
 	job mutant QuicWatchPTO.cfg 'Mutant = "none"' 'Mutant = "quiet-ignores-pto"' QuicWatch.tla
 	job mutant QuicWatchStarve.cfg 'Mutant = "none"' 'Mutant = "count-gap"' QuicWatch.tla
 	job mutant QuicWatch.cfg 'Mutant = "none"' 'Mutant = "backstop-low"' QuicWatch.tla
 	job mutant QuicWatch.cfg 'Mutant = "none"' 'Mutant = "never-close"' QuicWatch.tla
-	job mutant QuicWatchStarve.cfg 'MinSleep = 6' 'MinSleep = 0' QuicWatch.tla
+	job mutant QuicWatchStops.cfg 'Mutant = "none"' 'Mutant = "ignores-idle-start"' QuicWatch.tla
+	job mutant QuicWatchStops.cfg 'Rtt = 2' 'Rtt = 3' QuicWatch.tla
 	for w in WitnessWatch WitnessTight; do job witness QuicWatch.cfg $w QuicWatch.tla; done
 	job witness QuicWatchPTO.cfg WitnessTight QuicWatch.tla
 	job witness QuicWatchStarve.cfg WitnessStarvedLive QuicWatch.tla
 	job witness QuicWatchStarve.cfg WitnessIdle QuicWatch.tla
+	job witness QuicWatchStops.cfg WitnessLateKeepAlive QuicWatch.tla
 	# peerlink.Join's clean end (Join.tla, relay-core finding 23).
 	for m in no-sync no-hold done-skips-hold no-watch; do
 		job mutant Join.cfg 'Mutant = "none"' "Mutant = \"$m\"" Join.tla
@@ -557,7 +560,7 @@ behaviours)
 	gen Liveness.cfg MBTLive.tla live 60 '' $((${MBT_NUM:-4} * 8))
 	gen LivenessStarve.cfg MBTLive.tla live-starve 60 '' $((${MBT_NUM:-4} * 8))
 	# quiclink's watch (MBTWatch.tla; peerlink/quiclink/watch_mbt_test.go)
-	for c in QuicWatch QuicWatchPTO QuicWatchStarve; do
+	for c in QuicWatch QuicWatchPTO QuicWatchStarve QuicWatchStops; do
 		gen $c.cfg MBTWatch.tla qwatch-$c 300 '' $((${MBT_NUM:-4} * 4))
 	done
 	;;

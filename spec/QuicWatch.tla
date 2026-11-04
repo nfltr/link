@@ -27,8 +27,11 @@ CONSTANTS
 
 G == To \div 4
 K == IF KA > Iv THEN KA ELSE Iv                \* quic-go's keep-alive period
+\* watch's silence allowed. Mutant "quiet-ignores-pto" is the code before
+\* QW1 (and QW2: without the idle start, which implies K here whenever
+\* quic-go sends its keep-alive; Quiet's K bounds a side that sends none).
 Quiet == IF Mutant = "quiet-ignores-pto" THEN Iv + To \div 2
-         ELSE K + To \div 2                    \* watch's silence allowed
+         ELSE K + To \div 2
 \* the design's conditions: a live peer answers within To/2, ticks on a
 \* running process are late by under G/4, the backstop is past the watch's
 \* bound (Mutant "backstop-low" breaks the last one).
@@ -102,8 +105,11 @@ Die ==
     /\ alive' = FALSE
     /\ UNCHANGED <<now, rx, fresh, pend, ka, seen, prev, due, closed, run, since, slept>>
 
+\* a process that ran again runs for a moment before it may stop again: its
+\* run loop's due work (a packet waiting, the keep-alive due: Tick) is done
+\* by then.
 Sleep ==
-    /\ run /\ closed = "none" /\ slept < Sleeps
+    /\ run /\ closed = "none" /\ slept < Sleeps /\ (slept = 0 \/ now > since)
     /\ run' = FALSE /\ since' = now /\ slept' = slept + 1
     /\ UNCHANGED <<now, rx, fresh, pend, ka, seen, prev, due, alive, closed>>
 
@@ -111,6 +117,12 @@ Wake ==
     /\ ~run /\ closed = "none" /\ now >= since + MinSleep
     /\ run' = TRUE /\ since' = now
     /\ UNCHANGED <<now, rx, fresh, pend, ka, seen, prev, due, alive, closed, slept>>
+
+\* quic-go's idle timer start (idleTimeoutStartTime, ConnectionStats'
+\* IdleTimeoutStart): the later of the last packet processed and the first
+\* ack-eliciting packet sent after it, here the keep-alive. A stop that
+\* delays the keep-alive delays it too (finding QW2).
+IdleStart == IF ka >= 0 THEN ka ELSE rx
 
 \* One tick of watch at n (watchTick): the ticker's next tick is the first
 \* multiple of G after n (a Go Ticker drops the ticks it could not deliver).
@@ -122,6 +134,7 @@ WatchAt(n) ==
        ELSE IF n - prev > G + G \div 4 /\ Mutant # "count-gap"
        THEN seen' = seen + (n - prev) /\ UNCHANGED <<fresh, closed>>
        ELSE IF n - seen >= Quiet /\ Mutant # "never-close"
+               /\ (n - IdleStart >= To \div 2 \/ Mutant \in {"ignores-idle-start", "quiet-ignores-pto"})
        THEN closed' = "watch" /\ UNCHANGED <<seen, fresh>>
        ELSE UNCHANGED <<seen, fresh, closed>>
     /\ UNCHANGED <<now, rx, pend, ka, alive, run, since, slept>>
@@ -164,5 +177,10 @@ WitnessWatch == closed # "watch"
 WitnessStarvedLive == ~(run /\ alive /\ pend /\ now - rx >= Quiet /\ now >= due)
 \* the backstop's silent close is reachable (a dead peer, the stop discounted)
 WitnessIdle == closed # "idle"
+\* a live peer's tick due with nothing new for Quiet and no gap seen, the
+\* keep-alive sent late by a stop: the verdict the idle start withholds
+\* (QuicWatchStops.cfg; mutant ignores-idle-start closes here).
+WitnessLateKeepAlive == ~(run /\ alive /\ ~fresh /\ now >= due /\ now - prev <= G + G \div 4
+                          /\ now - seen >= Quiet /\ now - IdleStart < To \div 2)
 WitnessTight == ~(run /\ ~alive /\ closed = "none" /\ now - Max(rx, since) = Quiet + To \div 2 + Late)
 =============================================================================

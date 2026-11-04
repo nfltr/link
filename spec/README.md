@@ -1132,9 +1132,14 @@ and closes silently once nothing came for B (`IdleClose`, by the clock,
 possibly before it processes what waits in the socket: its run loop's
 timer case). The watch ticks (`WatchAt`, `watchState.tick`): a new packet
 moves `seen`; a tick more than 1.25 G after the one before moves `seen` on
-by the gap; otherwise no packet for Quiet = K + Timeout/2 is the verdict
-(CONNECTION_CLOSE, `CodeDeadPeer`). The peer answers the keep-alive within
-Rtt (`Rtt + Late < Timeout/2`); the process may stop (`Sleep`, `Wake`).
+by the gap; otherwise no packet for Quiet = K + Timeout/2, and none for
+Timeout/2 since quic-go's idle timer started (`IdleStart`: the keep-alive's
+send, else the last packet; `ConnectionStats.IdleTimeoutStart` of nfltr's
+quic-go, finding QW2), is the verdict (CONNECTION_CLOSE, `CodeDeadPeer`).
+The peer answers the keep-alive within Rtt (`Rtt + Late < Timeout/2`); the
+process may stop (`Sleep`, `Wake`), and between two stops runs a moment,
+long enough for its run loop's due work (`Tick`'s guard: the packet
+waiting, the keep-alive due).
 
 | property | statement |
 |---|---|
@@ -1148,17 +1153,25 @@ running process), `QuicWatchPTO.cfg` (K = 12 > Interval: a path whose
 probe timeout stretches the keep-alive), `QuicWatchStarve.cfg` (one stop
 of 6..12, B = 28: smaller than the code's but within the ASSUMEs, so that
 the backstop's close is reached; every action taken there, `-coverage
-1`; the first two take no `Sleep`, `Wake`, discounted gap or `IdleClose`).
+1`; the first two take no `Sleep`, `Wake`, discounted gap or `IdleClose`),
+`QuicWatchStops.cfg` (two stops of 0..5, each unseen in the tick gaps, Rtt
+2, the code's backstop; `make spec` only, about 10 s: its mutants are CI's;
+no `IdleClose`).
 
 Mutants (`make spec-mutants`): `quiet-ignores-pto` (Quiet = Interval +
-Timeout/2, the code before QW1: `NoFalseDead` on `QuicWatchPTO.cfg`, 22
-states), `count-gap` (no discount, the code before S1: `NoFalseDead` on
+Timeout/2 without the idle start, the code before QW1: `NoFalseDead` on
+`QuicWatchPTO.cfg`, 22 states; the idle start alone implies K while quic-go
+sends its keep-alive, Quiet's K bounds a side that sends none), `count-gap` (no discount, the code before S1: `NoFalseDead` on
 `QuicWatchStarve.cfg`), `backstop-low` (the idle timeout at Timeout, the
-code before LIVESTARVE: `WatchFirst`), `never-close` (`DetectBound`), and
-`MinSleep = 0` (QW2, open: `NoFalseDead`). Witnesses: `WitnessWatch`,
+code before LIVESTARVE: `WatchFirst`), `never-close` (`DetectBound`),
+`ignores-idle-start` (the code before QW2: `NoFalseDead` on
+`QuicWatchStops.cfg`) and `Rtt = 3` there (QW4, open: `NoFalseDead`).
+Witnesses: `WitnessWatch`,
 `WitnessTight` (both configurations), `WitnessStarvedLive` (a live peer's
 tick due with nothing processed for Quiet: only with `Sleep`),
-`WitnessIdle` (the backstop's close).
+`WitnessIdle` (the backstop's close), `WitnessLateKeepAlive` (a live
+peer's tick with Quiet passed, no gap seen, the keep-alive sent late: the
+verdict the idle start withholds, `QuicWatchStops.cfg`).
 
 **Action map.**
 
@@ -1177,6 +1190,7 @@ tick due with nothing processed for Quiet: only with `Sleep`),
 | `watchState.prev` (`prev`) | `conn.watch` (start), `watchState.tick` | `Init`, `WatchAt` |
 | the ticker (`due`) | `time.NewTicker(Timeout/4)` | `WatchAt` (the first multiple of G after the tick: a Go Ticker drops what it could not deliver) |
 | `Quiet` | `keepAliveAfter` + Timeout/2, per tick from `ConnectionStats` | (a constant per configuration) |
+| `IdleStart` (`ka`, `rx`) | quic-go's `setIdleStart` (`idleTimeoutStartTime`), read per tick as `ConnectionStats.IdleTimeoutStart` | `Recv`, `KeepAlive` |
 | `MaxIdleTimeout` (`B`) | `New` (`idleBackstop`) | `IdleClose` |
 
 No trace recorder: the watch's state is three fields, and the
@@ -1184,7 +1198,8 @@ model-based test below replays its every step. `TestWatchFollowsTheModel`
 (peerlink/quiclink/watch_mbt_test.go) replays every `WatchAt` of the TLC
 walks in `testdata/mbt/qwatch-<cfg>-*.ndjson` (`scripts/spec.sh
 behaviours`, 16 walks per configuration) on `watchState.tick` and compares
-`seen`, `prev` and the verdict.
+`seen`, `prev` and the verdict, with the model's idle start (`idle`); it
+counts the verdicts the idle start withholds and fails when there are none.
 
 **Finding QW1** (medium, fixed). The watch allowed Interval + Timeout/2 of
 silence, taking quic-go's keep-alive to come every Interval; quic-go sends
@@ -1199,15 +1214,31 @@ does; the dead-peer bound on such a path is 1.5 PTO + Timeout, not
 Interval + Timeout (`DeadAfter`'s doc). The same holds under load: RTT
 samples taken while a process is starved inflate rttvar.
 
-**Finding QW2** (low, open). A stop shorter than 1.25 ticks does not show
-in the tick gaps, yet it delays quic-go's keep-alive and counts as
-silence: two such stops (TLC: 5 and 2 quarter ticks, the keep-alive due
-in the first) end a live peer on a running process (mutant `MinSleep =
-0`). The margin is Timeout/2 - Rtt - Late; with `fast` on loopback 1.5 s
-of short stops in one Quiet window. A fix needs the watch to judge from
-quic-go's own idle start (the first ack-eliciting packet sent after the
-last one received, `idleTimeoutStartTime`), which quic-go does not
-expose; `PacketsSent` cannot tell a keep-alive from an ACK.
+**Finding QW2** (low, fixed, lane QW2). A stop shorter than 1.25 ticks
+does not show in the tick gaps, yet it delays quic-go's keep-alive and
+counted as silence: two such stops (TLC: 5 and 2 quarter ticks, the
+keep-alive due in the first) ended a live peer on a running process. The
+margin was Timeout/2 - Rtt - Late; with `fast` on loopback 1.5 s of short
+stops in one Quiet window. Fix: nfltr's quic-go exposes its idle timer
+start (`ConnectionStats.IdleTimeoutStart`, the later of the last packet
+received and the first ack-eliciting packet sent after it,
+`TestConnectionStatsIdleTimeoutStart` there), and the watch's verdict also
+needs Timeout/2 since it: a keep-alive a stop delayed moves the verdict
+with it. The detection bound stays (`DetectBound`: the keep-alive goes out
+K after the last packet on a running process). Mutant
+`ignores-idle-start` on `QuicWatchStops.cfg`; `TestWatchFollowsTheModel`
+failed before (a tick 7 after a keep-alive sent one late: the code closed,
+the model did not).
+
+**Finding QW4** (low, open). The other half of a short stop: one that
+starts after the peer's answer reached the socket and ends at the verdict
+tick, which runs before quic-go reads the answer (the run loop and the
+watch's ticker wake together). The idle start cannot see it (the
+keep-alive went out on time). TLC: unreachable while Rtt + Late + 1.25 G
+<= Timeout/2 (`QuicWatchStops.cfg`, Rtt 2), reached at Rtt 3 (mutant
+`Rtt = 3`, one stop of 5). With `fast` (Timeout 3 s): a round trip over
+about 0.4 s plus such a stop. A fix would have the verdict wait for the
+run loop (a second look after quic-go had its turn); not done.
 
 **Finding QW3** (the open item of "Starvation", refuted). That B's 3 s
 idle timeout closed B silently while A (`default`, 10 s) heard nothing
