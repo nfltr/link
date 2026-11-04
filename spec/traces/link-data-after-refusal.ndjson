@@ -1,0 +1,17 @@
+{"credit":262144,"ev":"Up","grant":0,"held":1,"n":262144,"sid":"","side":"d","t":""}
+{"credit":262144,"ev":"Up","grant":0,"held":1,"n":262144,"sid":"","side":"l","t":""}
+{"credit":0,"ev":"Open","grant":0,"held":0,"n":0,"sid":"01","side":"d","t":""}
+{"credit":196608,"ev":"Acquire","grant":0,"held":0,"n":65536,"sid":"01","side":"d","t":""}
+{"credit":0,"ev":"Recv","grant":0,"held":0,"n":0,"sid":"01","side":"l","t":"open"}
+{"credit":0,"ev":"SendData","grant":0,"held":0,"n":65536,"sid":"01","side":"d","t":""}
+{"credit":0,"ev":"Forget","grant":0,"held":0,"n":4,"sid":"01","side":"l","t":""}
+{"credit":0,"ev":"Close","grant":0,"held":0,"n":4,"sid":"01","side":"l","t":""}
+{"credit":159744,"ev":"Acquire","grant":0,"held":0,"n":36864,"sid":"01","side":"d","t":""}
+{"credit":0,"ev":"Recv","grant":0,"held":0,"n":4,"sid":"01","side":"d","t":"close"}
+{"credit":0,"ev":"SendData","grant":0,"held":0,"n":36864,"sid":"01","side":"d","t":""}
+{"credit":-1,"ev":"Recv","grant":0,"held":0,"n":65536,"sid":"01","side":"l","t":"data"}
+{"credit":-1,"ev":"Recv","grant":0,"held":0,"n":36864,"sid":"01","side":"l","t":"data"}
+{"credit":0,"ev":"ConnClose","grant":0,"held":0,"n":0,"sid":"","side":"d","t":""}
+{"credit":0,"ev":"Down","grant":0,"held":0,"n":0,"sid":"","side":"d","t":""}
+{"credit":0,"ev":"ConnClose","grant":0,"held":0,"n":0,"sid":"","side":"l","t":""}
+{"credit":0,"ev":"Down","grant":0,"held":0,"n":0,"sid":"","side":"l","t":""}

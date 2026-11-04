@@ -33,7 +33,10 @@ RecvStep ==
     /\ Recv(P)
     /\ E.t \in {"data", "win"} /\ E.credit >= 0 =>
         cr'[P][S].on /\ cr'[P][S].n = E.credit /\ (E.t = "data" => cr'[P][S].held = E.held)
-    /\ E.credit < 0 => ~cr[P][S].on
+    \* A refusal's Credit.forget (its Forget 4) comes before its ABORT is
+    \* buffered, End here: data read between is dropped, not charged; the
+    \* model queues it for a session nothing reads and End drops (C12).
+    /\ E.credit < 0 => ~cr[P][S].on \/ (E.t = "data" /\ Refusing(P, S))
 
 Step ==
     CASE E.ev = "Up" -> UNCHANGED vars
