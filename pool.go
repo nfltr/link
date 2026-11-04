@@ -485,6 +485,12 @@ func (p *Pool) Drain(ctx context.Context) error {
 		}
 	}
 	n := min(max(p.cfg.Min, 1), staying) // past Max only by what the GOAWAYs free (spec/Pool.tla, P2)
+	if len(old) > 0 && n > 0 {
+		// The first replacement counts against Max at the snapshot that
+		// planned it: a connection that ends meanwhile is not replaced by
+		// maintain too (spec/Pool.tla DrainStart, finding C6).
+		p.dials++
+	}
 	if traceOn && len(old) > 0 {
 		tracePoolEv(p, "DrainStart", "", 0, nil, n)
 	}
@@ -497,11 +503,8 @@ func (p *Pool) Drain(ctx context.Context) error {
 	}
 	deadline, _ := ctx.Deadline()
 	var reps []*Mux
-	for range n {
-		p.mu.Lock()
-		p.dials++ // past Max: the old ones are about to go
-		p.mu.Unlock()
-		m, err := p.dial(ctx, false)
+	for i := range n {
+		m, err := p.dial(ctx, i < n-1) // past Max: the old ones are about to go
 		if err != nil {
 			p.goAway(reps, deadline) // back within Max (spec/Pool.tla, M2)
 			return err

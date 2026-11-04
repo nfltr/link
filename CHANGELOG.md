@@ -13,13 +13,20 @@ version 2 unless an entry says otherwise.
   conn's next write (review
   r2 Join 2, `spec/Join.tla` `LostEnds`, lane CONFORM-link). New
   `Session.Err`: why a session ended, once `Done` is closed.
+- `Pool.Drain` counts its first replacement against Max under the lock it
+  takes its snapshot under, and each next one as the previous dial ends: a
+  connection that ended in between was replaced by maintain too, and the
+  Pool stayed past Max after the Drain (finding C6, `spec/Pool.tla`
+  mutant `drain-reserve-late`, `TestPoolDrainReservesWithItsSnapshot`).
+  `Pool.Close` cancels under the Pool's lock.
 - Conformance of the code to the TLA+ models (`spec/README.md`
   "Conformance", lane CONFORM-link): an action map checked by
   `TestSpecTraceEventsMapped` and `TestSpecWritesMapped`, model-based tests
   replaying TLC's behaviours on the credit (`TestCreditFollowsTheModel`)
   and on the keepalive's decision (`TestLivenessFollowsTheModel`;
-  `testdata/mbt`), a trace recorder for the joint (`TraceJoin.tla`) and
-  traced refusal tests. No wire change.
+  `testdata/mbt`), trace recorders for the joint (`TraceJoin.tla`) and the
+  Pool (`TracePool.tla`; background growth now modelled), and traced
+  refusal tests. No wire change.
 - `peerlink.Join` ends a plain conn (a TCP client, an agent's target)
   cleanly only once the peer read the FIN it passed onto the link session:
   it syncs after the session's `CloseWrite` (new `Session.Sync`: a ping
