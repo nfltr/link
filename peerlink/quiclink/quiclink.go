@@ -32,10 +32,12 @@
 // Handshakes are 1-RTT: 0-RTT is off (its data can be replayed).
 //
 // Liveness comes from a link.Liveness: QUIC keep-alive (a PING) Interval
-// after the last packet received, and a check of quiclink's own that
-// closes a connection that received no packet for Interval + Timeout/2
-// (conn.watch): a silent peer is dead within Interval + Timeout of its
-// last packet. Silence counts only while the process runs: after a gap in
+// after the last packet received (no sooner than 1.5 probe timeouts of
+// the path: quic-go's floor), and a check of quiclink's own that closes a
+// connection that received no packet for that keep-alive period +
+// Timeout/2 (conn.watch): a silent peer is dead within Interval + Timeout
+// of its last packet, or 1.5 PTO + Timeout on a path whose PTO is over 2/3
+// of Interval (link's spec/QuicWatch.tla). Silence counts only while the process runs: after a gap in
 // which the check itself did not run (a starved process), its packets
 // waiting in the socket are read before it judges (link's spec/README.md
 // "Starvation"). QUIC's own idle timeout, which judges by the clock alone,
@@ -219,7 +221,9 @@ func (n *Node) liveness() link.Liveness {
 
 // DeadAfter is the Node's dead-peer bound: Interval + Timeout of
 // Config.Liveness (zero: link.LivenessDefault), given both Nodes use the
-// same liveness (QUIC takes the lower idle timeout of the two).
+// same liveness, on a path whose probe timeout is at most 2/3 of Interval
+// (on a slower one quic-go's keep-alive comes 1.5 PTO after the last
+// packet, and the bound is 1.5 PTO + Timeout).
 func (n *Node) DeadAfter() time.Duration {
 	l := n.liveness()
 	return l.Interval + l.Timeout
@@ -276,9 +280,10 @@ func (c *conn) end() {
 // runs from the first packet sent after the last one received, and a
 // connection that cannot send then (its writes stalled, its congestion
 // window full) sends it late: by as long as it could not send.
-// Sampling every Timeout/4 and closing after Interval + Timeout/2 without
-// a packet keeps the bound (Interval + Timeout) while a live peer's
-// keep-alives (every Interval) arrive within a round trip under Timeout/2.
+// Sampling every Timeout/4 and closing after keepAliveAfter + Timeout/2
+// without a packet keeps the bound (Interval + Timeout) while a live
+// peer's answer to the keep-alive arrives within a round trip under
+// Timeout/2 (spec/QuicWatch.tla).
 //
 // A tick more than 1.25 periods after the one before came to a process
 // that did not run meanwhile: quic-go has not read the packets waiting in
@@ -286,11 +291,11 @@ func (c *conn) end() {
 // the next tick judges (link's spec/README.md "Starvation").
 func (c *conn) watch() {
 	l := c.n.liveness()
-	g, quiet := l.Timeout/4, l.Interval+l.Timeout/2
+	g := l.Timeout / 4
 	tk := time.NewTicker(g)
 	defer tk.Stop()
-	last, seen := c.q.ConnectionStats().PacketsReceived, time.Now()
-	prev := seen
+	w := watchState{last: c.q.ConnectionStats().PacketsReceived, seen: time.Now()}
+	w.prev = w.seen
 	for {
 		select {
 		case <-c.q.Context().Done():
@@ -300,18 +305,51 @@ func (c *conn) watch() {
 				(*h)(c.peer)
 			}
 			now := time.Now()
-			gap := now.Sub(prev)
-			prev = now
-			if n := c.q.ConnectionStats().PacketsReceived; n != last {
-				last, seen = n, now
-			} else if gap > g+g/4 {
-				seen = seen.Add(gap)
-			} else if now.Sub(seen) >= quiet {
+			st := c.q.ConnectionStats()
+			if w.tick(now, st.PacketsReceived, g, keepAliveAfter(l.Interval, st)+l.Timeout/2) {
 				_ = c.q.CloseWithError(CodeDeadPeer, "dead peer")
 				return
 			}
 		}
 	}
+}
+
+// watchState is watch's: the packet count last seen, when it was seen to
+// move (or the silence before a gap the watch did not run in, moved on by
+// that gap), and the last tick (spec/QuicWatch.tla's seen and prev).
+type watchState struct {
+	last       uint64
+	seen, prev time.Time
+}
+
+// tick is one tick of watch at now, n packets received: true when no
+// packet came for quiet (QuicWatch.tla's WatchAt).
+func (w *watchState) tick(now time.Time, n uint64, g, quiet time.Duration) bool {
+	gap := now.Sub(w.prev)
+	w.prev = now
+	switch {
+	case n != w.last:
+		w.last, w.seen = n, now
+	case gap > g+g/4:
+		w.seen = w.seen.Add(gap)
+	case now.Sub(w.seen) >= quiet:
+		return true
+	}
+	return false
+}
+
+// keepAliveAfter is how long after the last packet received quic-go sends
+// its keep-alive PING: Interval, or 1.5 probe timeouts of the path when
+// that is longer (quic-go's nextKeepAliveTime, PTO = srtt + max(4 x
+// rttvar, 1 ms) + the peer's max_ack_delay, 25 ms in quic-go). On a path
+// whose probe timeout is over 2/3 of Interval the peer's answer comes that
+// much later, and so does the verdict (finding QW1).
+func keepAliveAfter(iv time.Duration, st quic.ConnectionStats) time.Duration {
+	if st.SmoothedRTT == 0 { // no sample: quic-go's 200 ms PTO, below every Interval
+		return iv
+	}
+	pto := st.SmoothedRTT + max(4*st.MeanDeviation, time.Millisecond) + 25*time.Millisecond
+	return max(iv, pto*3/2)
 }
 
 // testHookWatchTick, set by a test, runs in watch as a tick came, before
