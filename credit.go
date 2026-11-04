@@ -67,12 +67,25 @@ const (
 type sessionCredit struct {
 	n        int           // bytes this side may still send
 	pend     int           // taken by a Session's Write, not yet buffered (Grant's bound)
-	wake     chan struct{} // signalled when n grows; closed when forgotten
+	wake     chan struct{} // the waiting senders': closed when n grows or the credit is forgotten (wakeAll); nil while none waits
 	held     int           // received and not yet acknowledged: at most the window
 	consumed int           // left the buffer, not yet acknowledged
 	by       int           // byCaller, byUs or byPeer
 	answered bool          // FeatureChain connections: byUs, the peer's ACCEPT or refusal came; byPeer, this side's went
 	onGrant  func(int)     // Session.OnGrant's; nil: none
+}
+
+// wakeAll wakes every sender waiting in Acquire: each checks the credit
+// again, so a grant enough for some of them is taken by each it is enough
+// for (spec/CreditWaiters.tla). One wakeup for all waiters lost one: the
+// sender woken could find too little for itself, or take its bytes and
+// leave the rest, and the others slept with credit there (lane LINKWAKE).
+// A waiter makes the next channel.
+func (s *sessionCredit) wakeAll() {
+	if s.wake != nil {
+		close(s.wake)
+		s.wake = nil
+	}
 }
 
 // NewCredit returns the credit of a connection whose side buffers window
@@ -119,7 +132,7 @@ func (c *Credit) open(sid string, by int) {
 		return
 	}
 	if old != nil {
-		close(old.wake) // a reused id: the old session's sender gives up
+		old.wakeAll() // a reused id: the old session's sender gives up
 		if by == byCaller {
 			by = old.by // the caller's own Open of a link-opened session
 		}
@@ -130,7 +143,7 @@ func (c *Credit) open(sid string, by int) {
 	if c.cut {
 		by = byCaller // the connection ended: SessionClose was reported for its sessions
 	}
-	c.sessions[sid] = &sessionCredit{n: c.peerWindow, wake: make(chan struct{}, 1), by: by}
+	c.sessions[sid] = &sessionCredit{n: c.peerWindow, by: by}
 	if by != byCaller {
 		c.opened[by-1]++
 		if old == nil {
@@ -175,7 +188,7 @@ func (c *Credit) forget(sid string, code int) {
 	}
 	s := c.sessions[sid]
 	if s != nil {
-		close(s.wake)
+		s.wakeAll()
 		delete(c.sessions, sid)
 		c.queued -= s.held - s.consumed
 		if s.by != byCaller {
@@ -238,12 +251,15 @@ func (c *Credit) acquire(sid string, n int, flush func() error, stop <-chan stru
 			}
 			return true, false
 		}
+		if s.wake == nil {
+			s.wake = make(chan struct{})
+		}
 		wake := s.wake
 		c.mu.Unlock()
 		if waited.IsZero() {
 			waited = time.Now()
 		}
-		if flush != nil && flush() != nil { // a grant meanwhile is kept in wake
+		if flush != nil && flush() != nil { // a grant meanwhile closes wake
 			return false, false
 		}
 		select {
@@ -281,10 +297,7 @@ func (c *Credit) refund(sid string, n int) {
 	if s != nil {
 		s.n += n
 		s.pend -= n
-		select {
-		case s.wake <- struct{}{}:
-		default:
-		}
+		s.wakeAll()
 	}
 }
 
@@ -439,10 +452,7 @@ func (c *Credit) Grant(sid string, n int) error {
 	if traceOn {
 		traceEv(c.tr, traceEvent{ev: "Recv", t: "win", sid: sid, n: n, credit: s.n})
 	}
-	select {
-	case s.wake <- struct{}{}:
-	default:
-	}
+	s.wakeAll()
 	f := s.onGrant
 	c.mu.Unlock()
 	if f != nil {
