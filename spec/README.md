@@ -348,6 +348,7 @@ holds in a `Spec-Reviewed:` trailer).
 | `LinkSession.tla` | the interface: what a session guarantees | `mux.go`, `chain.go`, `conn.go` |
 | `Liveness.tla`, `TraceLive.tla` | `keepAlive`, the dead-peer bound, `rxAt` | `conn.go`, `read.go`, `liveness.go` |
 | `Pool.tla`, `TracePool.tla` | `Pool`: Min, Max, `Open`'s pick, dial and growth, `Drain`, `Close` | `pool.go`, `trace_pool_on.go` |
+| `QuicWatch.tla`, `MBTWatch.tla` | quiclink's liveness: `conn.watch`, `watchState.tick`, `keepAliveAfter`, QUIC's idle timeout as its backstop | `peerlink/quiclink/quiclink.go` |
 | `Join.tla`, `TraceJoin.tla` | `peerlink.Join`'s clean end (`Session.Sync`, hold, the watch) | `peerlink/chain.go`, `join.go`, `peerlink/trace_on.go` |
 
 ## Action map (lane CONFORM-link)
@@ -1107,7 +1108,8 @@ connections measured 13 s for the same reason (their last frame is a ping
 or pong before the break). Both worst cases are 15 s; link's is its
 documented bound and this lane does not change it.
 
-**Open.** The two RCFOLLOW failures with at most 1.7 s of stall (A's 10 s
+**Superseded** by "quiclink's watch" below (QW3): the hypothesis that
+follows is refuted. The two RCFOLLOW failures with at most 1.7 s of stall (A's 10 s
 watch fired, B silent for 10 s while its process ran) are not explained by
 the starvation: no fire in them was late past a period. A cause in the
 same code, not proven: QUIC's idle timeout was the smaller preset's
@@ -1118,3 +1120,106 @@ lost or late packet and A would hear nothing until its own watch. With the
 idle timeout now a backstop (4 x (Interval + Timeout), the watch closing
 first with CONNECTION_CLOSE) that path is gone if that was the cause; a
 qlog of both ends would settle it.
+
+## quiclink's watch (QuicWatch.tla, 2026-11-04, lane QLWATCH)
+
+`conn.watch` and quic-go beneath it, in quarter ticks (G = Timeout/4 = 4,
+Interval 8, Timeout 16: the shape of every preset, Timeout = 2 x
+Interval). quic-go processes packets (`Recv`: `lastPacketReceivedTime`,
+`PacketsReceived`), sends its keep-alive PING K after the last one
+(`KeepAlive`; K = max(Interval, 1.5 PTO), quic-go's `nextKeepAliveTime`),
+and closes silently once nothing came for B (`IdleClose`, by the clock,
+possibly before it processes what waits in the socket: its run loop's
+timer case). The watch ticks (`WatchAt`, `watchState.tick`): a new packet
+moves `seen`; a tick more than 1.25 G after the one before moves `seen` on
+by the gap; otherwise no packet for Quiet = K + Timeout/2 is the verdict
+(CONNECTION_CLOSE, `CodeDeadPeer`). The peer answers the keep-alive within
+Rtt (`Rtt + Late < Timeout/2`); the process may stop (`Sleep`, `Wake`).
+
+| property | statement |
+|---|---|
+| `NoFalseDead` | a live peer is never closed, by the watch or the backstop, for any keep-alive period K and any stop of MinSleep..MaxSleep |
+| `DetectBound` | a running process closes a silent connection within Quiet + Timeout/2 + Late of the later of its last packet and its last start (Interval + Timeout + Late when K = Interval; `WitnessTight`: reached) |
+| `WatchFirst` | on a running process the watch closes before the idle timeout: the peer is told (CONNECTION_CLOSE), it does not wait out its own bound |
+| ASSUMEs | B > K + Timeout + 2 Late (the backstop past the watch's bound); MaxSleep + K + Rtt + Late < B: a stop longer than B - (K + Rtt + Late) lets the backstop close a live peer silently, the ceiling (with B = 4 x (Interval + Timeout): about 18 s at `fast`, 60 s at `default`) |
+
+Configurations (`make spec`, seconds): `QuicWatch.cfg` (K = Interval, a
+running process), `QuicWatchPTO.cfg` (K = 12 > Interval: a path whose
+probe timeout stretches the keep-alive), `QuicWatchStarve.cfg` (one stop
+of 6..12, B = 28: smaller than the code's but within the ASSUMEs, so that
+the backstop's close is reached; every action taken there, `-coverage
+1`; the first two take no `Sleep`, `Wake`, discounted gap or `IdleClose`).
+
+Mutants (`make spec-mutants`): `quiet-ignores-pto` (Quiet = Interval +
+Timeout/2, the code before QW1: `NoFalseDead` on `QuicWatchPTO.cfg`, 22
+states), `count-gap` (no discount, the code before S1: `NoFalseDead` on
+`QuicWatchStarve.cfg`), `backstop-low` (the idle timeout at Timeout, the
+code before LIVESTARVE: `WatchFirst`), `never-close` (`DetectBound`), and
+`MinSleep = 0` (QW2, open: `NoFalseDead`). Witnesses: `WitnessWatch`,
+`WitnessTight` (both configurations), `WitnessStarvedLive` (a live peer's
+tick due with nothing processed for Quiet: only with `Sleep`),
+`WitnessIdle` (the backstop's close).
+
+**Action map.**
+
+| action | code |
+|---|---|
+| `Tick`, `Arrive`, `Die`, `Sleep`, `Wake` | the environment (time, the peer, the path, the scheduler) |
+| `Recv` | quic-go's `handlePackets` (`lastPacketReceivedTime`, `connStats.PacketsReceived`) |
+| `KeepAlive` | quic-go's run loop, `nextKeepAliveTime` (`keepAlivePingSent`) |
+| `IdleClose` | quic-go's run loop, `nextIdleTimeoutTime` (`ErrIdleTimeout`, no CONNECTION_CLOSE) |
+| `WatchAt` | `conn.watch`'s tick: `watchState.tick` (its verdict: `CloseWithError(CodeDeadPeer)`) |
+
+| field (model variable) | written by | action |
+|---|---|---|
+| `watchState.last` (`fresh`) | `watchState.tick` | `WatchAt` |
+| `watchState.seen` (`seen`) | `conn.watch` (start), `watchState.tick` | `Init`, `WatchAt` |
+| `watchState.prev` (`prev`) | `conn.watch` (start), `watchState.tick` | `Init`, `WatchAt` |
+| the ticker (`due`) | `time.NewTicker(Timeout/4)` | `WatchAt` (the first multiple of G after the tick: a Go Ticker drops what it could not deliver) |
+| `Quiet` | `keepAliveAfter` + Timeout/2, per tick from `ConnectionStats` | (a constant per configuration) |
+| `MaxIdleTimeout` (`B`) | `New` (`idleBackstop`) | `IdleClose` |
+
+No trace recorder: the watch's state is three fields, and the
+model-based test below replays its every step. `TestWatchFollowsTheModel`
+(peerlink/quiclink/watch_mbt_test.go) replays every `WatchAt` of the TLC
+walks in `testdata/mbt/qwatch-<cfg>-*.ndjson` (`scripts/spec.sh
+behaviours`, 16 walks per configuration) on `watchState.tick` and compares
+`seen`, `prev` and the verdict.
+
+**Finding QW1** (medium, fixed). The watch allowed Interval + Timeout/2 of
+silence, taking quic-go's keep-alive to come every Interval; quic-go sends
+it no sooner than 1.5 PTO after the last packet (PTO = srtt + 4 x rttvar
++ max_ack_delay). On a path with a round trip of 0.8 s (under `fast`'s
+Timeout/2) the first sample's rttvar (half the RTT) makes PTO about 2 s,
+the keep-alive 3 s, and the watch closed a live idle peer 3 s in
+(`TestSlowPathKeepsALiveIdlePeer`, failed before; mutant
+`quiet-ignores-pto`). Fix: Quiet = `keepAliveAfter` + Timeout/2, the
+keep-alive period computed per tick from `ConnectionStats` as quic-go
+does; the dead-peer bound on such a path is 1.5 PTO + Timeout, not
+Interval + Timeout (`DeadAfter`'s doc). The same holds under load: RTT
+samples taken while a process is starved inflate rttvar.
+
+**Finding QW2** (low, open). A stop shorter than 1.25 ticks does not show
+in the tick gaps, yet it delays quic-go's keep-alive and counts as
+silence: two such stops (TLC: 5 and 2 quarter ticks, the keep-alive due
+in the first) end a live peer on a running process (mutant `MinSleep =
+0`). The margin is Timeout/2 - Rtt - Late; with `fast` on loopback 1.5 s
+of short stops in one Quiet window. A fix needs the watch to judge from
+quic-go's own idle start (the first ack-eliciting packet sent after the
+last one received, `idleTimeoutStartTime`), which quic-go does not
+expose; `PacketsSent` cannot tell a keep-alive from an ACK.
+
+**Finding QW3** (the open item of "Starvation", refuted). That B's 3 s
+idle timeout closed B silently while A (`default`, 10 s) heard nothing
+until its own watch cannot be: QUIC's idle timeout is the smaller of the
+two endpoints' (RFC 9000 section 10.1), so A's was 3 s too and A ends by
+its own idle timer (`TestIdleTimeoutIsBothSides`: 5.2-5.8 s, "no recent
+network activity"), never by a 10 s watch. Consistent with the two
+failures instead: QW1 under load. A's watch at 10 s fires only when A's
+idle timer (max(3 s, 3 PTO)) has not, so A's PTO was over 3.3 s there; B's
+keep-alive was then 1.5 PTO, over 5 s, past B's `fast` watch (3 s), which
+closed a live A; its one CONNECTION_CLOSE, sent as both sides came back
+from the stall, lost (A's socket full of the bulk transfer). Not
+reproduced (a qlog of both ends would settle it); the QW1 fix removes
+that path.
+
