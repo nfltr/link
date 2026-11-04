@@ -79,8 +79,8 @@ Per side `p` and session `s`:
 | `Accept(p, s)` | `Conn.sendAccept`, `Conn.acceptLocked` |
 | `Acquire(p, s, n)` | `Credit.acquire` (credit taken) |
 | `SendCheck(p, s)` | `Conn.sendData`'s check of the write side and the credit, then the frame waits (trace `SendWait`) |
-| `SendBuffer(p, s)` | `Conn.frameWaitLocked`: the check again after the wait, the frame buffered (trace `SendData`) |
-| `SendData(p, s)` | the two at once, a frame that did not wait (Trace.tla only) |
+| `SendBuffer(p, s)` | `Conn.frameWaitLocked`: the check again after the wait, the frame buffered (trace `SendData`, logged by that check: `Credit.sendable`) |
+| `SendData(p, s)` | the two at once, a frame that did not wait: checked again just before it is buffered (C12; Trace.tla only) |
 | `Refund(p, s)` | `Credit.refund` (a `Write`'s credit given back, nothing sent: its write side closed, its credit ended or its deadline passed) |
 | `CloseWrite(p, s)` | `Session.CloseWrite` -> `Conn.sendClose` code 1, in two steps: `CloseWriteMark` (`halfClosed` set) and `CloseWriteSend` (the CLOSE buffered, `finSent`; review r2 LinkSession 1). Trace.tla takes the two as one (`Close` code 1) |
 | `RefuseMark(p, s)` | `Session.AbortWith`/`answer`'s refusal: `ans` taken, the credit forgotten (`Credit.forget` code 4, trace `Forget` 4); its ABORT then is `End` (trace `Close` 4) |
@@ -562,7 +562,7 @@ property of `Link.tla` (LinkSession 3, Join 7: decided, argued below).
 | C9 | `Trace.tla`, peerlink traces under load: `Leave` (`closeFlushed`) logged after `ConnClose`, and a `CloseWrite`'s CLOSE buffered after `Down` cut its session (it checked the session open just before) | neither: both act on a closed connection, the frame goes nowhere, nothing changes | **decided**: the trace maps both to a stutter when the side is closed (and the session cut), as C1 does `GoAway`; no code change |
 | C10 | `TracePool.tla`, `TestPool` (3 of 15 runs rejected): a pick saw a connection leaving (the peer's GOAWAY, or Drain's own between its frames and its `GoAway` line) or ended before the watcher, `Serve` or Drain logged it | neither: the trace's order was not the order the Pool acted on | **decided**, the code tightened (as C8): Drain marks its connections leaving under `p.mu` with its `GoAway` line, before the frames; the recorder logs, before each decision under `p.mu`, the ends and GOAWAYs it sees first (their later lines are stutters). 0 of 15 runs rejected after |
 | C11 | `Trace.tla`, `TestReceiveLoopReadsWhileARefusalWaits` (lane LINKF7, 1 of 3 runs rejected): a refusal's `Forget` (code 4) logged after `Down` cut the session: `Mux.refuse`'s goroutine ran after the connection's end | neither: its ABORT goes nowhere, nothing changes | **decided**: as C9, the trace maps a refusal's `Forget` and `Close` (code 4) of a session the peer opened to a stutter when the side is closed and the session cut before its refusal began; no code change. Fixture `link-ok-refuse-after-down` (accepted; rejected before) |
-| C12 | `Trace.tla`, `TestChainRefuse` under load (lane LINKF7, about 1 of 3 runs of the session traces): the opener's `SendData` logged after its `Recv` close 4 (the peer's refusal forgot the credit) | open: `Conn.sendData` checks `sendable` under `wmu`, but the receive loop's `Credit.Forget` does not take `wmu`, so a data frame checked before the refusal was read may be buffered (or only logged) after it; the peer drops it (no credit there, WIRE.md section 5), so nothing reaches its reader. The model makes check and buffer one step against `cr.on`. Next: decide whether `Link.tla` splits them (as `SendCheck`/`SendBuffer`, with the receive's forget between) or the recorder logs at the check; trace kept at `~/nfltr-evidence/LINKF7/c12-chainrefuse-senddata-after-forget.ndjson` |
+| C12 | `Trace.tla`, `TestChainRefuse` under load (lane LINKF7; lane LINKC12 measured 12 of 30 runs with a rejected trace, two shapes): (a) the opener's `SendData` logged after its `Recv` close 4 (the peer's refusal forgot the credit); (b) the refusing side's `Recv` data with credit -1 between its `Forget` 4 and `Close` 4 | (a) code: `Conn.sendData` checked `sendable` under `wmu` once, but the receive loop's `Credit.Forget` does not take `wmu`, so a frame checked before the refusal was read was buffered and logged after it (the peer dropped it: no credit there, WIRE.md section 5); `sendData` promises no data once the credit ended, as the model says. (b) neither: `Conn.sendAbort` forgets the credit, then buffers the ABORT (`wmu` held, the receive loop not stopped: F7), where `End` does both at once; the data goes to no reader either way | **fixed** (lane LINKC12): (a) `frameWaitLocked` checks every data frame again just before it is buffered and `Credit.sendable` logs its `SendData` under the credit's lock, so a `Forget` is either before the check (nothing buffered, `Refund`) or after the logged step; the receive loop takes no new lock. (b) `Trace.tla`'s `RecvStep` takes data dropped (credit -1) on a session that is `Refusing` (marked, ABORT not yet buffered): the model queues it for a session nothing reads, which `End` drops. Fixtures `link-data-after-refusal` (a's trace, rejected), `link-ok-data-during-refusal` (b's, accepted; rejected before) and `link-data-dropped-while-open` (b's with the `Forget` after the data: dropped on an open session, rejected). `TestChainRefuse` traced 30 of 30 runs accepted under `taskpolicy -b` |
 
 ## Environment assumptions (lane W5-LINK)
 
@@ -943,14 +943,16 @@ tests write (the dead-peer tests' take each `FireAt` branch);
 `make spec-mutants` checks the fixtures in `spec/traces/`: `live-ok`
 accepted, `live-dead-early` (dead before Timeout after the ping) and
 `live-fire-early` (a fire before its deadline) rejected; and the session
-trace `link-ok` (TestSessionCleanEnd's) and `link-ok-refuse-after-down`
-(C11) accepted by Trace.tla, each
+trace `link-ok` (TestSessionCleanEnd's), `link-ok-refuse-after-down`
+(C11) and `link-ok-data-during-refusal` (C12) accepted by Trace.tla, each
 `link-*` beside it rejected: a bug put in per invariant of Link
 (`link-credit-not-taken` CreditBounds, `link-charge-past-window`
 BufferBound, `link-read-past-queue` QueueWithinHeld,
 `link-grant-from-nothing` Conservation, `link-reused-id`
 NoProtocolError, `link-fin-after-shut` FinBeforeShut,
-`link-data-after-fin` GWrites, `link-unknown-step` an unmodelled
+`link-data-after-fin` GWrites, `link-data-after-refusal` DataOK (C12: data
+buffered after the peer's refusal was read), `link-data-dropped-while-open`
+RecvStep's credit (C12: data dropped on a session not refusing), `link-unknown-step` an unmodelled
 event). The Pool has no recorder yet (left: `maintain`, `Open`'s pick and dial, `Drain`).
 
 ### What this means for the tests (finding P3)

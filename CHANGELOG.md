@@ -8,6 +8,11 @@ version 2 unless an entry says otherwise.
 
 ## Unreleased
 
+- A Session's data frame is checked against its credit just before it
+  is buffered, also when it did not wait: a frame whose check passed
+  before the receive loop read the peer's refusal or reset is no longer
+  buffered after it (finding C12; the peer dropped it, nothing reached
+  a reader). The trace recorder logs `SendData` with that check.
 - `Pool.Drain` marks the connections it sends GOAWAY to as leaving
   under the Pool's lock, before the frames go out: an `Open` meanwhile
   sees each of them leaving or not as Drain does (spec/Pool.tla

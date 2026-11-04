@@ -320,21 +320,22 @@ func (wd *writeDeadline) expired() bool { return wd != nil && wd.past.Load() }
 // before CloseWrite buffers its CLOSE) or its credit ended (before every
 // other CLOSE or ABORT is buffered): checked under wmu, so no data
 // follows this side's FIN (spec/README.md "Design of the fixes"); and
-// again just before the frame is buffered when frameLocked waited for
-// room or its turn (wmu let go meanwhile: review F1).
+// again just before each frame is buffered: frameLocked may have waited
+// for room or its turn (wmu let go meanwhile: review F1), and the receive
+// loop forgets a refused or reset session's credit without wmu (C12).
 func (c *Conn) sendData(sid string, data []byte, wd *writeDeadline, wclosed *atomic.Bool, flush bool) (flushErr, err error) {
 	if len(sid) > MaxSID {
 		return nil, errSID
 	}
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
-	open := func() error {
-		if wclosed.Load() || !c.credit.sendable(sid, c.chain()) {
+	open := func(n int) error {
+		if wclosed.Load() || !c.credit.sendable(sid, c.chain(), n) {
 			return io.ErrClosedPipe
 		}
 		return nil
 	}
-	if err := open(); err != nil {
+	if err := open(0); err != nil {
 		return nil, err
 	}
 	if err := c.dataLocked(sid, data, wd, open); err != nil {
@@ -349,14 +350,14 @@ func (c *Conn) sendData(sid string, data []byte, wd *writeDeadline, wclosed *ato
 }
 
 // dataLocked buffers data frames of at most maxData bytes each; recheck
-// (nil: none) as frameWaitLocked's.
-func (c *Conn) dataLocked(sid string, data []byte, wd *writeDeadline, recheck func() error) error {
+// (nil: none) as frameWaitLocked's, which logs the frame's SendData.
+func (c *Conn) dataLocked(sid string, data []byte, wd *writeDeadline, recheck func(n int) error) error {
 	for len(data) > 0 {
 		n := min(len(data), maxData)
 		if err := c.frameWaitLocked(typeData, sid, data[:n], wd, recheck); err != nil {
 			return err
 		}
-		if traceOn {
+		if traceOn && recheck == nil {
 			traceEv(c.credit.tr, traceEvent{ev: "SendData", sid: sid, n: n})
 		}
 		data = data[n:]
@@ -396,13 +397,13 @@ func (c *Conn) sendOpen(sid string, header []byte, ch Chain) error {
 	// counts: its credit is forgotten under wmu, after that frame took its
 	// place in line (review F3). An id whose credit lives is refused
 	// (WIRE.md section 5, review F5).
-	goingAway := func() error {
+	goingAway := func(int) error {
 		if c.goingAway.Load() {
 			return ErrGoAway
 		}
 		return nil
 	}
-	if err := goingAway(); err != nil {
+	if err := goingAway(0); err != nil {
 		return err
 	}
 	if c.credit.inUse(sid) {
@@ -717,11 +718,11 @@ func (c *Conn) frameLocked(typ byte, sid string, body []byte, wd *writeDeadline)
 
 // frameWaitLocked is frameLocked with recheck (nil: none), which runs just
 // before the frame is buffered when the frame waited (for room or its
-// turn, wmu let go meanwhile): its error is returned and nothing is
-// buffered. A sender checks its frame's preconditions under wmu before
+// turn, wmu let go meanwhile), and for every data frame (given its
+// length): its error is returned and nothing is buffered. A sender checks its frame's preconditions under wmu before
 // it calls this; recheck is that check again, for what changed while it
 // waited (spec/Link.tla SendCheck/SendBuffer, OpenCheck/OpenBuffer).
-func (c *Conn) frameWaitLocked(typ byte, sid string, body []byte, wd *writeDeadline, recheck func() error) error {
+func (c *Conn) frameWaitLocked(typ byte, sid string, body []byte, wd *writeDeadline, recheck func(n int) error) error {
 	waited := false
 	wait := func() { // before wmu is let go
 		if !waited && traceOn && recheck != nil {
@@ -812,8 +813,13 @@ func (c *Conn) frameWaitLocked(typ byte, sid string, body []byte, wd *writeDeadl
 	if c.werr != nil {
 		return c.werr
 	}
-	if waited && recheck != nil {
-		if err := recheck(); err != nil {
+	// A data frame is checked again even when it did not wait: the receive
+	// loop forgets a session's credit (the peer's CLOSE or ABORT) without
+	// wmu, so the check that buffers it is this one, which logs its
+	// SendData under the credit's lock, ordered with that Forget (finding
+	// C12).
+	if recheck != nil && (waited || typ == typeData) {
+		if err := recheck(len(body)); err != nil {
 			return err
 		}
 	}

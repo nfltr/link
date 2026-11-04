@@ -329,12 +329,17 @@ func (c *Credit) Received(sid string, n int) error {
 // sendable reports whether sid's data may go out: its credit lives and,
 // on a FeatureChain connection, a session the peer opened was answered
 // with an ACCEPT (a Refuse that took the answer sends none: review r2 of
-// LinkSession, finding 2).
-func (c *Credit) sendable(sid string, chain bool) bool {
+// LinkSession, finding 2). With n > 0 it is the check just before a data
+// frame of n bytes is buffered, and the trace's SendData is logged with it.
+func (c *Credit) sendable(sid string, chain bool, n int) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	s := c.sessions[sid]
-	return s != nil && (!chain || s.by != byPeer || s.answered)
+	ok := s != nil && (!chain || s.by != byPeer || s.answered)
+	if traceOn && ok && n > 0 { // the frame of n bytes is buffered next, under wmu (finding C12)
+		traceEv(c.tr, traceEvent{ev: "SendData", sid: sid, n: n})
+	}
+	return ok
 }
 
 // inUse reports whether sid is a session the link opened (an OPEN sent or
