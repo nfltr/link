@@ -9,6 +9,7 @@ type poolTraceState struct{}
 
 func tracePool(*Pool)                                   {}
 func tracePoolOpen(*Pool) int                           { return 0 }
+func tracePoolSeen(*Pool)                               {}
 func tracePoolEv(*Pool, string, string, int, *Mux, int) {}
 
 func (p *Pool) traceEv(string, int, *Mux, int) {}

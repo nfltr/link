@@ -8,6 +8,11 @@ version 2 unless an entry says otherwise.
 
 ## Unreleased
 
+- `Pool.Drain` marks the connections it sends GOAWAY to as leaving
+  under the Pool's lock, before the frames go out: an `Open` meanwhile
+  sees each of them leaving or not as Drain does (spec/Pool.tla
+  DrainGoAway, finding C10); the Pool recorder logs the ends and GOAWAYs
+  a decision sees before their own goroutines do.
 - `peerlink.Join` resets a plain conn whose link session's connection
   ended, even while the conn is idle; before, it noticed only at the
   conn's next write (review

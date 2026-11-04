@@ -157,6 +157,9 @@ func ended(m *Mux) bool {
 // staying is how many connections count against Max: those open and not
 // going away, and the dials in flight.
 func (p *Pool) stayingLocked() int {
+	if traceOn {
+		tracePoolSeen(p)
+	}
 	n := p.dials
 	for _, m := range p.conns {
 		if !m.c.GoingAway() && !ended(m) {
@@ -189,6 +192,9 @@ func (p *Pool) pick(o int) (best *Mux, grow, growBG bool, changed <-chan struct{
 			}
 			tracePoolEv(p, "Pick", t, o, best, 0)
 		}()
+	}
+	if traceOn {
+		tracePoolSeen(p)
 	}
 	if p.ctx.Err() != nil {
 		return nil, false, false, nil, net.ErrClosed
@@ -477,6 +483,9 @@ func (p *Pool) backoff(attempt int) time.Duration {
 // and the Pool holds both Drains' replacements beside them meanwhile.
 func (p *Pool) Drain(ctx context.Context) error {
 	p.mu.Lock()
+	if traceOn {
+		tracePoolSeen(p)
+	}
 	old := slices.Clone(p.conns)
 	staying := 0
 	for _, m := range old {
@@ -527,15 +536,20 @@ func (p *Pool) Drain(ctx context.Context) error {
 
 // goAway sends GOAWAY on ms; they stop counting toward Min and Max.
 func (p *Pool) goAway(ms []*Mux, deadline time.Time) {
-	for _, m := range ms {
-		_ = m.goAway(deadline)
-	}
+	// Leaving under p.mu, before the frames: a pick sees each of them
+	// leaving or not as Drain does (spec/Pool.tla DrainGoAway, finding C10).
 	p.mu.Lock()
+	for _, m := range ms {
+		m.c.goingAway.Store(true)
+	}
 	p.changedLocked()
 	if traceOn {
 		tracePoolEv(p, "GoAway", "", 0, nil, 0)
 	}
 	p.mu.Unlock()
+	for _, m := range ms {
+		_ = m.goAway(deadline)
+	}
 }
 
 // Close closes every connection; Open fails from then on. A connection

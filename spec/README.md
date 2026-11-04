@@ -385,7 +385,7 @@ no longer writes.
 | `Mux.left` | `Mux.leave`, `Mux.closeIdle` | `Leave` (`LeaveWhenDrained`); `closeIdle` is `Pool.Close`'s `Leave` without a GOAWAY (`Pool.tla` `CloseSnap`) |
 | `Mux.cutting` | `Mux.cut` | `Closing(p, s, ABT)` after a GOAWAY |
 | `Mux.done` (`down`) | `Mux.close` | `Down` |
-| `Conn.goingAway` (`ga`) | `Conn.GoAway`, `Conn.recv` | `GoAway`, `Recv` of a GOAWAY |
+| `Conn.goingAway` (`ga`) | `Conn.GoAway`, `Conn.recv`, `Pool.goAway` | `GoAway`, `Recv` of a GOAWAY; `Pool.goAway` marks leaving just before its `Conn.GoAway`s (C10), the same `GoAway` |
 | `Conn.goAwayAt` (`sentGA`) | `Conn.GoAway` | `GoAway` |
 | `Conn.lastPing` (the drain barrier's order) | `Conn.pingTime` | `Ping` |
 | `Conn.closing` (`wshut`) | `Conn.closeFlushed` | `Leave` |
@@ -555,6 +555,7 @@ property of `Link.tla` (LinkSession 3, Join 7: decided, argued below).
 | C7 | `TracePool.tla`: a failed replacement's `goAway(reps)` is a second step after the dial's end, with its own wake; the model did both at once | the model, coarser than the code | **fixed in the spec**: `DrainBack`; `MaxHolds` exempts it (the Pool is past Max until the GOAWAYs: as during the dials) |
 | C8 | `TracePool.tla`: `Pool.Close` cancelled `p.ctx` before taking `p.mu`; a pick in between returned `net.ErrClosed` before Close's snapshot | neither: a pick then fails as after Close | **decided**, the code tightened for the recorder: `p.cancel` under `p.mu`, so a pick or dial sees the Pool open or closed with Close's snapshot (`CloseStart`) |
 | C9 | `Trace.tla`, peerlink traces under load: `Leave` (`closeFlushed`) logged after `ConnClose`, and a `CloseWrite`'s CLOSE buffered after `Down` cut its session (it checked the session open just before) | neither: both act on a closed connection, the frame goes nowhere, nothing changes | **decided**: the trace maps both to a stutter when the side is closed (and the session cut), as C1 does `GoAway`; no code change |
+| C10 | `TracePool.tla`, `TestPool` (3 of 15 runs rejected): a pick saw a connection leaving (the peer's GOAWAY, or Drain's own between its frames and its `GoAway` line) or ended before the watcher, `Serve` or Drain logged it | neither: the trace's order was not the order the Pool acted on | **decided**, the code tightened (as C8): Drain marks its connections leaving under `p.mu` with its `GoAway` line, before the frames; the recorder logs, before each decision under `p.mu`, the ends and GOAWAYs it sees first (their later lines are stutters). 0 of 15 runs rejected after |
 
 ## Environment assumptions (lane W5-LINK)
 

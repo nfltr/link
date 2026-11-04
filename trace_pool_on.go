@@ -36,7 +36,8 @@ type poolTraceState = *poolTrace
 type poolTrace struct {
 	path  string
 	opens atomic.Int32
-	ids   map[*Mux]int // under p.mu
+	ids   map[*Mux]int   // under p.mu
+	seen  map[*Mux]uint8 // under p.mu: 1 its GOAWAY logged, 2 its end
 }
 
 var tracePools atomic.Int32
@@ -46,7 +47,7 @@ func tracePool(p *Pool) {
 	if dir == "" {
 		return
 	}
-	p.tr = &poolTrace{path: filepath.Join(dir, fmt.Sprintf("pool-%d.ndjson", tracePools.Add(1))), ids: map[*Mux]int{}}
+	p.tr = &poolTrace{path: filepath.Join(dir, fmt.Sprintf("pool-%d.ndjson", tracePools.Add(1))), ids: map[*Mux]int{}, seen: map[*Mux]uint8{}}
 	tracePoolEv(p, "Pool", "", 0, nil, p.cfg.Min)
 }
 
@@ -82,4 +83,24 @@ func (p *Pool) traceEv(ev string, o int, m *Mux, n int) {
 	p.mu.Lock()
 	tracePoolEv(p, ev, "", o, m, n)
 	p.mu.Unlock()
+}
+
+// tracePoolSeen logs, before a decision under p.mu, the ends and peer
+// GOAWAYs that decision sees but whose goroutines (Serve, the watcher)
+// have yet to log: the trace's order is the order the Pool acted on
+// (finding C10). Their own later lines are stutters (TracePool.tla).
+func tracePoolSeen(p *Pool) {
+	if p.tr == nil {
+		return
+	}
+	for _, m := range p.conns {
+		if p.tr.seen[m]&2 == 0 && ended(m) {
+			tracePoolEv(p, "Down", "", 0, m, 0)
+			p.tr.seen[m] |= 3
+		}
+		if p.tr.seen[m]&1 == 0 && m.c.GoingAway() { // the Pool's own GOAWAYs are logged already: stutters
+			tracePoolEv(p, "PeerGoAway", "", 0, m, 0)
+			p.tr.seen[m] |= 1
+		}
+	}
 }
