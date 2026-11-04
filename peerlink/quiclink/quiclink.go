@@ -35,11 +35,13 @@
 // after the last packet received (no sooner than 1.5 probe timeouts of
 // the path: quic-go's floor), and a check of quiclink's own that closes a
 // connection that received no packet for that keep-alive period +
-// Timeout/2 (conn.watch): a silent peer is dead within Interval + Timeout
-// of its last packet, or 1.5 PTO + Timeout on a path whose PTO is over 2/3
-// of Interval (link's spec/QuicWatch.tla), and Timeout/2 or more after the
-// keep-alive went out (quic-go's idle timer start: a keep-alive the process
-// sent late moves the verdict with it). Silence counts only while the process runs: after a gap in
+// Timeout/2 (conn.watch): a silent peer is dead within Interval +
+// 17/16 Timeout of its last packet, or 1.5 PTO + 17/16 Timeout on a path
+// whose PTO is over 2/3 of Interval (link's spec/QuicWatch.tla), and
+// Timeout/2 or more after the keep-alive went out (quic-go's idle timer
+// start: a keep-alive the process sent late moves the verdict with it);
+// the check looks at a verdict again Timeout/16 later, after quic-go read
+// what waited in the socket (finding QW4). Silence counts only while the process runs: after a gap in
 // which the check itself did not run (a starved process), its packets
 // waiting in the socket are read before it judges (link's spec/README.md
 // "Starvation"). QUIC's own idle timeout, which judges by the clock alone,
@@ -222,13 +224,14 @@ func (n *Node) liveness() link.Liveness {
 }
 
 // DeadAfter is the Node's dead-peer bound: Interval + Timeout of
-// Config.Liveness (zero: link.LivenessDefault), given both Nodes use the
-// same liveness, on a path whose probe timeout is at most 2/3 of Interval
-// (on a slower one quic-go's keep-alive comes 1.5 PTO after the last
-// packet, and the bound is 1.5 PTO + Timeout).
+// Config.Liveness (zero: link.LivenessDefault), and Timeout/16 for the
+// verdict's second look (finding QW4), given both Nodes use the same
+// liveness, on a path whose probe timeout is at most 2/3 of Interval (on a
+// slower one quic-go's keep-alive comes 1.5 PTO after the last packet, and
+// the bound is 1.5 PTO + 17/16 Timeout).
 func (n *Node) DeadAfter() time.Duration {
 	l := n.liveness()
-	return l.Interval + l.Timeout
+	return l.Interval + l.Timeout + l.Timeout/16
 }
 
 // QUICConfig is the Node's QUIC settings, for Config.Dial.
@@ -284,12 +287,13 @@ func (c *conn) end() {
 // window full) sends it late: by as long as it could not send.
 // Sampling every Timeout/4 and closing after keepAliveAfter + Timeout/2
 // without a packet, and Timeout/2 after quic-go's idle timer started (the
-// keep-alive sent), keeps the bound (Interval + Timeout) while a live
-// peer's answer to the keep-alive arrives within a round trip under
-// Timeout/2 (spec/QuicWatch.tla). Short stops (under 1.25 periods, unseen
-// in the tick gaps) that delay the keep-alive delay the verdict with it
-// (finding QW2); one that delays reading the answer is tolerated while
-// Rtt + 1.25 periods stays within Timeout/2 (finding QW4).
+// keep-alive sent), then looking again a quarter period later (DeadAfter)
+// while a live peer's answer to the keep-alive arrives within a round trip
+// under Timeout/2 (spec/QuicWatch.tla). Short stops (under 1.25 periods,
+// unseen in the tick gaps) that delay the keep-alive delay the verdict
+// with it (finding QW2); one that ends at the verdict tick, before quic-go
+// read the answer waiting in the socket, is taken back by the second look
+// (finding QW4).
 //
 // A tick more than 1.25 periods after the one before came to a process
 // that did not run meanwhile: quic-go has not read the packets waiting in
@@ -312,7 +316,18 @@ func (c *conn) watch() {
 			}
 			now := time.Now()
 			st := c.q.ConnectionStats()
-			if w.tick(now, st.PacketsReceived, st.IdleTimeoutStart, g, keepAliveAfter(l.Interval, st)+l.Timeout/2) {
+			if !w.tick(now, st.PacketsReceived, st.IdleTimeoutStart, g, keepAliveAfter(l.Interval, st)+l.Timeout/2) {
+				continue
+			}
+			// the verdict's second look, g/4 later: the tick may have come
+			// before quic-go's run loop read a packet that waited in the
+			// socket through a stop (finding QW4, QuicWatch.tla's Look).
+			select {
+			case <-c.q.Context().Done():
+				return
+			case <-time.After(g / 4):
+			}
+			if w.look(time.Now(), c.q.ConnectionStats().PacketsReceived) {
 				_ = c.q.CloseWithError(CodeDeadPeer, "dead peer")
 				return
 			}
@@ -344,6 +359,17 @@ func (w *watchState) tick(now time.Time, n uint64, idle time.Time, g, quiet time
 	case now.Sub(w.seen) >= quiet && now.Sub(idle) >= 2*g:
 		return true
 	}
+	return false
+}
+
+// look is the second look at a verdict tick took, n packets received by
+// now: true (dead) when none came since; else the verdict is taken back
+// (QuicWatch.tla's Look).
+func (w *watchState) look(now time.Time, n uint64) bool {
+	if n == w.last {
+		return true
+	}
+	w.last, w.seen = n, now
 	return false
 }
 
