@@ -345,8 +345,10 @@ SendWindow(p, s) ==                              \* Credit.grant -> Conn.sendWin
     /\ UNCHANGED <<cr, ss, pend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
                    pings, wshut, closed, down, appDone, crashes, err, wt>>
 
+\* Also after the connection's end (a Drain of a connection that closed
+\* meanwhile: peerlink's Node, Pool.goAway): the frame goes nowhere (Send),
+\* the flags change nothing more (finding C1, lane CONFORM-link).
 GoAway(p) ==                                     \* Mux.goAway -> Conn.GoAway
-    /\ ~down[p]
     /\ ga' = [ga EXCEPT ![p] = TRUE]
     /\ sentGA' = [sentGA EXCEPT ![p] = TRUE]
     /\ Send(p, Frame("goaway", NoSid, 0))

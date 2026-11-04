@@ -13,6 +13,9 @@ MCCredit == [p \in Sides |-> [s \in Sids |-> IF p = "d" THEN 6 ELSE 0]]
 MCCrash == [p \in Sides |-> [s \in Sids |-> IF p = "d" THEN 1 ELSE 0]]
 \* LinkRefuse.cfg: the accepter writes 2 bytes (a Refuse racing a Write).
 MCRefuse == [p \in Sides |-> [s \in Sids |-> IF p = "l" THEN 2 ELSE 0]]
+\* LinkBoth.cfg: a session of each side, opened at once (crossed OPENs),
+\* one byte each way on each (review r2 of LinkSession, finding 7).
+MCBoth == [p \in Sides |-> [s \in Sids |-> 1]]
 \* LinkDrain.cfg: two sessions, no data (Link.cfg checks credit).
 MCDrain == [p \in Sides |-> [s \in Sids |-> 0]]
 

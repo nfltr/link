@@ -17,6 +17,10 @@ EXTENDS Naturals, Sequences
 CONSTANTS
     N,       \* the client's bytes
     Mutant   \* "none"; "no-sync": end once the FIN is buffered (the code before);
+             \* "no-watch": the code before review r2 Join 2: nothing watches the
+             \* session while the client is idle, so a connection that dies after
+             \* the peer's FIN reached the client is noticed only at the client's
+             \* next write or close;
              \* "no-hold": pass the peer's FIN on while the sync waits;
              \* "done-skips-hold": the code before review r2 finding 1: the
              \* peer's FIN after the joint's CloseWrite drops the session
@@ -115,13 +119,21 @@ Crash == up /\ up' = FALSE /\ toA' = <<>> /\ toR' = <<>>
 Lost ==
     /\ ~up /\ cend = ""
     /\ (d0 # "done" \/ d1 # "done")
+    \* no-watch: only a step of the joint's own notices (a Pump running, a
+    \* sync waiting, a client byte or FIN to copy); joint.watch is the rest.
+    /\ Mutant = "no-watch" => (d1 = "run" \/ d0 = "sync" \/ cw > rcd \/ (cfin /\ d0 = "run"))
     /\ cend' = "reset" /\ d0' = "done" /\ d1' = "done"
     /\ UNCHANGED <<cw, cfin, rcd, toA, toR, afs, arcv, afin, up, ceof, clean>>
 
 Next == CWrite \/ CFin \/ Copy \/ CloseWrite \/ ARecv \/ AFin \/ RRecv
         \/ Finish \/ Crash \/ Lost
 
-Spec == Init /\ [][Next]_vars
+\* The joint's and the connection's steps are taken once they can be; the
+\* client's and the peer's application's need not be (an idle client).
+Fairness == WF_vars(Copy) /\ WF_vars(CloseWrite) /\ WF_vars(ARecv) /\ WF_vars(RRecv)
+            /\ WF_vars(Finish) /\ WF_vars(Lost)
+
+Spec == Init /\ [][Next]_vars /\ Fairness
 
 TypeOK ==
     /\ d0 \in {"run", "sync", "done"} /\ d1 \in {"run", "held", "done"}
@@ -130,6 +142,10 @@ TypeOK ==
 \* A client that saw a clean end had every byte and its FIN read by the
 \* peer once the connection is gone (relay-core finding 23).
 NoSilentLoss == clean /\ ~up => arcv = cw /\ afin /\ cfin
+
+\* A client whose link connection died ends (review r2 Join 2): reset, or
+\* cleanly closed, however idle it is.
+LostEnds == ~up ~> cend # ""
 
 \* Witnesses (make spec-mutants: TLC must violate each): a clean end, a
 \* reset, a FIN held while the sync waits.

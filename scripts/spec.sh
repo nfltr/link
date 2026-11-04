@@ -18,6 +18,7 @@
 #            linktrace, each connection's trace checked against the model
 #            (spec/Trace.tla).
 #   trace F  one recorded trace.
+#   behaviours  TLC -simulate walks for the model-based tests (testdata/mbt).
 # TLC_WORKERS (default 4) caps TLC's threads. Java and tla2tools.jar come
 # from scripts/fetch-tla.sh.
 set -eu
@@ -83,6 +84,25 @@ INVARIANTS
     FinBeforeShut
 CFG
 	META=$work/states-$(basename "$1") tlc "$cfg" Trace.tla -deadlock
+}
+
+# jtrace FILE: TLC on one joint's recorded trace (spec/TraceJoin.tla); it
+# passes when TLC reaches the trace's end (TraceUnfinished violated).
+jtrace() {
+	cfg=$work/$(basename "$1").cfg
+	cat >"$cfg" <<CFG
+CONSTANTS
+    TraceFile = "$1"
+    N <- TraceN
+    Mutant = "none"
+INIT TraceInit
+NEXT TraceNext
+INVARIANT TraceUnfinished
+CFG
+	jst=0 # not st: the callers' (sh has no locals)
+	META=$work/states-$(basename "$1") tlc "$cfg" TraceJoin.tla -deadlock >"$cfg.out" 2>&1 || jst=$?
+	cat "$cfg.out"
+	[ $jst != 0 ] && grep -q '^Error: Invariant TraceUnfinished is violated' "$cfg.out"
 }
 
 # tlcrun CFG: TLC on MCLink.tla with CFG, which must pass.
@@ -229,6 +249,23 @@ mutants)
 			;;
 		esac
 	}
+	# joinfixture FILE: a joint's trace with a bug put in (spec/traces/join-*):
+	# TraceJoin.tla must accept join-ok and reject each other one.
+	joinfixture() {
+		st=0
+		TLC_WORKERS=1 jtrace "$PWD/$1" >"$jw/m.out" 2>&1 || st=$?
+		case $(basename "$1"):$st in
+		join-ok.*:0) echo "$(basename "$1"): accepted, as expected" ;;
+		join-ok.*:*) echo "$(basename "$1"): rejected"; tail -10 "$jw/m.out"; return 1 ;;
+		*:0) echo "$(basename "$1"): accepted (a bug the trace check misses)"; return 1 ;;
+		*)
+			if grep -q 'Error: TLC threw\|Error: Parsing' "$jw/m.out"; then
+				echo "$(basename "$1"): TLC failed:"; tail -10 "$jw/m.out"; return 1
+			fi
+			echo "$(basename "$1"): rejected, as expected"
+			;;
+		esac
+	}
 	# job CHECK ARGS: CHECK in the background, SPEC_JOBS at once.
 	n=0
 	job() {
@@ -271,13 +308,14 @@ mutants)
 		job mutant Liveness.cfg 'Mutant = "none"' "Mutant = \"$m\"" Liveness.tla
 	done
 	# peerlink.Join's clean end (Join.tla, relay-core finding 23).
-	for m in no-sync no-hold done-skips-hold; do
+	for m in no-sync no-hold done-skips-hold no-watch; do
 		job mutant Join.cfg 'Mutant = "none"' "Mutant = \"$m\"" Join.tla
 	done
 	for w in WitnessDead WitnessLateAlive WitnessTight; do job witness Liveness.cfg $w Liveness.tla; done
 	for w in WitnessClean WitnessReset WitnessHeld WitnessCleanDown; do job witness Join.cfg $w Join.tla; done
 	for f in spec/traces/*.ndjson.live; do job livetrace "$f"; done
 	for f in spec/traces/link-*.ndjson; do job linkfixture "$f"; done
+	for f in spec/traces/join-*.ndjson; do job joinfixture "$f"; done
 	wait
 	fail=0
 	i=0
@@ -289,7 +327,7 @@ mutants)
 	exit $fail
 	;;
 traces)
-	tests=${TRACE_TESTS:-'^(TestSessionCleanEnd|TestSessionReset|TestMuxSlowSessionIsolated|TestGoAwayDrainKeepsTails|TestCrossedOpenRunsOnTheLeavingConnection|TestMuxV2GoAway|TestSessionCutWithItsConnection|TestMuxSessions|TestMuxV2Sessions|TestWriteRacingCloseWriteSendsNothingAfterFIN|TestWriteParkedForItsTurnSendsNothingAfterFIN|TestOpenParkedPastPeerGoAwayIsNotSent|TestAbortAtMaxSessionsRacingOpenKeepsTheConnection)$'}
+	tests=${TRACE_TESTS:-'^(TestSessionCleanEnd|TestSessionReset|TestMuxSlowSessionIsolated|TestGoAwayDrainKeepsTails|TestCrossedOpenRunsOnTheLeavingConnection|TestMuxV2GoAway|TestSessionCutWithItsConnection|TestMuxSessions|TestMuxV2Sessions|TestWriteRacingCloseWriteSendsNothingAfterFIN|TestWriteParkedForItsTurnSendsNothingAfterFIN|TestOpenParkedPastPeerGoAwayIsNotSent|TestAbortAtMaxSessionsRacingOpenKeepsTheConnection|TestChainRefuse|TestRefusedOpenReadsReset|TestWriteAfterRefuseSendsNoData|TestCloseWriteRacingThePeersFINDropsAfterItsCLOSE|TestMuxOpenSkipsAnIDThePeerTook)$'}
 	mkdir -p "$work/traces"
 	LINKTRACE=$work/traces go test -tags linktrace -count=1 -run "$tests" . >"$work/test.out" 2>&1 || {
 		cat "$work/test.out"
@@ -303,6 +341,32 @@ traces)
 			exit 1
 		}
 	done
+	# peerlink's joints (spec/TraceJoin.tla) and their link connections
+	# (Trace.tla, beside the others).
+	mkdir -p "$work/ptraces"
+	LINKTRACE=$work/ptraces go test -tags linktrace -count=1 -run "${TRACE_JOIN_TESTS:-^TestJoin}" ./peerlink/ >"$work/test.out" 2>&1 || {
+		cat "$work/test.out"
+		exit 1
+	}
+	for t in "$work"/ptraces/*; do
+		case $(basename "$t") in
+		join-*) ;;
+		*) mv "$t" "$work/traces/peerlink-$(basename "$t")" ;;
+		esac
+	done
+	for t in "$work"/ptraces/join-*.ndjson; do
+		[ -e "$t" ] || continue
+		if TLC_WORKERS=1 jtrace "$t" >"$t.out" 2>&1; then
+			echo "join $(basename "$t"): $(wc -l <"$t" | tr -d ' ') lines: accepted"
+		else
+			echo "join $(basename "$t"): REJECTED"
+			grep -E -B2 -A6 'unknown event|Error' "$t.out" | head -12
+			exit 1
+		fi
+	done
+	cat "$work"/ptraces/join-*.ndjson >"$work/jall" 2>/dev/null || :
+	for e in Copy CloseWrite Fin Synced Finish Lost; do printf 'join %s %s; ' "$e" "$(grep -c "\"ev\":\"$e\"" "$work/jall" || true)"; done
+	echo
 	# keepAlive's steps (<trace>.ndjson.live), each side's.
 	for t in "$work"/traces/*.ndjson.live; do
 		[ -e "$t" ] || continue
@@ -337,10 +401,61 @@ traces)
 		fi
 	done
 	echo "$n traces, $bad rejected"
+	# Action coverage: each event Trace.tla maps (a step of Link), how many
+	# times the traces took it; one never taken is a test gap.
+	cat "$work"/traces/*.ndjson >"$work/all"
+	gap=
+	for e in $(grep -o 'E.ev = "[A-Za-z]*"' spec/Trace.tla | sed 's/.*"\(.*\)"/\1/' | sort -u); do
+		k=$(grep -c "\"ev\":\"$e\"" "$work/all" || true)
+		[ "$k" != 0 ] || gap="$gap $e"
+		printf '%s %s; ' "$e" "$k"
+	done
+	for t in open data win accept close goaway ping pong; do
+		printf 'Recv %s %s; ' "$t" "$(grep -c "\"ev\":\"Recv\".*\"t\":\"$t\"\|\"t\":\"$t\".*\"ev\":\"Recv\"" "$work/all" || true)"
+	done
+	printf 'Close 4 %s; Forget 4 %s\n' "$(grep -c '"ev":"Close".*"n":4,\|"n":4,.*"ev":"Close"' "$work/all" || true)" "$(grep -c '"ev":"Forget".*"n":4,\|"n":4,.*"ev":"Forget"' "$work/all" || true)"
+	echo "events no trace took:${gap:- none}"
 	[ "$bad" = 0 ]
+	;;
+behaviours)
+	# Behaviours for the model-based tests (spec/README.md "Model-based
+	# tests"): TLC -simulate walks, MBT_NUM (default 4) per configuration,
+	# seeded (MBT_SEED, default 1), into MBT_OUT (default testdata/mbt):
+	# link-<cfg>-<n>.ndjson (MBTLink.tla) and live-<n>.ndjson (MBTLive.tla).
+	# The Go tests replay every file there (credit_mbt_test.go,
+	# liveness_mbt_test.go); MBT_DIR points them at another directory.
+	out=$(cd "${MBT_OUT:-testdata/mbt}" 2>/dev/null && pwd || { mkdir -p "${MBT_OUT:-testdata/mbt}" && cd "${MBT_OUT:-testdata/mbt}" && pwd; })
+	gen() { # gen CFG MODULE NAME DEPTH [sed expr] [walks]
+		mkdir -p "$work/gen"
+		rm -f "$work/gen"/*.ndjson
+		sed -e '/^PROPERTY/,$d' -e '/^INVARIANT/,$d' -e "${5:-s/^\$//}" -e "s|^CONSTANTS|CONSTANTS\n    MBTDir = \"$work/gen\"|" "spec/$1" >"$work/gen.cfg"
+		echo 'ACTION_CONSTRAINT MBTDump' >>"$work/gen.cfg"
+		# -deadlock: a walk may end anywhere (LinkData's sessions never end).
+		TLC_WORKERS=1 tlc "$work/gen.cfg" "$2" -simulate "num=${6:-${MBT_NUM:-4}}" -depth "$4" -seed "${MBT_SEED:-1}" -deadlock >"$work/gen.out" 2>&1 || {
+			tail -30 "$work/gen.out"
+			exit 1
+		}
+		for f in "$work"/gen/*.ndjson; do
+			b=$(basename "$f" .ndjson)
+			mv "$f" "$out/$3-${b#*-}.ndjson"
+		done
+		echo "$3: $(ls "$out" | grep -c "^$3-") behaviours"
+	}
+	gen Link.cfg MBTLink.tla link-Link 120 's/Crash = 1/Crash = 0/'
+	# Link.cfg without closes: every walk moves its 6 bytes through the
+	# window (reads, grants, window updates).
+	gen Link.cfg MBTLink.tla link-LinkData 120 's/Crash = 1/Crash = 0/;s/Ends = {0, 1, 2}/Ends = {}/'
+	gen LinkCrash.cfg MBTLink.tla link-LinkCrash 80
+	gen LinkSess.cfg MBTLink.tla link-LinkSess 120
+	gen LinkRefuse.cfg MBTLink.tla link-LinkRefuse 120
+	gen LinkDrain.cfg MBTLink.tla link-LinkDrain 120
+	gen Liveness.cfg MBTLive.tla live 60 '' $((${MBT_NUM:-4} * 8))
 	;;
 trace)
 	trace "$2"
+	;;
+jtrace)
+	jtrace "$2"
 	;;
 *)
 	echo "usage: spec.sh check|invariants|nightly|mutants|traces|trace FILE" >&2
