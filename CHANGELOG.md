@@ -8,6 +8,14 @@ version 2 unless an entry says otherwise.
 
 ## Unreleased
 
+- Several goroutines in `Credit.Acquire` on one session no longer wait
+  with credit there: a grant (and a refund) wakes every waiting sender,
+  where it woke one, which could take its bytes and leave the rest or
+  find too little for itself while the others slept until a grant that
+  might never come (relay lane FLAKECC; `spec/CreditWaiters.tla`, mutants
+  `one-slot` and `pass-on`, `TestConcurrentAcquiresShareAGrant`). A
+  session's credit makes its wake channel only when a sender waits: one
+  allocation fewer per session open.
 - A process that did not run for longer than its liveness Timeout (a
   starved or stopped process) no longer takes a live peer for dead:
   `keepAlive` declares the peer dead only at a fire after a look (an

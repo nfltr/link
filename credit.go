@@ -143,7 +143,7 @@ func (c *Credit) open(sid string, by int) {
 	if c.cut {
 		by = byCaller // the connection ended: SessionClose was reported for its sessions
 	}
-	c.sessions[sid] = &sessionCredit{n: c.peerWindow, by: by}
+	c.sessions[sid] = &sessionCredit{n: c.peerWindow, by: by} // no wake channel until a sender waits (TestCreditOpenMakesNoWakeChannel)
 	if by != byCaller {
 		c.opened[by-1]++
 		if old == nil {

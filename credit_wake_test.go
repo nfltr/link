@@ -75,3 +75,13 @@ func waitAcquiring(t *testing.T, n int) {
 	}
 	t.Fatalf("fewer than %d goroutines wait in Credit.acquire", n)
 }
+
+// TestCreditOpenMakesNoWakeChannel: a session's credit makes its wake
+// channel only when a sender waits (docs/performance.md, "Credit's wake
+// channel"): an Open and Forget allocate the credit alone.
+func TestCreditOpenMakesNoWakeChannel(t *testing.T) {
+	c := NewCredit(8, 8, func(string, int) {})
+	if n := testing.AllocsPerRun(100, func() { c.Open("s"); c.Forget("s") }); n > 1 {
+		t.Fatalf("Open and Forget: %v allocations, want 1 (the session's credit)", n)
+	}
+}

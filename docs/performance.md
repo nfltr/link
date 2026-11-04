@@ -489,6 +489,25 @@ per op equal). Evidence:
 `~/nfltr-evidence/profiles/2026-10-31-w1f/link-firstout/` (benchstat.txt).
 Guard: `TestChainEcho` and peerlink's `TestForwardReportsFirstOut`.
 
+## Credit's wake channel (2026-11-05, lane LINKWAKE, unreleased)
+
+A correctness fix with a gain: a grant now wakes every sender waiting in
+`Credit.Acquire` by closing the session's wake channel (`wakeAll`,
+`spec/CreditWaiters.tla`), and a waiting sender makes the next one, so a
+session no sender ever waited on makes none (before: a one-slot channel
+per session at `Open`). `BenchmarkLatency` (tcp, held and fresh),
+`BenchmarkChainOpen` (hops 0), `BenchmarkThroughput` (tcp, 64 B and
+64 KiB, 1 and 8 sessions, one way) and `BenchmarkIdleSessions` (1,000
+idle), the old and new test binaries interleaved, n = 6, load average
+4.6 to 7.4: allocations per fresh session open, echo and close 23 -> 21
+(bytes -13 %, p = 0.015), per `ChainOpen` 20.5 -> 18 (bytes -10 %);
+time, throughput and steady-state allocations unchanged (p >= 0.13).
+A sender that waits for credit allocates one channel per wait, which
+does not show in the window-bound throughput runs. Evidence:
+`~/nfltr-evidence/profiles/2026-11-05-LINKWAKE/` (benchstat.txt).
+Guard: `TestCreditOpenMakesNoWakeChannel` (an Open allocates its credit
+alone); `TestConcurrentAcquiresShareAGrant` for the fix.
+
 ## What was looked at and left
 
 - **TLS writes**: link writes a coalesced batch with one `Write` on the
