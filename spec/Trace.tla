@@ -70,7 +70,12 @@ Step ==
       [] E.ev = "Window" -> gpend[P][S] = E.n /\ SendWindow(P, S)
       [] E.ev = "GoAway" -> GoAway(P)
       [] E.ev = "Ping" -> Ping(P, E.n)
-      [] E.ev = "Pong" -> Pong(P, E.n = 1)
+      \* keepAlive took a ping off its channel before the receive loop handed
+      \* it the next (pings read in a burst): it answers both, the second in
+      \* place of the first, still last in the write buffer; the model's one
+      \* pong already answered the latest (lane LIVESTARVE, link-ok-pong-burst).
+      [] E.ev = "Pong" -> IF E.n = 1 /\ pong[P] = 0 /\ out[P] # <<>> /\ out[P][Len(out[P])].t = "pong"
+                          THEN UNCHANGED vars ELSE Pong(P, E.n = 1)
       [] E.ev = "Recv" -> RecvStep
       \* closeFlushed after Conn.Close (a Node or Pool closing a connection
       \* that ended meanwhile): nothing left to shut (finding C9).

@@ -949,7 +949,9 @@ tests write (the dead-peer tests' take each `FireAt` branch);
 accepted, `live-dead-early` (dead before Timeout after the ping) and
 `live-fire-early` (a fire before its deadline) rejected; and the session
 trace `link-ok` (TestSessionCleanEnd's), `link-ok-refuse-after-down`
-(C11) and `link-ok-data-during-refusal` (C12) accepted by Trace.tla, each
+(C11), `link-ok-data-during-refusal` (C12) and `link-ok-pong-burst`
+(`TestStarvedProcessKeepsALivePeer`'s: pings read in a burst, keepAlive
+answers both, the second pong in place of the first) accepted by Trace.tla, each
 `link-*` beside it rejected: a bug put in per invariant of Link
 (`link-credit-not-taken` CreditBounds, `link-charge-past-window`
 BufferBound, `link-read-past-queue` QueueWithinHeld,
