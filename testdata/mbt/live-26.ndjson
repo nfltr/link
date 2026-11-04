@@ -1,0 +1,14 @@
+{"a":"Init","now":0,"rx":0,"pingAt":-1,"timer":2,"dead":false}
+{"a":"Tick","now":1,"rx":0,"pingAt":-1,"timer":2,"dead":false}
+{"a":"Tick","now":2,"rx":0,"pingAt":-1,"timer":2,"dead":false}
+{"a":"Recv","now":2,"rx":2,"pingAt":-1,"timer":2,"dead":false}
+{"a":"Die","now":2,"rx":2,"pingAt":-1,"timer":2,"dead":false}
+{"a":"Tick","now":3,"rx":2,"pingAt":-1,"timer":2,"dead":false}
+{"a":"FireAt","now":3,"rx":2,"pingAt":-1,"timer":4,"dead":false}
+{"a":"Tick","now":4,"rx":2,"pingAt":-1,"timer":4,"dead":false}
+{"a":"FireAt","now":4,"rx":2,"pingAt":4,"timer":6,"dead":false}
+{"a":"Tick","now":5,"rx":2,"pingAt":4,"timer":6,"dead":false}
+{"a":"Tick","now":6,"rx":2,"pingAt":4,"timer":6,"dead":false}
+{"a":"FireAt","now":6,"rx":2,"pingAt":4,"timer":7,"dead":false}
+{"a":"Tick","now":7,"rx":2,"pingAt":4,"timer":7,"dead":false}
+{"a":"Tick","now":8,"rx":2,"pingAt":4,"timer":7,"dead":false}

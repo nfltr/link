@@ -1374,30 +1374,43 @@ func (c *Conn) keepAlive() {
 		if traceOn {
 			traceLive(c, "Fire", now, rx, pingAt)
 		}
-		if pingAt >= 0 && rx < pingAt { // nothing since the ping
-			if now-pingAt >= to {
-				if traceOn {
-					traceLive(c, "Dead", now, rx, pingAt)
-				}
-				c.fail(ErrDeadPeer)
-				return
+		dead, ping, due, at := liveFire(now, rx, pingAt, iv, to)
+		if dead {
+			if traceOn {
+				traceLive(c, "Dead", now, rx, pingAt)
 			}
-			t.Reset(pingAt + to - now)
-			continue
+			c.fail(ErrDeadPeer)
+			return
 		}
-		pingAt = -1
-		if idle := now - rx; idle < iv {
-			t.Reset(iv - idle)
-			continue
+		if ping {
+			c.ping()
 		}
-		c.ping()
-		pingAt = now
-		// Look again an interval on (Timeout is at least that): once the
-		// pong came the next ping goes Interval after it, so a peer that
-		// dies right after it is dead Interval + Timeout after its last
-		// frame (not 2 x Timeout).
-		t.Reset(iv)
+		pingAt = at
+		t.Reset(due - now)
 	}
+}
+
+// liveFire is one pass of keepAlive's loop once its timer fired at now,
+// the last bytes received at rx, the ping waiting for its answer sent at
+// pingAt (-1: none), all since the Conn's t0 (spec/Liveness.tla FireAt;
+// liveness_mbt_test.go replays the model's steps on it): the peer is dead,
+// or keepAlive pings first (ping), then waits for its timer at due with
+// the ping at at (-1: none).
+func liveFire(now, rx, pingAt, iv, to time.Duration) (dead, ping bool, due, at time.Duration) {
+	if pingAt >= 0 && rx < pingAt { // nothing since the ping
+		if now-pingAt >= to {
+			return true, false, 0, pingAt
+		}
+		return false, false, pingAt + to, pingAt
+	}
+	if rx+iv > now { // idle less than an interval
+		return false, false, rx + iv, -1
+	}
+	// Ping, and look again an interval on (Timeout is at least that): once
+	// the pong came the next ping goes Interval after it, so a peer that
+	// dies right after it is dead Interval + Timeout after its last frame
+	// (not 2 x Timeout).
+	return false, true, now + iv, now
 }
 
 // control writes a ping or pong at once, from a goroutine of its own when

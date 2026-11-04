@@ -1,0 +1,7 @@
+{"a":"Init","c":[],"cr":{"d":[{"on":false,"n":0,"held":0,"cons":0}],"l":[{"on":false,"n":0,"held":0,"cons":0}]},"pend":{"d":[0],"l":[0]},"gpend":{"d":[0],"l":[0]},"h":{"d":{"t":"","s":0},"l":{"t":"","s":0}}}
+{"a":"OpenCheck","c":{"p":"d","s":1},"cr":{"d":[{"on":true,"n":4,"held":0,"cons":0}],"l":[{"on":false,"n":0,"held":0,"cons":0}]},"pend":{"d":[0],"l":[0]},"gpend":{"d":[0],"l":[0]},"h":{"d":{"t":"","s":0},"l":{"t":"","s":0}}}
+{"a":"Crashed","c":{"p":"d"},"cr":{"d":[{"on":true,"n":4,"held":0,"cons":0}],"l":[{"on":false,"n":0,"held":0,"cons":0}]},"pend":{"d":[0],"l":[0]},"gpend":{"d":[0],"l":[0]},"h":{"d":{"t":"","s":0},"l":{"t":"","s":0}}}
+{"a":"EOFClose","c":{"p":"l"},"cr":{"d":[{"on":true,"n":4,"held":0,"cons":0}],"l":[{"on":false,"n":0,"held":0,"cons":0}]},"pend":{"d":[0],"l":[0]},"gpend":{"d":[0],"l":[0]},"h":{"d":{"t":"","s":0},"l":{"t":"","s":0}}}
+{"a":"Down","c":{"p":"d"},"cr":{"d":[{"on":true,"n":4,"held":0,"cons":0}],"l":[{"on":false,"n":0,"held":0,"cons":0}]},"pend":{"d":[0],"l":[0]},"gpend":{"d":[0],"l":[0]},"h":{"d":{"t":"","s":0},"l":{"t":"","s":0}}}
+{"a":"OpenRefused","c":{"p":"d","s":1},"cr":{"d":[{"on":false,"n":0,"held":0,"cons":0}],"l":[{"on":false,"n":0,"held":0,"cons":0}]},"pend":{"d":[0],"l":[0]},"gpend":{"d":[0],"l":[0]},"h":{"d":{"t":"","s":0},"l":{"t":"","s":0}}}
+{"a":"Down","c":{"p":"l"},"cr":{"d":[{"on":false,"n":0,"held":0,"cons":0}],"l":[{"on":false,"n":0,"held":0,"cons":0}]},"pend":{"d":[0],"l":[0]},"gpend":{"d":[0],"l":[0]},"h":{"d":{"t":"","s":0},"l":{"t":"","s":0}}}
