@@ -209,7 +209,7 @@ mutants)
 		if tlc "$jw/Mutant.cfg" "$mod" $dl >"$jw/m.out" 2>&1; then
 			echo "$3: not caught"
 			return 1
-		elif grep -q '^Error: \(Invariant\|Temporal property\|Action property\) .* violated' "$jw/m.out"; then
+		elif grep -q '^Error: \(Invariant\|Temporal propert\(y\|ies\)\|Action property\) .* violated' "$jw/m.out"; then
 			echo "$3: caught: $(grep '/\\ err = ' "$jw/m.out" | tail -1 | sed 's/.*err = //') ($(grep -m1 -E '^Error: (Invariant|Temporal property)' "$jw/m.out" | sed -E 's/^Error: (Invariant|Temporal property) ([A-Za-z]+).*/\2/'), $(grep -c '^State [0-9]*:' "$jw/m.out") states deep)"
 		else
 			echo "$3: TLC failed:"
