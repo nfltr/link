@@ -1109,6 +1109,12 @@ documented bound and this lane does not change it.
 
 **Open.** The two RCFOLLOW failures with at most 1.7 s of stall (A's 10 s
 watch fired, B silent for 10 s while its process ran) are not explained by
-this: no fire in them was late past a period. Not reproduced here; needs
-qlog of both ends (B's connection may have died first and its
-CONNECTION_CLOSE been lost).
+the starvation: no fire in them was late past a period. A cause in the
+same code, not proven: QUIC's idle timeout was the smaller preset's
+Timeout (3 s, negotiated down from A's 10 s), it judges by the clock
+alone, and an idle timeout closes silently (RFC 9000 section 10.1: no
+CONNECTION_CLOSE), so B's connection could end on a short stall plus a
+lost or late packet and A would hear nothing until its own watch. With the
+idle timeout now a backstop (4 x (Interval + Timeout), the watch closing
+first with CONNECTION_CLOSE) that path is gone if that was the cause; a
+qlog of both ends would settle it.
