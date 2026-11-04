@@ -364,18 +364,22 @@ mutants)
 	# stretched by the path's PTO (QW1), the starved gap counted (S1), the
 	# idle timeout below the watch's bound (the code before LIVESTARVE),
 	# never closing; stops under 1.25 ticks counted (QW2: the watch
-	# without quic-go's idle start) and the open QW4 (a slower path).
+	# without quic-go's idle start); a verdict taken at the tick a stop
+	# ended, its packet still in the socket (QW4: one look, or a second
+	# look with no time for quic-go's run loop).
 	job mutant QuicWatchPTO.cfg 'Mutant = "none"' 'Mutant = "quiet-ignores-pto"' QuicWatch.tla
 	job mutant QuicWatchStarve.cfg 'Mutant = "none"' 'Mutant = "count-gap"' QuicWatch.tla
 	job mutant QuicWatch.cfg 'Mutant = "none"' 'Mutant = "backstop-low"' QuicWatch.tla
 	job mutant QuicWatch.cfg 'Mutant = "none"' 'Mutant = "never-close"' QuicWatch.tla
 	job mutant QuicWatchStops.cfg 'Mutant = "none"' 'Mutant = "ignores-idle-start"' QuicWatch.tla
-	job mutant QuicWatchStops.cfg 'Rtt = 2' 'Rtt = 3' QuicWatch.tla
+	for m in one-look look-at-once; do
+		job mutant QuicWatchStops.cfg 'Mutant = "none"' "Mutant = \"$m\"" QuicWatch.tla
+	done
 	for w in WitnessWatch WitnessTight; do job witness QuicWatch.cfg $w QuicWatch.tla; done
 	job witness QuicWatchPTO.cfg WitnessTight QuicWatch.tla
 	job witness QuicWatchStarve.cfg WitnessStarvedLive QuicWatch.tla
 	job witness QuicWatchStarve.cfg WitnessIdle QuicWatch.tla
-	job witness QuicWatchStops.cfg WitnessLateKeepAlive QuicWatch.tla
+	for w in WitnessLateKeepAlive WitnessSecondLook; do job witness QuicWatchStops.cfg $w QuicWatch.tla; done
 	# peerlink.Join's clean end (Join.tla, relay-core finding 23).
 	for m in no-sync no-hold done-skips-hold no-watch; do
 		job mutant Join.cfg 'Mutant = "none"' "Mutant = \"$m\"" Join.tla

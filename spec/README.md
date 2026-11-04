@@ -1135,7 +1135,10 @@ moves `seen`; a tick more than 1.25 G after the one before moves `seen` on
 by the gap; otherwise no packet for Quiet = K + Timeout/2, and none for
 Timeout/2 since quic-go's idle timer started (`IdleStart`: the keep-alive's
 send, else the last packet; `ConnectionStats.IdleTimeoutStart` of nfltr's
-quic-go, finding QW2), is the verdict (CONNECTION_CLOSE, `CodeDeadPeer`).
+quic-go, finding QW2), is the verdict; its second look, D = Timeout/16
+later (`Look`, `watchState.look`, after quic-go's run loop had its turn),
+closes (CONNECTION_CLOSE, `CodeDeadPeer`) unless a packet came since
+(finding QW4).
 The peer answers the keep-alive within Rtt (`Rtt + Late < Timeout/2`); the
 process may stop (`Sleep`, `Wake`), and between two stops runs a moment,
 long enough for its run loop's due work (`Tick`'s guard: the packet
@@ -1144,18 +1147,18 @@ waiting, the keep-alive due).
 | property | statement |
 |---|---|
 | `NoFalseDead` | a live peer is never closed, by the watch or the backstop, for any keep-alive period K and any stop of MinSleep..MaxSleep |
-| `DetectBound` | a running process closes a silent connection within Quiet + Timeout/2 + Late of the later of its last packet and its last start (Interval + Timeout + Late when K = Interval; `WitnessTight`: reached) |
+| `DetectBound` | a running process closes a silent connection within Quiet + Timeout/2 + D + 2 Late of the later of its last packet and its last start (Interval + 17/16 Timeout + 2 Late when K = Interval; `WitnessTight`: reached) |
 | `WatchFirst` | on a running process the watch closes before the idle timeout: the peer is told (CONNECTION_CLOSE), it does not wait out its own bound |
-| ASSUMEs | B > K + Timeout + 2 Late (the backstop past the watch's bound); MaxSleep + K + Rtt + Late < B: a stop longer than B - (K + Rtt + Late) lets the backstop close a live peer silently, the ceiling (with B = 4 x (Interval + Timeout): about 18 s at `fast`, 60 s at `default`) |
+| ASSUMEs | B > K + Timeout + D + 3 Late (the backstop past the watch's bound); MaxSleep + K + Rtt + Late < B: a stop longer than B - (K + Rtt + Late) lets the backstop close a live peer silently, the ceiling (with B = 4 x (Interval + Timeout): about 18 s at `fast`, 60 s at `default`) |
 
 Configurations (`make spec`, seconds): `QuicWatch.cfg` (K = Interval, a
 running process), `QuicWatchPTO.cfg` (K = 12 > Interval: a path whose
 probe timeout stretches the keep-alive), `QuicWatchStarve.cfg` (one stop
-of 6..12, B = 28: smaller than the code's but within the ASSUMEs, so that
+of 6..12, B = 30: smaller than the code's but within the ASSUMEs, so that
 the backstop's close is reached; every action taken there, `-coverage
 1`; the first two take no `Sleep`, `Wake`, discounted gap or `IdleClose`),
 `QuicWatchStops.cfg` (two stops of 0..5, each unseen in the tick gaps, Rtt
-2, the code's backstop; `make spec` only, about 10 s: its mutants are CI's;
+6, the code's backstop; `make spec` only, about 12 s: its mutants are CI's;
 no `IdleClose`).
 
 Mutants (`make spec-mutants`): `quiet-ignores-pto` (Quiet = Interval +
@@ -1165,13 +1168,16 @@ sends its keep-alive, Quiet's K bounds a side that sends none), `count-gap` (no 
 `QuicWatchStarve.cfg`), `backstop-low` (the idle timeout at Timeout, the
 code before LIVESTARVE: `WatchFirst`), `never-close` (`DetectBound`),
 `ignores-idle-start` (the code before QW2: `NoFalseDead` on
-`QuicWatchStops.cfg`) and `Rtt = 3` there (QW4, open: `NoFalseDead`).
+`QuicWatchStops.cfg`), `one-look` (the code before QW4: the verdict closes
+at once) and `look-at-once` (D = 0: a second look with no time for quic-go's
+run loop), both `NoFalseDead` there.
 Witnesses: `WitnessWatch`,
 `WitnessTight` (both configurations), `WitnessStarvedLive` (a live peer's
 tick due with nothing processed for Quiet: only with `Sleep`),
 `WitnessIdle` (the backstop's close), `WitnessLateKeepAlive` (a live
 peer's tick with Quiet passed, no gap seen, the keep-alive sent late: the
-verdict the idle start withholds, `QuicWatchStops.cfg`).
+verdict the idle start withholds, `QuicWatchStops.cfg`),
+`WitnessSecondLook` (a verdict the second look took back, there).
 
 **Action map.**
 
@@ -1181,12 +1187,14 @@ verdict the idle start withholds, `QuicWatchStops.cfg`).
 | `Recv` | quic-go's `handlePackets` (`lastPacketReceivedTime`, `connStats.PacketsReceived`) |
 | `KeepAlive` | quic-go's run loop, `nextKeepAliveTime` (`keepAlivePingSent`) |
 | `IdleClose` | quic-go's run loop, `nextIdleTimeoutTime` (`ErrIdleTimeout`, no CONNECTION_CLOSE) |
-| `WatchAt` | `conn.watch`'s tick: `watchState.tick` (its verdict: `CloseWithError(CodeDeadPeer)`) |
+| `WatchAt` | `conn.watch`'s tick: `watchState.tick` (its verdict: the first look) |
+| `Look` | `conn.watch`, g/4 after a verdict: `watchState.look` (dead: `CloseWithError(CodeDeadPeer)`) |
 
 | field (model variable) | written by | action |
 |---|---|---|
 | `watchState.last` (`fresh`) | `watchState.tick` | `WatchAt` |
-| `watchState.seen` (`seen`) | `conn.watch` (start), `watchState.tick` | `Init`, `WatchAt` |
+| `watchState.seen` (`seen`) | `conn.watch` (start), `watchState.tick`, `watchState.look` | `Init`, `WatchAt`, `Look` |
+| the verdict's first look (`look`) | `conn.watch` (the g/4 wait after a verdict) | `WatchAt`, `Look` |
 | `watchState.prev` (`prev`) | `conn.watch` (start), `watchState.tick` | `Init`, `WatchAt` |
 | the ticker (`due`) | `time.NewTicker(Timeout/4)` | `WatchAt` (the first multiple of G after the tick: a Go Ticker drops what it could not deliver) |
 | `Quiet` | `keepAliveAfter` + Timeout/2, per tick from `ConnectionStats` | (a constant per configuration) |
@@ -1198,8 +1206,12 @@ model-based test below replays its every step. `TestWatchFollowsTheModel`
 (peerlink/quiclink/watch_mbt_test.go) replays every `WatchAt` of the TLC
 walks in `testdata/mbt/qwatch-<cfg>-*.ndjson` (`scripts/spec.sh
 behaviours`, 16 walks per configuration) on `watchState.tick` and compares
-`seen`, `prev` and the verdict, with the model's idle start (`idle`); it
-counts the verdicts the idle start withholds and fails when there are none.
+`seen`, `prev` and the verdict, with the model's idle start (`idle`), and
+every `Look` on `watchState.look`; it counts the verdicts the idle start
+withholds and the second looks, and fails when there are none. Random walks
+never reach a verdict the second look takes back (none in 200000
+`QuicWatchStops.cfg` walks: the live peer's own packets keep coming);
+`TestWatchSecondLookTakesBack` replays TLC's walk to `WitnessSecondLook`.
 
 **Finding QW1** (medium, fixed). The watch allowed Interval + Timeout/2 of
 silence, taking quic-go's keep-alive to come every Interval; quic-go sends
@@ -1230,15 +1242,22 @@ K after the last packet on a running process). Mutant
 failed before (a tick 7 after a keep-alive sent one late: the code closed,
 the model did not).
 
-**Finding QW4** (low, open). The other half of a short stop: one that
+**Finding QW4** (low, fixed, lane FLAKEQW4). The other half of a short stop: one that
 starts after the peer's answer reached the socket and ends at the verdict
 tick, which runs before quic-go reads the answer (the run loop and the
 watch's ticker wake together). The idle start cannot see it (the
 keep-alive went out on time). TLC: unreachable while Rtt + Late + 1.25 G
 <= Timeout/2 (`QuicWatchStops.cfg`, Rtt 2), reached at Rtt 3 (mutant
 `Rtt = 3`, one stop of 5). With `fast` (Timeout 3 s): a round trip over
-about 0.4 s plus such a stop. A fix would have the verdict wait for the
-run loop (a second look after quic-go had its turn); not done.
+about 0.4 s plus such a stop. Fix: the verdict is looked at again
+Timeout/16 later (`Look`; the process ran since, so quic-go processed what
+waited: `Tick`'s guard, and a process that woke runs a moment before it
+stops again), and a packet since takes it back. `QuicWatchStops.cfg` now
+holds at Rtt 6 (the ASSUME's largest); mutants `one-look` and
+`look-at-once`; the dead-peer bound grows by Timeout/16 + Late. A later
+look (another stop between the two) adds nothing in the model: a
+"late-look-decides" variant that closes then is not caught, so the code
+has no such branch.
 
 **Finding QW3** (the open item of "Starvation", refuted). That B's 3 s
 idle timeout closed B silently while A (`default`, 10 s) heard nothing
