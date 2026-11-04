@@ -7,7 +7,7 @@ EXTENDS Liveness, TLC, TLCExt, Json, Sequences
 
 CONSTANT MBTDir
 
-Row(x) == [a |-> x._action.name, now |-> x.now, rx |-> x.rx, pingAt |-> x.pingAt,
+Row(x) == [a |-> x._action.name, now |-> x.now, rx |-> x.rx, pingAt |-> x.pingAt, looked |-> x.looked,
            timer |-> x.timer, dead |-> x.dead]
 MBTDump == ndJsonSerialize(MBTDir \o "/live-" \o ToString(TLCGet("stats").traces) \o ".ndjson",
                            [i \in DOMAIN Trace |-> Row(Trace[i])])

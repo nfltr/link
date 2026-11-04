@@ -409,12 +409,14 @@ are Link's by the refinement mapping `LS` (`MCLink.tla`), checked by
 | action | code |
 |---|---|
 | `Tick` | time passing (no code) |
+| `Arrive` | the peer's bytes reach the socket (no code) |
 | `Recv` | `Conn.read`: any bytes read set `rxAt` |
 | `Die` | the environment (the peer or path stops) |
-| `FireAt(n, r)`, `Fire` | one pass of `keepAlive`'s loop after its timer fired: `liveFire` (now, `rxAt`, `pingAt`) decides dead, re-arm or ping (`keepAlive` reads the clock, pings, `t.Reset`s) |
+| `Sleep`, `Wake` | the environment: the process stops running (starved, a stopped VM) and runs again |
+| `FireAt(n, r)`, `Fire` | one pass of `keepAlive`'s loop after its timer fired: `liveFire` (now, `rxAt`, `pingAt`, `looked`) decides dead, look, re-arm or ping (`keepAlive` reads the clock, pings, `t.Reset`s) |
 | `Stall`, `FireMutant` | mutants only (`reader-writes`, `deadline-from-rx`) |
 
-Code writes: `pingAt` and the timer are `keepAlive`'s locals, written only
+Code writes: `pingAt`, `looked` and the timer are `keepAlive`'s locals, written only
 by `liveFire`'s result (`FireAt`); `rxAt` by `Conn.read` (`Recv`); a pong
 answered (`Conn.control`) changes no variable of the model.
 
@@ -515,10 +517,11 @@ LinkDrain and Link without closes, `LinkData`) on two `Credit`s: each
 change of `cr`, `pend`, `gpend` is the call the code makes for it, which
 must succeed as the model's step did, and after every step each Credit's
 session, credit, held, consumed and pend must be the model's.
-`TestLivenessFollowsTheModel` replays every `FireAt` of `Liveness.tla`'s
-walks on `liveFire`, keepAlive's decision (extracted for it, the loop
-unchanged): the verdict, the timer's deadline, `pingAt`, and whether it
-pings. Code mutants each caught (tried once, by hand): a grant at half a
+`TestLivenessFollowsTheModel` replays every `Fire` of `Liveness.tla`'s
+walks (`Liveness.cfg` and `LivenessStarve.cfg`, `live-*` and
+`live-starve-*`) on `liveFire`, keepAlive's decision (extracted for it,
+the loop unchanged): the verdict, the timer's deadline, `pingAt`,
+`looked`, and whether it pings. Code mutants each caught (tried once, by hand): a grant at half a
 window, a grant that keeps one byte held, a window update bound one short
 (Credit); the ping re-armed at Timeout, an idle check off by one
 (liveFire). Ceiling: a charge bound one too loose is not caught (the
@@ -574,6 +577,7 @@ What the models take of the world below link, and where that is stated.
 | a connection that ends loses what is on the way: any suffix of the frames sent (`CloseAt`'s `k`, `Crash`) | `Link`, `Join` | RFC 9293 section 3.6 (an abort: RST discards queued data); WIRE.md section 1 |
 | a process that dies or a path that breaks ends nothing by itself: the peer learns only by silence (the liveness bound) | `Liveness`, `Pool` (`dead`) | RFC 9293 section 3.8.4 (keep-alives are optional, off by default); WIRE.md section 8 |
 | timers fire at or after their deadline, late by a bounded amount on a loaded machine (`Late`) | `Liveness` | Go `time.Timer` docs ("at least duration d"); `TraceLive.tla` checks the real fires |
+| a process may not run at all for any time (starved, a stopped VM: `Sleep`); its timers and its receive loop then wait and the peer's bytes wait in the socket; once a goroutine blocks on a timer, the runtime polls the network and runs the goroutines it readies before the process stops again (A1) | `Liveness` (`LivenessStarve.cfg`) | Go runtime: `findRunnable` polls the network before it parks a P idle; the OS scheduler (any process may be descheduled); lane RCFOLLOW's measured stalls of 5.1-7.3 s |
 | the monotonic clock never goes back (`now`, `rxAt`, ping times) | `Liveness`, `Link` (drain barrier) | Go `time` package docs, "Monotonic Clocks" |
 | a goroutine may pause between any two steps (the scheduler): steps under one lock are atomic, nothing else is | every model | Go memory model (sync.Mutex, sync/atomic: sequentially consistent) |
 | a dial may fail or hang; the peer may refuse (end a connection early) or send GOAWAY at any time | `Pool` | `pool.go` (`Dial`), WIRE.md section 9 |
@@ -894,8 +898,9 @@ received (`rxAt`), the ping waiting for an answer (`pingAt`), the one
 timer, which fires at its deadline or up to `Late` ticks after (a starved
 process: the Go timer and the goroutine that reads it), a peer that
 answers a ping within `Rtt < Timeout` while alive and goes silent at any
-time. `Liveness.cfg`: Interval 2, Timeout 3, Late 1, Rtt 2; under a
-second.
+time. `Liveness.cfg`: Interval 2, Timeout 4, Late 1, Rtt 3, Gap 1; under a
+second. `LivenessStarve.cfg`: the same with a process that stops running
+up to twice for as long as it may (Rtt 1); seconds ("Starvation" below).
 
 - `NoFalseDead`: a peer that answers within Timeout is never taken for
   dead, however late the timer fires. The verdict is anchored at the
@@ -932,7 +937,7 @@ second.
 **`TraceLive.tla`** checks keepAlive's recorded steps against
 `Liveness.tla`: with `-tags linktrace` each connection also writes
 `<trace>.ndjson.live`, one line at keepAlive's start (`Live`: Interval,
-Timeout), one per timer fire (`Fire`: now, `rxAt`, `pingAt`, as read) and
+Timeout), one per timer fire (`Fire`: now, `rxAt`, `pingAt`, `looked`, as read) and
 one when it ends the connection (`Dead`), times in microseconds since the
 Conn's `t0`, floored (a deadline fires at or after it, so every
 comparison keeps its outcome). Each side's steps must be `FireAt` steps
@@ -1029,3 +1034,79 @@ mechanism's own lateness, not a fault.
   `CloseEnds`; the code held (no change).
 - **M4. `Open`'s error exits were not modelled** (review r2; medium): an
   `Open` now ends with its dial's error, `ErrFull` or `net.ErrClosed`.
+
+## Starvation (2026-11-04, lane LIVESTARVE)
+
+**Finding S1** (medium, fixed). A process that does not run for longer
+than its Timeout (5.1-7.3 s measured under two GOMAXPROCS=1 low-priority
+test processes with build loops, lane RCFOLLOW; link's `falsedead` cell at
+0.1 CPU with `fast`) took a live peer for dead. The pong it waited for was
+in the socket; when the process ran again, `keepAlive`'s timer (long
+overdue) ran before the receive loop and saw `rxAt` older than the ping.
+quiclink's `watch` and quic-go's idle timeout judge silence the same way
+(wall clock, before the queued packets are read).
+
+**Invariant.** A peer is declared dead only after silence that this
+process observed while it was able to run, and a running process still
+declares a silent peer dead within the preset's bound: Interval + Timeout
+after the later of its last read and the moment it ran again, plus the
+lateness of the two fires that decide it (`DetectBound`). Time the process
+did not run is not observed silence.
+
+**Failure model.** The process may stop running between any two steps for
+any time (`Sleep`), up to twice in the model; its timers fire late by that
+much and the peer's bytes wait unread. A1 (Environment assumptions): once
+`keepAlive` blocks on its timer, the runtime runs the receive loop on what
+arrived before the process can stop again. A live peer's pong comes
+within an Interval of the ping (`Rtt < Iv`, `LivenessStarve.cfg`); on a
+process that keeps running any `Rtt < Timeout` holds as before
+(`Liveness.cfg`).
+
+**Design.** The verdict needs a look. A fire that finds nothing read since
+the ping is a look (`looked`); the peer is dead only at a later fire that
+again finds nothing read and is at least Timeout after the ping. A look
+re-arms at `max(pingAt + Timeout, now + Interval/4)`: after a starvation
+the first fire is always a look, the receive loop then reads what waited,
+and the verdict comes a quarter interval later at the earliest. On a
+running process the look is the fire at `pingAt + Interval` that the loop
+already took, so detection is unchanged whenever `Interval/4 <=
+Timeout - Interval - lateness` (every preset: Timeout >= 2 x Interval);
+with Timeout = Interval the verdict comes Interval/4 later.
+
+quiclink's `watch` (no model: it samples, it has no verdict state beyond
+`seen`) applies the same rule as a discount: a tick that comes more than
+1.25 periods after the one before (the process did not run) moves `seen`
+on by that gap, so the silence it measures is time it was able to run, and
+the tick after it judges with what quic-go read meanwhile. quiclink sets
+quic-go's own idle timeout to a backstop (4 x (Interval + Timeout)) so the
+watch is the one judge; against a peer that advertises a smaller idle
+timeout quic-go uses that (QUIC takes the smaller of the two).
+
+Checked: `Liveness.cfg` and `LivenessStarve.cfg` (`-coverage 1`: every
+action taken; `Sleep`/`Wake` only in the second); mutants
+`verdict-unlooked` (the code before: `NoFalseDead`, 12 states, the
+measured shape: a pong waiting, the process back, the timer first) and
+`look-no-gap` (the look re-armed at `pingAt + Timeout`, already past)
+caught on `LivenessStarve.cfg`, both hold on `Liveness.cfg` (no false
+dead without starvation); `never-dead` caught by `DetectBound`; witness
+`WitnessStarved` (a live peer's fire due with its ping unread for Timeout:
+reachable only with `Sleep`). Trace fixtures: `live-dead-starved` (dead at
+a late first fire) rejected, `live-ok-starved` (the look, then the read)
+accepted. Test: `TestStarvedProcessKeepsALivePeer` (failed before).
+
+**The 15 s detection with busy sessions** (yamux comparison, `part`,
+`netchange`): link's bound is Interval + Timeout from the last frame read
+(15 s at `default`, 4.5 s at `fast`), and a busy connection's last frame
+is the moment the path broke, so it is reached in full. yamux pings every
+Interval whatever the traffic and fails the ping's write after its 10 s
+timeout: dead 10-15 s after the break, uniform over where in the ping
+period it fell (12.5 s on average, 12.7-13 s measured); idle link
+connections measured 13 s for the same reason (their last frame is a ping
+or pong before the break). Both worst cases are 15 s; link's is its
+documented bound and this lane does not change it.
+
+**Open.** The two RCFOLLOW failures with at most 1.7 s of stall (A's 10 s
+watch fired, B silent for 10 s while its process ran) are not explained by
+this: no fire in them was late past a period. Not reproduced here; needs
+qlog of both ends (B's connection may have died first and its
+CONNECTION_CLOSE been lost).

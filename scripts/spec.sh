@@ -177,7 +177,7 @@ check | invariants)
 	# PoolDrain (Min 2: a Drain failing halfway) only in full: its
 	# mutant is CI's.
 	# PoolGrow: background growth (Max above Min).
-	pools="Pool PoolGrow Liveness Join"
+	pools="Pool PoolGrow Liveness LivenessStarve Join"
 	[ "$1" = invariants ] || pools="$pools PoolDrain"
 	for m in $pools; do
 		echo "== $m.cfg"
@@ -185,7 +185,7 @@ check | invariants)
 		# Liveness explores a horizon of ticks, Join one session: their last
 		# states end there; PoolDrain has no Open to keep it going.
 		dl=; [ $m = Pool ] || [ $m = PoolGrow ] || dl=-deadlock
-		mod=$m.tla; case $m in Pool*) mod=Pool.tla ;; esac
+		mod=$m.tla; case $m in Pool*) mod=Pool.tla ;; Liveness*) mod=Liveness.tla ;; esac
 		tlc "$m.cfg" "$mod" $dl >"$work/check.out" 2>&1 || st=$?
 		grep -E '^[0-9]+ states generated|depth of|Finished in|Error|violated' "$work/check.out" || true
 		[ $st = 0 ] || exit $st
@@ -253,7 +253,7 @@ mutants)
 		st=0
 		live "$PWD/$1" d >"$jw/m.out" 2>&1 || st=$?
 		case $(basename "$1"):$st in
-		live-ok.*:0 | live-*:[1-9]*) echo "$(basename "$1"): as expected" ;;
+		live-ok*:0 | live-[!o]*:[1-9]*) echo "$(basename "$1"): as expected" ;;
 		*)
 			echo "$(basename "$1"): not as expected (exit $st)"
 			return 1
@@ -352,14 +352,20 @@ mutants)
 	job mutant Pool.cfg 'Mutant = "none"' 'Mutant = "drain-reserve-late"' Pool.tla
 	job mutant PoolGrow.cfg 'Mutant = "none"' 'Mutant = "grow-past-max"' Pool.tla
 	for w in WitnessOpen WitnessWait WitnessReplaced WitnessPastMax WitnessClosed WitnessBesideLeaving WitnessAtMax; do job witness Pool.cfg $w Pool.tla; done
-	for m in rearm-timeout deadline-from-rx reader-writes; do
+	for m in rearm-timeout deadline-from-rx reader-writes never-dead; do
 		job mutant Liveness.cfg 'Mutant = "none"' "Mutant = \"$m\"" Liveness.tla
+	done
+	# a starved process (lane LIVESTARVE): the verdict without a look, the
+	# look's re-arm without its gap.
+	for m in verdict-unlooked look-no-gap; do
+		job mutant LivenessStarve.cfg 'Mutant = "none"' "Mutant = \"$m\"" Liveness.tla
 	done
 	# peerlink.Join's clean end (Join.tla, relay-core finding 23).
 	for m in no-sync no-hold done-skips-hold no-watch; do
 		job mutant Join.cfg 'Mutant = "none"' "Mutant = \"$m\"" Join.tla
 	done
 	for w in WitnessDead WitnessLateAlive WitnessTight; do job witness Liveness.cfg $w Liveness.tla; done
+	job witness LivenessStarve.cfg WitnessStarved Liveness.tla
 	for w in WitnessClean WitnessReset WitnessHeld WitnessCleanDown; do job witness Join.cfg $w Join.tla; done
 	for f in spec/traces/*.ndjson.live; do job livetrace "$f"; done
 	for f in spec/traces/link-*.ndjson; do job linkfixture "$f"; done
@@ -376,7 +382,7 @@ mutants)
 	exit $fail
 	;;
 traces)
-	tests=${TRACE_TESTS:-'^(TestSessionCleanEnd|TestSessionReset|TestMuxSlowSessionIsolated|TestGoAwayDrainKeepsTails|TestCrossedOpenRunsOnTheLeavingConnection|TestMuxV2GoAway|TestSessionCutWithItsConnection|TestMuxSessions|TestMuxV2Sessions|TestWriteRacingCloseWriteSendsNothingAfterFIN|TestWriteParkedForItsTurnSendsNothingAfterFIN|TestOpenParkedPastPeerGoAwayIsNotSent|TestAbortAtMaxSessionsRacingOpenKeepsTheConnection|TestChainRefuse|TestRefusedOpenReadsReset|TestWriteAfterRefuseSendsNoData|TestCloseWriteRacingThePeersFINDropsAfterItsCLOSE|TestMuxOpenSkipsAnIDThePeerTook|TestReceiveLoopReadsWhileARefusalWaits|TestCloseWriteReportsAFailedFIN)$'}
+	tests=${TRACE_TESTS:-'^(TestSessionCleanEnd|TestSessionReset|TestMuxSlowSessionIsolated|TestGoAwayDrainKeepsTails|TestCrossedOpenRunsOnTheLeavingConnection|TestMuxV2GoAway|TestSessionCutWithItsConnection|TestMuxSessions|TestMuxV2Sessions|TestWriteRacingCloseWriteSendsNothingAfterFIN|TestWriteParkedForItsTurnSendsNothingAfterFIN|TestOpenParkedPastPeerGoAwayIsNotSent|TestAbortAtMaxSessionsRacingOpenKeepsTheConnection|TestChainRefuse|TestRefusedOpenReadsReset|TestWriteAfterRefuseSendsNoData|TestCloseWriteRacingThePeersFINDropsAfterItsCLOSE|TestMuxOpenSkipsAnIDThePeerTook|TestReceiveLoopReadsWhileARefusalWaits|TestCloseWriteReportsAFailedFIN|TestStarvedProcessKeepsALivePeer)$'}
 	mkdir -p "$work/traces"
 	LINKTRACE=$work/traces go test -tags linktrace -count=1 -run "$tests" . >"$work/test.out" 2>&1 || {
 		cat "$work/test.out"
@@ -536,6 +542,7 @@ behaviours)
 	gen LinkRefuse.cfg MBTLink.tla link-LinkRefuse 120
 	gen LinkDrain.cfg MBTLink.tla link-LinkDrain 120
 	gen Liveness.cfg MBTLive.tla live 60 '' $((${MBT_NUM:-4} * 8))
+	gen LivenessStarve.cfg MBTLive.tla live-starve 60 '' $((${MBT_NUM:-4} * 8))
 	;;
 trace)
 	trace "$2"

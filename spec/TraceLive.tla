@@ -3,7 +3,8 @@
 (* the timer fires a recorded run of Conn.keepAlive took (-tags linktrace,  *)
 (* the files <connection>.ndjson.live) must be steps of Liveness.tla for    *)
 (* one side, Side: each fire at or after the model's deadline, with the    *)
-(* model's pingAt, and the connection ended exactly when the model says.   *)
+(* model's pingAt and looked, and the connection ended exactly when the   *)
+(* model says.                                                             *)
 (* Times are microseconds since the Conn's t0, floored: every comparison  *)
 (* keepAlive makes keeps its outcome (a deadline fires at or after it).    *)
 EXTENDS TraceLog, Integers, Sequences, TLC
@@ -13,18 +14,19 @@ CONSTANT Side
 SLog == SelectSeq(Log, LAMBDA e : e.side = Side)
 LiveLine == SLog[CHOOSE i \in DOMAIN SLog : SLog[i].ev = "Live"]
 
-VARIABLES now, rx, pingAt, timer, alive, dead, stuck, l
-traceVars == <<now, rx, pingAt, timer, alive, dead, stuck, l>>
+VARIABLES now, rx, pingAt, looked, timer, alive, dead, stuck, run, pend, woke, slept, l
+traceVars == <<now, rx, pingAt, looked, timer, alive, dead, stuck, run, pend, woke, slept, l>>
 
 LV == INSTANCE Liveness WITH Iv <- LiveLine.n, To <- LiveLine.credit,
-    Late <- 0, Rtt <- 0, Horizon <- 0, Mutant <- "none"
+    Late <- 0, Rtt <- 0, Gap <- LiveLine.n \div 4, Sleeps <- 0, Horizon <- 0,
+    Mutant <- "none"
 
 E == SLog[l]
 
 Step ==
-    CASE E.ev = "Live" -> UNCHANGED <<now, rx, pingAt, timer, alive, dead, stuck>>
-      [] E.ev = "Fire" -> pingAt = E.held /\ E.n >= now /\ E.credit >= rx /\ LV!FireAt(E.n, E.credit)
-      [] E.ev = "Dead" -> dead /\ UNCHANGED <<now, rx, pingAt, timer, alive, dead, stuck>>
+    CASE E.ev = "Live" -> UNCHANGED <<now, rx, pingAt, looked, timer, alive, dead, stuck, run, pend, woke, slept>>
+      [] E.ev = "Fire" -> pingAt = E.held /\ looked = (E.look = 1) /\ E.n >= now /\ E.credit >= rx /\ LV!FireAt(E.n, E.credit)
+      [] E.ev = "Dead" -> dead /\ UNCHANGED <<now, rx, pingAt, looked, timer, alive, dead, stuck, run, pend, woke, slept>>
       [] OTHER -> Print(<<"unknown event", E>>, FALSE)
 
 \* A Fire the model ends the connection on must be followed by Dead (or end
