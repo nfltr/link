@@ -4,7 +4,8 @@
 
 # spec.sh check|mutants|traces: the TLA+ model of spec/ (spec/README.md).
 #   check    TLC on spec/Link.cfg, LinkDrain.cfg and LinkSess.cfg (no crash),
-#            LinkCrash.cfg, then spec/Pool.cfg, Liveness.cfg and Join.cfg:
+#            LinkCrash.cfg, then spec/Pool.cfg, Liveness.cfg, Join.cfg and
+#            CreditWaiters.cfg:
 #            every invariant and liveness property, and Refines.
 #   invariants  the same, Link's invariants only, Refines only on
 #            LinkCrash.cfg (CI's; Pool's liveness is checked too, seconds).
@@ -177,15 +178,15 @@ check | invariants)
 	# PoolDrain (Min 2: a Drain failing halfway) and QuicWatchStops (two
 	# short stops, ~10 s) only in full: their mutants are CI's.
 	# PoolGrow: background growth (Max above Min).
-	pools="Pool PoolGrow Liveness LivenessStarve QuicWatch QuicWatchPTO QuicWatchStarve Join"
+	pools="Pool PoolGrow Liveness LivenessStarve QuicWatch QuicWatchPTO QuicWatchStarve Join CreditWaiters"
 	[ "$1" = invariants ] || pools="$pools PoolDrain QuicWatchStops"
 	for m in $pools; do
 		echo "== $m.cfg"
 		st=0
-		# Liveness explores a horizon of ticks, Join one session: their last
-		# states end there; PoolDrain has no Open to keep it going.
+		# Liveness explores a horizon of ticks, Join one session,
+		# CreditWaiters a fixed number of Acquires: their last states end there; PoolDrain has no Open to keep it going.
 		dl=; [ $m = Pool ] || [ $m = PoolGrow ] || dl=-deadlock
-		mod=$m.tla; case $m in Pool*) mod=Pool.tla ;; Liveness*) mod=Liveness.tla ;; QuicWatch*) mod=QuicWatch.tla ;; esac
+		mod=$m.tla; case $m in Pool*) mod=Pool.tla ;; Liveness*) mod=Liveness.tla ;; QuicWatch*) mod=QuicWatch.tla ;; CreditWaiters*) mod=CreditWaiters.tla ;; esac
 		tlc "$m.cfg" "$mod" $dl >"$work/check.out" 2>&1 || st=$?
 		grep -E '^[0-9]+ states generated|depth of|Finished in|Error|violated' "$work/check.out" || true
 		[ $st = 0 ] || exit $st
@@ -205,7 +206,7 @@ mutants)
 		else
 			sed -e "s/$2/$3/" "spec/$1" >"$jw/Mutant.cfg"
 		fi
-		dl=; [ "$mod" != Liveness.tla ] && [ "$mod" != QuicWatch.tla ] && [ "$mod" != Join.tla ] && [ "$1" != PoolDrain.cfg ] || dl=-deadlock
+		dl=; [ "$mod" != Liveness.tla ] && [ "$mod" != QuicWatch.tla ] && [ "$mod" != Join.tla ] && [ "$mod" != CreditWaiters.tla ] && [ "$1" != PoolDrain.cfg ] || dl=-deadlock
 		if tlc "$jw/Mutant.cfg" "$mod" $dl >"$jw/m.out" 2>&1; then
 			echo "$3: not caught"
 			return 1
@@ -236,7 +237,7 @@ mutants)
 	witness() {
 		sed -e '/^PROPERTY/,$d' "spec/$1" >"$jw/Witness.cfg"
 		printf 'INVARIANT %s\n' "$2" >>"$jw/Witness.cfg"
-		dl=; [ "${3:-}" != Join.tla ] && [ "${3:-}" != Liveness.tla ] && [ "${3:-}" != QuicWatch.tla ] || dl=-deadlock
+		dl=; [ "${3:-}" != Join.tla ] && [ "${3:-}" != Liveness.tla ] && [ "${3:-}" != QuicWatch.tla ] && [ "${3:-}" != CreditWaiters.tla ] || dl=-deadlock
 		if tlc "$jw/Witness.cfg" "${3:-MCLink.tla}" $dl >"$jw/m.out" 2>&1; then
 			echo "$2: never violated (vacuous)"
 			return 1
@@ -387,6 +388,15 @@ mutants)
 	for w in WitnessDead WitnessLateAlive WitnessTight; do job witness Liveness.cfg $w Liveness.tla; done
 	job witness LivenessStarve.cfg WitnessStarved Liveness.tla
 	for w in WitnessClean WitnessReset WitnessHeld WitnessCleanDown; do job witness Join.cfg $w Join.tla; done
+	# Credit's waiters (CreditWaiters.tla, lane LINKWAKE): the one-slot
+	# wake (the code before) strands a waiter and leaves its Acquire for
+	# good; passing the token on strands one that needs less (a stall
+	# until the next grant).
+	for m in one-slot pass-on; do
+		job mutant CreditWaiters.cfg 'Mutant = "none"' "Mutant = \"$m\"" CreditWaiters.tla
+	done
+	job mutant CreditWaitersLive.cfg 'Mutant = "none"' 'Mutant = "one-slot"' CreditWaiters.tla
+	for w in WitnessTwoWait WitnessTooLittle WitnessWakeAll; do job witness CreditWaiters.cfg $w CreditWaiters.tla; done
 	for f in spec/traces/*.ndjson.live; do job livetrace "$f"; done
 	for f in spec/traces/link-*.ndjson; do job linkfixture "$f"; done
 	for f in spec/traces/join-*.ndjson; do job joinfixture "$f"; done

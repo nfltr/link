@@ -336,6 +336,55 @@ mutant `no-watch`).
 | the ping and its pong | `mux.go` (`Session.Sync`), `conn.go` (`sync`, `synced`, `pingTime`, `keepAlive`) |
 | `ARecv` | `conn.go` (`recv`: a ping handed to `keepAlive` after every frame before it) |
 
+## Credit's waiters (CreditWaiters.tla, 2026-11-05, lane LINKWAKE)
+
+`Credit`'s methods are safe from any goroutine, so several senders may
+`Acquire` on one session at once (relay's `serverStream.Send` did: lane
+FLAKECC, 427 of 500 frames, every sender waiting). `Link.tla` gives a
+session one writer and takes `Acquire` as one step; `CreditWaiters.tla`
+is the wait inside it: `Waiters` acquiring `Need[w]` bytes `K` times each
+on one session of window `W`, the receiver reading the bytes one at a
+time and granting each quarter window back (`Consumed`), the grants in
+order.
+
+| action | the Go it models |
+|---|---|
+| `Check(w)` | `Credit.acquire`'s check under the lock: take the bytes (and send them), or wait on the session's wake channel, taken under the lock |
+| `Read` | `Credit.Consumed`: a byte read, a window update once a quarter window was |
+| `Grant` | `Credit.Grant` (and `refund`): the credit grows, `wakeAll` |
+
+The code before woke waiters through one token of capacity one
+(`sessionCredit.wake`, filled by `Grant`, emptied by a waiter): a grant
+woke one waiter, which found too little for itself or took its bytes
+and left the rest, and the others slept with credit there; the receiver
+grants only for bytes it read, so nothing woke them. The design: a grant
+closes the session's wake channel (`wakeAll`), so every waiter checks
+again; the first waiter after it makes the next channel (none is made
+while no sender waits).
+
+- **`NoStrandedWaiter`** (invariant): no waiter sleeps while the session
+  has the credit it waits for, unless it is woken.
+- **`Conservation`**: credit, bytes on the wire, bytes read and not yet
+  granted, and grants on the way make up the window.
+- **`AllDone`** (liveness, weak fairness on every step): every `Acquire`
+  completes. It needs `Need[w] <= W - T + 1` (`T` a quarter window): the
+  receiver keeps up to `T - 1` read bytes ungranted, in any design.
+
+`CreditWaiters.cfg` (in `make spec` and `spec-invariants`): three waiters
+needing 5, 2 and 1 bytes, twice each, `W` 8 (grants of 2): 1,638
+distinct states, depth 31, under a second; every action taken
+(`-coverage 1`; `Grant`'s one-slot branch only by the mutants).
+Mutants (`make spec-mutants`): `one-slot` (the code before) breaks
+`NoStrandedWaiter` and, alone (`CreditWaitersLive.cfg`), `AllDone`;
+`pass-on` (one-slot, and a waiter that takes its bytes and leaves credit
+fills the token again: right only while every waiter needs the same)
+breaks `NoStrandedWaiter` (a waiter needing less sleeps until the next
+grant) and keeps `AllDone`. Witnesses (violated): `WitnessTwoWait`,
+`WitnessTooLittle` (a waiter with credit there, too little for it),
+`WitnessWakeAll` (one grant waking two). The guard:
+`TestConcurrentAcquiresShareAGrant` (credit_wake_test.go: waiters of 5, 2
+and 1 bytes, a grant of 3; red 20 of 20 before the fix).
+
 ## Code map (lane W5-LINK)
 
 The files each model stands for (`scripts/check-spec-drift.sh`: a commit
@@ -350,6 +399,7 @@ holds in a `Spec-Reviewed:` trailer).
 | `Pool.tla`, `TracePool.tla` | `Pool`: Min, Max, `Open`'s pick, dial and growth, `Drain`, `Close` | `pool.go`, `trace_pool_on.go` |
 | `QuicWatch.tla`, `MBTWatch.tla` | quiclink's liveness: `conn.watch`, `watchState.tick`, `keepAliveAfter`, QUIC's idle timeout as its backstop | `peerlink/quiclink/quiclink.go` |
 | `Join.tla`, `TraceJoin.tla` | `peerlink.Join`'s clean end (`Session.Sync`, hold, the watch) | `peerlink/chain.go`, `join.go`, `peerlink/trace_on.go` |
+| `CreditWaiters.tla` | senders waiting in `Credit.Acquire` on one session: the wait and `wakeAll` | `credit.go` |
 
 ## Action map (lane CONFORM-link)
 
