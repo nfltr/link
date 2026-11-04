@@ -415,7 +415,9 @@ func (p *Pool) backoff(attempt int) time.Duration {
 // sessions ended, at ctx's deadline at the latest. It returns once they
 // all closed. A replacement that cannot be dialled leaves the old
 // connections as they were and sends GOAWAY on the replacements already
-// dialled, so the Pool is back within Max.
+// dialled, so the Pool is back within Max. Call one Drain at a time: a
+// second one while the first runs replaces the same connections again,
+// and the Pool holds both Drains' replacements beside them meanwhile.
 func (p *Pool) Drain(ctx context.Context) error {
 	p.mu.Lock()
 	old := slices.Clone(p.conns)

@@ -103,6 +103,12 @@ nightly)
 	echo "== Link.cfg (crash, invariants and Refines)"
 	sed -e '/^PROPERTIES/,$d' spec/Link.cfg >"$work/Link.cfg"
 	tlcrun "$work/Link.cfg"
+	# The Pool wider than Pool.cfg (review r2 L5): two Opens, Min below Max.
+	echo "== PoolWide.cfg"
+	st=0
+	tlc PoolWide.cfg Pool.tla >"$work/check.out" 2>&1 || st=$?
+	grep -E '^[0-9]+ states generated|Finished in|Error|violated' "$work/check.out" || true
+	[ $st = 0 ] || { tail -60 "$work/check.out"; exit $st; }
 	;;
 check | invariants)
 	for cfg in Link.cfg LinkDrain.cfg LinkSess.cfg LinkCrash.cfg LinkRefuse.cfg; do

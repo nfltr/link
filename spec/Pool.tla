@@ -364,6 +364,13 @@ MinHeld == <>[](Cardinality({c \in Ids : Stays(c)}) >= Min \/ Closed)
 \* error (its own failed dial, ErrFull, net.ErrClosed).
 OpensOpen == \A o \in Opens : op[o].st \in {"pick", "dial", "wait", "late", "place"} ~> op[o].st \in {"open", "idle"}
 
+\* With two Opens (PoolWide.cfg) OpensOpen does not hold: an Open that
+\* closes its session and opens again can take the last room each time
+\* the other picked it, and the other re-picks forever (nothing queues
+\* Opens; review r2 L3, L5). What holds is progress for the Pool: while
+\* some Open is pending, some Open ends.
+OpensProgress == (\E o \in Opens : op[o].st \in {"pick", "dial", "wait", "late", "place"}) ~> (\E o \in Opens : op[o].st \in {"open", "idle"})
+
 \* After Close, every connection ends and is dropped.
 CloseEnds == Closed ~> \A c \in Ids : cs[c] = "free"
 
