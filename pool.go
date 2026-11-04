@@ -68,7 +68,10 @@ type Pool struct {
 	// liveness interval (a peer shutting down that still accepts). Min
 	// is redialled after Backoff(refused), never in a tight loop.
 	refused int
-	ended   ConnStats // the counters of its connections that ended
+	ended   ConnStats      // the counters of its connections that ended
+	tr      poolTraceState // linktrace builds only (trace_pool_on.go)
+
+	drainSnapped func() // tests: runs once Drain took its snapshot
 }
 
 // NewPool returns a Pool; it dials its Min connections in the background.
@@ -80,6 +83,9 @@ func NewPool(cfg PoolConfig) (*Pool, error) {
 	cfg.Max = max(cfg.Max, cfg.Min, 1)
 	p := &Pool{cfg: cfg, changed: make(chan struct{})}
 	p.ctx, p.cancel = context.WithCancel(context.Background())
+	if traceOn {
+		tracePool(p)
+	}
 	if cfg.Min > 0 {
 		go p.maintain()
 	}
@@ -168,9 +174,22 @@ func (p *Pool) stayingLocked() int {
 // p.changed as pick read it: with neither a connection nor a dial, the
 // caller waits on it, so a dial ending after pick wakes it (spec/Pool.tla,
 // H1).
-func (p *Pool) pick() (best *Mux, grow, growBG bool, changed <-chan struct{}, err error) {
+// o numbers the Open in a trace (tracePoolOpen).
+func (p *Pool) pick(o int) (best *Mux, grow, growBG bool, changed <-chan struct{}, err error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if traceOn {
+		defer func() {
+			t := map[bool]string{true: "dial", false: "wait"}[grow]
+			switch {
+			case err != nil:
+				t = map[bool]string{true: "closed", false: "full"}[err == net.ErrClosed]
+			case best != nil:
+				t = map[bool]string{true: "grow", false: "place"}[growBG]
+			}
+			tracePoolEv(p, "Pick", t, o, best, 0)
+		}()
+	}
 	if p.ctx.Err() != nil {
 		return nil, false, false, nil, net.ErrClosed
 	}
@@ -201,9 +220,20 @@ func (p *Pool) pick() (best *Mux, grow, growBG bool, changed <-chan struct{}, er
 // Open opens a session with header on one of the Pool's connections,
 // with the Chain ctx carries (ContextWithChain; Mux.OpenChain) when it
 // carries one.
-func (p *Pool) Open(ctx context.Context, header []byte) (*Session, error) {
+func (p *Pool) Open(ctx context.Context, header []byte) (s *Session, err error) {
+	o := 0
+	if traceOn {
+		if o = tracePoolOpen(p); o != 0 {
+			p.traceEv("Start", o, nil, 0)
+			defer func() {
+				if err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, ErrFull) {
+					p.traceEv("OpenErr", o, nil, 0)
+				}
+			}()
+		}
+	}
 	for attempt := 0; ; {
-		m, grow, growBG, changed, err := p.pick()
+		m, grow, growBG, changed, err := p.pick(o)
 		if err != nil {
 			return nil, err
 		}
@@ -224,7 +254,7 @@ func (p *Pool) Open(ctx context.Context, header []byte) (*Session, error) {
 			}
 		}
 		if grow { // none takes the session: Open waits for this dial
-			nm, err := p.dial(ctx)
+			nm, err := p.dial(ctx, false)
 			if err != nil {
 				attempt++
 				if p.cfg.Backoff == nil {
@@ -245,6 +275,12 @@ func (p *Pool) Open(ctx context.Context, header []byte) (*Session, error) {
 		}
 		ch, _ := ChainFromContext(ctx)
 		s, err := m.OpenChain(header, ch)
+		if traceOn && o != 0 {
+			p.traceEv("Place", o, m, map[bool]int{true: 1}[err == nil])
+			if err == nil {
+				go func() { <-s.Done(); p.traceEv("End", o, m, 0) }()
+			}
+		}
 		if err == nil {
 			return s, nil
 		}
@@ -266,34 +302,42 @@ func (p *Pool) grow(ctx context.Context) *Mux {
 		dctx, cancel = context.WithDeadline(p.ctx, dl)
 		defer cancel()
 	}
-	m, _ := p.dial(dctx)
+	m, _ := p.dial(dctx, false)
 	p.mu.Lock()
 	p.growing = false
 	p.mu.Unlock()
 	return m
 }
 
-// reserve counts a dial in flight against Max before dial makes it.
-func (p *Pool) reserve() {
-	p.mu.Lock()
-	p.dials++
-	p.mu.Unlock()
-}
-
 // dial opens one more connection and adds it to the Pool; its caller
-// reserved it (pick, reserve), and dial ends the reservation.
-func (p *Pool) dial(ctx context.Context) (*Mux, error) {
+// reserved it (pick, maintain, Drain), and dial ends the reservation. next:
+// once it is up, reserve the caller's next dial in its place (Drain's
+// replacements, one at a time: no one takes the room in between).
+func (p *Pool) dial(ctx context.Context, next bool) (*Mux, error) {
 	m, err := p.connect(ctx)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.dials--
 	p.changedLocked() // its end, failed too: a waiter whose room it held looks again (spec/Pool.tla, H2)
+	if traceOn {
+		cap := 0
+		if m != nil {
+			cap = min(MaxSessions, m.c.PeerMaxSessions())
+		}
+		tracePoolEv(p, "Dial", "", 0, m, cap)
+	}
 	if err == nil && p.ctx.Err() != nil {
 		_ = m.Close()
 		err = net.ErrClosed
+		if traceOn {
+			tracePoolEv(p, "Remove", "", 0, m, 0)
+		}
 	}
 	if err != nil {
 		return nil, err
+	}
+	if next {
+		p.dials++
 	}
 	p.conns = append(p.conns, m)
 	go func() { // it stops counting toward Min: maintain replaces it now (spec/Pool.tla, P1)
@@ -301,6 +345,9 @@ func (p *Pool) dial(ctx context.Context) (*Mux, error) {
 		case <-m.c.PeerGoAway():
 			p.mu.Lock()
 			p.changedLocked()
+			if traceOn {
+				tracePoolEv(p, "PeerGoAway", "", 0, m, 0)
+			}
 			p.mu.Unlock()
 		case <-m.c.Done():
 		}
@@ -315,6 +362,10 @@ func (p *Pool) dial(ctx context.Context) (*Mux, error) {
 			p.refused = 0
 		}
 		p.conns = slices.DeleteFunc(p.conns, func(x *Mux) bool { return x == m })
+		if traceOn {
+			tracePoolEv(p, "Down", "", 0, m, 0)
+			tracePoolEv(p, "Remove", "", 0, m, 0)
+		}
 		p.ended.add(m.c.Stats())
 		p.changedLocked()
 		p.mu.Unlock()
@@ -370,6 +421,9 @@ func (p *Pool) maintain() {
 		p.mu.Lock()
 		need := p.statsLocked().Conns+p.dials < p.cfg.Min && p.stayingLocked() < p.cfg.Max
 		ch, refused := p.changed, p.refused
+		if traceOn && !need {
+			tracePoolEv(p, "MaintainWait", "", 0, nil, 0)
+		}
 		p.mu.Unlock()
 		if !need {
 			select {
@@ -385,12 +439,15 @@ func (p *Pool) maintain() {
 		need = p.statsLocked().Conns+p.dials < p.cfg.Min && p.stayingLocked() < p.cfg.Max
 		if need {
 			p.dials++
+			if traceOn {
+				tracePoolEv(p, "MaintainDial", "", 0, nil, 0)
+			}
 		}
 		p.mu.Unlock()
 		if !need {
 			continue
 		}
-		if _, err := p.dial(p.ctx); err != nil {
+		if _, err := p.dial(p.ctx, false); err != nil {
 			attempt++
 			_ = p.sleep(p.ctx, p.backoff(attempt))
 			continue
@@ -427,15 +484,24 @@ func (p *Pool) Drain(ctx context.Context) error {
 			staying++
 		}
 	}
+	n := min(max(p.cfg.Min, 1), staying) // past Max only by what the GOAWAYs free (spec/Pool.tla, P2)
+	if traceOn && len(old) > 0 {
+		tracePoolEv(p, "DrainStart", "", 0, nil, n)
+	}
 	p.mu.Unlock()
+	if p.drainSnapped != nil {
+		p.drainSnapped()
+	}
 	if len(old) == 0 {
 		return nil
 	}
 	deadline, _ := ctx.Deadline()
 	var reps []*Mux
-	for range min(max(p.cfg.Min, 1), staying) { // past Max only by what the GOAWAYs free (spec/Pool.tla, P2)
-		p.reserve()
-		m, err := p.dial(ctx) // past Max: the old ones are about to go
+	for range n {
+		p.mu.Lock()
+		p.dials++ // past Max: the old ones are about to go
+		p.mu.Unlock()
+		m, err := p.dial(ctx, false)
 		if err != nil {
 			p.goAway(reps, deadline) // back within Max (spec/Pool.tla, M2)
 			return err
@@ -463,6 +529,9 @@ func (p *Pool) goAway(ms []*Mux, deadline time.Time) {
 	}
 	p.mu.Lock()
 	p.changedLocked()
+	if traceOn {
+		tracePoolEv(p, "GoAway", "", 0, nil, 0)
+	}
 	p.mu.Unlock()
 }
 
@@ -471,12 +540,18 @@ func (p *Pool) goAway(ms []*Mux, deadline time.Time) {
 // went out (the tails and closes of the sessions that ended there reach
 // the peer), the others at once.
 func (p *Pool) Close() error {
-	p.cancel()
 	p.mu.Lock()
+	p.cancel() // under p.mu: a pick or dial sees the Pool open or closed, not both (spec/Pool.tla CloseStart)
+	if traceOn {
+		tracePoolEv(p, "CloseStart", "", 0, nil, 0)
+	}
 	conns := slices.Clone(p.conns)
 	p.mu.Unlock()
 	for _, m := range conns {
 		m.closeIdle()
+	}
+	if traceOn {
+		p.traceEv("CloseEnd", 0, nil, 0)
 	}
 	return nil
 }

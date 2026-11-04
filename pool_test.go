@@ -245,12 +245,14 @@ func TestPoolOpenWaitsOnTheChangeItsPickSaw(t *testing.T) {
 		var dials atomic.Int32
 		p := mustPool(t, PoolConfig{Link: v2cfg, Max: 1, Dial: scriptDial(&dials, func(int32) error { return nil })})
 		defer p.Close() //nolint:errcheck
-		p.reserve()     // a dial in flight holds Max's room
-		m, grow, _, ch, err := p.pick()
+		p.mu.Lock()
+		p.dials++ // a dial in flight holds Max's room
+		p.mu.Unlock()
+		m, grow, _, ch, err := p.pick(0)
 		if m != nil || grow || err != nil {
 			t.Fatalf("pick: %v, %v, %v; want a wait", m, grow, err)
 		}
-		if _, err := p.dial(context.Background()); err != nil { // it ends before Open waits
+		if _, err := p.dial(context.Background(), false); err != nil { // it ends before Open waits
 			t.Fatal(err)
 		}
 		select {
@@ -407,6 +409,72 @@ func TestPoolDrainFailingHalfwayStaysWithinMax(t *testing.T) {
 		synctest.Wait()
 		if st := p.Stats(); st.Conns != 2 {
 			t.Fatalf("%d connections take sessions after a Drain failed halfway; want Max (2)", st.Conns)
+		}
+	})
+}
+
+// TestPoolDrainReservesWithItsSnapshot (finding C6, lane CONFORM-link;
+// spec/Pool.tla mutant drain-reserve-late): Drain counts its first
+// replacement against Max under the lock it takes its snapshot under. The
+// Pool's only connection dies right after that snapshot (drainSnapped):
+// maintain must see Drain's replacement as the dial that keeps Min, not
+// dial one of its own beside it, which would leave the Pool past Max once
+// Drain ended.
+func TestPoolDrainReservesWithItsSnapshot(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var dials atomic.Int32
+		p := mustPool(t, PoolConfig{Link: v2cfg, Min: 1, Max: 1, Dial: scriptDial(&dials, func(int32) error { return nil })})
+		defer p.Close() //nolint:errcheck
+		synctest.Wait() // maintain's one
+		p.drainSnapped = func() {
+			p.mu.Lock()
+			m := p.conns[0]
+			p.mu.Unlock()
+			_ = m.Close()               // its path dies
+			time.Sleep(2 * time.Second) // maintain's backoff after a refused connection (1 s)
+			synctest.Wait()
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		if err := p.Drain(ctx); err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait()
+		if st, n := p.Stats(), dials.Load(); st.Conns != 1 || n != 2 {
+			t.Fatalf("after Drain: %d connections take sessions, %d dials; want Max (1) and 2 (the first, Drain's replacement)", st.Conns, n)
+		}
+	})
+}
+
+// TestPoolOpenFullAndClosed: the two picks that end an Open at once
+// (spec/Pool.tla Pick, traced: make spec-traces): ErrFull when the Pool is
+// at Max and its connection carries the peer's most sessions, and
+// net.ErrClosed once the Pool is closed.
+func TestPoolOpenFullAndClosed(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		p := mustPool(t, PoolConfig{Link: v2cfg, Max: 1, Dial: func(context.Context) (net.Conn, error) {
+			a, b := net.Pipe()
+			go func() {
+				c, _, err := Server(context.Background(), b, Config{Window: testWindow, Auth: testToken, MaxSessions: 1})
+				if err != nil {
+					_ = b.Close()
+					return
+				}
+				_ = NewMux(c).Serve(func([]byte, *Session) {})
+			}()
+			return a, nil
+		}})
+		s, err := p.Open(context.Background(), []byte("x"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer s.Close() //nolint:errcheck
+		if _, err := p.Open(context.Background(), []byte("x")); !errors.Is(err, ErrFull) {
+			t.Fatalf("Open at Max with its connection full: %v; want ErrFull", err)
+		}
+		_ = p.Close()
+		if _, err := p.Open(context.Background(), []byte("x")); !errors.Is(err, net.ErrClosed) {
+			t.Fatalf("Open after Close: %v; want net.ErrClosed", err)
 		}
 	})
 }
