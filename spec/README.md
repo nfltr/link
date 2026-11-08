@@ -943,6 +943,18 @@ racing `maintain`, three connection slots, two environment events; about
   (C6, the code before) caught by `MaxHolds` on `Pool.cfg`. Decided, not
   modelled: concurrent Drains (L1), the refused backoff (L4), sessions the
   peer opens (L7).
+- A client past its peer's max_sessions (lane CONNPERF: tcp-connect's
+  data connections, the relay's 1,024 sessions each): `FullOnlyAtMax`, an
+  action property on every Pool config: an `Open` fails `ErrFull` only
+  with the room full (every connection that counts against Max at its Cap,
+  no slot to dial one more). `PoolClient.cfg` (Min 0, Max 2, Cap 1, two
+  `Open`s, under a second; in `make spec`, and with a third slot and an
+  environment event, 487 thousand states, in `make spec-nightly`): mutant
+  `full-below-max` (a full connection fails the `Open`: one connection
+  only, the code before) caught by `FullOnlyAtMax`; witness
+  `WitnessActFull` (an `ErrFull` is reached; `WitnessAct*` are action
+  properties, checked as a `PROPERTY`). Min 0 leaves `maintain`'s and
+  `Drain`'s reservations untaken there: `Pool.cfg` covers them.
 
 **`Liveness.tla`** (`Conn.keepAlive`) in discrete time: the last frame
 received (`rxAt`), the ping waiting for an answer (`pingAt`), the one

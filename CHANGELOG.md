@@ -8,6 +8,11 @@ version 2 unless an entry says otherwise.
 
 ## Unreleased
 
+- `spec/Pool.tla` checks `FullOnlyAtMax` (an `Open` fails `ErrFull` only
+  with every connection Max allows at its peer's max_sessions) on every
+  Pool config and `PoolClient.cfg` (Min 0, Max 2: a client past one
+  connection's sessions, nfltr's tcp-connect, lane CONNPERF); mutant
+  `full-below-max`, witness `WitnessActFull`. No code change.
 - Several goroutines in `Credit.Acquire` on one session no longer wait
   with credit there: a grant (and a refund) wakes every waiting sender,
   where it woke one, which could take its bytes and leave the rest or

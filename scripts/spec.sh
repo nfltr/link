@@ -154,6 +154,13 @@ nightly)
 	tlc PoolWide.cfg Pool.tla >"$work/check.out" 2>&1 || st=$?
 	grep -E '^[0-9]+ states generated|Finished in|Error|violated' "$work/check.out" || true
 	[ $st = 0 ] || { tail -60 "$work/check.out"; exit $st; }
+	# A client's Pool past one connection's max sessions, wider (lane CONNPERF).
+	echo "== PoolClient.cfg (Ids {1, 2, 3}, MaxEnv 1)"
+	sed -e 's/Ids = {1, 2}/Ids = {1, 2, 3}/' -e 's/MaxEnv = 0/MaxEnv = 1/' spec/PoolClient.cfg >"$work/PoolClient.cfg"
+	st=0
+	tlc "$work/PoolClient.cfg" Pool.tla >"$work/check.out" 2>&1 || st=$?
+	grep -E '^[0-9]+ states generated|Finished in|Error|violated' "$work/check.out" || true
+	[ $st = 0 ] || { tail -60 "$work/check.out"; exit $st; }
 	# Sessions of both sides at once, data both ways (review r2 LinkSession
 	# 7): 3.6 million states, about 15 minutes on 4 workers.
 	echo "== LinkBoth.cfg (invariants and Refines)"
@@ -178,14 +185,14 @@ check | invariants)
 	# PoolDrain (Min 2: a Drain failing halfway) and QuicWatchStops (two
 	# short stops, ~10 s) only in full: their mutants are CI's.
 	# PoolGrow: background growth (Max above Min).
-	pools="Pool PoolGrow Liveness LivenessStarve QuicWatch QuicWatchPTO QuicWatchStarve Join CreditWaiters"
+	pools="Pool PoolGrow PoolClient Liveness LivenessStarve QuicWatch QuicWatchPTO QuicWatchStarve Join CreditWaiters"
 	[ "$1" = invariants ] || pools="$pools PoolDrain QuicWatchStops"
 	for m in $pools; do
 		echo "== $m.cfg"
 		st=0
 		# Liveness explores a horizon of ticks, Join one session,
 		# CreditWaiters a fixed number of Acquires: their last states end there; PoolDrain has no Open to keep it going.
-		dl=; [ $m = Pool ] || [ $m = PoolGrow ] || dl=-deadlock
+		dl=; [ $m = Pool ] || [ $m = PoolGrow ] || [ $m = PoolClient ] || dl=-deadlock
 		mod=$m.tla; case $m in Pool*) mod=Pool.tla ;; Liveness*) mod=Liveness.tla ;; QuicWatch*) mod=QuicWatch.tla ;; CreditWaiters*) mod=CreditWaiters.tla ;; esac
 		tlc "$m.cfg" "$mod" $dl >"$work/check.out" 2>&1 || st=$?
 		grep -E '^[0-9]+ states generated|depth of|Finished in|Error|violated' "$work/check.out" || true
@@ -211,7 +218,7 @@ mutants)
 			echo "$3: not caught"
 			return 1
 		elif grep -q '^Error: \(Invariant\|Temporal propert\(y\|ies\)\|Action property\) .* violated' "$jw/m.out"; then
-			echo "$3: caught: $(grep '/\\ err = ' "$jw/m.out" | tail -1 | sed 's/.*err = //') ($(grep -m1 -E '^Error: (Invariant|Temporal property)' "$jw/m.out" | sed -E 's/^Error: (Invariant|Temporal property) ([A-Za-z]+).*/\2/'), $(grep -c '^State [0-9]*:' "$jw/m.out") states deep)"
+			echo "$3: caught: $(grep '/\\ err = ' "$jw/m.out" | tail -1 | sed 's/.*err = //') ($(grep -m1 -E '^Error: (Invariant|Temporal property|Action property)' "$jw/m.out" | sed -E 's/^Error: (Invariant|Temporal property|Action property) ([A-Za-z]+).*/\2/'), $(grep -c '^State [0-9]*:' "$jw/m.out") states deep)"
 		else
 			echo "$3: TLC failed:"
 			tail -20 "$jw/m.out"
@@ -236,12 +243,14 @@ mutants)
 	# witness CFG NAME [MODULE]: the witness NAME must be violated.
 	witness() {
 		sed -e '/^PROPERTY/,$d' "spec/$1" >"$jw/Witness.cfg"
-		printf 'INVARIANT %s\n' "$2" >>"$jw/Witness.cfg"
+		# WitnessAct*: an action property (checked as a PROPERTY).
+		case $2 in WitnessAct*) kind=PROPERTY what="Action property" ;; *) kind=INVARIANT what=Invariant ;; esac
+		printf '%s %s\n' "$kind" "$2" >>"$jw/Witness.cfg"
 		dl=; [ "${3:-}" != Join.tla ] && [ "${3:-}" != Liveness.tla ] && [ "${3:-}" != QuicWatch.tla ] && [ "${3:-}" != CreditWaiters.tla ] || dl=-deadlock
 		if tlc "$jw/Witness.cfg" "${3:-MCLink.tla}" $dl >"$jw/m.out" 2>&1; then
 			echo "$2: never violated (vacuous)"
 			return 1
-		elif grep -q "^Error: Invariant $2 is violated" "$jw/m.out"; then
+		elif grep -q "^Error: $what $2 is violated" "$jw/m.out"; then
 			echo "$2: violated, as it must be ($(grep -c '^State [0-9]*:' "$jw/m.out") states deep)"
 		else
 			echo "$2: TLC failed:"
@@ -352,6 +361,8 @@ mutants)
 	job mutant PoolDrain.cfg 'Mutant = "none"' 'Mutant = "drain-fail-keeps"' Pool.tla
 	job mutant Pool.cfg 'Mutant = "none"' 'Mutant = "drain-reserve-late"' Pool.tla
 	job mutant PoolGrow.cfg 'Mutant = "none"' 'Mutant = "grow-past-max"' Pool.tla
+	job mutant PoolClient.cfg 'Mutant = "none"' 'Mutant = "full-below-max"' Pool.tla
+	job witness PoolClient.cfg WitnessActFull Pool.tla
 	for w in WitnessOpen WitnessWait WitnessReplaced WitnessPastMax WitnessClosed WitnessBesideLeaving WitnessAtMax; do job witness Pool.cfg $w Pool.tla; done
 	for m in rearm-timeout deadline-from-rx reader-writes never-dead; do
 		job mutant Liveness.cfg 'Mutant = "none"' "Mutant = \"$m\"" Liveness.tla

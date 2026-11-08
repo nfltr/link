@@ -153,6 +153,9 @@ Pick(o) ==
                   /\ (Staying < Max \/ Mutant = "grow-past-max") /\ gr = 0 /\ FreeId # {}
                   /\ dials' = dials + 1 /\ gr' = o
        ELSE IF Staying < Max /\ FreeId # {}
+               \* full-below-max: a full connection fails the Open (one
+               \* connection only, tcp-connect before lane CONNPERF)
+               /\ ~(Mutant = "full-below-max" /\ Staying > dials)
        THEN /\ dials' = dials + 1
             /\ op' = [op EXCEPT ![o].st = "dial"]
             /\ UNCHANGED <<opw, gr>>
@@ -412,6 +415,14 @@ OpensOpen == \A o \in Opens : op[o].st \in {"pick", "dial", "wait", "late", "pla
 \* some Open is pending, some Open ends.
 OpensProgress == (\E o \in Opens : op[o].st \in {"pick", "dial", "wait", "late", "place"}) ~> (\E o \in Opens : op[o].st \in {"open", "idle"})
 
+\* An Open fails ErrFull only with the room full: every connection that
+\* counts against Max carries its most sessions and no slot is left to dial
+\* one more (an Open's pick -> idle step without Close is its ErrFull). A
+\* client whose peer caps sessions per connection (tcp-connect: the relay's
+\* max_sessions, 1,024) opens past the cap by Max > 1 (lane CONNPERF).
+ErrFullStep(o) == op[o].st = "pick" /\ op'[o].st = "idle" /\ ~Closed
+FullOnlyAtMax == [][\A o \in Opens : ErrFullStep(o) => ~(Staying < Max /\ FreeId # {})]_vars
+
 \* After Close, every connection ends and is dropped.
 CloseEnds == Closed ~> \A c \in Ids : cs[c] = "free"
 
@@ -426,4 +437,7 @@ WitnessClosed == ~(pc = "done" /\ \E c \in Ids : cs[c] = "closed") \* NoLeak wit
 \* away is still up; MaxHolds': an Open waits with the room full.
 WitnessBesideLeaving == ~\E o \in Opens : op[o].st = "open" /\ \E c \in Ids : Up(c) /\ ga[c]
 WitnessAtMax == ~(Staying = Max /\ \E o \in Opens : op[o].st = "wait")
+\* FullOnlyAtMax's case: an Open fails ErrFull (an action: checked as a
+\* PROPERTY, violated).
+WitnessActFull == [][\A o \in Opens : ~ErrFullStep(o)]_vars
 =============================================================================
