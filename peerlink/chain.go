@@ -513,7 +513,7 @@ func (j *joint) closeWrite(dst net.Conn) {
 }
 
 // sync closes ds's writes and ends the direction src -> ds once that
-// CloseWrite reached the peer (Session.Sync): a clean end at src only
+// CloseWrite reached the peer (Session.CloseWriteSync): a clean end at src only
 // then; a connection that ends first aborts src (spec/Join.tla, relay-core finding 23). The other
 // direction's clean end waits meanwhile (hold), so src reads no EOF while
 // its own tail may still be lost.
@@ -524,9 +524,11 @@ func (j *joint) sync(src net.Conn, ds *link.Session) {
 		traceJoin(j, "CloseWrite", 0)
 	}
 	j.mu.Unlock()
-	_ = ds.CloseWrite()
 	go func() {
-		err := ds.Sync()
+		// the ping with the CLOSE: a drained connection closes once the
+		// session ended, and a ping after that close never goes (spec/Join.tla
+		// DrainNeverResets, lane LINKDRAIN)
+		err := ds.CloseWriteSync()
 		if err != nil {
 			j.abort(src, abortOf(err))
 		}

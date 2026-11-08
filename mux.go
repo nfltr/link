@@ -172,6 +172,22 @@ func (m *Mux) drop(s *Session) {
 func (m *Mux) leave() {
 	m.mu.Lock()
 	last := m.leaving && !m.left && len(m.sess) == 0 && closed(m.c.drained)
+	if last {
+		// a Sync's pong still to come (CloseWriteSync's: the session ended
+		// with its CLOSE): the peer's close would lose it (spec/Join.tla
+		// Leave, DrainNeverResets)
+		if synced := m.c.syncPending(); synced != nil {
+			m.mu.Unlock()
+			go func() {
+				select {
+				case <-synced:
+					m.leave()
+				case <-m.c.Done():
+				}
+			}()
+			return
+		}
+	}
 	m.left = m.left || last
 	m.mu.Unlock()
 	if last {
@@ -986,14 +1002,48 @@ func (s *Session) writeWait() <-chan struct{} {
 // the CLOSE was buffered, not that it arrived (Sync); a session that
 // already ended, or a second CloseWrite, returns nil.
 func (s *Session) CloseWrite() error {
+	_, err := s.closeWrite(false)
+	return err
+}
+
+// CloseWriteSync is CloseWrite, then Sync, with Sync's ping buffered with
+// the CLOSE under one write lock, so the Sync is pending before the peer
+// can read the CLOSE: a draining connection closes once its sessions
+// ended (Mux.leave), but not before that pong was read, whereas a ping
+// buffered after the close would never be sent, failing a Sync whose
+// CLOSE the peer read (spec/Join.tla DrainNeverResets, lane LINKDRAIN).
+// Once CloseWrite was called (or the session ended) it is Sync.
+func (s *Session) CloseWriteSync() error {
+	synced, err := s.closeWrite(true)
+	switch {
+	case err != nil:
+		return err
+	case synced == nil:
+		return s.Sync()
+	}
+	return waitSync(s.m.c, synced)
+}
+
+// closeWrite is CloseWrite; with sync, the returned channel is closed
+// once the pong of a ping buffered right after the CLOSE was read (nil
+// when nothing was sent).
+func (s *Session) closeWrite(sync bool) (<-chan struct{}, error) {
 	if debugOn {
 		debugReleased(s)
 	}
 	s.autoAccept()
 	if s.closed.Load() || s.halfClosed.Swap(true) {
-		return nil
+		return nil, nil
 	}
-	err := s.m.sendClose(s.id, true)
+	var synced <-chan struct{}
+	var err error
+	if sync { // the ping with the CLOSE: pending before the peer can answer it
+		if synced, err = s.m.c.sendCloseSync(s.id); err == nil {
+			err = s.m.c.Flush()
+		}
+	} else {
+		err = s.m.sendClose(s.id, true)
+	}
 	// Dekker with the receive of the peer's FIN (peerHalf, then finSent):
 	// one of the two sees both and drops it, after the CLOSE is buffered.
 	s.finSent.Store(true)
@@ -1002,9 +1052,9 @@ func (s *Session) CloseWrite() error {
 		s.m.drop(s)
 	}
 	if err != nil { // review F9 (lane LINKF7): the code before returned nil
-		return fmt.Errorf("%w: %w", io.ErrClosedPipe, s.m.connErr())
+		return nil, fmt.Errorf("%w: %w", io.ErrClosedPipe, s.m.connErr())
 	}
-	return nil
+	return synced, nil
 }
 
 // Sync waits until the peer's Mux read every frame this side buffered
@@ -1015,23 +1065,36 @@ func (s *Session) CloseWrite() error {
 // it ends the other side cleanly (spec/Join.tla).
 func (s *Session) Sync() error {
 	c := s.m.c
-	ended := func() error {
-		if err := c.Err(); err != nil {
-			return err
-		}
-		return ErrConnClosed
-	}
 	select {
 	case <-c.Done():
-		return ended()
+		return syncEnded(c)
 	default:
 	}
+	return waitSync(c, c.sync())
+}
+
+// waitSync waits for synced (Conn.sync): nil once its pong was read, even
+// when the connection ended since; else the connection's error.
+func waitSync(c *Conn, synced <-chan struct{}) error {
 	select {
-	case <-c.sync():
+	case <-synced:
 		return nil
 	case <-c.Done():
-		return ended()
+		select {
+		case <-synced: // the pong came before the end
+			return nil
+		default:
+		}
+		return syncEnded(c)
 	}
+}
+
+// syncEnded is a Sync's error once the connection ended first.
+func syncEnded(c *Conn) error {
+	if err := c.Err(); err != nil {
+		return err
+	}
+	return ErrConnClosed
 }
 
 // endErr is WriteTo's error once the session ended: nil at a clean end

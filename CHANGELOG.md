@@ -8,6 +8,16 @@ version 2 unless an entry says otherwise.
 
 ## Unreleased
 
+- `Session.CloseWriteSync`: CloseWrite, then Sync, with Sync's ping
+  buffered with the CLOSE; a leaving connection (`Mux.Drain`) closes only
+  once every Sync's pong was read. `peerlink` joints use it: a session
+  joined across a drained connection could be reset after every byte
+  arrived, when the session's end let the connection close before Sync's
+  ping was sent (peerlink `ChainDrainMiddle`, Reverse; lane LINKDRAIN).
+  `spec/Join.tla`: the drain (`Drain`, `Leave`, `PeerClose`, `ConnEnd`),
+  `DrainNeverResets`, mutants `ping-late` and `leave-ignores-sync`;
+  `TestCloseWriteSyncOnALeavingConnection`.
+
 - `Pool.Open` fails `ErrFull` only when no dial in flight can make room:
   beside a connection at its peer's max_sessions, an `Open` waits for the
   dials that hold the rest of Max (another `Open`'s, maintain's, a

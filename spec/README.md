@@ -82,7 +82,7 @@ Per side `p` and session `s`:
 | `SendBuffer(p, s)` | `Conn.frameWaitLocked`: the check again after the wait, the frame buffered (trace `SendData`, logged by that check: `Credit.sendable`) |
 | `SendData(p, s)` | the two at once, a frame that did not wait: checked again just before it is buffered (C12; Trace.tla only) |
 | `Refund(p, s)` | `Credit.refund` (a `Write`'s credit given back, nothing sent: its write side closed, its credit ended or its deadline passed) |
-| `CloseWrite(p, s)` | `Session.CloseWrite` -> `Conn.sendClose` code 1, in two steps: `CloseWriteMark` (`halfClosed` set) and `CloseWriteSend` (the CLOSE buffered, `finSent`; review r2 LinkSession 1). Trace.tla takes the two as one (`Close` code 1) |
+| `CloseWrite(p, s)` | `Session.CloseWrite` (and `CloseWriteSync`): `closeWrite` -> `Conn.sendClose` code 1, in two steps: `CloseWriteMark` (`halfClosed` set) and `CloseWriteSend` (the CLOSE buffered, `finSent`; review r2 LinkSession 1). Trace.tla takes the two as one (`Close` code 1) |
 | `RefuseMark(p, s)` | `Session.AbortWith`/`answer`'s refusal: `ans` taken, the credit forgotten (`Credit.forget` code 4, trace `Forget` 4); its ABORT then is `End` (trace `Close` 4) |
 | `Closing(p, s, code)` | `Conn.sendClose` (code 0 from `Session.Close`, 2 from `Session.Reset`) and `Conn.sendAbort` (3, from `Mux.cut`): the credit forgotten (`Credit.forget`) |
 | `End(p, s)` | the same, once the CLOSE/ABORT is buffered (it may wait for room between the two) |
@@ -302,7 +302,7 @@ TCP proxy's limit): the model's clean end is the joint's clean close, or
 an EOF given after it read the client's FIN. Bound: one round trip plus
 the write buffer; the connection's liveness bounds a dead peer.
 
-`Join.tla` (`Join.cfg`, `make spec` and `make spec-invariants`, 306
+`Join.tla` (`Join.cfg`, `make spec` and `make spec-invariants`, 723
 states): the client (`CWrite`, `CFin`), the joint (`Copy`, `CloseWrite`,
 `RRecv`, `Finish`, `Lost`), the peer's Mux (`ARecv`, `AFin`) and the
 connection as two FIFOs that a `Crash` empties. Invariant `NoSilentLoss`:
@@ -329,6 +329,30 @@ recorder and `TraceJoin.tla`: "Conformance" below. `LostEnds` (weak
 fairness on the joint's and the connection's steps, none on the
 client's): a client whose connection died ends, however idle (Join 2,
 mutant `no-watch`).
+A drain (lane LINKDRAIN, 2026-11-08: peerlink `ChainDrainMiddle` on a
+Reverse pair failed about 1 in 75 runs under load, the joined session
+reset after every byte arrived): the joint's side of the session's
+connection drains (`Drain`); once the session ended at its Mux (the
+joint's FIN buffered, the peer's read) the leaving connection writes
+every buffered frame and shuts its write side (`Leave`, `Mux.leave`), the
+peer reads to the end and closes (`PeerClose`), its pongs not yet written
+lost (`PFlush` writes one), and the connection ends cleanly (`ConnEnd`).
+The code before buffered Sync's ping in a step after the CloseWrite, so
+a leave between the two never sent it and the clean end reset the
+client. Invariant `DrainNeverResets`: a reset only after a `Crash`.
+Fixed: `Session.CloseWriteSync` buffers the CLOSE and Sync's ping under
+one write lock (`Conn.sendCloseSync`), the Sync pending before the peer
+can read the CLOSE, and `Mux.leave` closes only once every Sync's pong
+was read (`Leave` not while `d0` is `sync`). A first fix registered the
+Sync just after the CLOSE was flushed: the far end's close answering the
+CLOSE ended the session and the leave closed first (1 in about 3,600
+runs; the same step as `ping-late`). Mutants `ping-late` (the code
+before) and `leave-ignores-sync` (the ping with the CLOSE, the leave not
+waiting: the peer's close loses the pong), both caught by
+`DrainNeverResets`; witness `WitnessDrained`. Guards: link
+`TestCloseWriteSyncOnALeavingConnection` (failed before: CloseWrite then
+Sync), peerlink `ChainDrainMiddle` under `GOMAXPROCS=2 -race`, 4 at once
+x 150 (failed 3 of 4 before; after, 0 in 30 such rounds).
 
 | model | Go |
 |---|---|
@@ -429,10 +453,10 @@ no longer writes.
 | `sessionCredit.consumed` (`cr.cons`) | `Credit.Consumed` | `Read` |
 | `sessionCredit.answered` (`ss.acc`, `Answered`) | `Credit.answered`, `Credit.answering` | `RecvAccept` (and the refusal's `Recv` close 4), `Accept`/`RefuseMark` |
 | `Session.ans` | `Session.answer`, `Session.AbortWith` | `Accept`, `RefuseMark` |
-| `Session.halfClosed` (`ss.wfin`) | `Session.CloseWrite` | `CloseWriteMark` |
-| `Session.finSent` (`ss.fin`) | `Session.CloseWrite` | `CloseWriteSend` |
+| `Session.halfClosed` (`ss.wfin`) | `Session.closeWrite` | `CloseWriteMark` |
+| `Session.finSent` (`ss.fin`) | `Session.closeWrite` | `CloseWriteSend` |
 | `Session.peerHalf` (`ss.rfin`) | `Mux.serve` | `RecvClose` code 1 |
-| `Session.peerClosed` (`ss.pclosed`) | `Mux.serve`, `Mux.close`, `Mux.OpenChain`, `Session.CloseWrite` | `RecvClose` 0, 2, 3; `Down`; `OpenRefused` (the peer never heard of it); `CloseWriteSend` after the peer's FIN (both halves: `Mux.drop`) |
+| `Session.peerClosed` (`ss.pclosed`) | `Mux.serve`, `Mux.close`, `Mux.OpenChain`, `Session.closeWrite` | `RecvClose` 0, 2, 3; `Down`; `OpenRefused` (the peer never heard of it); `CloseWriteSend` after the peer's FIN (both halves: `Mux.drop`) |
 | `Session.closed` (`ss.st = "gone"`) | `Session.ended` | every end: `End`, `RecvClose`, `Down`, `CloseWriteSend` with `rfin` |
 | `Mux.sess` (`ss.st`) | `Mux.add`, `Mux.drop`, `Mux.close` | `OpenCheck`, `RecvOpen` (add); every end (drop); `Down` |
 | `Mux.leaving` | `Mux.goAway` | `GoAway` |
@@ -503,12 +527,17 @@ session):
 |---|---|
 | `CWrite`, `CFin` | the client (environment) |
 | `Copy` | `joint.dir(0)`'s copy: `connWriter.Write` onto the session |
-| `CloseWrite` | `joint.ended(0)` -> `joint.sync`: `syncing` set, `Session.CloseWrite`, `Session.Sync`'s ping |
+| `CloseWrite` | `joint.ended(0)` -> `joint.sync`: `syncing` set, `Session.CloseWriteSync` (`Conn.sendCloseSync`: the CLOSE, the Sync registered and its ping, under one `wmu`) |
+| `SyncPing` | mutant `ping-late` only: the code before, `Session.Sync`'s ping after `CloseWrite` |
 | `ARecv`, `AFin` | the peer's `Conn.recv` (and `keepAlive`'s pong); the peer's application's `CloseWrite` |
 | `RRecv` (FIN) | `joint.dir(1)`'s Pump ends at the peer's FIN: `joint.ended(1)` -> `hold` while syncing, else `closeWrite` on the client (`Eof`) |
 | `RRecv` (pong) | `Session.Sync` returns: `sync`'s goroutine runs the held end (`fin`) and `finish` |
 | `Finish` | `joint.finish` of both directions: the client closed |
 | `Crash` | the environment (the link connection ends) |
+| `Drain` | `Mux.Drain` / `goAway` on the session's connection (peerlink `Node.Drain` on an accepted one) |
+| `Leave` | `Mux.leave` -> `Conn.closeFlushed`, once `Conn.syncPending` is nil |
+| `PFlush`, `PeerClose` | the peer's write of a pong it buffered; its close after reading the shut (environment) |
+| `ConnEnd` | the receive loop's clean EOF: `Conn.Done` |
 | `Lost` | `joint.abort` of the client: from `ended` (Pump's error, a failed write), `sync` (Sync's error), or `watch` (the session's end while the client is idle: Join 2) |
 
 Unmapped code, outside `Join.tla` on purpose: `Forward`'s answer wait

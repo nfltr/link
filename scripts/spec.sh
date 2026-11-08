@@ -396,12 +396,12 @@ mutants)
 	job witness QuicWatchStarve.cfg WitnessIdle QuicWatch.tla
 	for w in WitnessLateKeepAlive WitnessSecondLook; do job witness QuicWatchStops.cfg $w QuicWatch.tla; done
 	# peerlink.Join's clean end (Join.tla, relay-core finding 23).
-	for m in no-sync no-hold done-skips-hold no-watch; do
+	for m in no-sync no-hold done-skips-hold no-watch ping-late leave-ignores-sync; do
 		job mutant Join.cfg 'Mutant = "none"' "Mutant = \"$m\"" Join.tla
 	done
 	for w in WitnessDead WitnessLateAlive WitnessTight; do job witness Liveness.cfg $w Liveness.tla; done
 	job witness LivenessStarve.cfg WitnessStarved Liveness.tla
-	for w in WitnessClean WitnessReset WitnessHeld WitnessCleanDown; do job witness Join.cfg $w Join.tla; done
+	for w in WitnessClean WitnessReset WitnessHeld WitnessCleanDown WitnessDrained; do job witness Join.cfg $w Join.tla; done
 	# Credit's waiters (CreditWaiters.tla, lane LINKWAKE): the one-slot
 	# wake (the code before) strands a waiter and leaves its Acquire for
 	# good; passing the token on strands one that needs less (a stall

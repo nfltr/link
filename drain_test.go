@@ -447,3 +447,39 @@ func TestPingBeforeGoAwayIsNotTheBarrier(t *testing.T) {
 		t.Fatal("the pong of a ping buffered after the GOAWAY left Drained open")
 	}
 }
+
+// TestCloseWriteSyncOnALeavingConnection: the peer's FIN came first, so
+// the CLOSE ends the session and the draining connection then closes
+// (Mux.leave); CloseWriteSync still returns nil: its ping went with the
+// CLOSE (spec/Join.tla DrainNeverResets, lane LINKDRAIN). CloseWrite then
+// Sync failed: Sync's ping came after the connection's write side shut.
+func TestCloseWriteSyncOnALeavingConnection(t *testing.T) {
+	for i := range 50 {
+		accepted := make(chan *Session, 1)
+		dm, lm := v2muxPair(t, func(_ []byte, s *Session) { accepted <- s }, v2cfg, v2cfg)
+		o, err := openV2(dm, "x")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := o.CloseWrite(); err != nil {
+			t.Fatal(err)
+		}
+		s := <-accepted
+		if b, err := io.ReadAll(s); err != nil || len(b) != 0 { // the peer's FIN read
+			t.Fatalf("read %q, %v", b, err)
+		}
+		drained := make(chan error, 1)
+		go func() { drained <- lm.Drain(context.Background()) }()
+		waitUntil(t, func() bool { return closed(lm.c.drained) }) // the peer read the GOAWAY
+		if err := s.CloseWriteSync(); err != nil {
+			t.Fatalf("round %d: CloseWriteSync on a leaving connection: %v", i, err)
+		}
+		if b, err := io.ReadAll(o); err != nil || len(b) != 0 {
+			t.Fatalf("the opener read %q, %v", b, err)
+		}
+		if err := <-drained; err != nil {
+			t.Fatalf("Drain: %v", err)
+		}
+		_ = dm.Close()
+	}
+}

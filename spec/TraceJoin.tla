@@ -3,9 +3,10 @@
 (* end"): the steps a joint of a plain conn and a link session recorded    *)
 (* (-tags linktrace, peerlink/trace_on.go) must be steps of Join.tla, in   *)
 (* order. The client's, the peer's and the network's steps (CWrite, CFin,  *)
-(* ARecv, AFin, Crash) are not logged: TLC takes any of them between two   *)
-(* logged steps. N is the number of Copy lines (one model byte each). The  *)
-(* trace is accepted when TLC reaches its end: TraceUnfinished violated.   *)
+(* ARecv, PFlush, AFin, Crash; a drain's Drain, Leave, PeerClose and       *)
+(* ConnEnd) are not logged: TLC takes any of them between two logged      *)
+(* steps. N is the number of Copy lines (one model byte each). The trace  *)
+(* is accepted when TLC reaches its end: TraceUnfinished violated.         *)
 EXTENDS TraceLog, Join, TLC, FiniteSets
 
 TraceN == Cardinality({i \in DOMAIN Log : Log[i].ev = "Copy"})
@@ -15,7 +16,7 @@ traceVars == <<vars, l>>
 
 E == Log[l]
 
-Env == CWrite \/ CFin \/ ARecv \/ AFin \/ Crash
+Env == CWrite \/ CFin \/ ARecv \/ PFlush \/ AFin \/ Crash \/ Drain \/ Leave \/ PeerClose \/ ConnEnd
 
 Step ==
     CASE E.ev = "Copy" -> Copy

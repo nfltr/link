@@ -585,6 +585,27 @@ func (c *Conn) sendClose(sid string, code byte) error {
 	}
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
+	return c.sendCloseLocked(sid, code)
+}
+
+// sendCloseSync buffers sid's CLOSE of its write side and a Sync's ping
+// after it under one wmu: the Sync is pending (syncPending) before the
+// peer can read the CLOSE, and so before the session can end at the
+// peer's answer and a leaving connection close (spec/Join.tla CloseWrite,
+// Leave). The channel is closed once that ping's pong was read.
+func (c *Conn) sendCloseSync(sid string) (<-chan struct{}, error) {
+	if len(sid) > MaxSID {
+		return nil, errSID
+	}
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
+	if err := c.sendCloseLocked(sid, closeHalf); err != nil {
+		return nil, err
+	}
+	return c.syncLocked(), nil
+}
+
+func (c *Conn) sendCloseLocked(sid string, code byte) error {
 	if err := c.acceptLocked(sid, nil); err != nil {
 		return err
 	}
@@ -648,13 +669,28 @@ type syncWait struct {
 // those frames (a pong answers a ping after reading every frame before it).
 func (c *Conn) sync() <-chan struct{} {
 	c.wmu.Lock()
+	defer c.wmu.Unlock()
+	return c.syncLocked()
+}
+
+func (c *Conn) syncLocked() <-chan struct{} {
 	w := syncWait{at: c.lastPing + 1, done: make(chan struct{})} // every ping from here on
 	c.smu.Lock()
 	c.syncs = append(c.syncs, w)
 	c.smu.Unlock()
-	c.wmu.Unlock()
-	c.control(typePing, nil)
+	c.controlLocked(typePing, nil)
 	return w.done
+}
+
+// syncPending is the done channel of the last Sync still waiting for its
+// pong (each pong answers every Sync before it), nil when none waits.
+func (c *Conn) syncPending() <-chan struct{} {
+	c.smu.Lock()
+	defer c.smu.Unlock()
+	if len(c.syncs) == 0 {
+		return nil
+	}
+	return c.syncs[len(c.syncs)-1].done
 }
 
 // synced ends the Syncs a pong of time t answers.
@@ -1443,6 +1479,10 @@ func liveFire(now, rx, pingAt time.Duration, looked bool, iv, to, gap time.Durat
 func (c *Conn) control(typ byte, b []byte) {
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
+	c.controlLocked(typ, b)
+}
+
+func (c *Conn) controlLocked(typ byte, b []byte) {
 	if typ == typePing {
 		b = c.pingTime()
 	}
