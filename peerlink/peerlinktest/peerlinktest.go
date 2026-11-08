@@ -30,6 +30,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -459,6 +460,43 @@ func (c counting) Read(b []byte) (int, error) {
 // to as fast as they take each get at least a quarter of a fair share and
 // none waits long for its turn.
 func testFairness(t *testing.T, newPair func(*testing.T) Pair) {
+	f := measureFairness(t, newPair)
+	t.Logf("%v", f)
+	if err := f.verdict(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// fairness is what measureFairness saw in its run: the KiB each session
+// read, the bytes all read, and the longest wait for a turn, as the bytes
+// the path moved for the other sessions while one read nothing.
+type fairness struct {
+	per          []int64
+	total, worst int64
+}
+
+func (f fairness) String() string {
+	return fmt.Sprintf("KiB per session: %v (fair share %d); longest wait for a turn: %d KiB the others moved (%d%% of the run)", f.per, f.total/int64(len(f.per))>>10, f.worst>>10, 100*f.worst/max(f.total, 1))
+}
+
+// verdict: every session got a quarter of a fair share, and while one
+// waited for its turn the others moved at most half the run. A wait is
+// counted in the path's bytes, not in time: on a loaded host the whole
+// process (the path, the senders, the readers) runs late, and a time
+// bound (2 s, half the run at the path's rate) failed a fair scheduler
+// there. A turn comes every few writes of the path (link: 5-20% of the
+// run, up to 38% seen with -count 6 at GOMAXPROCS=2 under a loop of go
+// build -a); a scheduler that let one of 8 sessions wait while the others
+// moved 2.4 s of a 1 MiB/s path (TestTurnsKeepTheirPlace in link) waited
+// ~60%. TestFairnessCatchesAWait is the mutant.
+func (f fairness) verdict() error {
+	if f.total == 0 || slices.Min(f.per) < f.total>>10/int64(4*len(f.per)) || f.worst > f.total/2 {
+		return fmt.Errorf("a session fell behind: %v", f)
+	}
+	return nil
+}
+
+func measureFairness(t *testing.T, newPair func(*testing.T) Pair) fairness {
 	const n, rate, warm, run = 8, 1 << 20, 2 * time.Second, 4 * time.Second
 	var accepted atomic.Int32
 	start := make(chan struct{})
@@ -476,16 +514,18 @@ func testFairness(t *testing.T, newPair func(*testing.T) Pair) {
 		}
 	})
 	p.Throttle(rate)
+	// all: the bytes every session read; last[i]: all after session i's
+	// last read.
+	var all atomic.Int64
 	var moved, last [n]atomic.Int64
 	for i := range n {
 		s := open(t, p, "src")
-		last[i].Store(time.Now().UnixNano()) // waiting for its first turn
 		go func() {
 			buf := make([]byte, 32<<10)
 			for {
 				k, err := s.Read(buf)
 				moved[i].Add(int64(k))
-				last[i].Store(time.Now().UnixNano())
+				last[i].Store(all.Add(int64(k)))
 				if err != nil {
 					return
 				}
@@ -505,31 +545,22 @@ func testFairness(t *testing.T, newPair func(*testing.T) Pair) {
 	// A wait counts from the run's start: a session's first turn comes
 	// after whatever the path took before it (on a loaded host, a writer
 	// late by a few ms queues behind the others' first window in the
-	// kernel buffers in front of the throttle, 2-3 s here), not after a
-	// turn of the path.
-	runStart := time.Now().UnixNano()
-	var worst time.Duration
+	// kernel buffers in front of the throttle), not after a turn of the
+	// path.
+	runStart := all.Load()
+	var worst int64
 	for end := time.Now().Add(run); time.Now().Before(end); {
 		time.Sleep(100 * time.Millisecond)
+		now := all.Load()
 		for i := range n {
-			worst = max(worst, time.Since(time.Unix(0, max(last[i].Load(), runStart))))
+			worst = max(worst, now-max(last[i].Load(), runStart))
 		}
 	}
-	var total, least int64 = 0, 1 << 62
-	var per []int64
+	f := fairness{total: all.Load() - runStart, worst: worst}
 	for i := range n {
-		m := moved[i].Load() - base[i]
-		total += m
-		least = min(least, m)
-		per = append(per, m>>10)
+		f.per = append(f.per, (moved[i].Load()-base[i])>>10)
 	}
-	t.Logf("KiB per session in %v at %d KiB/s: %v; longest wait for a turn %v", run, rate>>10, per, worst.Round(time.Millisecond))
-	// A turn comes every few writes of the path (link: ~0.4 s here, its
-	// senders queue for room in order); 2 s leaves a margin for -race on
-	// a small, loaded host (up to 1.3 s seen on 4 CPUs).
-	if total == 0 || least < total/(4*n) || worst > run/2 {
-		t.Fatalf("a session fell behind: KiB per session %v (fair share %d), longest wait %v", per, total/n>>10, worst.Round(time.Millisecond))
-	}
+	return f
 }
 
 // DeadPeer: once the path goes silent, every session (two idle, one whose

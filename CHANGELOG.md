@@ -8,6 +8,15 @@ version 2 unless an entry says otherwise.
 
 ## Unreleased
 
+- `peerlinktest` Fairness counts a session's wait for its turn in the
+  bytes the path moved for the others meanwhile (at most half the run),
+  not in time (2 s): under load the whole process runs late and fair
+  runs failed on time alone (lane LINKFAIR). Mutant
+  `TestFairnessCatchesAWait`: one session that reads nothing for most of
+  the run fails it. `make test-under-load PKGS=...`
+  (`scripts/test-under-load.sh`, the same file in relay and relay-core):
+  packages run on a starved machine.
+
 - `Session.CloseWriteSync`: CloseWrite, then Sync, with Sync's ping
   buffered with the CLOSE; a leaving connection (`Mux.Drain`) closes only
   once every Sync's pong was read. `peerlink` joints use it: a session
