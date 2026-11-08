@@ -204,18 +204,31 @@ func exchange(s peerlink.Session, n int64) error {
 	return nil
 }
 
-// recvWithin waits for n values on ch, each within d of start.
+// recvWithin waits for n values on ch, each within d of start, counting
+// only the time this process ran on time: when the host runs its timers
+// late (a loaded machine, a busy CI runner), the bound grows by how late
+// its own ticks were, as the implementation's timers (its liveness) are
+// late by as much. A host on time gets d, so a late implementation still
+// fails; one that never delivers fails once the host is on time again.
 func recvWithin[T any](t *testing.T, ch <-chan T, n int, start time.Time, d time.Duration, what string) []T {
 	t.Helper()
 	var got []T
-	timer := time.NewTimer(time.Until(start.Add(d)))
-	defer timer.Stop()
+	const tick = 50 * time.Millisecond
+	ticker := time.NewTicker(tick)
+	defer ticker.Stop()
+	var late time.Duration
+	last := time.Now()
 	for len(got) < n {
 		select {
 		case v := <-ch:
 			got = append(got, v)
-		case <-timer.C:
-			t.Fatalf("%s: %d of %d within %v", what, len(got), n, d)
+		case <-ticker.C:
+			now := time.Now()
+			late += max(now.Sub(last)-tick, 0)
+			last = now
+			if now.Sub(start) > d+late {
+				t.Fatalf("%s: %d of %d within %v (and %v the host ran late)", what, len(got), n, d, late.Round(time.Millisecond))
+			}
 		}
 	}
 	return got

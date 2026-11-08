@@ -13,7 +13,10 @@ version 2 unless an entry says otherwise.
   not in time (2 s): under load the whole process runs late and fair
   runs failed on time alone (lane LINKFAIR). Mutant
   `TestFairnessCatchesAWait`: one session that reads nothing for most of
-  the run fails it. `make test-under-load PKGS=...`
+  the run fails it. Its dead-peer and drain bounds (DeadPeer, Cut,
+  Reset, the drains) grow by how late the host ran the suite's own ticks,
+  as it runs the implementation's liveness timers late by as much (relay-core
+  TestAgentLinkConformanceTCP/DeadPeer, quiclink Cut under load). `make test-under-load PKGS=...`
   (`scripts/test-under-load.sh`, the same file in relay and relay-core):
   packages run on a starved machine.
 
