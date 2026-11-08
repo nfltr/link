@@ -8,6 +8,14 @@ version 2 unless an entry says otherwise.
 
 ## Unreleased
 
+- `Mux.Drain` at its deadline returns only once the deadline's cut
+  ended (its ABORTs sent, the connection closed), also when the drain's
+  own timer began that cut first: Drain's second cut returned at once,
+  so a relay let its agents go while a client's ABORT (drain deadline)
+  was still unsent, and that client read the agent's lost connection
+  instead (nfltr `TestRelayDrain`, lane CONNDRAINFLAKE). Guard
+  `TestDrainReturnsAfterTheCutItRaced`.
+
 - `peerlinktest` Fairness counts a session's wait for its turn in the
   bytes the path moved for the others meanwhile (at most half the run),
   not in time (2 s): under load the whole process runs late and fair

@@ -51,9 +51,10 @@ type Mux struct {
 	done bool // Serve returned: no more sessions
 	// leaving: this side sent GOAWAY; the connection closes once its last
 	// session ended and the peer read the GOAWAY (Conn.Drained).
-	leaving bool
-	left    bool // the close began
-	cutting bool // a drain's deadline cut the sessions
+	leaving  bool
+	left     bool          // the close began
+	cutting  bool          // a drain's deadline cut the sessions
+	cutEnded chan struct{} // closed once that cut ended (its ABORTs sent, the connection closed)
 	// refusals of the peer's opens, sent by a goroutine while refusing.
 	refusals []refusal
 	refusing bool
@@ -450,11 +451,15 @@ func lateErr(ctx context.Context) error {
 // ABORTs before the peer read them), within two seconds at most.
 func (m *Mux) cut() {
 	m.mu.Lock()
-	if m.cutting { // the drain's timer and Drain's ctx: one cut
+	if m.cutting { // the drain's timer and Drain's ctx: one cut, which the other waits for
+		done := m.cutEnded
 		m.mu.Unlock()
+		<-done // Drain returns once the peer can have read the ABORTs (TestDrainReturnsAfterTheCutItRaced)
 		return
 	}
 	m.cutting = true
+	m.cutEnded = make(chan struct{})
+	defer close(m.cutEnded)
 	ids := make([]string, 0, len(m.sess))
 	for id, s := range m.sess {
 		ids = append(ids, id)

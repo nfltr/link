@@ -483,3 +483,47 @@ func TestCloseWriteSyncOnALeavingConnection(t *testing.T) {
 		_ = dm.Close()
 	}
 }
+
+// TestDrainReturnsAfterTheCutItRaced: a drain's deadline fires twice (its
+// timer and Drain's ctx); the cut that comes second returns only once
+// the first one's ABORTs went out and the connection closed. A Drain
+// that returned before let its caller close what the session was joined
+// to first (a relay letting its agents go once its clients drained), so
+// the peer read that end, not the drain's deadline.
+func TestDrainReturnsAfterTheCutItRaced(t *testing.T) {
+	a, b := tcpPair(t)
+	gc := &gatedConn{TCPConn: b.(*net.TCPConn), entered: make(chan struct{}), release: make(chan struct{})}
+	sc := make(chan *Conn, 1)
+	go func() {
+		c, _, err := Server(context.Background(), gc, Config{Auth: testToken})
+		if err != nil {
+			t.Error(err)
+		}
+		sc <- c
+	}()
+	cc, err := Client(context.Background(), a, Config{Auth: testToken})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lm, dm := NewMux(<-sc), NewMux(cc)
+	t.Cleanup(func() { _ = dm.Close(); _ = lm.Close() })
+	hold := make(chan struct{})
+	defer close(hold)
+	go func() { _ = lm.Serve(func(_ []byte, _ *Session) { <-hold }) }()
+	go func() { _ = dm.Serve(nil) }()
+	if _, err := dm.Open([]byte("held")); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, func() bool { return lm.Sessions() == 1 })
+	gc.armed.Store(true) // the first cut's ABORT waits here
+	first := make(chan struct{})
+	go func() { lm.cut(); close(first) }()
+	<-gc.entered
+	time.AfterFunc(200*time.Millisecond, func() { close(gc.release) })
+	lm.cut()
+	select {
+	case <-first:
+	default:
+		t.Fatal("the second cut returned while the first was still sending its ABORTs")
+	}
+}
