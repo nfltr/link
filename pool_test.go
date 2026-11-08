@@ -478,3 +478,77 @@ func TestPoolOpenFullAndClosed(t *testing.T) {
 		}
 	})
 }
+
+// TestPoolOpenWaitsForADialBesideAFullConnection (lane CONNCAP,
+// spec/Pool.tla FullOnlyAtMax, mutant full-with-dials): at Max 2, one
+// connection carries its most sessions and another Open's dial holds the
+// rest of the room. An Open then waits for that dial instead of failing
+// ErrFull: up, it places its session there; failed, it wakes and dials
+// one itself (WaitWakes; mutant no-wake-on-dial-fail). A burst of opens
+// past one connection's sessions (tcp-connect past the relay's 1,024)
+// opened only those that found room before.
+func TestPoolOpenWaitsForADialBesideAFullConnection(t *testing.T) {
+	for _, fails := range []bool{false, true} {
+		synctest.Test(t, func(t *testing.T) {
+			release := make(chan struct{})
+			var dials atomic.Int32
+			p := mustPool(t, PoolConfig{Link: v2cfg, Max: 2, Dial: func(ctx context.Context) (net.Conn, error) {
+				if dials.Add(1) == 2 {
+					<-release
+					if fails {
+						return nil, errors.New("dial failed")
+					}
+				}
+				a, b := net.Pipe()
+				go func() {
+					c, _, err := Server(context.Background(), b, Config{Window: testWindow, Auth: testToken, MaxSessions: 2})
+					if err != nil {
+						_ = b.Close()
+						return
+					}
+					_ = NewMux(c).Serve(func(_ []byte, s *Session) {
+						go func() { _, _ = io.Copy(io.Discard, s); _ = s.Close() }()
+					})
+				}()
+				return a, nil
+			}})
+			defer p.Close() //nolint:errcheck
+			open := func() (*Session, error) { return p.Open(context.Background(), []byte("x")) }
+			for range 2 { // the first connection full
+				if _, err := open(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			type res struct {
+				s   *Session
+				err error
+			}
+			dialer, waiter := make(chan res, 1), make(chan res, 1)
+			go func() { s, err := open(); dialer <- res{s, err} }()
+			synctest.Wait() // its dial holds the room
+			go func() { s, err := open(); waiter <- res{s, err} }()
+			synctest.Wait()
+			select {
+			case r := <-waiter:
+				close(release)
+				t.Fatalf("fails %v: an Open beside a full connection and a dial in flight returned %v, want it to wait for the dial", fails, r.err)
+			default:
+			}
+			close(release)
+			d, w := <-dialer, <-waiter
+			if fails {
+				if d.err == nil {
+					t.Fatal("the failed dial's Open got a session")
+				}
+				if w.err != nil {
+					t.Fatalf("the waiting Open after the dial it waited on failed: %v, want it to dial one itself", w.err)
+				}
+			} else if d.err != nil || w.err != nil {
+				t.Fatalf("Opens on the new connection: %v, %v", d.err, w.err)
+			}
+			if n := dials.Load(); n != map[bool]int32{false: 2, true: 3}[fails] {
+				t.Fatalf("fails %v: %d dials", fails, n)
+			}
+		})
+	}
+}

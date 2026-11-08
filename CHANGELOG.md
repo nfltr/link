@@ -8,6 +8,16 @@ version 2 unless an entry says otherwise.
 
 ## Unreleased
 
+- `Pool.Open` fails `ErrFull` only when no dial in flight can make room:
+  beside a connection at its peer's max_sessions, an `Open` waits for the
+  dials that hold the rest of Max (another `Open`'s, maintain's, a
+  growth's, a Drain's) and picks again when one ends, up or failed. It
+  failed at once before, so a burst of opens past one connection's
+  sessions lost those that came while the next connection was dialled
+  (nfltr tcp-connect, lane CONNCAP). `spec/Pool.tla`: `FullOnlyAtMax`
+  requires no dial in flight (mutant `full-with-dials`), `WaitWakes` (a
+  waiting `Open` wakes, its dial failed too), witness
+  `WitnessWaitBesideFull`; `TestPoolOpenWaitsForADialBesideAFullConnection`.
 - `spec/Pool.tla` checks `FullOnlyAtMax` (an `Open` fails `ErrFull` only
   with every connection Max allows at its peer's max_sessions) on every
   Pool config and `PoolClient.cfg` (Min 0, Max 2: a client past one

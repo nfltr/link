@@ -159,11 +159,15 @@ Pick(o) ==
        THEN /\ dials' = dials + 1
             /\ op' = [op EXCEPT ![o].st = "dial"]
             /\ UNCHANGED <<opw, gr>>
-       ELSE IF Staying > dials \* ErrFull: a connection at its most sessions holds the room
+       ELSE IF IF Mutant = "full-with-dials" THEN Staying > dials ELSE dials = 0
+            \* ErrFull: the room full and no dial in flight, so no change will
+            \* make room (full-with-dials, the code before lane CONNCAP: a
+            \* connection at its most sessions beside dials in flight failed
+            \* the Open, a burst past one connection's sessions)
        THEN op' = [op EXCEPT ![o] = [st |-> "idle", c |-> 0]] /\ UNCHANGED <<dials, opw, gr>>
-       ELSE \* every room held by dials in flight: pick returns the
-            \* p.changed it read under p.mu, and Open waits on that one
-            \* (finding H1).
+       ELSE \* the room full and dials in flight hold some of it: pick
+            \* returns the p.changed it read under p.mu, and Open waits on
+            \* that one (finding H1) until a dial ends, up or failed (H2).
             /\ IF Mutant = "wait-takes-late"
                THEN op' = [op EXCEPT ![o].st = "late"] /\ UNCHANGED opw
                ELSE op' = [op EXCEPT ![o].st = "wait"] /\ opw' = [opw EXCEPT ![o] = FALSE]
@@ -416,12 +420,20 @@ OpensOpen == \A o \in Opens : op[o].st \in {"pick", "dial", "wait", "late", "pla
 OpensProgress == (\E o \in Opens : op[o].st \in {"pick", "dial", "wait", "late", "place"}) ~> (\E o \in Opens : op[o].st \in {"open", "idle"})
 
 \* An Open fails ErrFull only with the room full: every connection that
-\* counts against Max carries its most sessions and no slot is left to dial
-\* one more (an Open's pick -> idle step without Close is its ErrFull). A
-\* client whose peer caps sessions per connection (tcp-connect: the relay's
-\* max_sessions, 1,024) opens past the cap by Max > 1 (lane CONNPERF).
+\* counts against Max carries its most sessions, no slot is left to dial
+\* one more, and no dial is in flight that would make room (an Open's pick
+\* -> idle step without Close is its ErrFull). A client whose peer caps
+\* sessions per connection (tcp-connect: the relay's max_sessions, 1,024)
+\* opens past the cap by Max > 1 (lane CONNPERF), in a burst too (lane
+\* CONNCAP: mutant full-with-dials).
 ErrFullStep(o) == op[o].st = "pick" /\ op'[o].st = "idle" /\ ~Closed
-FullOnlyAtMax == [][\A o \in Opens : ErrFullStep(o) => ~(Staying < Max /\ FreeId # {})]_vars
+FullOnlyAtMax == [][\A o \in Opens : ErrFullStep(o) => ~(Staying < Max /\ FreeId # {}) /\ dials = 0]_vars
+
+\* An Open that waits on dials in flight wakes: each dial ends, up or failed
+\* or cancelled, and closes p.changed (H2), whatever the other Opens and
+\* their sessions do (OpensProgress is met by another Open's session; this
+\* is per Open). Mutant no-wake-on-dial-fail: an Open waits forever.
+WaitWakes == \A o \in Opens : op[o].st = "wait" ~> op[o].st # "wait"
 
 \* After Close, every connection ends and is dropped.
 CloseEnds == Closed ~> \A c \in Ids : cs[c] = "free"
@@ -437,6 +449,9 @@ WitnessClosed == ~(pc = "done" /\ \E c \in Ids : cs[c] = "closed") \* NoLeak wit
 \* away is still up; MaxHolds': an Open waits with the room full.
 WitnessBesideLeaving == ~\E o \in Opens : op[o].st = "open" /\ \E c \in Ids : Up(c) /\ ga[c]
 WitnessAtMax == ~(Staying = Max /\ \E o \in Opens : op[o].st = "wait")
+\* FullOnlyAtMax's new case: an Open waits beside a connection at its most
+\* sessions, on a dial in flight (lane CONNCAP).
+WitnessWaitBesideFull == ~\E o \in Opens : op[o].st = "wait" /\ \E c \in Ids : Stays(c) /\ sess[c] = Cap
 \* FullOnlyAtMax's case: an Open fails ErrFull (an action: checked as a
 \* PROPERTY, violated).
 WitnessActFull == [][\A o \in Opens : ~ErrFullStep(o)]_vars

@@ -592,7 +592,7 @@ each checked here):
 | sessions end once both applications ended them; a closed connection goes down on both sides; a drained one closes | `SessionsEnd`, `ConnEnds`, `DrainEnds` (`Link.tla` liveness) |
 | a dead peer is declared within Interval + Timeout + 2 x Late of its last bytes, never a live one | `Liveness.tla` `DetectBound` (tight), `NoFalseDead`, `NeverEarly` |
 | `peerlink.Join`: a clean end to a plain conn only once the peer read its bytes and FIN; a dead link connection ends the conn however idle | `Join.tla` `NoSilentLoss`, `LostEnds` |
-| a Pool: no session on a connection going away, within Max but Drain's make-before-break, Min held, every Open progresses, nothing left after Close | `Pool.tla` `NoSessionOnLeaving`, `MaxHolds`, `MakeBeforeBreak`, `MinHeld`, `OpensProgress`, `NoLeak`, `CloseEnds` |
+| a Pool: no session on a connection going away, within Max but Drain's make-before-break, Min held, every Open progresses and every waiting Open wakes, ErrFull only with the room full and no dial in flight, nothing left after Close | `Pool.tla` `NoSessionOnLeaving`, `MaxHolds`, `MakeBeforeBreak`, `MinHeld`, `OpensProgress`, `WaitWakes`, `FullOnlyAtMax`, `NoLeak`, `CloseEnds` |
 
 Not a guarantee (stated above, "The session interface"): a session that
 ended cleanly at one side had its tail read by the peer; a layer that
@@ -953,8 +953,27 @@ racing `maintain`, three connection slots, two environment events; about
   `full-below-max` (a full connection fails the `Open`: one connection
   only, the code before) caught by `FullOnlyAtMax`; witness
   `WitnessActFull` (an `ErrFull` is reached; `WitnessAct*` are action
-  properties, checked as a `PROPERTY`). Min 0 leaves `maintain`'s and
+  properties, checked as a `PROPERTY`) on `PoolClientWake.cfg`, since
+  lane CONNCAP (below) two `Open`s no longer fill `PoolClient.cfg`'s room. Min 0 leaves `maintain`'s and
   `Drain`'s reservations untaken there: `Pool.cfg` covers them.
+- A burst of opens past one connection's sessions (lane CONNCAP:
+  tcp-connect at 2,000 new connections at once failed hundreds with
+  `ErrFull` while its second connection was being dialled):
+  `FullOnlyAtMax` also requires no dial in flight, so an `Open` beside a
+  full connection waits on `p.changed` for the dials that hold the rest of
+  the room. Mutant `full-with-dials` (the code before: `ErrFull` with a
+  full connection beside dials in flight) caught by `FullOnlyAtMax` on
+  `PoolClient.cfg` (an `Open` holds the full connection, a growth dial
+  the rest of the room); witness `WitnessWaitBesideFull`. `WaitWakes`
+  (every config with `Open`s): an `Open` that waits wakes, each dial
+  ending up or failed (`DialFails`: a failed or cancelled dial) closing
+  `p.changed`; per `Open`, where `OpensProgress` is met by another's
+  session. `PoolClientWake.cfg` (`PoolClient.cfg` at Max 1 with one
+  environment event, `WaitWakes` alone; `make spec-mutants`): mutant
+  `no-wake-on-dial-fail` caught by `WaitWakes` (an `Open` waiting on
+  another's dial that fails).
+  `TestPoolOpenWaitsForADialBesideAFullConnection` (the dial up, and
+  failed: the waiter dials one itself).
 
 **`Liveness.tla`** (`Conn.keepAlive`) in discrete time: the last frame
 received (`rxAt`), the ping waiting for an answer (`pingAt`), the one

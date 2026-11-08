@@ -171,7 +171,8 @@ func (p *Pool) stayingLocked() int {
 
 // pick returns the connection with the fewest sessions that takes one
 // (nil when none), and whether to dial another: synchronously when none
-// takes the session, else in the background (growBG). A dial it asks for
+// takes the session, else in the background (growBG); ErrFull when none
+// takes it, the room is full and no dial is in flight. A dial it asks for
 // is reserved (counted against Max) before it returns, so concurrent
 // Opens never dial past Max; the caller makes it with dial. changed is
 // p.changed as pick read it: with neither a connection nor a dial, the
@@ -207,7 +208,11 @@ func (p *Pool) pick(o int) (best *Mux, grow, growBG bool, changed <-chan struct{
 	staying := p.stayingLocked()
 	room := staying < p.cfg.Max
 	if best == nil {
-		if !room && staying > p.dials {
+		// ErrFull only when no dial in flight can make room: an Open
+		// beside a full connection waits for one (spec/Pool.tla
+		// FullOnlyAtMax, mutant full-with-dials; guard
+		// TestPoolOpenWaitsForADialBesideAFullConnection).
+		if !room && p.dials == 0 {
 			return nil, false, false, nil, ErrFull // every connection carries its most sessions
 		}
 		if room {
@@ -225,7 +230,9 @@ func (p *Pool) pick(o int) (best *Mux, grow, growBG bool, changed <-chan struct{
 
 // Open opens a session with header on one of the Pool's connections,
 // with the Chain ctx carries (ContextWithChain; Mux.OpenChain) when it
-// carries one.
+// carries one. It fails ErrFull when every connection Max allows carries
+// its peer's most sessions and no dial is in flight; while one is, it
+// waits for it.
 func (p *Pool) Open(ctx context.Context, header []byte) (s *Session, err error) {
 	o := 0
 	if traceOn {

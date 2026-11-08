@@ -362,7 +362,10 @@ mutants)
 	job mutant Pool.cfg 'Mutant = "none"' 'Mutant = "drain-reserve-late"' Pool.tla
 	job mutant PoolGrow.cfg 'Mutant = "none"' 'Mutant = "grow-past-max"' Pool.tla
 	job mutant PoolClient.cfg 'Mutant = "none"' 'Mutant = "full-below-max"' Pool.tla
-	job witness PoolClient.cfg WitnessActFull Pool.tla
+	job mutant PoolClient.cfg 'Mutant = "none"' 'Mutant = "full-with-dials"' Pool.tla
+	job mutant PoolClientWake.cfg 'Mutant = "none"' 'Mutant = "no-wake-on-dial-fail"' Pool.tla
+	job witness PoolClientWake.cfg WitnessActFull Pool.tla
+	job witness PoolClient.cfg WitnessWaitBesideFull Pool.tla
 	for w in WitnessOpen WitnessWait WitnessReplaced WitnessPastMax WitnessClosed WitnessBesideLeaving WitnessAtMax; do job witness Pool.cfg $w Pool.tla; done
 	for m in rearm-timeout deadline-from-rx reader-writes never-dead; do
 		job mutant Liveness.cfg 'Mutant = "none"' "Mutant = \"$m\"" Liveness.tla
