@@ -3,8 +3,14 @@
 
 GOVULNCHECK_VERSION := v1.8.0
 
-.PHONY: check test-identity build vet test test-race test-linkdebug test-ci fuzz-short fuzz-long check-gosec check-semgrep check-govulncheck
-check: build vet test-identity test-ci check-gosec check-semgrep check-govulncheck
+.PHONY: check test-identity build vet check-fmt test test-race test-linkdebug test-ci fuzz-short fuzz-long check-gosec check-semgrep check-govulncheck
+check: build vet check-fmt test-identity test-ci check-gosec check-semgrep check-govulncheck
+
+# check-fmt: gofmt (the toolchain's, not one on PATH) changes no tracked Go
+# file (vendor/ aside); go vet and the tests accept unformatted code.
+check-fmt:
+	@out="$$("$$(go env GOROOT)/bin/gofmt" -l $$(git ls-files '*.go' | grep -v '^vendor/'))"; \
+	if [ -n "$$out" ]; then echo "gofmt would change:"; echo "$$out"; exit 1; fi
 
 # scripts/check-identity.sh (the pre-push hook's) refuses what it should.
 test-identity:

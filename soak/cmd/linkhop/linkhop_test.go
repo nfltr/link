@@ -161,4 +161,3 @@ func pki(t *testing.T) string {
 	write("tls.key", "PRIVATE KEY", keyDER)
 	return dir
 }
-
