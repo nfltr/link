@@ -73,7 +73,13 @@ type sessionCredit struct {
 	by       int           // byCaller, byUs or byPeer
 	answered bool          // FeatureChain connections: byUs, the peer's ACCEPT or refusal came; byPeer, this side's went
 	onGrant  func(int)     // Session.OnGrant's; nil: none
+	fins     uint8         // the half CLOSEs: finSent (this side's buffered), finRecv (the peer's read)
 }
+
+const (
+	finSent = 1 << iota
+	finRecv
+)
 
 // wakeAll wakes every sender waiting in Acquire: each checks the credit
 // again, so a grant enough for some of them is taken by each it is enough
@@ -179,6 +185,32 @@ func (c *Credit) cutSessions(err error) {
 // Forget ends a session's credit: a sender waiting in Acquire gives up.
 func (c *Credit) Forget(sid string) { c.forget(sid, -1) }
 
+// halfClosed records one direction's half CLOSE of sid (e, the trace's
+// event for it, under this lock); the second ends its credit, under this
+// lock, while its CLOSE is buffered under wmu and not yet written (finSent)
+// or before the next frame is read (finRecv): the peer may open another
+// session once it reads the CLOSE that ended this one, and this side
+// counts its sessions by their credit (max_sessions). Mux.drop, after the
+// frame, forgot it too late (lane LINKDROPSPLIT, spec/Link.tla
+// CloseWriteSend, RecvClose).
+func (c *Credit) halfClosed(sid string, fin uint8, e traceEvent) {
+	c.mu.Lock()
+	if traceOn {
+		traceEv(c.tr, e)
+	}
+	s := c.sessions[sid]
+	if s == nil || s.fins|fin != finSent|finRecv {
+		if s != nil {
+			s.fins |= fin
+		}
+		c.mu.Unlock()
+		return
+	}
+	c.dropLocked(sid)
+	c.mu.Unlock()
+	c.dropped(s)
+}
+
 // forget is Forget; code, when this side ends the session (a CLOSE or
 // ABORT it is about to buffer: 0, 2, 3, 4 for a refusal), goes to the trace.
 func (c *Credit) forget(sid string, code int) {
@@ -186,6 +218,13 @@ func (c *Credit) forget(sid string, code int) {
 	if traceOn && code >= 0 {
 		traceEv(c.tr, traceEvent{ev: "Forget", sid: sid, n: code})
 	}
+	s := c.dropLocked(sid)
+	c.mu.Unlock()
+	c.dropped(s)
+}
+
+// dropLocked ends sid's credit, under c.mu; nil when it had none.
+func (c *Credit) dropLocked(sid string) *sessionCredit {
 	s := c.sessions[sid]
 	if s != nil {
 		s.wakeAll()
@@ -195,7 +234,11 @@ func (c *Credit) forget(sid string, code int) {
 			c.opened[s.by-1]--
 		}
 	}
-	c.mu.Unlock()
+	return s
+}
+
+// dropped reports a link-managed session's end (dropLocked's) to the Observer.
+func (c *Credit) dropped(s *sessionCredit) {
 	if s != nil && s.by != byCaller && c.obs != nil {
 		c.obs.SessionClose(nil)
 	}

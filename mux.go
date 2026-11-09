@@ -162,6 +162,9 @@ func (m *Mux) drop(s *Session) {
 	if m.sess[s.id] == s {
 		delete(m.sess, s.id)
 		m.c.credit.Forget(s.id)
+		if traceOn {
+			traceEv(m.c.credit.tr, traceEvent{ev: "Drop", sid: s.id})
+		}
 	}
 	m.mu.Unlock()
 	s.ended()
@@ -1066,6 +1069,9 @@ func (s *Session) closeWrite(sync bool) (<-chan struct{}, error) {
 	} else {
 		err = s.m.sendClose(s.id, true)
 	}
+	if h := testHookCloseWriteSent.Load(); h != nil {
+		(*h)()
+	}
 	// Dekker with the receive of the peer's FIN (peerHalf, then finSent):
 	// one of the two sees both and drops it, after the CLOSE is buffered.
 	s.finSent.Store(true)
@@ -1078,6 +1084,10 @@ func (s *Session) closeWrite(sync bool) (<-chan struct{}, error) {
 	}
 	return synced, nil
 }
+
+// testHookCloseWriteSent, set by a test, runs in closeWrite once its CLOSE
+// is buffered, before the session can be dropped.
+var testHookCloseWriteSent atomic.Pointer[func()]
 
 // Sync waits until the peer's Mux read every frame this side buffered
 // on the session's connection before the call (its bytes, its CloseWrite):

@@ -83,6 +83,8 @@ Per side `p` and session `s`:
 | `SendData(p, s)` | the two at once, a frame that did not wait: checked again just before it is buffered (C12; Trace.tla only) |
 | `Refund(p, s)` | `Credit.refund` (a `Write`'s credit given back, nothing sent: its write side closed, its credit ended or its deadline passed) |
 | `CloseWrite(p, s)` | `Session.CloseWrite` (and `CloseWriteSync`): `closeWrite` -> `Conn.sendClose` code 1, in two steps: `CloseWriteMark` (`halfClosed` set) and `CloseWriteSend` (the CLOSE buffered, `finSent`; review r2 LinkSession 1). Trace.tla takes the two as one (`Close` code 1) |
+| `Drop(p, s)` | `Mux.drop` after `closeWrite`'s CLOSE ended both halves (trace `Drop`): the session leaves `Mux.sess`; its credit went with the CLOSE (`Credit.halfClosed`, lane LINKDROPSPLIT) |
+| `LateAbortForget(p, s)`, `LateAbortSend(p, s)` | `Session.Abort`/`AbortWith` of a session already gone at `p`: `Conn.sendAbort` (trace `Forget` 3, `Close` 3) forgets nothing more and buffers an ABORT the peer drops (Trace.tla only) |
 | `RefuseMark(p, s)` | `Session.AbortWith`/`answer`'s refusal: `ans` taken, the credit forgotten (`Credit.forget` code 4, trace `Forget` 4); its ABORT then is `End` (trace `Close` 4) |
 | `Closing(p, s, code)` | `Conn.sendClose` (code 0 from `Session.Close`, 2 from `Session.Reset`) and `Conn.sendAbort` (3, from `Session.Abort`/`AbortWith`): the credit forgotten (`Credit.forget`) |
 | `End(p, s)` | the same, once the CLOSE/ABORT is buffered (it may wait for room between the two) |
@@ -162,6 +164,9 @@ violation for each:
   credit, so a `Write` that took credit before a `CloseWrite` or `Close`
   of another goroutine sends after its FIN (finding 1, the code before
   its fix).
+- `drop-forgets-late` (`LinkSessHalf.cfg`): a CLOSE that ends both
+  halves leaves the credit to the drop after it (the code before lane
+  LINKDROPSPLIT): the peer opens again on reading it, past max_sessions;
 - `turns-no-recheck`, `open-no-recheck`, `abort-forget-early`,
   `reopen-known`, `release-early`: the review's F1, F2, F3, F5 and F6
   ("Review findings").
@@ -194,7 +199,8 @@ reads them, so they change no behaviour (the state count grows by the
 states they tell apart).
 
 `make spec` checks `Refines` (`PROPERTY Refines`) on `Link.cfg`,
-`LinkDrain.cfg` and `LinkSess.cfg` (`Crash = 0`) and on `LinkCrash.cfg`;
+`LinkDrain.cfg` and `LinkSess.cfg` (`Crash = 0`) and on `LinkCrash.cfg`
+and `LinkSessHalf.cfg`;
 `make spec-invariants` (CI) only on `LinkCrash.cfg`, where it costs
 seconds (on the three it tripled CI's run, lane SPECTRIM); `make
 spec-nightly` on `Link.cfg` with its crash. `make
@@ -504,17 +510,9 @@ above); an ABORT or refusal for it could only race the close the same
 way. The cut's doc says "each session still open"; it means the ones in
 its snapshot.
 
-**Not traced (conformance gap, no wire effect)**: `TestChainDrainMiddleHop`'s
-connections are rejected by `Trace.tla` before and after this lane, at
-a step the model takes with the session's drop: a CLOSE that ends both
-halves (`CloseWrite` after the peer's FIN, or the FIN read after this
-side's) drops the session and forgets its credit in the same step, where
-the code forgets it later (`Mux.drop` after the frame, or after
-`Conn.recv`'s trace event): a window received, or a read's grant, in
-between is charged to a credit the code still knows (an extra WINDOW for
-a session both sides closed; the peer drops it). Follow-up: split the
-drop from `CloseWriteSend`/`RecvClose` as the cut's was, then trace the
-chain tests (two rejected traces: `~/nfltr-evidence/LINKATOMIC/`).
+**Traced since lane LINKDROPSPLIT**: `TestChainDrainMiddleHop`'s
+connections were rejected here, at the drop of a session whose CLOSE
+ended both halves (README "The drop's split" below).
 
 **Sizes** (TLC 1.8.0, `-workers 2`, loaded machine): `LinkCut.cfg`
 (`Sids {1}`, the accepter writes 1 byte, `Ends {3, 5}`, `MaxOut 4`):
@@ -537,7 +535,57 @@ cut's ABORTs are buffered. In `make spec-traces`:
 `Close 5`/`Forget 5`. `TestDrainDeadlineAbortsReachABusyPeer` was checked
 once (21 traces, 80 cut ABORT events, all accepted; about 13k lines a
 connection, 40 min): too long for each night. `TestChainDrainMiddleHop`
-is not traced (above).
+is traced (lane LINKDROPSPLIT).
+
+## The drop's split (Link.tla `Drop`, 2026-11-09, lane LINKDROPSPLIT)
+
+LINKATOMIC found `TestChainDrainMiddleHop`'s traces rejected: the model
+dropped a session whose CLOSE ended both halves (`CloseWrite` after the
+peer's FIN) and forgot its credit in the step that buffered the CLOSE,
+where the code forgot it in `Mux.drop`, after the frame: a WINDOW
+received between was charged to a credit the code still knew.
+
+**The code was wrong, not only the model (medium; fixed in this lane).**
+The peer drops the session when it reads that CLOSE (`RecvClose`: its
+own FIN was buffered) and may open another at once: its count of open
+sessions fell. This side counts its sessions by their credit
+(`Credit.count`, max_sessions), so a receive loop reading that OPEN
+before `Mux.drop` ran refused it with `ErrFull`, the connection's end,
+with every session on it. Guard: `TestCloseWriteEndingBothHalvesFreesItsSessionAtOnce`
+(`MaxSessions` 1; a test hook holds `closeWrite` after its CLOSE; failed
+before: `link: connection closed`, 3 of 3). Mutant `drop-forgets-late`
+(the code before: the credit forgotten in `Drop`) on `LinkSessHalf.cfg`
+(two sessions of the dialer, max_sessions 1, a CloseWrite each way, no
+data) is caught by `NoProtocolError` (open past max_sessions), 15 states
+deep.
+
+Fix (`Credit.halfClosed`): the credit records each direction's half CLOSE
+(`fins`); the second ends it under the credit's lock: this side's, once
+its CLOSE is buffered and wmu still held (no write takes the buffer
+without wmu, so the peer cannot have read it), with the trace's `Close` 1
+logged under the same lock; the peer's, in `Conn.recv` before the next
+frame is read, with its `Recv` close. `Mux.drop` then forgets nothing
+more.
+
+**The split**: `CloseWriteSend` (and `CloseWrite`, its trace form) forgets
+the credit when the peer's FIN was read (`HalfForget`) and leaves the
+session open; `Drop` (new, weakly fair, a `Next` disjunct of its own for
+`-coverage`) takes it out of `Mux.sess` (`st` gone, `pclosed`). Between
+the two, a WINDOW for it is ignored (no credit) and `Mux.leave` waits
+(`LeaveWhenDrained`: no session open). The peer's FIN read after this
+side's CLOSE still drops the session in the receive step (`RecvClose`:
+the receive loop's `Mux.serve` drops it before the next frame). No
+invariant was narrowed.
+
+**Traces**: the recorder logs `Drop` in `Mux.drop` (every drop; Trace.tla
+maps it to `Drop` while the session waits for it, else to no step: the
+other drops follow a step that already ended the session in the model).
+With the drop split, `TestChainDrainMiddleHop` showed a second gap: a
+joint's `AbortWith` of a session already gone (the peer's ABORT read, or
+the connection's end), whose `Forget` 3 and `Close` 3 the model had no
+step for (`Closing` needs the session open); `LateAbortForget` and
+`LateAbortSend` (Trace.tla only) take them, the ABORT dropped by the peer.
+`TestChainDrainMiddleHop` and the guard are in `make spec-traces`.
 
 ## Code map (lane W5-LINK)
 
@@ -574,8 +622,8 @@ no longer writes.
 <!-- writes: TestSpecWritesMapped -->
 | field (model variable) | written by | action |
 |---|---|---|
-| `Credit.sessions` (`cr.on`) | `Credit.open`, `Credit.forget` | `OpenCheck`/`Open`, `RecvOpen` (open); `Closing`, `RefuseMark`, `Down` (forget) |
-| `Credit.opened` (`Count`) | `Credit.open`, `Credit.forget`, `Credit.cutSessions` | the same, and `Down` |
+| `Credit.sessions` (`cr.on`) | `Credit.open`, `Credit.dropLocked` | `OpenCheck`/`Open`, `RecvOpen` (open); `Closing`, `RefuseMark`, `Down` (`Credit.forget`); `CloseWriteSend`, `RecvClose` (the second half CLOSE, `Credit.halfClosed`) |
+| `Credit.opened` (`Count`) | `Credit.open`, `Credit.dropLocked`, `Credit.cutSessions` | the same, and `Down` |
 | `Credit.cut` | `Credit.cutSessions` | `Down` (`CloseConn`'s credit end) |
 | `sessionCredit.n` (`cr.n`) | `Credit.acquire`, `Credit.refund`, `Credit.Grant` | `Acquire`, `Refund`, `RecvWindow` |
 | `sessionCredit.pend` (`pend`) | `Credit.acquire`, `Credit.sent`, `Credit.refund` | `Acquire`, `SendBuffer`/`SendData`, `Refund` |
@@ -588,7 +636,7 @@ no longer writes.
 | `Session.peerHalf` (`ss.rfin`) | `Mux.serve` | `RecvClose` code 1 |
 | `Session.peerClosed` (`ss.pclosed`) | `Mux.serve`, `Mux.close`, `Mux.OpenChain`, `Session.closeWrite` | `RecvClose` 0, 2, 3; `Down`; `OpenRefused` (the peer never heard of it); `CloseWriteSend` after the peer's FIN (both halves: `Mux.drop`) |
 | `Session.closed` (`ss.st = "gone"`) | `Session.ended` | every end: `End`, `RecvClose`, `Down`, `CloseWriteSend` with `rfin` |
-| `Mux.sess` (`ss.st`) | `Mux.add`, `Mux.drop`, `Mux.close` | `OpenCheck`, `RecvOpen` (add); every end (drop); `Down` |
+| `Mux.sess` (`ss.st`) | `Mux.add`, `Mux.drop`, `Mux.close` | `OpenCheck`, `RecvOpen` (add); every end (drop; `Drop` after a CloseWrite that ended both halves); `Down` |
 | `Mux.leaving` | `Mux.goAway` | `GoAway` |
 | `Mux.left` | `Mux.leave`, `Mux.closeIdle` | `Leave` (`LeaveWhenDrained`); `closeIdle` is `Pool.Close`'s `Leave` without a GOAWAY (`Pool.tla` `CloseSnap`) |
 | `Mux.cutting` | `Mux.cut` | `CutBegin`, `CutWait` (README "The drain's cut") |

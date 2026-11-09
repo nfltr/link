@@ -616,7 +616,11 @@ func (c *Conn) sendCloseLocked(sid string, code byte) error {
 		c.credit.forget(sid, int(code))
 	}
 	err := c.frameLocked(typeClose, sid, []byte{code}, nil)
-	if traceOn && err == nil {
+	switch {
+	case err == nil && code == closeHalf:
+		// buffered, not yet written: wmu is held (a write takes the buffer under it)
+		c.credit.halfClosed(sid, finSent, traceEvent{ev: "Close", sid: sid, n: int(code)})
+	case traceOn && err == nil:
 		traceEv(c.credit.tr, traceEvent{ev: "Close", sid: sid, n: int(code)})
 	}
 	return err
@@ -1322,11 +1326,15 @@ func (c *Conn) recv() (rframe, bool, error) {
 			return rframe{}, false, ErrFrame
 		}
 		sid, half := string(b[1:1+l]), b[n-1] == closeHalf
-		if !half {
+		e := traceEvent{ev: "Recv", t: "close", sid: sid, n: int(b[n-1])}
+		switch {
+		case half:
+			c.credit.halfClosed(sid, finRecv, e)
+		case traceOn:
 			c.credit.Forget(sid)
-		}
-		if traceOn {
-			traceEv(c.credit.tr, traceEvent{ev: "Recv", t: "close", sid: sid, n: int(b[n-1])})
+			traceEv(c.credit.tr, e)
+		default:
+			c.credit.Forget(sid)
 		}
 		return rframe{Frame: Frame{SID: sid, Close: true, Half: half, Reset: b[n-1] == closeReset}}, true, nil
 	case typePing, typePong:

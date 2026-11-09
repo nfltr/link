@@ -6,6 +6,7 @@ package link
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"runtime"
 	"strings"
@@ -372,5 +373,66 @@ func TestSendOpenAfterCreditOpen(t *testing.T) {
 	c.Credit().Open("1")
 	if err := c.SendOpen("1", nil); !errors.Is(err, errSIDInUse) {
 		t.Fatalf("SendOpen of a link-opened id after Credit.Open: %v, want errSIDInUse", err)
+	}
+}
+
+// LINKDROPSPLIT: a CloseWrite that ends both halves (the peer's FIN read
+// first) forgets the session's credit before its CLOSE can reach the
+// peer: the peer drops the session on that CLOSE and may open another at
+// once, which a receiver still counting the old one refused with ErrFull
+// (the connection's end). The code before forgot it in Mux.drop, after the
+// CLOSE (spec/Link.tla CloseWriteSend, mutant drop-forgets-late).
+func TestCloseWriteEndingBothHalvesFreesItsSessionAtOnce(t *testing.T) {
+	lcfg := v2cfg
+	lcfg.MaxSessions = 1
+	dm, _ := v2muxPair(t, func(_ []byte, s *Session) { _, _ = io.Copy(s, s); _ = s.CloseWrite() }, v2cfg, lcfg)
+	sa, err := dm.Open([]byte("a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sa.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	got := make(chan error, 1)
+	var once atomic.Bool
+	h := func() {
+		if once.Swap(true) {
+			return
+		}
+		func() {
+			select {
+			case <-sa.Done(): // the dialer read the listener's CLOSE
+			case <-time.After(10 * time.Second):
+				got <- errors.New("session a never ended at the dialer")
+				return
+			}
+			sb, err := dm.Open([]byte("b"))
+			if err == nil {
+				_, err = sb.Write([]byte("echo"))
+			}
+			if err == nil {
+				err = sb.CloseWrite()
+			}
+			if err == nil {
+				var b []byte
+				if b, err = io.ReadAll(sb); err == nil && string(b) != "echo" {
+					err = fmt.Errorf("echo %q", b)
+				}
+			}
+			got <- err
+		}()
+	}
+	testHookCloseWriteSent.Store(&h)
+	t.Cleanup(func() { testHookCloseWriteSent.Store(nil) })
+	if _, err := io.ReadAll(sa); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-got:
+		if err != nil {
+			t.Fatalf("a second session after the first ended: %v (the connection lives)", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("no second session")
 	}
 }

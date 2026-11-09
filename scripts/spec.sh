@@ -171,7 +171,7 @@ nightly)
 	tlcrun "$work/LinkCutHalf.cfg"
 	;;
 check | invariants)
-	for cfg in Link.cfg LinkDrain.cfg LinkSess.cfg LinkCrash.cfg LinkRefuse.cfg LinkCut.cfg; do
+	for cfg in Link.cfg LinkDrain.cfg LinkSess.cfg LinkSessHalf.cfg LinkCrash.cfg LinkRefuse.cfg LinkCut.cfg; do
 		echo "== $cfg ($1)"
 		# No crash in the first three: Link.cfg's crash grows its states past
 		# 20 million (spec-nightly); LinkCrash.cfg takes it on fewer bytes.
@@ -182,9 +182,9 @@ check | invariants)
 		else
 			sed -e 's/Crash = 1/Crash = 0/' "spec/$cfg" >"$work/$cfg"
 		fi
-		# LinkCrash.cfg and LinkRefuse.cfg (seconds): Refines and liveness in CI too.
+		# LinkCrash.cfg, LinkRefuse.cfg and LinkSessHalf.cfg (seconds): Refines and liveness in CI too.
 		# LinkCut.cfg's (the drain's cut, 142,465 states): in check only (minutes).
-		[ $cfg != LinkCrash.cfg ] && [ $cfg != LinkRefuse.cfg ] || cp spec/$cfg "$work/$cfg"
+		[ $cfg != LinkCrash.cfg ] && [ $cfg != LinkRefuse.cfg ] && [ $cfg != LinkSessHalf.cfg ] || cp spec/$cfg "$work/$cfg"
 		tlcrun "$work/$cfg"
 	done
 	# PoolDrain (Min 2: a Drain failing halfway) and QuicWatchStops (two
@@ -366,6 +366,9 @@ mutants)
 		job mutant LinkSess.cfg 'Mutant = "none"' "Mutant = \"$m\""
 	done
 	job mutant LinkRefuse.cfg 'Mutant = "none"' 'Mutant = "refuse-then-write"'
+	# A CLOSE that ends both halves forgetting the credit only in the drop
+	# after it (the code before lane LINKDROPSPLIT): an open past max_sessions.
+	job mutant LinkSessHalf.cfg 'Mutant = "none"' 'Mutant = "drop-forgets-late"'
 	job witness LinkRefuse.cfg WitnessRefusing
 	for m in no-wake-on-goaway drain-past-max open-on-goaway maintain-no-recheck wait-takes-late no-wake-on-dial-fail drain-counts-takes dial-no-closed-check snapshot-before-cancel; do
 		job mutant Pool.cfg 'Mutant = "none"' "Mutant = \"$m\"" Pool.tla
@@ -438,7 +441,7 @@ mutants)
 	exit $fail
 	;;
 traces)
-	tests=${TRACE_TESTS:-'^(TestSessionCleanEnd|TestSessionReset|TestMuxSlowSessionIsolated|TestGoAwayDrainKeepsTails|TestCrossedOpenRunsOnTheLeavingConnection|TestMuxV2GoAway|TestSessionCutWithItsConnection|TestMuxSessions|TestMuxV2Sessions|TestWriteRacingCloseWriteSendsNothingAfterFIN|TestWriteParkedForItsTurnSendsNothingAfterFIN|TestOpenParkedPastPeerGoAwayIsNotSent|TestAbortAtMaxSessionsRacingOpenKeepsTheConnection|TestChainRefuse|TestRefusedOpenReadsReset|TestWriteAfterRefuseSendsNoData|TestCloseWriteRacingThePeersFINDropsAfterItsCLOSE|TestMuxOpenSkipsAnIDThePeerTook|TestReceiveLoopReadsWhileARefusalWaits|TestCloseWriteReportsAFailedFIN|TestStarvedProcessKeepsALivePeer|TestDrainReturnsAfterTheCutItRaced|TestDrainDeadlineAbortsAHeldSession|TestDrainDeadlineKeepsAnEndedSessionsClose)$'}
+	tests=${TRACE_TESTS:-'^(TestSessionCleanEnd|TestSessionReset|TestMuxSlowSessionIsolated|TestGoAwayDrainKeepsTails|TestCrossedOpenRunsOnTheLeavingConnection|TestMuxV2GoAway|TestSessionCutWithItsConnection|TestMuxSessions|TestMuxV2Sessions|TestWriteRacingCloseWriteSendsNothingAfterFIN|TestWriteParkedForItsTurnSendsNothingAfterFIN|TestOpenParkedPastPeerGoAwayIsNotSent|TestAbortAtMaxSessionsRacingOpenKeepsTheConnection|TestChainRefuse|TestRefusedOpenReadsReset|TestWriteAfterRefuseSendsNoData|TestCloseWriteRacingThePeersFINDropsAfterItsCLOSE|TestMuxOpenSkipsAnIDThePeerTook|TestReceiveLoopReadsWhileARefusalWaits|TestCloseWriteReportsAFailedFIN|TestStarvedProcessKeepsALivePeer|TestDrainReturnsAfterTheCutItRaced|TestDrainDeadlineAbortsAHeldSession|TestDrainDeadlineKeepsAnEndedSessionsClose|TestChainDrainMiddleHop|TestCloseWriteEndingBothHalvesFreesItsSessionAtOnce)$'}
 	mkdir -p "$work/traces"
 	LINKTRACE=$work/traces go test -tags linktrace -count=1 -run "$tests" . >"$work/test.out" 2>&1 || {
 		cat "$work/test.out"

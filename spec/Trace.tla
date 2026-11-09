@@ -58,7 +58,9 @@ LinkStep ==
                                        THEN UNCHANGED vars ELSE RefuseMark(P, S)
       [] E.ev = "Close" /\ E.n = 4 -> IF closed[P] /\ Owner[S] # P /\ ss[P][S].st # "open" /\ ss[P][S].closing = 0
                                       THEN UNCHANGED vars ELSE ss[P][S].closing = ABT + 1 /\ End(P, S)
-      [] E.ev = "Forget" /\ E.n \notin {4, DDL} -> Closing(P, S, E.n)
+      \* A joint's Abort of a session already gone here (LateAbort).
+      [] E.ev = "Forget" /\ E.n \notin {4, DDL} -> IF E.n = ABT /\ LateAbort(P, S) THEN LateAbortForget(P, S)
+                                                ELSE Closing(P, S, E.n)
       \* FinBeforeShut at a trace's grain (the mark is not logged): no FIN goes
       \* after this side's write side shut while the peer still reads, but
       \* after an abort (Mux.cut).
@@ -67,7 +69,11 @@ LinkStep ==
       [] E.ev = "Close" /\ E.n = Half -> IF closed[P] /\ ss[P][S].st # "open" THEN UNCHANGED vars
                                          ELSE CloseWrite(P, S)
                                          /\ (wshut[P] => ss[P][S].code = ABT \/ ss[Peer(P)][S].st # "open")
-      [] E.ev = "Close" /\ E.n \notin {Half, 4, DDL} -> ss[P][S].closing = E.n + 1 /\ End(P, S)
+      [] E.ev = "Close" /\ E.n \notin {Half, 4, DDL} -> IF E.n = ABT /\ LateAbort(P, S) THEN LateAbortSend(P, S)
+                                                      ELSE ss[P][S].closing = E.n + 1 /\ End(P, S)
+      \* Mux.drop: a session whose CLOSE ended both halves leaves the Mux
+      \* (Drop); the other drops follow a step that already ended it here.
+      [] E.ev = "Drop" -> IF Dropping(P, S) THEN Drop(P, S) ELSE UNCHANGED vars
       [] E.ev = "Read" -> Read(P, S, E.n) /\ cr'[P][S].held = E.held /\ gpend'[P][S] = E.grant
       [] E.ev = "Window" -> gpend[P][S] = E.n /\ SendWindow(P, S)
       [] E.ev = "GoAway" -> GoAway(P)

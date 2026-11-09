@@ -261,11 +261,16 @@ Refund(p, s) ==
 
 \* Session.CloseWrite in two steps, as the code takes them (review r2 of
 \* LinkSession, finding 1): halfClosed set (Mark: no data after it), then
-\* the CLOSE buffered (Send, finSent); the session is dropped once both
-\* halves are closed and this side's CLOSE is buffered, by whichever of
-\* Send and the receive of the peer's FIN comes second. Mutant
-\* drop-on-mark (the code before): the receive dropped it on the mark, and
-\* a leaving connection then shut its write side before the CLOSE.
+\* the CLOSE buffered (Send, finSent). A CLOSE that ends both halves (the
+\* peer's FIN read first) forgets the credit with it (Credit.halfClosed,
+\* under wmu): the peer may open another session once it reads this CLOSE.
+\* The session is dropped from the Mux after (Drop, lane LINKDROPSPLIT);
+\* the receive of the peer's FIN after this side's CLOSE drops it at once
+\* (RecvClose: the receive loop's own step). Mutant drop-on-mark (the code
+\* before r2): the receive dropped it on the mark, and a leaving
+\* connection then shut its write side before the CLOSE. Mutant
+\* drop-forgets-late (the code before LINKDROPSPLIT): the credit forgotten
+\* in the drop, after the CLOSE: an OPEN past max_sessions.
 CloseWriteMark(p, s) ==
     /\ ss[p][s].st = "open" /\ ~ss[p][s].wfin /\ ss[p][s].closing = 0
     /\ Answered(p, s)
@@ -273,15 +278,23 @@ CloseWriteMark(p, s) ==
     /\ appDone' = [appDone EXCEPT ![p][s] = TRUE]
     /\ UNCHANGED <<out, cr, pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
                    pings, wshut, closed, down, crashes, err, wt>>
+HalfForget(p, s) == IF ss[p][s].rfin /\ Mutant # "drop-forgets-late" THEN Forget(p, s) ELSE cr
 CloseWriteSend(p, s) ==
     /\ ss[p][s].wfin /\ ~ss[p][s].fin
     /\ SendClose(p, s, Half)
-    /\ IF ss[p][s].rfin /\ ss[p][s].st = "open"   \* both halves: drop
-       THEN /\ ss' = [ss EXCEPT ![p][s].st = "gone", ![p][s].pclosed = TRUE, ![p][s].fin = TRUE]
-            /\ cr' = Forget(p, s)
-       ELSE /\ ss' = [ss EXCEPT ![p][s].fin = TRUE]
-            /\ UNCHANGED cr
+    /\ ss' = [ss EXCEPT ![p][s].fin = TRUE]
+    /\ cr' = HalfForget(p, s)
     /\ UNCHANGED <<pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
+                   pings, wshut, closed, down, appDone, crashes, err, wt>>
+
+\* Mux.drop of a session whose CLOSE ended both halves (closeWrite, after
+\* its frame): out of Mux.sess (so Mux.leave may close the connection).
+Dropping(p, s) == ss[p][s].st = "open" /\ ss[p][s].fin /\ ss[p][s].rfin
+Drop(p, s) ==
+    /\ Dropping(p, s)
+    /\ ss' = [ss EXCEPT ![p][s].st = "gone", ![p][s].pclosed = TRUE]
+    /\ cr' = IF Mutant = "drop-forgets-late" THEN Forget(p, s) ELSE cr
+    /\ UNCHANGED <<out, pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
                    pings, wshut, closed, down, appDone, crashes, err, wt>>
 
 \* The two at once (Trace.tla: the recorder logs the CLOSE, not the mark).
@@ -289,11 +302,8 @@ CloseWrite(p, s) ==
     /\ ss[p][s].st = "open" /\ ~ss[p][s].wfin /\ ss[p][s].closing = 0
     /\ Answered(p, s)
     /\ SendClose(p, s, Half)
-    /\ IF ss[p][s].rfin                          \* both halves: drop
-       THEN /\ ss' = [ss EXCEPT ![p][s].wfin = TRUE, ![p][s].st = "gone", ![p][s].pclosed = TRUE, ![p][s].code = IF @ \in {ABT, DDL} THEN @ ELSE Half, ![p][s].fin = TRUE]
-            /\ cr' = Forget(p, s)
-       ELSE /\ ss' = [ss EXCEPT ![p][s].wfin = TRUE, ![p][s].code = IF @ \in {ABT, DDL} THEN @ ELSE Half, ![p][s].fin = TRUE]
-            /\ UNCHANGED cr
+    /\ ss' = [ss EXCEPT ![p][s].wfin = TRUE, ![p][s].code = IF @ \in {ABT, DDL} THEN @ ELSE Half, ![p][s].fin = TRUE]
+    /\ cr' = HalfForget(p, s)
     /\ appDone' = [appDone EXCEPT ![p][s] = TRUE]
     /\ UNCHANGED <<pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
                    pings, wshut, closed, down, crashes, err, wt>>
@@ -334,6 +344,26 @@ End(p, s) ==
                                  ![p][s].fin = @ \/ code = Full]   \* a Close after Mux.cut's abort
     /\ cr' = IF cr[p][s].on THEN Forget(p, s) ELSE cr   \* a refusal's (RefuseMark)
     /\ UNCHANGED <<pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
+                   pings, wshut, closed, down, appDone, crashes, err, wt>>
+
+\* Session.Abort (a joint's AbortWith) of a session already gone here (the
+\* peer's CLOSE or ABORT read, or the connection's end): Conn.sendAbort
+\* looks at nothing, so the credit's forget does nothing more and the
+\* ABORT still goes out, which the peer drops (RecvClose of a session gone
+\* there: it follows every frame that ended the session there). Trace.tla
+\* only (events Forget 3, Close 3; lane LINKDROPSPLIT,
+\* TestChainDrainMiddleHop), as the cut's ABORT of an ended session is
+\* in Next (CutForget).
+LateAbort(p, s) == ss[p][s].st = "gone" /\ ss[p][s].closing = 0
+LateAbortForget(p, s) ==
+    /\ LateAbort(p, s)
+    /\ cr' = Forget(p, s)
+    /\ UNCHANGED <<out, ss, pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
+                   pings, wshut, closed, down, appDone, crashes, err, wt>>
+LateAbortSend(p, s) ==
+    /\ LateAbort(p, s)
+    /\ SendClose(p, s, ABT)
+    /\ UNCHANGED <<cr, ss, pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
                    pings, wshut, closed, down, appDone, crashes, err, wt>>
 
 \* A read takes k bytes off the session's queue (bytequeue's OnPop ->
@@ -653,6 +683,8 @@ LinkNext ==
 CutSides == IF DDL \in Ends THEN Drain ELSE {}
 Next ==
     \/ LinkNext /\ UNCHANGED cut
+    \* Mux.drop after a CLOSE that ended both halves (a disjunct of its own, as the cut's).
+    \/ \E p \in Sides, s \in Sids : Drop(p, s) /\ UNCHANGED cut
     \/ \E p \in CutSides : \E g \in SUBSET CutEnded(p) : CutBegin(p, CutBase(p) \cup g)
     \/ \E p \in CutSides : CutWait(p)
     \/ \E p \in CutSides, s \in Sids : CutForget(p, s)
@@ -682,7 +714,7 @@ Fairness ==
                           /\ WF_lvars(OpenBuffer(p, s)) /\ WF_lvars(OpenRefused(p, s))
                           /\ WF_lvars(Refund(p, s))
                           /\ WF_lvars(SendWindow(p, s)) /\ WF_lvars(End(p, s))
-                          /\ WF_lvars(CloseWriteSend(p, s))
+                          /\ WF_lvars(CloseWriteSend(p, s)) /\ WF_lvars(Drop(p, s))
 
 Spec == Init /\ [][Next]_vars /\ Fairness
 
