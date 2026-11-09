@@ -199,7 +199,9 @@ ping's pong crossed the goaway and run like any other session (since
 v0.4.2; before, they were refused). An open after the pong breaks the
 protocol and is refused with a reset. The sender closes the connection
 once its last session ended and the pong arrived, after writing every
-frame it buffered, or at its drain deadline.
+frame it buffered, or at its drain deadline: it then aborts the sessions
+it carries and answers each open it reads from then until its write side
+shuts with an abort refuse (code 2, draining: nothing ran on it).
 
 ## 10. Limits
 

@@ -128,6 +128,10 @@ they can in Go.
    open that arrives after the receiver's drain barrier (the pong of the
    ping it sent after its GOAWAY) or after the peer's GOAWAY never happens
    (the code refuses it with a reset: a refused crossed open is an error).
+   An OPEN read once the drain deadline's cut began is refused
+   (CodeDraining); once the write side shut, every session the peer opened
+   that this side read before has its end on the way (`OpensAnswered`,
+   "The crossed open's refusal").
 5. **Buffers.** A session's queue holds at most the receiver's window,
    and at most the bytes still charged to it (`QueueWithinHeld`): why
    `bytequeue.Push` never waits in the receive loop.
@@ -167,6 +171,10 @@ violation for each:
 - `drop-forgets-late` (`LinkSessHalf.cfg`): a CLOSE that ends both
   halves leaves the credit to the drop after it (the code before lane
   LINKDROPSPLIT): the peer opens again on reading it, past max_sessions;
+- `open-after-goaway-unanswered` (`LinkCut.cfg`): an OPEN read after
+  the cut's snapshot runs (the code before lane LINKOPENREFUSE) and gets
+  no ABORT (`OpensAnswered`); `shut-before-refusal` (`LinkCut.cfg`): the
+  write side shuts with a refusal still to buffer;
 - `turns-no-recheck`, `open-no-recheck`, `abort-forget-early`,
   `reopen-known`, `release-early`: the review's F1, F2, F3, F5 and F6
   ("Review findings").
@@ -441,7 +449,7 @@ goroutine or timer.
 | credit grant, window update | `credit.go` `Credit.Consumed`, `conn.go` `Conn.sendWindow` | `credit.mu`: count, grant decided; unlock; `wmu`: WINDOW | the session's reader (`OnPop`) | no | already split: `Read` (gpend), `SendWindow`; a grant after the session's ABORT goes out and the peer ignores it (`RecvWindow` of an unknown session) |
 | Write | `mux.go` `Session.send`, `credit.go` `Credit.acquire`, `conn.go` `Conn.sendData` | credit taken; `wmu`: check, frame (may wait), check again | the writer | no | already split: `Acquire`, `SendCheck`, `SendBuffer`, `Refund` |
 | open | `mux.go` `Mux.OpenChain`, `conn.go` `Conn.sendOpen` | `goingAway`; `m.mu`: `add`; `wmu`: check, frame (may wait), check again; Flush; on error `drop` | the opener | no | already split: `OpenCheck`, `OpenBuffer`, `OpenRefused`; a session in `Mux.sess` before its OPEN is in the cut's snapshot (`CutCand`); against the connection's close: `OpenRefused` (closed during the wait), `CloseAt` (a buffered OPEN dropped), `Down` (the opener reads lost) |
-| accept of a peer's open | `conn.go` `Conn.recv` (credit opened, trace `Recv`), `mux.go` `Mux.serve` (`add` under `m.mu`) | two: the credit, then the Mux | the receive loop | no: the cut's snapshot can fall between | `RecvOpen` one step; the trace's `CutBegin` takes a snapshot that may lack it; the consequence is `CutAbortsAll`'s (below) |
+| accept of a peer's open | `conn.go` `Conn.recv` (credit opened, trace `Recv`), `mux.go` `Mux.serve` (`add` under `m.mu`) | two: the credit, then the Mux | the receive loop | no: the cut's snapshot can fall between | `RecvOpen` one step; the trace's `CutBegin` takes a snapshot that may lack it; since lane LINKOPENREFUSE one read after the snapshot is refused (`Mux.add` under `m.mu`: `OpensAnswered`, "The crossed open's refusal") |
 | answer | `chain.go` `Session.answer`, `conn.go` `Conn.sendAccept` | `ansOnce`; `wmu`: ACCEPT | `autoAccept` (first frame), `AcceptPath` | one `wmu` step; not checked against a forgotten credit: an ACCEPT after the cut's ABORT goes out, the peer ignores it | `Accept` (no credit guard, as the code) |
 | Close, Reset, Abort | `mux.go` `Session.Close`/`Reset`, `chain.go` `Session.AbortWith`, `conn.go` `sendClose`/`sendAbort` | `once`; `wmu`: forget, frame (may wait); `m.mu`: `drop` | the application, a joint (`joint.abort`, `ended`) | no: the drop follows the frame | already split: `Closing`, `End`; the gap before the drop puts an ended session in the cut's snapshot (`CutCand`: its ABORT goes out after the CLOSE, the peer drops it) |
 | CloseWrite | `mux.go` `Session.closeWrite` | `halfClosed`; `wmu`: CLOSE; `finSent` | the application, a joint | no | already split (review r2 LinkSession 1): `CloseWriteMark`, `CloseWriteSend` |
@@ -499,7 +507,8 @@ relay, a joint aborts the client session only when the agent's side ended
 first; after 7dabd5e a single relay lets its agents go only once its
 clients' cuts ended, so the agent's end no longer comes first there.
 
-**Finding (low, decided: no code change)**: `CutAbortsAll` (once the cut
+**Finding (low; decided again and fixed in lane LINKOPENREFUSE, "The
+crossed open's refusal" below)**: `CutAbortsAll` (once the cut
 closed the connection, every session open here had its ABORT sent or
 ended at the peer) does not hold: an OPEN that crossed the GOAWAY and was
 read after the cut's snapshot (a drain deadline shorter than the peer's
@@ -536,6 +545,79 @@ cut's ABORTs are buffered. In `make spec-traces`:
 once (21 traces, 80 cut ABORT events, all accepted; about 13k lines a
 connection, 40 min): too long for each night. `TestChainDrainMiddleHop`
 is traced (lane LINKDROPSPLIT).
+
+## The crossed open's refusal (Link.tla `RecvOpen`, 2026-11-09, lane LINKOPENREFUSE)
+
+LINKATOMIC's finding F1 (`CutAbortsAll` violated): an OPEN that crossed
+the GOAWAY and was read after the drain deadline's snapshot became a
+session the cut never aborted: its opener read the connection's end
+(`lost`), though nothing had run on it and it could have opened
+elsewhere. Decision (coordinator, 2026-11-09): such an OPEN is answered
+with link's open refusal, never silence, as HTTP/2's REFUSED_STREAM.
+
+**Only once the cut began.** An OPEN that crosses the GOAWAY before the
+drain's deadline still runs to its end like any other session (since
+v0.4.2; peerlink's drain contract, `ExampleNode_Drain`,
+`TestDrainDuringHandshake`, `TestCrossedOpenRunsOnTheLeavingConnection`):
+the graceful drain loses nothing, so it is unchanged (`LinkDrain.cfg`
+has the same 342,742 states as before). Refusing every crossed OPEN (the
+first reading of the decision) refused requests a drain should have
+served (`ExampleNode_Drain` failed on the Linux runner) and would refuse
+more clients' opens while a relay drains an agent link.
+
+**Guarantee** `OpensAnswered` (`LinkDrain.cfg`, `LinkCut.cfg`,
+`LinkCutHalf.cfg`): once a side's write side shut (Mux.leave's or the
+cut's closeFlushed), every session the peer opened whose OPEN it read
+before has its end (refusal, ABORT, CLOSE) on the way or ended at the
+peer: it ends refused, aborted or ended, never lost while the connection
+was up to answer it. Not with a crash, nor at the cut's 2 s bound (its
+close comes before any shut). An OPEN read after the shut can get no
+answer (`late`); `CutAbortsAll` stays a witness for that case only.
+
+**Model**: `RecvOpen` of an OPEN read once the cut began (`cut.st`; the
+code's check is in Mux.add under m.mu, where the cut takes its snapshot,
+so an OPEN is in the snapshot or refused) on FeatureChain opens its
+credit (it counts until the refusal is buffered, as every refusal's) and
+marks the session `refd` with an ABORT due (`closing`); `End` buffers it
+(Mux.sendRefusals). A `refd` session is in no snapshot (`CutBase`,
+`CutEnded`: not in Mux.sess) and has no application (`AppStep`).
+`CutFlush` waits for every refusal due (`RefusalDue`), and
+`LeaveWhenDrained` for no session open, a refusal's too: Mux.shutWrite,
+before closeFlushed. The refinement maps a refusal due to no read ended
+yet (`shut`); the interface is unchanged (the opener reads `reset`:
+ErrOpenRefused).
+
+**Mutants** (`LinkCut.cfg`): `open-after-goaway-unanswered` (the code
+before: the OPEN read after the snapshot runs, out of it) is caught by
+`OpensAnswered` 7 states deep; `shut-before-refusal` (the cut's
+closeFlushed with a refusal still queued: the race Mux.shutWrite closes)
+too, 7 states. Witnesses (violated, as they must be): `WitnessShutAnswers`
+(the write side shut under a session the peer opened, its ABORT on the
+way), `WitnessDrainRefused` (an opener read the cut's refusal).
+
+**Sizes and coverage** (TLC 1.8.0, invariants, `-coverage 1`):
+`LinkCut.cfg` 126,355 distinct states (162,643 before: an OPEN after the
+cut is refused, not a session), depth 34, every action taken, the
+refusing branch of `RecvOpen` in 310 states; `LinkDrain.cfg` 342,742, as
+before.
+
+**Code** (`mux.go`): `Mux.add` refuses a peer's open once `m.cutting`
+(`errCut`), and `Mux.serve` answers it `CodeDraining`; `Mux.shutWrite`
+waits for the refusal goroutine and then queues no more (an OPEN read
+after it is one read after the shut), called by `Mux.closeFlushed`
+before `Conn.closeFlushed` in `leave`, `closeIdle` and the cut. Guard
+`TestOpenReadAfterTheCutsSnapshotIsRefused` (a test hook holds the cut's
+first ABORT while the OPEN is read; failed before: `link: connection
+closed`), in `make spec-traces`. No wire change: the refusal is the
+existing abort refuse (code 2, draining; WIRE.md 9).
+
+**Traces**: the cut's refusal logs `Forget` 4 and `Close` 4 (sendAbort);
+`Trace.tla` maps the forget to no step (`RefusalDue`: End forgets) and
+the close to `End`; one whose `Recv` was logged before the cut's `Cut`
+event is an accepted session in the model, refused (`RefuseMark`). A
+refusal Mux.shutWrite drops (read after the shut was decided, before
+closeFlushed logs `Leave`) leaves the model's refusal due: the trace
+check does not hold `Leave` to it for that reason.
 
 ## The drop's split (Link.tla `Drop`, 2026-11-09, lane LINKDROPSPLIT)
 

@@ -55,9 +55,13 @@ type Mux struct {
 	left     bool          // the close began
 	cutting  bool          // a drain's deadline cut the sessions
 	cutEnded chan struct{} // closed once that cut ended (its ABORTs sent, the connection closed)
-	// refusals of the peer's opens, sent by a goroutine while refusing.
+	// refusals of the peer's opens, sent by a goroutine while refusing
+	// (refused: closed when it ends); shut: the write side shuts, so no
+	// more refusals go out (shutWrite).
 	refusals []refusal
 	refusing bool
+	refused  chan struct{}
+	shut     bool
 }
 
 // NewMux returns a Mux over c. Call Serve on it: Serve is the receive
@@ -141,6 +145,13 @@ func (m *Mux) add(sid string, header []byte, c Chain, accepter bool) (*Session, 
 	if m.sess[sid] != nil { // the Conn refuses a peer's open of an id in use
 		return nil, errSIDInUse
 	}
+	// The cut took its snapshot under m.mu: a peer's OPEN read after it is
+	// refused, as HTTP/2's REFUSED_STREAM (nothing ran: the opener opens
+	// elsewhere), never left out of the cut's ABORTs to read the
+	// connection's end (spec/Link.tla OpensAnswered).
+	if accepter && m.cutting {
+		return nil, errCut
+	}
 	s := &Session{m: m, id: sid, q: bytequeue.New(m.c.credit.window), header: header, done: make(chan struct{}),
 		chain: c, answers: m.c.chain(), accepter: accepter}
 	if s.answers && !accepter {
@@ -195,7 +206,7 @@ func (m *Mux) leave() {
 	m.left = m.left || last
 	m.mu.Unlock()
 	if last {
-		go m.c.closeFlushed(m.c.live.Timeout)
+		go m.closeFlushed(m.c.live.Timeout)
 	}
 }
 
@@ -284,16 +295,20 @@ func (m *Mux) serve(f Frame, accept func([]byte, *Session)) {
 	switch {
 	case f.Open:
 		var s *Session
-		// An OPEN that crossed this side's GOAWAY runs like any other;
-		// one after the peer's GOAWAY, or after it read ours (Drained),
-		// breaks the protocol.
+		// An OPEN that crossed this side's GOAWAY runs like any other,
+		// unless the drain deadline's cut began (add: errCut); one after
+		// the peer's GOAWAY, or after it read ours (Drained), breaks the
+		// protocol.
 		refusal := &Abort{Refused: true, Code: CodeRefused, Msg: "not taking sessions"}
 		switch {
 		case accept == nil:
 		case closed(m.c.peerGoAway) || closed(m.c.drained):
 			refusal.Code, refusal.Msg = CodeDraining, "draining"
 		default:
-			s, _ = m.add(f.SID, f.Header, f.Chain, true)
+			var err error
+			if s, err = m.add(f.SID, f.Header, f.Chain, true); err == errCut {
+				refusal.Code, refusal.Msg = CodeDraining, "draining"
+			}
 		}
 		if s == nil { // refused: the opener reads a refusal or a reset, never a clean end
 			m.refuse(f.SID, refusal)
@@ -339,8 +354,15 @@ func (m *Mux) serve(f Frame, accept func([]byte, *Session)) {
 // refusal is buffered, and an open past the max ends the connection.
 func (m *Mux) refuse(sid string, a *Abort) {
 	m.mu.Lock()
+	if m.shut { // read after the write side's shut: no answer can go out
+		m.mu.Unlock()
+		return
+	}
 	m.refusals = append(m.refusals, refusal{sid, a})
 	start := !m.refusing
+	if start {
+		m.refused = make(chan struct{})
+	}
 	m.refusing = true
 	m.mu.Unlock()
 	if start {
@@ -359,6 +381,7 @@ func (m *Mux) sendRefusals() {
 		m.mu.Lock()
 		if len(m.refusals) == 0 {
 			m.refusals, m.refusing = nil, false
+			close(m.refused)
 			m.mu.Unlock()
 			return
 		}
@@ -374,6 +397,31 @@ func (m *Mux) sendRefusals() {
 		if err == nil {
 			_ = m.c.Flush()
 		}
+	}
+}
+
+// closeFlushed is Conn.closeFlushed once the refusals queued are
+// buffered (shutWrite).
+func (m *Mux) closeFlushed(wait time.Duration) {
+	m.shutWrite()
+	m.c.closeFlushed(wait)
+}
+
+// shutWrite returns once every refusal queued is buffered, and queues no
+// more: the write side shuts next, so a peer's OPEN read before it is
+// answered, never left to the connection's end (spec/Link.tla
+// OpensAnswered, mutant shut-before-refusal).
+func (m *Mux) shutWrite() {
+	for {
+		m.mu.Lock()
+		if !m.refusing {
+			m.shut = true
+			m.mu.Unlock()
+			return
+		}
+		done := m.refused
+		m.mu.Unlock()
+		<-done
 	}
 }
 
@@ -488,7 +536,7 @@ func (m *Mux) cut() {
 					return
 				}
 			}
-			m.c.closeFlushed(time.Second)
+			m.closeFlushed(time.Second)
 		}()
 		t := time.NewTimer(2 * time.Second)
 		select {
@@ -503,6 +551,9 @@ func (m *Mux) cut() {
 		traceEv(m.c.credit.tr, traceEvent{ev: "CutRet"})
 	}
 }
+
+// errCut is Mux.add's refusal of a peer's open once the cut began.
+var errCut = errors.New("link: drain deadline cut")
 
 // cutAbort is the ABORT Mux.cut sends each session at a drain's deadline.
 var cutAbort = &Abort{Code: CodeDrainDeadline, Msg: "drain deadline"}
@@ -554,7 +605,7 @@ func (m *Mux) closeIdle() {
 	switch {
 	case closing: // leave closes it
 	case idle:
-		go m.c.closeFlushed(m.c.live.Timeout)
+		go m.closeFlushed(m.c.live.Timeout)
 	default:
 		_ = m.Close()
 	}

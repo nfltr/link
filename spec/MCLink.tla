@@ -39,7 +39,8 @@ LS == INSTANCE LinkSession WITH
     c <- [p \in Sides |-> [s \in Sids |-> dlv[p][s] - ss[p][s].q]],
     wend <- [p \in Sides |-> [s \in Sids |-> WEnd(ss[p][s].code)]],
     fin <- [p \in Sides |-> [s \in Sids |-> ss[p][s].fin]],
-    shut <- [p \in Sides |-> [s \in Sids |-> ss[p][s].closing # 0 \/ ss[p][s].code \in {Full, RST, ABT, DDL}]],
+    \* a drain's refusal due (refd) is no read of an application's ended yet
+    shut <- [p \in Sides |-> [s \in Sids |-> (ss[p][s].closing # 0 /\ ~ss[p][s].refd) \/ ss[p][s].code \in {Full, RST, ABT, DDL}]],
     rend <- [p \in Sides |-> [s \in Sids |-> REnd(p, s)]],
     up <- [p \in Sides |-> ~down[p]],
     fault <- err # {}
@@ -90,12 +91,18 @@ WitnessCutAbortsEnded ==
 \* Not a guarantee (README "The drain's cut"): once the cut closed the
 \* connection (its write side shut first, or at once with no ABORT to
 \* send), every session open here had its ABORT sent or ended at the peer.
-\* An OPEN that crossed the GOAWAY and arrived after the cut's snapshot gets
-\* none: its opener reads lost (spec-mutants expects the violation).
+\* An OPEN read after the write side shut can get no answer: its opener
+\* reads lost (spec-mutants expects the violation; one read before is
+\* refused: OpensAnswered, lane LINKOPENREFUSE).
 CutAbortsAll ==
     \A p \in Sides, s \in Sids :
         (cut[p].st \in {"flushed", "close"} /\ closed[p] /\ ss[p][s].st = "open") =>
             \/ \E i \in 1..Len(out[p]) : out[p][i].t = "close" /\ out[p][i].s = s
             \/ ss[Peer(p)][s].st # "open"
+\* OpensAnswered's case: the write side shut under a session the peer
+\* opened, its ABORT on the way; a drain's refusal read by its opener.
+WitnessShutAnswers ==
+    \A p \in Sides, s \in Sids : ~(crashes = 0 /\ wshut[p] /\ Owner[s] # p /\ ss[p][s].st = "open" /\ ~ss[p][s].late)
+WitnessDrainRefused == \A p \in Sides, s \in Sids : ~(ss[p][s].refd /\ ss[Peer(p)][s].got = ABT)
 WitnessInFlight == \A p \in Sides, s \in Sids : ~(SumIn(out[p], "data", s) > 0 /\ SumIn(out[Peer(p)], "win", s) > 0)
 =============================================================================

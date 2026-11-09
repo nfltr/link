@@ -507,6 +507,58 @@ func TestDrainDeadlineAbortsAHeldSession(t *testing.T) {
 	}
 }
 
+// TestOpenReadAfterTheCutsSnapshotIsRefused: an OPEN that crossed the
+// GOAWAY and is read once a drain deadline's cut took its snapshot (its
+// ABORTs going out) is refused before the write side shuts: its opener
+// reads the refusal (CodeDraining), not the connection's end (spec/Link.tla
+// OpensAnswered, mutants open-after-goaway-unanswered and
+// shut-before-refusal; lane LINKOPENREFUSE).
+func TestOpenReadAfterTheCutsSnapshotIsRefused(t *testing.T) {
+	c, s := v2pair(t, v2cfg, v2cfg)
+	dm, lm := NewMux(c), NewMux(s)
+	hold := make(chan struct{})
+	defer close(hold)
+	go func() { _ = lm.Serve(func(_ []byte, _ *Session) { <-hold }) }()
+	// dm's receive loop waits: it reads no GOAWAY, so it opens again later.
+	if _, err := openV2(dm, "held"); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, func() bool { return lm.Sessions() == 1 })
+	var once sync.Once
+	crossed := make(chan *Session, 1)
+	testHookAbortForgot = func() {
+		once.Do(func() { // the cut's ABORT of "held": its snapshot is taken
+			s, err := openV2(dm, "crossed")
+			if err != nil {
+				t.Error(err)
+			}
+			// lm's receive loop read the OPEN: refused, or a session (the code before)
+			for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+				lm.mu.Lock()
+				read := lm.refusing || len(lm.sess) == 2
+				lm.mu.Unlock()
+				if read {
+					break
+				}
+			}
+			crossed <- s
+		})
+	}
+	t.Cleanup(func() { testHookAbortForgot = nil })
+	if err := lm.goAway(time.Now().Add(20 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	sess := <-crossed
+	go func() { _ = dm.Serve(nil) }()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var a *Abort
+	if err := sess.Answered(ctx); !errors.As(err, &a) || !a.Refused || a.Code != CodeDraining {
+		t.Fatalf("an OPEN read after the cut's snapshot: %v, want refused (draining)", err)
+	}
+	<-lm.c.Done()
+}
+
 // TestDrainReturnsAfterTheCutItRaced: a drain's deadline fires twice (its
 // timer and Drain's ctx); the cut that comes second returns only once
 // the first one's ABORTs went out and the connection closed. A Drain

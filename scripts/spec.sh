@@ -346,7 +346,14 @@ mutants)
 	for m in second-cut-early cut-keeps-credit cut-closes-at-once; do
 		job mutant LinkCut.cfg 'Mutant = "none"' "Mutant = \"$m\""
 	done
-	for w in WitnessCutWaits WitnessAbortBeforeCut WitnessCutAbortsEnded CutAbortsAll; do job witness LinkCut.cfg $w; done
+	for w in WitnessCutWaits WitnessAbortBeforeCut WitnessCutAbortsEnded CutAbortsAll WitnessShutAnswers; do job witness LinkCut.cfg $w; done
+	# An OPEN read after the cut's snapshot (lane LINKOPENREFUSE): run, not
+	# refused (the code before: it got no ABORT); the write side shut with
+	# a refusal still to buffer.
+	for m in open-after-goaway-unanswered shut-before-refusal; do
+		job mutant LinkCut.cfg 'Mutant = "none"' "Mutant = \"$m\""
+	done
+	job witness LinkCut.cfg WitnessDrainRefused
 	for w in WitnessEof WitnessReset WitnessLost WitnessCredit; do job witness Link.cfg $w; done
 	job witness LinkDrain.cfg WitnessRefused
 	# A witness per invariant of Link (spec/README.md "Witnesses").
@@ -441,7 +448,7 @@ mutants)
 	exit $fail
 	;;
 traces)
-	tests=${TRACE_TESTS:-'^(TestSessionCleanEnd|TestSessionReset|TestMuxSlowSessionIsolated|TestGoAwayDrainKeepsTails|TestCrossedOpenRunsOnTheLeavingConnection|TestMuxV2GoAway|TestSessionCutWithItsConnection|TestMuxSessions|TestMuxV2Sessions|TestWriteRacingCloseWriteSendsNothingAfterFIN|TestWriteParkedForItsTurnSendsNothingAfterFIN|TestOpenParkedPastPeerGoAwayIsNotSent|TestAbortAtMaxSessionsRacingOpenKeepsTheConnection|TestChainRefuse|TestRefusedOpenReadsReset|TestWriteAfterRefuseSendsNoData|TestCloseWriteRacingThePeersFINDropsAfterItsCLOSE|TestMuxOpenSkipsAnIDThePeerTook|TestReceiveLoopReadsWhileARefusalWaits|TestCloseWriteReportsAFailedFIN|TestStarvedProcessKeepsALivePeer|TestDrainReturnsAfterTheCutItRaced|TestDrainDeadlineAbortsAHeldSession|TestDrainDeadlineKeepsAnEndedSessionsClose|TestChainDrainMiddleHop|TestCloseWriteEndingBothHalvesFreesItsSessionAtOnce)$'}
+	tests=${TRACE_TESTS:-'^(TestSessionCleanEnd|TestSessionReset|TestMuxSlowSessionIsolated|TestGoAwayDrainKeepsTails|TestCrossedOpenRunsOnTheLeavingConnection|TestOpenReadAfterTheCutsSnapshotIsRefused|TestMuxV2GoAway|TestSessionCutWithItsConnection|TestMuxSessions|TestMuxV2Sessions|TestWriteRacingCloseWriteSendsNothingAfterFIN|TestWriteParkedForItsTurnSendsNothingAfterFIN|TestOpenParkedPastPeerGoAwayIsNotSent|TestAbortAtMaxSessionsRacingOpenKeepsTheConnection|TestChainRefuse|TestRefusedOpenReadsReset|TestWriteAfterRefuseSendsNoData|TestCloseWriteRacingThePeersFINDropsAfterItsCLOSE|TestMuxOpenSkipsAnIDThePeerTook|TestReceiveLoopReadsWhileARefusalWaits|TestCloseWriteReportsAFailedFIN|TestStarvedProcessKeepsALivePeer|TestDrainReturnsAfterTheCutItRaced|TestDrainDeadlineAbortsAHeldSession|TestDrainDeadlineKeepsAnEndedSessionsClose|TestChainDrainMiddleHop|TestCloseWriteEndingBothHalvesFreesItsSessionAtOnce)$'}
 	mkdir -p "$work/traces"
 	LINKTRACE=$work/traces go test -tags linktrace -count=1 -run "$tests" . >"$work/test.out" 2>&1 || {
 		cat "$work/test.out"

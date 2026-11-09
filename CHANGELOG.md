@@ -8,6 +8,21 @@ version 2 unless an entry says otherwise.
 
 ## Unreleased
 
+- An OPEN read once a drain's deadline cut the sessions is refused
+  (abort refuse, `CodeDraining`: the opener's `Answered` and reads return
+  an `*Abort` matching `ErrOpenRefused`), as HTTP/2's REFUSED_STREAM:
+  nothing ran on it, so its opener can open it elsewhere. It became a
+  session the cut never aborted, and its opener read the connection's end.
+  The check is in `Mux.add` under the lock the cut takes its snapshot
+  with, so a session is either aborted by the cut or refused; and the cut
+  (and a leaving connection) shuts its write side only once every queued
+  refusal is buffered. A crossed OPEN read before the deadline still runs
+  to its end, as it has since v0.4.2: a graceful drain loses nothing, so
+  it is unchanged. No wire change. Found by the model of the cut
+  (spec/README.md "The crossed open's refusal", lane LINKOPENREFUSE:
+  guarantee `OpensAnswered`, mutants `open-after-goaway-unanswered`,
+  `shut-before-refusal`). Guard `TestOpenReadAfterTheCutsSnapshotIsRefused`.
+
 - A drain's deadline that finds no session open writes what is buffered
   before it closes the connection (closeFlushed, within its 2 s): it
   closed at once, so the CLOSE of a session that ended just before the

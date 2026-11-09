@@ -81,8 +81,10 @@ NoCredit == [on |-> FALSE, n |-> 0, held |-> 0, cons |-> 0]
 \* code, got, fin: history for the interface (LinkSession.tla): the code of the last close
 \* this side buffered (a reset kept), the first one it received while the session was
 \* open (NoCode: none), and whether it buffered a FIN (code Half or Full).
+\* refd: a peer's OPEN read after GOAWAY, refused (no Mux session: Mux.refuse);
+\* late: its OPEN read once this side could no longer send (OpensAnswered).
 NoSession == [st |-> "none", wfin |-> FALSE, rfin |-> FALSE, pclosed |-> FALSE, q |-> 0, acc |-> FALSE, closing |-> 0,
-              code |-> NoCode, got |-> NoCode, fin |-> FALSE]
+              code |-> NoCode, got |-> NoCode, fin |-> FALSE, refd |-> FALSE, late |-> FALSE]
 
 Init ==
     /\ out = [p \in Sides |-> <<>>]
@@ -134,6 +136,8 @@ Answered(p, s) == ~Chain \/ Owner[s] = p \/ ss[p][s].acc   \* autoAccept ran
 \* LinkSess.cfg, LinkRefuse.cfg).
 Refuse == Drain = {}
 Refusing(p, s) == ss[p][s].closing = ABT + 1 /\ cr[p][s].on
+\* A drain's refusal (RecvOpen) not buffered yet: Mux.refuse queued it.
+RefusalDue(p, s) == ss[p][s].refd /\ ss[p][s].closing # 0
 
 -----------------------------------------------------------------------------
 (* The application's steps.                                                 *)
@@ -431,15 +435,30 @@ Pong(p, rep) ==
 
 Flag(e) == err' = err \cup {e}
 
+\* An OPEN read once the drain deadline's cut began (Mux.add under m.mu,
+\* where the cut takes its snapshot) is refused, as HTTP/2's
+\* REFUSED_STREAM: Conn.recv opens its credit (it counts until its
+\* refusal is buffered), Mux.serve queues the refusal (CodeDraining), no
+\* Mux session (lane LINKOPENREFUSE); one read before is in the snapshot.
+\* Mutant open-after-goaway-unanswered (the code before): it ran as any
+\* other, out of the snapshot, so it got no ABORT and its opener read the
+\* connection's end (OpensAnswered).
 RecvOpen(p, f) ==
-    LET s == f.s IN
+    LET s == f.s
+        on == [cr EXCEPT ![p][s] = [NoCredit EXCEPT !.on = TRUE, !.n = Win[Peer(p)]]]
+    IN
     IF ss[p][s].st # "none" THEN Flag("open of an id in use") /\ UNCHANGED <<cr, ss>>
     ELSE IF peerGA[p] \/ drained[p]
     THEN Flag("open after GOAWAY") /\ UNCHANGED <<cr, ss>>   \* the code refuses it with a reset
     ELSE IF Count(p, Peer(p)) >= MaxSess
     THEN Flag("open past max_sessions") /\ UNCHANGED <<cr, ss>>   \* ErrFull
-    ELSE /\ cr' = [cr EXCEPT ![p][s] = [NoCredit EXCEPT !.on = TRUE, !.n = Win[Peer(p)]]]
-         /\ ss' = [ss EXCEPT ![p][s].st = "open"]
+    ELSE IF cut[p].st # "no" /\ Chain /\ Mutant # "open-after-goaway-unanswered"
+    THEN /\ cr' = on
+         /\ ss' = [ss EXCEPT ![p][s] = [NoSession EXCEPT !.st = "open", !.closing = ABT + 1, !.refd = TRUE,
+                                                        !.late = ~CanSend(p)]]
+         /\ UNCHANGED err
+    ELSE /\ cr' = on
+         /\ ss' = [ss EXCEPT ![p][s].st = "open", ![p][s].late = ~CanSend(p)]
          /\ UNCHANGED err
 
 RecvData(p, f) ==                                \* Conn.next charges, Mux.data queues
@@ -559,8 +578,9 @@ Down(p) ==                                       \* Mux.close: every session at 
 \* Mux.sess: every session open, an Open's before its OPEN, and one that
 \* ended may still be there (the drop follows its last frame): CutBase and
 \* any of CutEnded.
-CutBase(p) == IF down[p] THEN {} ELSE {s \in Sids : ss[p][s].st = "open" \/ wt[p][s] = "open"}
-CutEnded(p) == IF down[p] THEN {} ELSE {s \in Sids : ss[p][s].st = "gone"}
+\* A refused OPEN (refd) is in none: no Mux session.
+CutBase(p) == IF down[p] THEN {} ELSE {s \in Sids : (ss[p][s].st = "open" /\ ~ss[p][s].refd) \/ wt[p][s] = "open"}
+CutEnded(p) == IF down[p] THEN {} ELSE {s \in Sids : ss[p][s].st = "gone" /\ ~ss[p][s].refd}
 CutCand(p) == CutBase(p) \cup CutEnded(p)
 
 \* CutEnter's first call with snapshot q (Trace.tla: the code's m.sess may
@@ -596,9 +616,11 @@ CutSend(p) ==
     /\ UNCHANGED <<cr, pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
                    pings, wshut, closed, down, appDone, crashes, err, wt>>
 \* Every ABORT buffered: closeFlushed (trace Leave). A side that left
-\* already has nothing more to shut.
+\* already has nothing more to shut. The refusals queued go first
+\* (Mux.shutWrite; mutant shut-before-refusal: they did not).
 CutFlush(p) ==
     /\ cut[p].st = "run" /\ cut[p].q = {} /\ cut[p].w = NoSid /\ ~closed[p]
+    /\ Mutant = "shut-before-refusal" \/ \A s \in Sids : ~RefusalDue(p, s)
     /\ IF wshut[p] THEN UNCHANGED lvars ELSE Leave(p)
     /\ cut' = [cut EXCEPT ![p].st = "flushed"]
 \* The cut's own closes (Mux.Close; trace ConnClose): at once when it had no
@@ -629,7 +651,8 @@ CutReturn(p) ==                                   \* a call of cut returns (trac
 OpenAt(p) == {s \in Sids : ss[p][s].st = "open"}
 Ended(s) == \A p \in Sides : ss[p][s].st # "open"
 
-\* Mux.leave: leaving, the peer read the GOAWAY, no session left.
+\* Mux.leave: leaving, the peer read the GOAWAY, no session left (nor a
+\* refusal to buffer: Mux.shutWrite).
 LeaveWhenDrained(p) == sentGA[p] /\ drained[p] /\ OpenAt(p) = {} /\ Leave(p)
 \* The peer's end reached p: its read sees EOF once it read every frame.
 EOFClose(p) == (closed[Peer(p)] \/ wshut[Peer(p)]) /\ out[Peer(p)] = <<>> /\ CloseConn(p, Len(out[p]))
@@ -646,7 +669,8 @@ Terminated == ((down["d"] /\ down["l"]) \/ Idle) /\ UNCHANGED vars
 AppStep(p, s) ==
     \/ OpenCheck(p, s)
     \/ Accept(p, s)
-    \/ \E n \in 1..Chunk : sent[p][s] + pend[p][s] + n <= MaxBytes[p][s] /\ Acquire(p, s, n)
+    \* a refused OPEN has no Session to write or read
+    \/ ~ss[p][s].refd /\ \E n \in 1..Chunk : sent[p][s] + pend[p][s] + n <= MaxBytes[p][s] /\ Acquire(p, s, n)
     \/ Half \in Ends /\ CloseWriteMark(p, s)
     \/ \E code \in Ends \ {Half, ABT, DDL} : Closing(p, s, code)
     \* Session.Abort (a joint's AbortWith) after a GOAWAY, racing the cut's
@@ -654,7 +678,7 @@ AppStep(p, s) ==
     \* LinkDrain.cfg's state space stays small).
     \/ ABT \in Ends /\ (sentGA[p] \/ Drain = {}) /\ Closing(p, s, ABT)
     \/ ABT \in Ends /\ Refuse /\ RefuseMark(p, s)
-    \/ \E k \in 1..ss[p][s].q : Read(p, s, k)
+    \/ ~ss[p][s].refd /\ \E k \in 1..ss[p][s].q : Read(p, s, k)
 
 LinkNext ==
     \/ \E p \in Sides, s \in Sids :
@@ -778,6 +802,17 @@ DrainReturnsAfterCut == \A p \in Sides : cut[p].ret > 0 => cut[p].st = "done" /\
 \* before the deadline is read ended, not lost (README "The drain's cut",
 \* F2; TestDrainDeadlineKeepsAnEndedSessionsClose).
 CutLosesNoEnd == \A p \in Sides : ~cut[p].lost
+\* Every session the peer opened ends refused, aborted or ended, never lost
+\* while this side could answer it (lane LINKOPENREFUSE): once this side's
+\* write side shut (Mux.leave's or the cut's closeFlushed), each session
+\* the peer opened whose OPEN this side read before has its end (refusal,
+\* ABORT, CLOSE) on the way, or ended at the peer. Not with a crash, nor
+\* at the cut's 2 s bound (it closes before the shut: CutLosesNoEnd).
+OpensAnswered ==
+    \A p \in Sides, s \in Sids :
+        (crashes = 0 /\ wshut[p] /\ Owner[s] # p /\ ss[p][s].st = "open" /\ ~ss[p][s].late) =>
+            \/ \E i \in 1..Len(out[p]) : out[p][i].t = "close" /\ out[p][i].s = s
+            \/ ss[Peer(p)][s].st # "open"
 
 \* Liveness (README "Liveness").
 SessionsEnd == \A s \in Sids : (appDone["d"][s] /\ appDone["l"][s]) ~> Ended(s)

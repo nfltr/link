@@ -54,7 +54,9 @@ LinkStep ==
       \* A refusal (code 4): the answer taken (RefuseMark, not logged), its ABORT forgets.
       \* Mux.refuse's goroutine may run after the connection's end cut the
       \* session: its ABORT goes nowhere (finding C11, as C9).
-      [] E.ev = "Forget" /\ E.n = 4 -> IF closed[P] /\ Owner[S] # P /\ ss[P][S].st # "open" /\ ss[P][S].closing = 0
+      \* A drain's refusal (RecvOpen marked it): its forget is End's here.
+      [] E.ev = "Forget" /\ E.n = 4 -> IF (closed[P] /\ Owner[S] # P /\ ss[P][S].st # "open" /\ ss[P][S].closing = 0)
+                                          \/ RefusalDue(P, S)
                                        THEN UNCHANGED vars ELSE RefuseMark(P, S)
       [] E.ev = "Close" /\ E.n = 4 -> IF closed[P] /\ Owner[S] # P /\ ss[P][S].st # "open" /\ ss[P][S].closing = 0
                                       THEN UNCHANGED vars ELSE ss[P][S].closing = ABT + 1 /\ End(P, S)
