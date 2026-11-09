@@ -8,6 +8,15 @@ version 2 unless an entry says otherwise.
 
 ## Unreleased
 
+- A drain's deadline that finds no session open writes what is buffered
+  before it closes the connection (closeFlushed, within its 2 s): it
+  closed at once, so the CLOSE of a session that ended just before the
+  deadline, its write behind another, was lost and the peer read the
+  connection's end instead of io.EOF. Found by the model of the cut in
+  its steps (spec/README.md "The drain's cut", lane LINKATOMIC: invariant
+  `CutLosesNoEnd`, mutant `cut-closes-at-once`). Guard
+  `TestDrainDeadlineKeepsAnEndedSessionsClose`.
+
 - `Mux.Drain` at its deadline returns only once the deadline's cut
   ended (its ABORTs sent, the connection closed), also when the drain's
   own timer began that cut first: Drain's second cut returned at once,

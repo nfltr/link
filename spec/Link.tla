@@ -70,7 +70,9 @@ vars == <<lvars, cut>>
 \* "done" (cut ended: cutEnded closed); q: the sessions whose ABORT is still
 \* to go; w: the one whose ABORT is between its forget and its frame; in,
 \* ret: the calls of cut begun and returned (the drain's timer, Drain's ctx).
-NoCut == [st |-> "no", q |-> {}, w |-> NoSid, in |-> 0, ret |-> 0]
+\* lost: the cut's close dropped a CLOSE or ABORT buffered before it, not at
+\* its 2 s bound (CutLosesNoEnd).
+NoCut == [st |-> "no", q |-> {}, w |-> NoSid, in |-> 0, ret |-> 0, lost |-> FALSE]
 \* Mux.cut's callers: the drain's own timer (Mux.goAway) and Drain's ctx.
 Cutters == 2
 
@@ -524,15 +526,21 @@ Down(p) ==                                       \* Mux.close: every session at 
 (* code before 7dabd5e: Drain returned while the first cut's ABORTs were    *)
 (* still to go out).                                                        *)
 
-\* Mux.sess: every session not dropped (a dropped one may still be there:
-\* the drop follows its last frame), and an Open's before its OPEN.
-CutCand(p) == IF down[p] THEN {} ELSE {s \in Sids : ss[p][s].st # "none" \/ wt[p][s] = "open"}
+\* Mux.sess: every session open, an Open's before its OPEN, and one that
+\* ended may still be there (the drop follows its last frame): CutBase and
+\* any of CutEnded.
+CutBase(p) == IF down[p] THEN {} ELSE {s \in Sids : ss[p][s].st = "open" \/ wt[p][s] = "open"}
+CutEnded(p) == IF down[p] THEN {} ELSE {s \in Sids : ss[p][s].st = "gone"}
+CutCand(p) == CutBase(p) \cup CutEnded(p)
 
 \* CutEnter's first call with snapshot q (Trace.tla: the code's m.sess may
 \* lag a RecvOpen, whose Mux.add follows its trace event).
 CutBegin(p, q) ==
     /\ sentGA[p] /\ cut[p].st = "no"
-    /\ cut' = [cut EXCEPT ![p] = [NoCut EXCEPT !.st = IF Chain /\ q # {} THEN "run" ELSE "close", !.q = q, !.in = 1]]
+    \* Mutant cut-closes-at-once (the code before lane LINKATOMIC): with no
+    \* ABORT to send, Mux.Close at once, what was buffered lost.
+    /\ cut' = [cut EXCEPT ![p] = [NoCut EXCEPT !.st = IF Chain /\ (q # {} \/ Mutant # "cut-closes-at-once") THEN "run" ELSE "close",
+                                              !.q = q, !.in = 1]]
     /\ UNCHANGED lvars
 CutWait(p) ==                                     \* the second call: it waits for cutEnded
     /\ cut[p].st # "no" /\ cut[p].in < Cutters
@@ -569,8 +577,10 @@ CutFlush(p) ==
 \* ("run": what was not written is lost).
 CutClose(p) ==
     /\ cut[p].st \in {"run", "flushed", "close"} /\ ~closed[p]
-    /\ \E k \in (IF wshut[p] THEN {Len(out[p])} ELSE 0..Len(out[p])) : CloseConn(p, k)
-    /\ UNCHANGED cut
+    /\ \E k \in (IF wshut[p] THEN {Len(out[p])} ELSE 0..Len(out[p])) :
+        /\ CloseConn(p, k)
+        /\ cut' = [cut EXCEPT ![p].lost = @ \/ (cut[p].st = "close" /\ Chain /\
+                                                \E i \in k + 1..Len(out[p]) : out[p][i].t = "close")]
 \* The connection closed (the cut's close, the peer's, an ABORT that failed
 \* on it): cutEnded is closed (trace CutEnd).
 CutEnd(p) ==
@@ -643,7 +653,7 @@ LinkNext ==
 CutSides == IF DDL \in Ends THEN Drain ELSE {}
 Next ==
     \/ LinkNext /\ UNCHANGED cut
-    \/ \E p \in CutSides : CutBegin(p, CutCand(p))
+    \/ \E p \in CutSides : \E g \in SUBSET CutEnded(p) : CutBegin(p, CutBase(p) \cup g)
     \/ \E p \in CutSides : CutWait(p)
     \/ \E p \in CutSides, s \in Sids : CutForget(p, s)
     \/ \E p \in CutSides : CutSend(p)
@@ -685,10 +695,12 @@ NoProtocolError == err = {}
 \* is buffered while the peer still reads the session (review r2 of
 \* LinkSession, finding 1): a graceful end is never read as lost. A CLOSE
 \* still due after this side's reset or abort is no FIN (the peer reads the
-\* reset), nor one to a peer that closed the session whole.
+\* reset), nor one to a peer that closed the session whole. Not the cut's
+\* shut (CutFlush): a session it did not abort (an OPEN read after its
+\* snapshot, CutAbortsAll) ends reset or lost.
 FinBeforeShut ==
     \A p \in Sides, s \in Sids :
-        (wshut[p] /\ ss[p][s].wfin /\ ~ss[p][s].fin /\ ss[p][s].code = Half) => ss[Peer(p)][s].st # "open"
+        (wshut[p] /\ cut[p].st = "no" /\ ss[p][s].wfin /\ ~ss[p][s].fin /\ ss[p][s].code = Half) => ss[Peer(p)][s].st # "open"
 
 CreditBounds == \A p \in Sides, s \in Sids : cr[p][s].n >= 0 /\ cr[p][s].n <= Win[Peer(p)]
 
@@ -706,11 +718,14 @@ SumFrom(seq, i, t, s) ==                          \* by index: Tail copies the s
 SumIn(seq, t, s) == SumFrom(seq, 1, t, s)
 
 \* The peer's window is split between p's credit, p's Write in flight,
-\* data on the wire, the peer's buffer and its grants on their way back.
+\* data on the wire, the peer's buffer and its grants on their way back;
+\* while both sides still write (a frame after a write side's shut goes
+\* nowhere: the drain's cut shuts it under a session it did not abort,
+\* CutAbortsAll).
 Conservation ==
     \A p \in Sides, s \in Sids :
         LET q == Peer(p) IN
-        (cr[p][s].on /\ cr[q][s].on /\ ~closed[p] /\ ~closed[q]) =>
+        (cr[p][s].on /\ cr[q][s].on /\ ~closed[p] /\ ~closed[q] /\ ~wshut[p] /\ ~wshut[q]) =>
             cr[p][s].n + pend[p][s] + SumIn(out[p], "data", s)
               + cr[q][s].held + gpend[q][s] + SumIn(out[q], "win", s) = Win[q]
 
@@ -726,6 +741,11 @@ TypeOK ==
 \* came before them; the caller may then close what its sessions were
 \* joined to (a relay letting its agents go once its clients drained).
 DrainReturnsAfterCut == \A p \in Sides : cut[p].ret > 0 => cut[p].st = "done" /\ closed[p]
+\* The cut's close loses no session's end buffered before it but at its
+\* 2 s bound (a peer too starved to read): a session that ended just
+\* before the deadline is read ended, not lost (README "The drain's cut",
+\* F2; TestDrainDeadlineKeepsAnEndedSessionsClose).
+CutLosesNoEnd == \A p \in Sides : ~cut[p].lost
 
 \* Liveness (README "Liveness").
 SessionsEnd == \A s \in Sids : (appDone["d"][s] /\ appDone["l"][s]) ~> Ended(s)

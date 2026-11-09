@@ -343,7 +343,7 @@ mutants)
 	# The drain's cut in its steps (lane LINKATOMIC): the second call
 	# returning before the first ended (the code before 7dabd5e), and the
 	# cut's ABORT leaving the credit (a Write after it).
-	for m in second-cut-early cut-keeps-credit; do
+	for m in second-cut-early cut-keeps-credit cut-closes-at-once; do
 		job mutant LinkCut.cfg 'Mutant = "none"' "Mutant = \"$m\""
 	done
 	for w in WitnessCutWaits WitnessAbortBeforeCut WitnessCutAbortsEnded CutAbortsAll; do job witness LinkCut.cfg $w; done

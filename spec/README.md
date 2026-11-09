@@ -441,6 +441,24 @@ goroutine or timer.
 | CloseWrite | `mux.go` `Session.closeWrite` | `halfClosed`; `wmu`: CLOSE; `finSent` | the application, a joint | no | already split (review r2 LinkSession 1): `CloseWriteMark`, `CloseWriteSend` |
 | refusal | `mux.go` `Mux.refuse`, `sendRefusals` | queued under `m.mu`; a goroutine's `sendAbort` | the receive loop | no | `RefuseMark`, `End`; after the end: C11 |
 
+**Bug found (low; fixed in this lane)**: the cut with no session in its
+snapshot closed the connection at once (`Mux.Close`), so frames buffered
+behind a write in flight were lost: the CLOSE of a session that ended
+just before the deadline (dropped from `Mux.sess`, so not in the
+snapshot) never reached the peer, which read the connection's end
+instead of io.EOF. The model's snapshot (`CutBase` plus any of
+`CutEnded`: a session's drop follows its last frame) reaches it;
+`CutLosesNoEnd` (the cut's close drops no session's end but at its 2 s
+bound) fails with mutant `cut-closes-at-once` (the code before), 9
+states deep. Fix: the cut runs closeFlushed whenever the connection has
+FeatureChain, with no ABORT to send too (`mux.go` `Mux.cut`). Guard
+`TestDrainDeadlineKeepsAnEndedSessionsClose` (failed before: the peer
+read `link: connection closed`). `Conservation` now holds while both
+sides still write (a frame after the cut's shut goes nowhere: the
+crossed OPEN of `CutAbortsAll`), and `FinBeforeShut` is the graceful
+drain's (`Leave`), not the cut's: a half-closed session the cut did not
+abort loses its FIN to the cut's shut, as `CutAbortsAll` says.
+
 **Invariants.** `DrainReturnsAfterCut`: a call of cut (so Drain) returns
 only once the cut ended: its connection closed, so every ABORT it buffered
 before was written or the connection's end came first, and the caller may
@@ -453,8 +471,9 @@ receiver keeps no credit for it).
 `second-cut-early` (the code before 7dabd5e: the second call returns at
 once) is caught by `DrainReturnsAfterCut`, 4 states deep;
 `cut-keeps-credit` (the cut's ABORT leaves the credit: a Write after it)
-by `Conservation`, 13 states deep (with `Conservation` left out, by
-`NoProtocolError`: data after the session's end, 16 deep).
+by `NoProtocolError` (data after the session's end), 16 states deep
+(`Conservation` no longer sees it: it holds only while both sides write);
+`cut-closes-at-once` by `CutLosesNoEnd` (the bug above).
 
 **Witnesses** (each must be violated): `WitnessCutWaits` (two calls, one
 waiting), `WitnessAbortBeforeCut`, `WitnessCutAbortsEnded`, and the
@@ -485,22 +504,34 @@ above); an ABORT or refusal for it could only race the close the same
 way. The cut's doc says "each session still open"; it means the ones in
 its snapshot.
 
+**Not traced (conformance gap, no wire effect)**: `TestChainDrainMiddleHop`'s
+connections are rejected by `Trace.tla` before and after this lane, at
+a step the model takes with the session's drop: a CLOSE that ends both
+halves (`CloseWrite` after the peer's FIN, or the FIN read after this
+side's) drops the session and forgets its credit in the same step, where
+the code forgets it later (`Mux.drop` after the frame, or after
+`Conn.recv`'s trace event): a window received, or a read's grant, in
+between is charged to a credit the code still knows (an extra WINDOW for
+a session both sides closed; the peer drops it). Follow-up: split the
+drop from `CloseWriteSend`/`RecvClose` as the cut's was, then trace the
+chain tests (two rejected traces: `~/nfltr-evidence/LINKATOMIC/`).
+
 **Sizes** (TLC 1.8.0, `-workers 2`, loaded machine): `LinkCut.cfg`
 (`Sids {1}`, the accepter writes 1 byte, `Ends {3, 5}`, `MaxOut 4`):
-142,465 distinct states, depth 34, 5 s for the invariants (CI's
-`spec-invariants`), 5 min with `Refines` and the liveness properties
-(`make spec`). `-coverage 1`: `CutBegin` 385, `CutWait` 1,148,
-`CutForget` 1,735, `CutSend` 787, `CutFlush` 1,711, `CutClose` 11,404,
-`CutEnd` 35,782, `CutReturn` 54,160 distinct states (every cut action
-taken). `LinkCutHalf.cfg` (with CloseWrite, `Ends {1, 3, 5}`): 2,617,459
-states, 3 min (`make spec-nightly`). `LinkDrain.cfg` no longer has the
+162,643 distinct states, depth 34, 7 s for the invariants (CI's
+`spec-invariants`), 2 min with `Refines` and the liveness properties
+(`make spec`). `-coverage 1`: `CutBegin` 377, `CutWait` 1,270,
+`CutForget` 1,640, `CutSend` 787, `CutFlush` 2,303, `CutClose` 12,658,
+`CutEnd` 40,696, `CutReturn` 61,866 distinct states (every cut action
+taken). `LinkCutHalf.cfg` (with CloseWrite, `Ends {1, 3, 5}`): 2,931,298
+states, 2.5 min (`make spec-nightly`). `LinkDrain.cfg` no longer has the
 cut (with it: past 6.4 million states): `Ends {0, 1}`, 299,581 states.
 
 **Traces**: the recorder writes `Cut` (n: the snapshot's size),
 `CutWait`, `Forget`/`Close` 5 (`cutAbort`), `CutEnd` and `CutRet`;
 `Trace.tla` maps them (`CutTrace`), `Leave` to `CutFlush` once the
-cut's ABORTs are buffered. `TestDrainReturnsAfterTheCutItRaced` and
-`TestChainDrainMiddleHop` are in `make spec-traces`.
+cut's ABORTs are buffered. `TestDrainReturnsAfterTheCutItRaced` is in `make spec-traces`
+(`TestChainDrainMiddleHop` is not: above).
 
 ## Code map (lane W5-LINK)
 

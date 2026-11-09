@@ -530,3 +530,49 @@ func TestDrainReturnsAfterTheCutItRaced(t *testing.T) {
 		t.Fatal("the second cut returned while the first was still sending its ABORTs")
 	}
 }
+
+// TestDrainDeadlineKeepsAnEndedSessionsClose: a drain's deadline that
+// finds no session open still writes what is buffered before it closes
+// (closeFlushed): the CLOSE of a session that ended just before, its
+// write held behind another, reaches the peer, which reads io.EOF, not
+// the connection's end (spec/README.md "The drain's cut", finding F2).
+func TestDrainDeadlineKeepsAnEndedSessionsClose(t *testing.T) {
+	a, b := tcpPair(t)
+	gc := &gatedConn{TCPConn: b.(*net.TCPConn), entered: make(chan struct{}), release: make(chan struct{})}
+	sc := make(chan *Conn, 1)
+	go func() {
+		c, _, err := Server(context.Background(), gc, Config{Auth: testToken})
+		if err != nil {
+			t.Error(err)
+		}
+		sc <- c
+	}()
+	cc, err := Client(context.Background(), a, Config{Auth: testToken})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lm, dm := NewMux(<-sc), NewMux(cc)
+	t.Cleanup(func() { _ = dm.Close(); _ = lm.Close() })
+	accepted := make(chan *Session, 1)
+	go func() { _ = lm.Serve(func(_ []byte, s *Session) { accepted <- s }) }()
+	go func() { _ = dm.Serve(nil) }()
+	ds, err := dm.Open([]byte("ends"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ls := <-accepted
+	if err := lm.Conn().GoAway(0, ""); err != nil { // a cut follows a GOAWAY
+		t.Fatal(err)
+	}
+	gc.armed.Store(true)
+	go lm.Conn().ping() // the write in flight, held: what follows is buffered behind it
+	<-gc.entered
+	_ = ls.Close() // its CLOSE buffered, the session dropped
+	waitUntil(t, func() bool { return lm.Sessions() == 0 })
+	time.AfterFunc(200*time.Millisecond, func() { close(gc.release) })
+	lm.cut()
+	_ = ds.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := ds.Read(make([]byte, 1)); err != io.EOF {
+		t.Fatalf("the session closed before the drain's deadline: the peer read %v, want io.EOF", err)
+	}
+}

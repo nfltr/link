@@ -446,7 +446,8 @@ func lateErr(ctx context.Context) error {
 // cut ends a drain at its deadline: on a FeatureChain connection each
 // session still open gets an ABORT (CodeDrainDeadline) first, and reads
 // here end with ErrDrainDeadline; the connection then closes its write
-// side once the ABORTs are written, and the rest at the peer's close
+// side once the ABORTs and every frame buffered before are written (with
+// no session open too: an ended session's CLOSE), and the rest at the peer's close
 // (closeFlushed: a reset under frames the peer still sends would drop the
 // ABORTs before the peer read them), within two seconds at most.
 func (m *Mux) cut() {
@@ -475,7 +476,7 @@ func (m *Mux) cut() {
 		traceEv(m.c.credit.tr, traceEvent{ev: "Cut", n: len(ids)})
 	}
 	m.mu.Unlock()
-	if m.c.chain() && len(ids) > 0 {
+	if m.c.chain() { // with no ABORT to send too: what is buffered goes out first (TestDrainDeadlineKeepsAnEndedSessionsClose)
 		closed := make(chan struct{})
 		go func() {
 			defer close(closed)
