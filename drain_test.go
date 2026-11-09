@@ -515,6 +515,9 @@ func TestDrainReturnsAfterTheCutItRaced(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitUntil(t, func() bool { return lm.Sessions() == 1 })
+	if err := lm.Conn().GoAway(0, ""); err != nil { // a cut follows a GOAWAY (spec/Link.tla CutBegin)
+		t.Fatal(err)
+	}
 	gc.armed.Store(true) // the first cut's ABORT waits here
 	first := make(chan struct{})
 	go func() { lm.cut(); close(first) }()

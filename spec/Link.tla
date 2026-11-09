@@ -14,7 +14,7 @@ CONSTANTS
     Mutant,      \* "none", or a bug put back on purpose (README "Mutants")
     MaxBytes,    \* model checking: [Sides -> [Sids -> Nat]], bytes each side writes on each session
     Drain,       \* model checking: the sides that may send GOAWAY
-    Ends,        \* model checking: the close codes used (Half, Full, RST; ABT: Mux.cut after a GOAWAY)
+    Ends,        \* model checking: the close codes used (Half, Full, RST; ABT: Session.Abort; DDL: Mux.cut)
     MaxOut,      \* model checking: frames on the way each way
     MaxPings,    \* model checking: pings per side
     Crash,       \* model checking: a side may close its connection abruptly
@@ -30,6 +30,7 @@ Half == 1
 RST == 2
 ABT == 3
 NoCode == 4    \* no close sent or received yet
+DDL == 5       \* the ABORT Mux.cut sends at a drain's deadline (CodeDrainDeadline)
 
 \* at: for a close, the bytes of the session its sender sent before it.
 Frame(t, s, n) == [t |-> t, s |-> s, n |-> n, at |-> 0]
@@ -55,10 +56,23 @@ VARIABLES
     appDone,  \* p's application ended s (Close, Reset or CloseWrite)
     crashes,  \* abrupt closes so far
     err,      \* the protocol errors and broken invariants seen by receivers
-    wt        \* [Sides -> [Sids -> {"no", "data", "open"}]]: a frame checked, waiting in frameLocked (wmu let go)
+    wt,       \* [Sides -> [Sids -> {"no", "data", "open"}]]: a frame checked, waiting in frameLocked (wmu let go)
+    cut       \* [Sides -> cut]: Mux.cut, the drain deadline's (README "The drain's cut")
 
-vars == <<out, cr, ss, pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA,
-          drained, pong, pings, wshut, closed, down, appDone, crashes, err, wt>>
+\* Link's variables but cut: the steps of a session and of the connection
+\* leave the cut alone (Next adds UNCHANGED cut), the cut's own set it.
+lvars == <<out, cr, ss, pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA,
+           drained, pong, pings, wshut, closed, down, appDone, crashes, err, wt>>
+vars == <<lvars, cut>>
+
+\* st: "no" (not begun), "run" (its ABORTs going out), "flushed" (closeFlushed
+\* shut the write side), "close" (no ABORT to send: Mux.Close at once),
+\* "done" (cut ended: cutEnded closed); q: the sessions whose ABORT is still
+\* to go; w: the one whose ABORT is between its forget and its frame; in,
+\* ret: the calls of cut begun and returned (the drain's timer, Drain's ctx).
+NoCut == [st |-> "no", q |-> {}, w |-> NoSid, in |-> 0, ret |-> 0]
+\* Mux.cut's callers: the drain's own timer (Mux.goAway) and Drain's ctx.
+Cutters == 2
 
 NoCredit == [on |-> FALSE, n |-> 0, held |-> 0, cons |-> 0]
 \* closing: a Close, Reset or abort that forgot the credit and has yet to buffer its frame (code + 1).
@@ -90,6 +104,7 @@ Init ==
     /\ crashes = 0
     /\ err = {}
     /\ wt = [p \in Sides |-> [s \in Sids |-> "no"]]
+    /\ cut = [p \in Sides |-> NoCut]
 
 -----------------------------------------------------------------------------
 (* Sending: a frame joins out[p] unless p's connection is closed or its     *)
@@ -252,7 +267,7 @@ Refund(p, s) ==
 CloseWriteMark(p, s) ==
     /\ ss[p][s].st = "open" /\ ~ss[p][s].wfin /\ ss[p][s].closing = 0
     /\ Answered(p, s)
-    /\ ss' = [ss EXCEPT ![p][s].wfin = TRUE, ![p][s].code = IF @ = ABT THEN @ ELSE Half]
+    /\ ss' = [ss EXCEPT ![p][s].wfin = TRUE, ![p][s].code = IF @ \in {ABT, DDL} THEN @ ELSE Half]
     /\ appDone' = [appDone EXCEPT ![p][s] = TRUE]
     /\ UNCHANGED <<out, cr, pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
                    pings, wshut, closed, down, crashes, err, wt>>
@@ -273,9 +288,9 @@ CloseWrite(p, s) ==
     /\ Answered(p, s)
     /\ SendClose(p, s, Half)
     /\ IF ss[p][s].rfin                          \* both halves: drop
-       THEN /\ ss' = [ss EXCEPT ![p][s].wfin = TRUE, ![p][s].st = "gone", ![p][s].pclosed = TRUE, ![p][s].code = IF @ = ABT THEN @ ELSE Half, ![p][s].fin = TRUE]
+       THEN /\ ss' = [ss EXCEPT ![p][s].wfin = TRUE, ![p][s].st = "gone", ![p][s].pclosed = TRUE, ![p][s].code = IF @ \in {ABT, DDL} THEN @ ELSE Half, ![p][s].fin = TRUE]
             /\ cr' = Forget(p, s)
-       ELSE /\ ss' = [ss EXCEPT ![p][s].wfin = TRUE, ![p][s].code = IF @ = ABT THEN @ ELSE Half, ![p][s].fin = TRUE]
+       ELSE /\ ss' = [ss EXCEPT ![p][s].wfin = TRUE, ![p][s].code = IF @ \in {ABT, DDL} THEN @ ELSE Half, ![p][s].fin = TRUE]
             /\ UNCHANGED cr
     /\ appDone' = [appDone EXCEPT ![p][s] = TRUE]
     /\ UNCHANGED <<pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
@@ -313,7 +328,7 @@ End(p, s) ==
     /\ ss[p][s].closing # 0
     /\ SendClose(p, s, IF Mutant = "abort-as-fin" /\ code \in {RST, ABT} THEN Full ELSE code)
     /\ ss' = [ss EXCEPT ![p][s].closing = 0, ![p][s].st = IF code = ABT /\ ~cr[p][s].on THEN @ ELSE "gone",
-                                 ![p][s].code = IF @ \in {RST, ABT} THEN @ ELSE code,
+                                 ![p][s].code = IF @ \in {RST, ABT, DDL} THEN @ ELSE code,
                                  ![p][s].fin = @ \/ code = Full]   \* a Close after Mux.cut's abort
     /\ cr' = IF cr[p][s].on THEN Forget(p, s) ELSE cr   \* a refusal's (RefuseMark)
     /\ UNCHANGED <<pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
@@ -405,7 +420,12 @@ RecvData(p, f) ==                                \* Conn.next charges, Mux.data 
                  /\ UNCHANGED err
             ELSE /\ UNCHANGED <<ss, dlv>>
                  /\ IF ss[p][s].st = "open" THEN Flag("data after FIN") ELSE UNCHANGED err
-    IN IF ~c.on THEN UNCHANGED <<cr, ss, dlv, err>>      \* no credit here: dropped, not charged
+    IN IF ~c.on                                   \* no credit here: dropped, not charged
+       THEN /\ UNCHANGED <<cr, ss, dlv>>
+            \* the peer sends nothing after its CLOSE or ABORT: a frame it
+            \* checked before, buffered after, would be dropped here unseen
+            \* (mutant cut-keeps-credit: Mux.cut's ABORT left the credit)
+            /\ IF ss[p][s].got \in {Full, RST, ABT, DDL} THEN Flag("data after the session's end") ELSE UNCHANGED err
        ELSE IF Chain /\ Owner[s] = p /\ ~ss[p][s].acc
        THEN Flag("data before ACCEPT") /\ UNCHANGED <<cr, ss, dlv>>
        ELSE IF f.n > Win[p] - c.held
@@ -493,6 +513,76 @@ Down(p) ==                                       \* Mux.close: every session at 
                    pong, pings, wshut, closed, appDone, crashes, err, wt>>
 
 -----------------------------------------------------------------------------
+(* Mux.cut: a drain's deadline, in the steps the code takes them (README    *)
+(* "The drain's cut", lane LINKATOMIC). Two callers (the drain's timer,     *)
+(* goAway's AfterFunc, and Drain's ctx) enter it; the first takes the       *)
+(* sessions of Mux.sess under m.mu and a goroutine sends their ABORTs one   *)
+(* by one (Conn.sendAbort: forget the credit, then buffer the frame, which  *)
+(* may wait), then closeFlushed shuts the write side and the connection     *)
+(* closes at the peer's close (or the 1 s / 2 s timers); the second waits   *)
+(* for cutEnded. Mutant second-cut-early: the second returned at once (the  *)
+(* code before 7dabd5e: Drain returned while the first cut's ABORTs were    *)
+(* still to go out).                                                        *)
+
+\* Mux.sess: every session not dropped (a dropped one may still be there:
+\* the drop follows its last frame), and an Open's before its OPEN.
+CutCand(p) == IF down[p] THEN {} ELSE {s \in Sids : ss[p][s].st # "none" \/ wt[p][s] = "open"}
+
+\* CutEnter's first call with snapshot q (Trace.tla: the code's m.sess may
+\* lag a RecvOpen, whose Mux.add follows its trace event).
+CutBegin(p, q) ==
+    /\ sentGA[p] /\ cut[p].st = "no"
+    /\ cut' = [cut EXCEPT ![p] = [NoCut EXCEPT !.st = IF Chain /\ q # {} THEN "run" ELSE "close", !.q = q, !.in = 1]]
+    /\ UNCHANGED lvars
+CutWait(p) ==                                     \* the second call: it waits for cutEnded
+    /\ cut[p].st # "no" /\ cut[p].in < Cutters
+    /\ cut' = [cut EXCEPT ![p].in = @ + 1, ![p].ret = IF Mutant = "second-cut-early" THEN @ + 1 ELSE @]
+    /\ UNCHANGED lvars
+
+\* Conn.sendAbort's forget (trace Forget 5), whatever the session's state:
+\* one that ended meanwhile gets an ABORT too, which the peer drops. The
+\* goroutine runs on past the cut's 2 s timer ("done"), its frames failing.
+CutForget(p, s) ==
+    /\ cut[p].st \in {"run", "done"} /\ cut[p].w = NoSid /\ s \in cut[p].q
+    /\ cr' = IF Mutant = "cut-keeps-credit" THEN cr ELSE Forget(p, s)
+    /\ cut' = [cut EXCEPT ![p].q = @ \ {s}, ![p].w = s]
+    /\ UNCHANGED <<out, ss, pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
+                   pings, wshut, closed, down, appDone, crashes, err, wt>>
+\* Its frame buffered (trace Close 5): a reset this side's history keeps.
+CutSend(p) ==
+    LET s == cut[p].w IN
+    /\ cut[p].st = "run" /\ s # NoSid /\ ~closed[p]   \* closed: sendAbort fails, the goroutine ends
+    /\ SendClose(p, s, DDL)
+    /\ ss' = IF ss[p][s].st = "open" THEN [ss EXCEPT ![p][s].code = IF @ \in {RST, ABT, DDL} THEN @ ELSE DDL] ELSE ss
+    /\ cut' = [cut EXCEPT ![p].w = NoSid]
+    /\ UNCHANGED <<cr, pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
+                   pings, wshut, closed, down, appDone, crashes, err, wt>>
+\* Every ABORT buffered: closeFlushed (trace Leave). A side that left
+\* already has nothing more to shut.
+CutFlush(p) ==
+    /\ cut[p].st = "run" /\ cut[p].q = {} /\ cut[p].w = NoSid /\ ~closed[p]
+    /\ IF wshut[p] THEN UNCHANGED lvars ELSE Leave(p)
+    /\ cut' = [cut EXCEPT ![p].st = "flushed"]
+\* The cut's own closes (Mux.Close; trace ConnClose): at once when it had no
+\* ABORT to send ("close"); after the write side shut, at closeFlushed's
+\* 1 s (every frame out); at its 2 s timer while ABORTs are still to go
+\* ("run": what was not written is lost).
+CutClose(p) ==
+    /\ cut[p].st \in {"run", "flushed", "close"} /\ ~closed[p]
+    /\ \E k \in (IF wshut[p] THEN {Len(out[p])} ELSE 0..Len(out[p])) : CloseConn(p, k)
+    /\ UNCHANGED cut
+\* The connection closed (the cut's close, the peer's, an ABORT that failed
+\* on it): cutEnded is closed (trace CutEnd).
+CutEnd(p) ==
+    /\ cut[p].st \in {"run", "flushed", "close"} /\ closed[p]
+    /\ cut' = [cut EXCEPT ![p].st = "done"]
+    /\ UNCHANGED lvars
+CutReturn(p) ==                                   \* a call of cut returns (trace CutRet)
+    /\ cut[p].st = "done" /\ cut[p].ret < cut[p].in
+    /\ cut' = [cut EXCEPT ![p].ret = @ + 1]
+    /\ UNCHANGED lvars
+
+-----------------------------------------------------------------------------
 (* Model checking: the steps above, bounded, with the Mux's own guards on   *)
 (* when it drains and leaves.                                               *)
 
@@ -518,14 +608,15 @@ AppStep(p, s) ==
     \/ Accept(p, s)
     \/ \E n \in 1..Chunk : sent[p][s] + pend[p][s] + n <= MaxBytes[p][s] /\ Acquire(p, s, n)
     \/ Half \in Ends /\ CloseWriteMark(p, s)
-    \/ \E code \in Ends \ {Half, ABT} : Closing(p, s, code)
-    \* Mux.cut's abort after a GOAWAY; Session.Abort any time where no side
-    \* drains (LinkSess.cfg: LinkDrain.cfg's state space stays small).
+    \/ \E code \in Ends \ {Half, ABT, DDL} : Closing(p, s, code)
+    \* Session.Abort (a joint's AbortWith) after a GOAWAY, racing the cut's
+    \* ABORT (CONNDRAINFLAKE); any time where no side drains (LinkSess.cfg:
+    \* LinkDrain.cfg's state space stays small).
     \/ ABT \in Ends /\ (sentGA[p] \/ Drain = {}) /\ Closing(p, s, ABT)
     \/ ABT \in Ends /\ Refuse /\ RefuseMark(p, s)
     \/ \E k \in 1..ss[p][s].q : Read(p, s, k)
 
-Next ==
+LinkNext ==
     \/ \E p \in Sides, s \in Sids :
         \/ AppStep(p, s)
         \/ SendCheck(p, s)
@@ -546,22 +637,42 @@ Next ==
         \/ EOFClose(p)
         \/ Crashed(p)
         \/ Down(p)
+
+\* The cut where a side drains and its abort is among the ends checked
+\* (each step a disjunct of its own: -coverage counts it by name).
+CutSides == IF DDL \in Ends THEN Drain ELSE {}
+Next ==
+    \/ LinkNext /\ UNCHANGED cut
+    \/ \E p \in CutSides : CutBegin(p, CutCand(p))
+    \/ \E p \in CutSides : CutWait(p)
+    \/ \E p \in CutSides, s \in Sids : CutForget(p, s)
+    \/ \E p \in CutSides : CutSend(p)
+    \/ \E p \in CutSides : CutFlush(p)
+    \/ \E p \in CutSides : CutClose(p)
+    \/ \E p \in CutSides : CutEnd(p)
+    \/ \E p \in CutSides : CutReturn(p)
     \/ Terminated
 
-\* Every step that is not the application's is taken once it can be.
+\* Every step that is not the application's is taken once it can be
+\* (Link's steps leave cut unchanged: fair on lvars).
 Fairness ==
     /\ \A p \in Sides :
-        /\ WF_vars(Recv(p))
-        /\ WF_vars(\E rep \in BOOLEAN : Pong(p, rep))
-        /\ WF_vars(DrainPing(p))
-        /\ WF_vars(LeaveWhenDrained(p))
-        /\ WF_vars(EOFClose(p))
-        /\ WF_vars(Down(p))
-        /\ \A s \in Sids : WF_vars(SendCheck(p, s)) /\ WF_vars(SendBuffer(p, s))
-                          /\ WF_vars(OpenBuffer(p, s)) /\ WF_vars(OpenRefused(p, s))
-                          /\ WF_vars(Refund(p, s))
-                          /\ WF_vars(SendWindow(p, s)) /\ WF_vars(End(p, s))
-                          /\ WF_vars(CloseWriteSend(p, s))
+        /\ WF_lvars(Recv(p))
+        /\ WF_lvars(\E rep \in BOOLEAN : Pong(p, rep))
+        /\ WF_lvars(DrainPing(p))
+        /\ WF_lvars(LeaveWhenDrained(p))
+        /\ WF_lvars(EOFClose(p))
+        /\ WF_lvars(Down(p))
+        \* the cut's goroutine and its timers, once it began
+        /\ WF_vars(\E s \in Sids : CutForget(p, s))
+        /\ WF_vars(CutSend(p)) /\ WF_vars(CutFlush(p)) /\ WF_vars(CutEnd(p))
+        /\ WF_vars(CutReturn(p))
+        /\ WF_vars(cut[p].st \in {"run", "flushed", "close"} /\ CutClose(p))
+        /\ \A s \in Sids : WF_lvars(SendCheck(p, s)) /\ WF_lvars(SendBuffer(p, s))
+                          /\ WF_lvars(OpenBuffer(p, s)) /\ WF_lvars(OpenRefused(p, s))
+                          /\ WF_lvars(Refund(p, s))
+                          /\ WF_lvars(SendWindow(p, s)) /\ WF_lvars(End(p, s))
+                          /\ WF_lvars(CloseWriteSend(p, s))
 
 Spec == Init /\ [][Next]_vars /\ Fairness
 
@@ -608,6 +719,13 @@ TypeOK ==
     /\ \A p \in Sides : pong[p] \in 0..2
     /\ \A p \in Sides, s \in Sids : ss[p][s].closing \in 0..ABT + 1
     /\ \A p \in Sides, s \in Sids : wt[p][s] \in {"no", "data", "open"}
+    /\ \A p \in Sides : cut[p].st \in {"no", "run", "flushed", "close", "done"} /\ cut[p].ret <= cut[p].in
+
+\* A drain returns only once its cut ended (README "The drain's cut"): the
+\* connection closed, so its ABORTs were written or the connection's end
+\* came before them; the caller may then close what its sessions were
+\* joined to (a relay letting its agents go once its clients drained).
+DrainReturnsAfterCut == \A p \in Sides : cut[p].ret > 0 => cut[p].st = "done" /\ closed[p]
 
 \* Liveness (README "Liveness").
 SessionsEnd == \A s \in Sids : (appDone["d"][s] /\ appDone["l"][s]) ~> Ended(s)

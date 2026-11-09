@@ -453,8 +453,14 @@ func (m *Mux) cut() {
 	m.mu.Lock()
 	if m.cutting { // the drain's timer and Drain's ctx: one cut, which the other waits for
 		done := m.cutEnded
+		if traceOn {
+			traceEv(m.c.credit.tr, traceEvent{ev: "CutWait"})
+		}
 		m.mu.Unlock()
 		<-done // Drain returns once the peer can have read the ABORTs (TestDrainReturnsAfterTheCutItRaced)
+		if traceOn {
+			traceEv(m.c.credit.tr, traceEvent{ev: "CutRet"})
+		}
 		return
 	}
 	m.cutting = true
@@ -465,13 +471,16 @@ func (m *Mux) cut() {
 		ids = append(ids, id)
 		s.fail(fmt.Errorf("%w: %w", ErrConnClosed, ErrDrainDeadline)) // before its ABORT ends its credit (writeErr)
 	}
+	if traceOn {
+		traceEv(m.c.credit.tr, traceEvent{ev: "Cut", n: len(ids)})
+	}
 	m.mu.Unlock()
 	if m.c.chain() && len(ids) > 0 {
 		closed := make(chan struct{})
 		go func() {
 			defer close(closed)
 			for _, id := range ids {
-				if m.c.sendAbort(id, &Abort{Code: CodeDrainDeadline, Msg: "drain deadline"}) != nil {
+				if m.c.sendAbort(id, cutAbort) != nil {
 					return
 				}
 			}
@@ -485,7 +494,14 @@ func (m *Mux) cut() {
 		t.Stop()
 	}
 	_ = m.Close()
+	if traceOn { // before the defer closes cutEnded: CutEnd, then each call's CutRet
+		traceEv(m.c.credit.tr, traceEvent{ev: "CutEnd"})
+		traceEv(m.c.credit.tr, traceEvent{ev: "CutRet"})
+	}
 }
+
+// cutAbort is the ABORT Mux.cut sends each session at a drain's deadline.
+var cutAbort = &Abort{Code: CodeDrainDeadline, Msg: "drain deadline"}
 
 // goAway is Drain without the wait: the connection closes once its last
 // session ended and the peer read the GOAWAY, at deadline at the latest

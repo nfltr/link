@@ -482,9 +482,12 @@ func (c *Conn) sendAbort(sid string, a *Abort) error {
 	if len(sid) > MaxSID {
 		return errSID
 	}
-	code := 3
-	if a.Refused {
+	code := 3 // the trace's: 4 a refusal, 5 Mux.cut's (spec/Link.tla CutForget)
+	switch {
+	case a.Refused:
 		code = 4
+	case a == cutAbort:
+		code = 5
 	}
 	// Forgotten under wmu, as sendClose does: an OPEN checked against the
 	// peer's max sessions goes after this frame (review F3).

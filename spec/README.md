@@ -84,7 +84,7 @@ Per side `p` and session `s`:
 | `Refund(p, s)` | `Credit.refund` (a `Write`'s credit given back, nothing sent: its write side closed, its credit ended or its deadline passed) |
 | `CloseWrite(p, s)` | `Session.CloseWrite` (and `CloseWriteSync`): `closeWrite` -> `Conn.sendClose` code 1, in two steps: `CloseWriteMark` (`halfClosed` set) and `CloseWriteSend` (the CLOSE buffered, `finSent`; review r2 LinkSession 1). Trace.tla takes the two as one (`Close` code 1) |
 | `RefuseMark(p, s)` | `Session.AbortWith`/`answer`'s refusal: `ans` taken, the credit forgotten (`Credit.forget` code 4, trace `Forget` 4); its ABORT then is `End` (trace `Close` 4) |
-| `Closing(p, s, code)` | `Conn.sendClose` (code 0 from `Session.Close`, 2 from `Session.Reset`) and `Conn.sendAbort` (3, from `Mux.cut`): the credit forgotten (`Credit.forget`) |
+| `Closing(p, s, code)` | `Conn.sendClose` (code 0 from `Session.Close`, 2 from `Session.Reset`) and `Conn.sendAbort` (3, from `Session.Abort`/`AbortWith`): the credit forgotten (`Credit.forget`) |
 | `End(p, s)` | the same, once the CLOSE/ABORT is buffered (it may wait for room between the two) |
 | `Read(p, s, k)` | a pop of the session's queue -> `Credit.Consumed` |
 | `SendWindow(p, s)` | `Credit.Consumed`'s `grant` -> `Conn.sendWindow` |
@@ -95,6 +95,10 @@ Per side `p` and session `s`:
 | `Leave(p)` | `Mux.leave` -> `closeFlushed` (the leaving side's frames all go out) |
 | `Down(p)` | `Mux.close` |
 | `DrainPing(p)`, `LeaveWhenDrained(p)`, `EOFClose(p)`, `Crashed(p)` | `Ping(p, 1)` after the GOAWAY (`Mux.goAway`'s ping), `Leave` once drained, `CloseConn` when the peer's end was read (`Conn.recv`'s EOF), `CloseAt` at any point (a crash: the environment) |
+| `CutBegin(p, q)`, `CutWait(p)` | `Mux.cut`'s first call (`cutting` set, the snapshot `q` of `Mux.sess` under `m.mu`; trace `Cut`, n: its size) and the second (it waits for `cutEnded`; trace `CutWait`) |
+| `CutForget(p, s)`, `CutSend(p)` | the cut's goroutine: `Conn.sendAbort` of each session of the snapshot (`cutAbort`): the credit forgotten (trace `Forget` 5), then the ABORT buffered (`DDL`; trace `Close` 5) |
+| `CutFlush(p)`, `CutClose(p)` | `closeFlushed` once every ABORT is buffered (trace `Leave`); the cut's closes: at once with no ABORT to send, at closeFlushed's 1 s or the cut's 2 s (trace `ConnClose`) |
+| `CutEnd(p)`, `CutReturn(p)` | the connection closed: `cutEnded` closed (trace `CutEnd`); a call of cut returns (trace `CutRet`) |
 | `Terminated` | no code: the end states TLC's deadlock check allows |
 
 The receive side applies a frame in one step (`Conn.recv` and the `Mux`
@@ -409,6 +413,95 @@ grant) and keeps `AllDone`. Witnesses (violated): `WitnessTwoWait`,
 `TestConcurrentAcquiresShareAGrant` (credit_wake_test.go: waiters of 5, 2
 and 1 bytes, a grant of 3; red 20 of 20 before the fix).
 
+## The drain's cut (Link.tla "Mux.cut", 2026-11-09, lane LINKATOMIC)
+
+CONNDRAINFLAKE found a race in `Mux.cut` (fixed in 7dabd5e, guard
+`TestDrainReturnsAfterTheCutItRaced`): the drain's timer and Drain's ctx
+both call it, and the second returned while the first was still sending
+its ABORTs. The model had the cut as per-session `Closing(ABT)` steps with
+no Mux-level action and no Drain return, so TLC had no state where it
+could happen; `-race` cannot see it (every step is locked) and a load
+test rarely hits the window. This lane audited every spec action whose
+code runs in more than one locked step or is entered from more than one
+goroutine or timer.
+
+| action | code | steps in the code | entered from | atomic in the code | in the model |
+|---|---|---|---|---|---|
+| the drain's cut | `mux.go` `Mux.cut` | `m.mu`: `cutting`, snapshot, `fail`; per session `Conn.sendAbort` (`wmu`: forget; frame, may wait); `closeFlushed` (`wmu`: flush; unlock; `CloseWrite`; wait for the peer's close, 1 s); 2 s timer; `Mux.Close`; `close(cutEnded)` | goAway's `AfterFunc` (timer goroutine), Drain's ctx | no: 6 steps, 2 callers | **split** (was: per-session `Closing(ABT)`): `CutBegin`, `CutWait`, `CutForget`, `CutSend`, `CutFlush`, `CutClose`, `CutEnd`, `CutReturn` |
+| Drain's return | `mux.go` `Mux.Drain`, `lateErr` | `goAway`; select on `Done` or ctx; ctx: `cut` | the caller | no: returns after `cut` returns or the connection closed | **added**: `CutReturn`; `DrainReturnsAfterCut` (a return on `Done` is after `closed` by construction) |
+| goAway / drain | `mux.go` `Mux.goAway`, `conn.go` `Conn.GoAway` | `goingAway` (no lock); `wmu`: GOAWAY, `goAwayAt`, flush; `ping` (`wmu`); `m.mu`: `leaving`; timer; goroutine waits for `drained` -> `leave` | Drain, `Pool.goAway` | no | already split: `GoAway`, `DrainPing`, `LeaveWhenDrained`; `goingAway` before `wmu` is the open's recheck (`OpenCheck`/`OpenBuffer`, review F2) |
+| close after GOAWAY | `mux.go` `Mux.leave`, `conn.go` `Conn.closeFlushed` | `m.mu`: decide `left`; goroutine: `wmu` flush loop, unlock, `CloseWrite`, wait | `drop`, goAway's goroutine, `closeIdle`, the cut | no: a frame buffered between unlock and `CloseWrite` goes or not | one step (`Leave`): sound, a frame's step falls before or after it as in the code; a second call (leave and the cut) does nothing more (`CutFlush` on a shut side) |
+| the connection's end | `conn.go` `Conn.Close`, `mux.go` `Mux.close` | `credit.Close`, `nc.Close`, `downOne`; `m.mu`: `done`, sessions taken; each session's end | many (`Mux.Close`, the cut, closeFlushed's timer, keepAlive, `recv`'s EOF); `Mux.close` from Serve only | `Conn.Close` idempotent (`downOne`); `Mux.close` one caller | `CloseConn` (first call), `Down` |
+| credit grant, window update | `credit.go` `Credit.Consumed`, `conn.go` `Conn.sendWindow` | `credit.mu`: count, grant decided; unlock; `wmu`: WINDOW | the session's reader (`OnPop`) | no | already split: `Read` (gpend), `SendWindow`; a grant after the session's ABORT goes out and the peer ignores it (`RecvWindow` of an unknown session) |
+| Write | `mux.go` `Session.send`, `credit.go` `Credit.acquire`, `conn.go` `Conn.sendData` | credit taken; `wmu`: check, frame (may wait), check again | the writer | no | already split: `Acquire`, `SendCheck`, `SendBuffer`, `Refund` |
+| open | `mux.go` `Mux.OpenChain`, `conn.go` `Conn.sendOpen` | `goingAway`; `m.mu`: `add`; `wmu`: check, frame (may wait), check again; Flush; on error `drop` | the opener | no | already split: `OpenCheck`, `OpenBuffer`, `OpenRefused`; a session in `Mux.sess` before its OPEN is in the cut's snapshot (`CutCand`) |
+| accept of a peer's open | `conn.go` `Conn.recv` (credit opened, trace `Recv`), `mux.go` `Mux.serve` (`add` under `m.mu`) | two: the credit, then the Mux | the receive loop | no: the cut's snapshot can fall between | `RecvOpen` one step; the trace's `CutBegin` takes a snapshot that may lack it; the consequence is `CutAbortsAll`'s (below) |
+| answer | `chain.go` `Session.answer`, `conn.go` `Conn.sendAccept` | `ansOnce`; `wmu`: ACCEPT | `autoAccept` (first frame), `AcceptPath` | one `wmu` step; not checked against a forgotten credit: an ACCEPT after the cut's ABORT goes out, the peer ignores it | `Accept` (no credit guard, as the code) |
+| Close, Reset, Abort | `mux.go` `Session.Close`/`Reset`, `chain.go` `Session.AbortWith`, `conn.go` `sendClose`/`sendAbort` | `once`; `wmu`: forget, frame (may wait); `m.mu`: `drop` | the application, a joint (`joint.abort`, `ended`) | no: the drop follows the frame | already split: `Closing`, `End`; the gap before the drop puts an ended session in the cut's snapshot (`CutCand`: its ABORT goes out after the CLOSE, the peer drops it) |
+| CloseWrite | `mux.go` `Session.closeWrite` | `halfClosed`; `wmu`: CLOSE; `finSent` | the application, a joint | no | already split (review r2 LinkSession 1): `CloseWriteMark`, `CloseWriteSend` |
+| refusal | `mux.go` `Mux.refuse`, `sendRefusals` | queued under `m.mu`; a goroutine's `sendAbort` | the receive loop | no | `RefuseMark`, `End`; after the end: C11 |
+
+**Invariants.** `DrainReturnsAfterCut`: a call of cut (so Drain) returns
+only once the cut ended: its connection closed, so every ABORT it buffered
+before was written or the connection's end came first, and the caller may
+close what the sessions were joined to. `NoProtocolError` now also flags
+**data after the session's end**: a data frame read for a session whose
+CLOSE or ABORT this side already read (it was dropped unseen before: the
+receiver keeps no credit for it).
+
+**Mutants** (`make spec-mutants`, `LinkCut.cfg`):
+`second-cut-early` (the code before 7dabd5e: the second call returns at
+once) is caught by `DrainReturnsAfterCut`, 4 states deep;
+`cut-keeps-credit` (the cut's ABORT leaves the credit: a Write after it)
+by `Conservation`, 13 states deep (with `Conservation` left out, by
+`NoProtocolError`: data after the session's end, 16 deep).
+
+**Witnesses** (each must be violated): `WitnessCutWaits` (two calls, one
+waiting), `WitnessAbortBeforeCut`, `WitnessCutAbortsEnded`, and the
+non-guarantee `CutAbortsAll` (below).
+
+**CONNDRAINFLAKE's open question**: a joint's `AbortWith` on a client
+session racing the cut's own `sendAbort` of it. `LinkCut.cfg` has
+`Session.Abort` (ABT) of the session the cut aborts (`DDL`), both orders.
+Settled: both ABORTs go out (neither looks at the other: `sendAbort` does
+not check the credit, `AbortWith`'s `once` is not the cut's); the peer
+reads the first one buffered (`WitnessAbortBeforeCut`: the joint's reason,
+though the cut began) and drops the second (its credit is gone: no
+protocol error, `NoProtocolError` holds, and `Refines` holds on
+`LinkCut.cfg`: the reader's end is typed once). Which reason the client
+reads is the order of the two `wmu` steps; link guarantees neither. In a
+relay, a joint aborts the client session only when the agent's side ended
+first; after 7dabd5e a single relay lets its agents go only once its
+clients' cuts ended, so the agent's end no longer comes first there.
+
+**Finding (low, decided: no code change)**: `CutAbortsAll` (once the cut
+closed the connection, every session open here had its ABORT sent or
+ended at the peer) does not hold: an OPEN that crossed the GOAWAY and was
+read after the cut's snapshot (a drain deadline shorter than the peer's
+delay, or a snapshot that found no session: the cut then closes at once)
+gets no ABORT, and its opener reads `lost`. Within link's guarantee (a
+session cut at the deadline ends `reset` or `lost`, `GEnds`, LOADTESTS
+above); an ABORT or refusal for it could only race the close the same
+way. The cut's doc says "each session still open"; it means the ones in
+its snapshot.
+
+**Sizes** (TLC 1.8.0, `-workers 2`, loaded machine): `LinkCut.cfg`
+(`Sids {1}`, the accepter writes 1 byte, `Ends {3, 5}`, `MaxOut 4`):
+142,465 distinct states, depth 34, 5 s for the invariants (CI's
+`spec-invariants`), 5 min with `Refines` and the liveness properties
+(`make spec`). `-coverage 1`: `CutBegin` 385, `CutWait` 1,148,
+`CutForget` 1,735, `CutSend` 787, `CutFlush` 1,711, `CutClose` 11,404,
+`CutEnd` 35,782, `CutReturn` 54,160 distinct states (every cut action
+taken). `LinkCutHalf.cfg` (with CloseWrite, `Ends {1, 3, 5}`): 2,617,459
+states, 3 min (`make spec-nightly`). `LinkDrain.cfg` no longer has the
+cut (with it: past 6.4 million states): `Ends {0, 1}`, 299,581 states.
+
+**Traces**: the recorder writes `Cut` (n: the snapshot's size),
+`CutWait`, `Forget`/`Close` 5 (`cutAbort`), `CutEnd` and `CutRet`;
+`Trace.tla` maps them (`CutTrace`), `Leave` to `CutFlush` once the
+cut's ABORTs are buffered. `TestDrainReturnsAfterTheCutItRaced` and
+`TestChainDrainMiddleHop` are in `make spec-traces`.
+
 ## Code map (lane W5-LINK)
 
 The files each model stands for (`scripts/check-spec-drift.sh`: a commit
@@ -461,7 +554,7 @@ no longer writes.
 | `Mux.sess` (`ss.st`) | `Mux.add`, `Mux.drop`, `Mux.close` | `OpenCheck`, `RecvOpen` (add); every end (drop); `Down` |
 | `Mux.leaving` | `Mux.goAway` | `GoAway` |
 | `Mux.left` | `Mux.leave`, `Mux.closeIdle` | `Leave` (`LeaveWhenDrained`); `closeIdle` is `Pool.Close`'s `Leave` without a GOAWAY (`Pool.tla` `CloseSnap`) |
-| `Mux.cutting` | `Mux.cut` | `Closing(p, s, ABT)` after a GOAWAY |
+| `Mux.cutting` | `Mux.cut` | `CutBegin`, `CutWait` (README "The drain's cut") |
 | `Mux.done` (`down`) | `Mux.close` | `Down` |
 | `Conn.goingAway` (`ga`) | `Conn.GoAway`, `Conn.recv`, `Pool.goAway` | `GoAway`, `Recv` of a GOAWAY; `Pool.goAway` marks leaving just before its `Conn.GoAway`s (C10), the same `GoAway` |
 | `Conn.goAwayAt` (`sentGA`) | `Conn.GoAway` | `GoAway` |
@@ -745,7 +838,7 @@ requires TLC to catch.
 | LINKPOOL L5: `Pool.cfg` is the smallest shape only | low | **done**: `PoolWide.cfg` (two Opens racing for the last of Max 2, Min 1) in `make spec-nightly`. It found that `OpensOpen` does not hold with two Opens: one that closes and opens again can take the room the other picked each time, and the other re-picks forever. **Decided**: the Pool promises progress, not fairness among Opens (`OpensProgress`); a queue of Opens is the fix if a starved Open is ever seen |
 | LINKPOOL M5: background growth not modelled | medium | **done** (lane CONFORM-link): `gr`, `Pick`'s growth, `GrowDial`; `PoolGrow.cfg` in `make spec`, mutant `grow-past-max` |
 | LINKPOOL M6: no trace recorder for the Pool | medium | **done** (lane CONFORM-link): `trace_pool_on.go`, `TracePool.tla`, the Pool tests in `make spec-traces`, fixtures `pool-*` in `make spec-mutants`; it found C6 |
-| LINKPOOL L2: Drain's wait and deadline cut | low | **decided**: the cut is a connection's end with its sessions, which the model has (a path death); Drain's return is bounded by its ctx, no property needed |
+| LINKPOOL L2: Drain's wait and deadline cut | low | **decided**, then **superseded** (lane LINKATOMIC, 2026-11-09): the cut as one connection's end hid CONNDRAINFLAKE's race (Drain returned while the other call's ABORTs were unsent, fixed in 7dabd5e); the cut is now modelled in its steps with Drain's return (`DrainReturnsAfterCut`, "The drain's cut") |
 | LINKPOOL L3: Open re-picks at once while `takes` and the Conn disagree | low | **decided**: a short spin, not a hang (the Conn agrees once the dropped session's CLOSE is buffered); `Place`'s retry is fair and `OpensProgress` holds |
 | LINKPOOL L4: refused backoff not modelled | low | **decided**: a delay without state; `TestPoolBacksOffRefusingPeer` |
 | LINKPOOL L6: slot shortage turns a dial into a wait the code never does | low | **decided**: a model artifact of a finite `Ids`; the trace check sizes slots from the trace, one spare, so no traced dial waits on it |

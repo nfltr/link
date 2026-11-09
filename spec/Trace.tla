@@ -29,7 +29,9 @@ RecvStep ==
     /\ out[Peer(P)] # <<>>
     /\ f.t = E.t
     /\ E.t \in {"open", "data", "win", "accept", "close"} => f.s = S
-    /\ E.t \in {"data", "win", "close"} => f.n = (IF E.t = "close" /\ E.n = 4 THEN ABT ELSE E.n)  \* 4: a refusal's ABORT
+    /\ E.t \in {"data", "win"} => f.n = E.n
+    \* 4: a refusal's ABORT; 3: an ABORT, Mux.cut's (DDL) or Session.Abort's
+    /\ E.t = "close" => f.n \in (CASE E.n = 4 -> {ABT} [] E.n = 3 -> {ABT, DDL} [] OTHER -> {E.n})
     /\ Recv(P)
     /\ E.t \in {"data", "win"} /\ E.credit >= 0 =>
         cr'[P][S].on /\ cr'[P][S].n = E.credit /\ (E.t = "data" => cr'[P][S].held = E.held)
@@ -38,7 +40,7 @@ RecvStep ==
     \* model queues it for a session nothing reads and End drops (C12).
     /\ E.credit < 0 => ~cr[P][S].on \/ (E.t = "data" /\ Refusing(P, S))
 
-Step ==
+LinkStep ==
     CASE E.ev = "Up" -> UNCHANGED vars
       [] E.ev = "OpenWait" -> OpenCheck(P, S)
       \* An OPEN buffered after Conn.Close is logged, then undone (its Flush fails).
@@ -56,7 +58,7 @@ Step ==
                                        THEN UNCHANGED vars ELSE RefuseMark(P, S)
       [] E.ev = "Close" /\ E.n = 4 -> IF closed[P] /\ Owner[S] # P /\ ss[P][S].st # "open" /\ ss[P][S].closing = 0
                                       THEN UNCHANGED vars ELSE ss[P][S].closing = ABT + 1 /\ End(P, S)
-      [] E.ev = "Forget" /\ E.n # 4 -> Closing(P, S, E.n)
+      [] E.ev = "Forget" /\ E.n \notin {4, DDL} -> Closing(P, S, E.n)
       \* FinBeforeShut at a trace's grain (the mark is not logged): no FIN goes
       \* after this side's write side shut while the peer still reads, but
       \* after an abort (Mux.cut).
@@ -65,7 +67,7 @@ Step ==
       [] E.ev = "Close" /\ E.n = Half -> IF closed[P] /\ ss[P][S].st # "open" THEN UNCHANGED vars
                                          ELSE CloseWrite(P, S)
                                          /\ (wshut[P] => ss[P][S].code = ABT \/ ss[Peer(P)][S].st # "open")
-      [] E.ev = "Close" /\ E.n \notin {Half, 4} -> ss[P][S].closing = E.n + 1 /\ End(P, S)
+      [] E.ev = "Close" /\ E.n \notin {Half, 4, DDL} -> ss[P][S].closing = E.n + 1 /\ End(P, S)
       [] E.ev = "Read" -> Read(P, S, E.n) /\ cr'[P][S].held = E.held /\ gpend'[P][S] = E.grant
       [] E.ev = "Window" -> gpend[P][S] = E.n /\ SendWindow(P, S)
       [] E.ev = "GoAway" -> GoAway(P)
@@ -83,6 +85,25 @@ Step ==
       [] E.ev = "ConnClose" -> \E k \in 0..Len(out[P]) : CloseConn(P, k)
       [] E.ev = "Down" -> Down(P)
       [] OTHER -> Print(<<"unknown event", E>>, FALSE)
+
+\* Mux.cut's steps (Link.tla "Mux.cut"): its snapshot (Cut, n: the
+\* sessions in it), the second call (CutWait), each ABORT (Forget and
+\* Close 5), closeFlushed (Leave), cutEnded closed (CutEnd), each call's
+\* return (CutRet).
+CutReady == cut[P].st = "run" /\ cut[P].q = {} /\ cut[P].w = NoSid /\ ~closed[P]
+CutEv == E.ev \in {"Cut", "CutWait", "CutEnd", "CutRet"} \/ (E.ev \in {"Forget", "Close"} /\ E.n = DDL)
+CutTrace ==
+    CASE E.ev = "Cut" -> \E q \in SUBSET CutCand(P) : Cardinality(q) = E.n /\ CutBegin(P, q)
+      [] E.ev = "CutWait" -> CutWait(P)
+      [] E.ev = "Forget" -> CutForget(P, S)
+      [] E.ev = "Close" -> cut[P].w = S /\ CutSend(P)
+      [] E.ev = "CutEnd" -> CutEnd(P)
+      [] E.ev = "CutRet" -> CutReturn(P)
+\* closeFlushed: the cut's once its ABORTs are buffered, or Mux.leave's.
+Step ==
+    IF CutEv THEN CutTrace
+    ELSE IF E.ev = "Leave" /\ CutReady THEN CutFlush(P) \/ (LinkStep /\ UNCHANGED cut)
+    ELSE LinkStep /\ UNCHANGED cut
 
 TraceInit == Init /\ l = 1
 TraceNext == l <= Len(Log) /\ Step /\ l' = l + 1

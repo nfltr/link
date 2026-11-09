@@ -70,7 +70,7 @@ CONSTANTS
     MaxPings = 0
     Crash = 0
     Drain = {"d", "l"}
-    Ends = {0, 1, 2, 3}
+    Ends = {0, 1, 2, 3, 5}
     MaxOut = 0
     MaxSess = 1048576
 INIT TraceInit
@@ -165,9 +165,13 @@ nightly)
 	# 7): 3.6 million states, about 15 minutes on 4 workers.
 	echo "== LinkBoth.cfg (invariants and Refines)"
 	tlcrun LinkBoth.cfg
+	# The drain's cut with CloseWrite (lane LINKATOMIC): 2.6 million states.
+	echo "== LinkCutHalf.cfg (invariants)"
+	sed -e '/^PROPERTY Refines/d' -e '/^PROPERTIES/,$d' spec/LinkCutHalf.cfg >"$work/LinkCutHalf.cfg"
+	tlcrun "$work/LinkCutHalf.cfg"
 	;;
 check | invariants)
-	for cfg in Link.cfg LinkDrain.cfg LinkSess.cfg LinkCrash.cfg LinkRefuse.cfg; do
+	for cfg in Link.cfg LinkDrain.cfg LinkSess.cfg LinkCrash.cfg LinkRefuse.cfg LinkCut.cfg; do
 		echo "== $cfg ($1)"
 		# No crash in the first three: Link.cfg's crash grows its states past
 		# 20 million (spec-nightly); LinkCrash.cfg takes it on fewer bytes.
@@ -179,6 +183,7 @@ check | invariants)
 			sed -e 's/Crash = 1/Crash = 0/' "spec/$cfg" >"$work/$cfg"
 		fi
 		# LinkCrash.cfg and LinkRefuse.cfg (seconds): Refines and liveness in CI too.
+		# LinkCut.cfg's (the drain's cut, 142,465 states): in check only (minutes).
 		[ $cfg != LinkCrash.cfg ] && [ $cfg != LinkRefuse.cfg ] || cp spec/$cfg "$work/$cfg"
 		tlcrun "$work/$cfg"
 	done
@@ -335,6 +340,13 @@ mutants)
 	for m in open-after-goaway open-no-recheck; do job iface LinkDrain.cfg $m; done
 	for m in abort-forget-early reopen-known; do job iface LinkSess.cfg $m; done
 	job iface LinkRefuse.cfg refuse-then-write
+	# The drain's cut in its steps (lane LINKATOMIC): the second call
+	# returning before the first ended (the code before 7dabd5e), and the
+	# cut's ABORT leaving the credit (a Write after it).
+	for m in second-cut-early cut-keeps-credit; do
+		job mutant LinkCut.cfg 'Mutant = "none"' "Mutant = \"$m\""
+	done
+	for w in WitnessCutWaits WitnessAbortBeforeCut WitnessCutAbortsEnded CutAbortsAll; do job witness LinkCut.cfg $w; done
 	for w in WitnessEof WitnessReset WitnessLost WitnessCredit; do job witness Link.cfg $w; done
 	job witness LinkDrain.cfg WitnessRefused
 	# A witness per invariant of Link (spec/README.md "Witnesses").
@@ -426,7 +438,7 @@ mutants)
 	exit $fail
 	;;
 traces)
-	tests=${TRACE_TESTS:-'^(TestSessionCleanEnd|TestSessionReset|TestMuxSlowSessionIsolated|TestGoAwayDrainKeepsTails|TestCrossedOpenRunsOnTheLeavingConnection|TestMuxV2GoAway|TestSessionCutWithItsConnection|TestMuxSessions|TestMuxV2Sessions|TestWriteRacingCloseWriteSendsNothingAfterFIN|TestWriteParkedForItsTurnSendsNothingAfterFIN|TestOpenParkedPastPeerGoAwayIsNotSent|TestAbortAtMaxSessionsRacingOpenKeepsTheConnection|TestChainRefuse|TestRefusedOpenReadsReset|TestWriteAfterRefuseSendsNoData|TestCloseWriteRacingThePeersFINDropsAfterItsCLOSE|TestMuxOpenSkipsAnIDThePeerTook|TestReceiveLoopReadsWhileARefusalWaits|TestCloseWriteReportsAFailedFIN|TestStarvedProcessKeepsALivePeer)$'}
+	tests=${TRACE_TESTS:-'^(TestSessionCleanEnd|TestSessionReset|TestMuxSlowSessionIsolated|TestGoAwayDrainKeepsTails|TestCrossedOpenRunsOnTheLeavingConnection|TestMuxV2GoAway|TestSessionCutWithItsConnection|TestMuxSessions|TestMuxV2Sessions|TestWriteRacingCloseWriteSendsNothingAfterFIN|TestWriteParkedForItsTurnSendsNothingAfterFIN|TestOpenParkedPastPeerGoAwayIsNotSent|TestAbortAtMaxSessionsRacingOpenKeepsTheConnection|TestChainRefuse|TestRefusedOpenReadsReset|TestWriteAfterRefuseSendsNoData|TestCloseWriteRacingThePeersFINDropsAfterItsCLOSE|TestMuxOpenSkipsAnIDThePeerTook|TestReceiveLoopReadsWhileARefusalWaits|TestCloseWriteReportsAFailedFIN|TestStarvedProcessKeepsALivePeer|TestDrainReturnsAfterTheCutItRaced)$'}
 	mkdir -p "$work/traces"
 	LINKTRACE=$work/traces go test -tags linktrace -count=1 -run "$tests" . >"$work/test.out" 2>&1 || {
 		cat "$work/test.out"
