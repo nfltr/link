@@ -584,8 +584,11 @@ marks the session `refd` with an ABORT due (`closing`); `End` buffers it
 `CutFlush` waits for every refusal due (`RefusalDue`), and
 `LeaveWhenDrained` for no session open, a refusal's too: Mux.shutWrite,
 before closeFlushed. The refinement maps a refusal due to no read ended
-yet (`shut`); the interface is unchanged (the opener reads `reset`:
-ErrOpenRefused).
+yet (`shut`), and a refusal `End` buffers after the connection's end
+(`Down`) types no end (the session ended first: `Refines` on
+`LinkCut.cfg` failed without it, 9 states deep, `make spec` only: CI's
+`spec-invariants` checks `Refines` on `LinkCrash.cfg`); the interface is
+unchanged (the opener reads `reset`: ErrOpenRefused).
 
 **Mutants** (`LinkCut.cfg`): `open-after-goaway-unanswered` (the code
 before: the OPEN read after the snapshot runs, out of it) is caught by
@@ -596,10 +599,11 @@ too, 7 states. Witnesses (violated, as they must be): `WitnessShutAnswers`
 way), `WitnessDrainRefused` (an opener read the cut's refusal).
 
 **Sizes and coverage** (TLC 1.8.0, invariants, `-coverage 1`):
-`LinkCut.cfg` 126,355 distinct states (162,643 before: an OPEN after the
+`LinkCut.cfg` 126,838 distinct states (162,643 before: an OPEN after the
 cut is refused, not a session), depth 34, every action taken, the
-refusing branch of `RecvOpen` in 310 states; `LinkDrain.cfg` 342,742, as
-before.
+refusing branch of `RecvOpen` in 317 states; with `Refines` and the
+liveness properties 6.5 min; `LinkDrain.cfg` 342,742, as before (13.5 min
+with `Refines` and liveness).
 
 **Code** (`mux.go`): `Mux.add` refuses a peer's open once `m.cutting`
 (`errCut`), and `Mux.serve` answers it `CodeDraining`; `Mux.shutWrite`

@@ -343,8 +343,10 @@ End(p, s) ==
     LET code == ss[p][s].closing - 1 IN
     /\ ss[p][s].closing # 0
     /\ SendClose(p, s, IF Mutant = "abort-as-fin" /\ code \in {RST, ABT} THEN Full ELSE code)
+    \* a cut's refusal after the connection's end (Down: gone) goes nowhere
+    \* and ends nothing more (Refines: no end typed after the session's)
     /\ ss' = [ss EXCEPT ![p][s].closing = 0, ![p][s].st = IF code = ABT /\ ~cr[p][s].on THEN @ ELSE "gone",
-                                 ![p][s].code = IF @ \in {RST, ABT, DDL} THEN @ ELSE code,
+                                 ![p][s].code = IF @ \in {RST, ABT, DDL} \/ (ss[p][s].refd /\ ss[p][s].st # "open") THEN @ ELSE code,
                                  ![p][s].fin = @ \/ code = Full]   \* a Close after Mux.cut's abort
     /\ cr' = IF cr[p][s].on THEN Forget(p, s) ELSE cr   \* a refusal's (RefuseMark)
     /\ UNCHANGED <<pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
