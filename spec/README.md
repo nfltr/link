@@ -434,7 +434,7 @@ goroutine or timer.
 | the connection's end | `conn.go` `Conn.Close`, `mux.go` `Mux.close` | `credit.Close`, `nc.Close`, `downOne`; `m.mu`: `done`, sessions taken; each session's end | many (`Mux.Close`, the cut, closeFlushed's timer, keepAlive, `recv`'s EOF); `Mux.close` from Serve only | `Conn.Close` idempotent (`downOne`); `Mux.close` one caller | `CloseConn` (first call), `Down` |
 | credit grant, window update | `credit.go` `Credit.Consumed`, `conn.go` `Conn.sendWindow` | `credit.mu`: count, grant decided; unlock; `wmu`: WINDOW | the session's reader (`OnPop`) | no | already split: `Read` (gpend), `SendWindow`; a grant after the session's ABORT goes out and the peer ignores it (`RecvWindow` of an unknown session) |
 | Write | `mux.go` `Session.send`, `credit.go` `Credit.acquire`, `conn.go` `Conn.sendData` | credit taken; `wmu`: check, frame (may wait), check again | the writer | no | already split: `Acquire`, `SendCheck`, `SendBuffer`, `Refund` |
-| open | `mux.go` `Mux.OpenChain`, `conn.go` `Conn.sendOpen` | `goingAway`; `m.mu`: `add`; `wmu`: check, frame (may wait), check again; Flush; on error `drop` | the opener | no | already split: `OpenCheck`, `OpenBuffer`, `OpenRefused`; a session in `Mux.sess` before its OPEN is in the cut's snapshot (`CutCand`) |
+| open | `mux.go` `Mux.OpenChain`, `conn.go` `Conn.sendOpen` | `goingAway`; `m.mu`: `add`; `wmu`: check, frame (may wait), check again; Flush; on error `drop` | the opener | no | already split: `OpenCheck`, `OpenBuffer`, `OpenRefused`; a session in `Mux.sess` before its OPEN is in the cut's snapshot (`CutCand`); against the connection's close: `OpenRefused` (closed during the wait), `CloseAt` (a buffered OPEN dropped), `Down` (the opener reads lost) |
 | accept of a peer's open | `conn.go` `Conn.recv` (credit opened, trace `Recv`), `mux.go` `Mux.serve` (`add` under `m.mu`) | two: the credit, then the Mux | the receive loop | no: the cut's snapshot can fall between | `RecvOpen` one step; the trace's `CutBegin` takes a snapshot that may lack it; the consequence is `CutAbortsAll`'s (below) |
 | answer | `chain.go` `Session.answer`, `conn.go` `Conn.sendAccept` | `ansOnce`; `wmu`: ACCEPT | `autoAccept` (first frame), `AcceptPath` | one `wmu` step; not checked against a forgotten credit: an ACCEPT after the cut's ABORT goes out, the peer ignores it | `Accept` (no credit guard, as the code) |
 | Close, Reset, Abort | `mux.go` `Session.Close`/`Reset`, `chain.go` `Session.AbortWith`, `conn.go` `sendClose`/`sendAbort` | `once`; `wmu`: forget, frame (may wait); `m.mu`: `drop` | the application, a joint (`joint.abort`, `ended`) | no: the drop follows the frame | already split: `Closing`, `End`; the gap before the drop puts an ended session in the cut's snapshot (`CutCand`: its ABORT goes out after the CLOSE, the peer drops it) |
@@ -530,8 +530,14 @@ cut (with it: past 6.4 million states): `Ends {0, 1}`, 299,581 states.
 **Traces**: the recorder writes `Cut` (n: the snapshot's size),
 `CutWait`, `Forget`/`Close` 5 (`cutAbort`), `CutEnd` and `CutRet`;
 `Trace.tla` maps them (`CutTrace`), `Leave` to `CutFlush` once the
-cut's ABORTs are buffered. `TestDrainReturnsAfterTheCutItRaced` is in `make spec-traces`
-(`TestChainDrainMiddleHop` is not: above).
+cut's ABORTs are buffered. In `make spec-traces`:
+`TestDrainReturnsAfterTheCutItRaced`, `TestDrainDeadlineKeepsAnEndedSessionsClose`
+(an empty snapshot's flush) and `TestDrainDeadlineAbortsAHeldSession`
+(`Close`/`Forget` 5, so `CutForget`, `CutSend`); the summary counts
+`Close 5`/`Forget 5`. `TestDrainDeadlineAbortsReachABusyPeer` was checked
+once (21 traces, 80 cut ABORT events, all accepted; about 13k lines a
+connection, 40 min): too long for each night. `TestChainDrainMiddleHop`
+is not traced (above).
 
 ## Code map (lane W5-LINK)
 

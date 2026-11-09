@@ -484,6 +484,29 @@ func TestCloseWriteSyncOnALeavingConnection(t *testing.T) {
 	}
 }
 
+// TestDrainDeadlineAbortsAHeldSession: the smallest cut that aborts a
+// session (spec/Link.tla CutForget, CutSend), for make spec-traces: the
+// busy-peer test above is too long to trace each night.
+func TestDrainDeadlineAbortsAHeldSession(t *testing.T) {
+	hold := make(chan struct{})
+	defer close(hold)
+	dm, lm := v2muxPair(t, func(_ []byte, _ *Session) { <-hold }, Config{Auth: testToken}, Config{Auth: testToken})
+	held, err := openV2(dm, "held")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, func() bool { return lm.Sessions() == 1 })
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	_ = lm.Drain(ctx)
+	cancel()
+	_ = held.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, err = held.Read(make([]byte, 1))
+	var a *Abort
+	if !errors.As(err, &a) || a.Code != CodeDrainDeadline {
+		t.Fatalf("the held session at the drain's deadline: %v, want aborted drain deadline", err)
+	}
+}
+
 // TestDrainReturnsAfterTheCutItRaced: a drain's deadline fires twice (its
 // timer and Drain's ctx); the cut that comes second returns only once
 // the first one's ABORTs went out and the connection closed. A Drain

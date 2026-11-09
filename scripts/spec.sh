@@ -438,7 +438,7 @@ mutants)
 	exit $fail
 	;;
 traces)
-	tests=${TRACE_TESTS:-'^(TestSessionCleanEnd|TestSessionReset|TestMuxSlowSessionIsolated|TestGoAwayDrainKeepsTails|TestCrossedOpenRunsOnTheLeavingConnection|TestMuxV2GoAway|TestSessionCutWithItsConnection|TestMuxSessions|TestMuxV2Sessions|TestWriteRacingCloseWriteSendsNothingAfterFIN|TestWriteParkedForItsTurnSendsNothingAfterFIN|TestOpenParkedPastPeerGoAwayIsNotSent|TestAbortAtMaxSessionsRacingOpenKeepsTheConnection|TestChainRefuse|TestRefusedOpenReadsReset|TestWriteAfterRefuseSendsNoData|TestCloseWriteRacingThePeersFINDropsAfterItsCLOSE|TestMuxOpenSkipsAnIDThePeerTook|TestReceiveLoopReadsWhileARefusalWaits|TestCloseWriteReportsAFailedFIN|TestStarvedProcessKeepsALivePeer|TestDrainReturnsAfterTheCutItRaced)$'}
+	tests=${TRACE_TESTS:-'^(TestSessionCleanEnd|TestSessionReset|TestMuxSlowSessionIsolated|TestGoAwayDrainKeepsTails|TestCrossedOpenRunsOnTheLeavingConnection|TestMuxV2GoAway|TestSessionCutWithItsConnection|TestMuxSessions|TestMuxV2Sessions|TestWriteRacingCloseWriteSendsNothingAfterFIN|TestWriteParkedForItsTurnSendsNothingAfterFIN|TestOpenParkedPastPeerGoAwayIsNotSent|TestAbortAtMaxSessionsRacingOpenKeepsTheConnection|TestChainRefuse|TestRefusedOpenReadsReset|TestWriteAfterRefuseSendsNoData|TestCloseWriteRacingThePeersFINDropsAfterItsCLOSE|TestMuxOpenSkipsAnIDThePeerTook|TestReceiveLoopReadsWhileARefusalWaits|TestCloseWriteReportsAFailedFIN|TestStarvedProcessKeepsALivePeer|TestDrainReturnsAfterTheCutItRaced|TestDrainDeadlineAbortsAHeldSession|TestDrainDeadlineKeepsAnEndedSessionsClose)$'}
 	mkdir -p "$work/traces"
 	LINKTRACE=$work/traces go test -tags linktrace -count=1 -run "$tests" . >"$work/test.out" 2>&1 || {
 		cat "$work/test.out"
@@ -561,7 +561,10 @@ traces)
 	for t in open data win accept close goaway ping pong; do
 		printf 'Recv %s %s; ' "$t" "$(grep -c "\"ev\":\"Recv\".*\"t\":\"$t\"\|\"t\":\"$t\".*\"ev\":\"Recv\"" "$work/all" || true)"
 	done
-	printf 'Close 4 %s; Forget 4 %s\n' "$(grep -c '"ev":"Close".*"n":4,\|"n":4,.*"ev":"Close"' "$work/all" || true)" "$(grep -c '"ev":"Forget".*"n":4,\|"n":4,.*"ev":"Forget"' "$work/all" || true)"
+	for k in 4 5; do # 4 a refusal's, 5 the cut's (Mux.cut)
+		printf 'Close %s %s; Forget %s %s; ' $k "$(grep -c "\"ev\":\"Close\".*\"n\":$k,\\|\"n\":$k,.*\"ev\":\"Close\"" "$work/all" || true)" $k "$(grep -c "\"ev\":\"Forget\".*\"n\":$k,\\|\"n\":$k,.*\"ev\":\"Forget\"" "$work/all" || true)"
+	done
+	echo
 	echo "events no trace took:${gap:- none}"
 	[ "$bad" = 0 ]
 	;;
