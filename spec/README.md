@@ -1668,9 +1668,10 @@ client-to-agent direction, R on the other.
 | variable | meaning |
 |---|---|
 | `st[e]` | epoch `e`'s stream: its path (`relay`, `direct`), its holder (`peer`, or `rogue`: whoever the relay pointed at), `dead` |
-| `d[e]`, `k[e]` | frames on stream `e`, S to R (`open`, `data`) and R to S (`resume(n)`, `ack(n)`) |
+| `d[e]`, `k[e]` | frames on stream `e`, S to R (`open`, `data`, `end`, `abort`) and R to S (`resume(n)`, `ack(n)`, `abort`) |
 | `sEp`, `sWait`, `hi`, `nxt`, `acked` | S's stream; S opened it and waits for R's RESUME; bytes the application handed it; the next it sends; every byte below `acked` freed |
-| `rEp`, `rcvd`, `rAck`, `out` | R's stream (the only one it reads); bytes delivered; the count last told S; the bytes delivered |
+| `rEp`, `rcvd`, `rEnds`, `rAck`, `out` | R's stream (the only one it reads); bytes delivered; ENDs taken; the count last told S; the bytes delivered |
+| `ab`, `sGone`, `rGone` | who reset the session (`none`, `S`, `R`); each end knows the reset |
 | `relayUp`, `dir` | the relayed path is up; the direct path (`none`, `probing`, `up`, `down`) and its holder |
 
 The protocol: each attach opens a fresh stream (an epoch) on one path. R
@@ -1692,13 +1693,32 @@ organisation certificate and the session's exporter token, relay
 | `NoLoss` | `acked <= rcvd`: S never frees a byte R lacks |
 | `BufferBound` | `hi - acked <= W`: at most W bytes kept per direction of a session |
 | `OnlyPeer` | no stream to whoever the relay pointed at |
-| `AllDelivered` (liveness) | every byte arrives (paths die at most `MaxDie` times; TLC with `-deadlock`, so a stuck state violates it) |
+| `EndAfterData` | R ends the direction only after its last byte: an END never overtakes data |
+| `EndOnce` | R takes the END once, however often it was sent |
+| `AllDelivered` (liveness) | every byte and the END arrive and S frees them all, or the reset reached both ends (paths die at most `MaxDie` times; TLC with `-deadlock`, so a stuck state violates it) |
+| `ResetReaches` (liveness) | a reset, across any switch, reaches both ends |
 
-`DirectPath.cfg` (3 bytes, window 2, each path dies once, two candidates,
-two moves, either decider): 633,769 distinct states, depth 42, about a
-minute with the liveness property (`make spec`), 12 s for the invariants
-(`make spec-invariants`). `-coverage 1` takes every action; the two that
-only a mutant enables (`SendStale`, `RecvStale`) take none.
+A direction's end and a session's reset (gap G1, lane DIRECTPATH2): after
+its `Total` bytes S sends `END`, which takes position `Total`: retained,
+resent from a RESUME and acknowledged like a byte (R's counts include it
+once taken). Either end may reset the session (`AbortBy`, `MaxAbort` 1)
+at any time before the direction ended cleanly: the aborter stops its
+data and keeps answering every stream the session opens with `ABORT`
+(the decider aborting opens one when its stream ended, `Lingers`) until
+the peer took it, so an ABORT sent on a stream the peer left, or lost
+with a path, is sent again on the next.
+
+`DirectPath.cfg` (3 bytes, window 2, each path dies once, one candidate,
+two moves, either decider, no reset): 333,496 distinct states, depth 47,
+7 s for the invariants (`make spec-invariants`). `DirectPathReset.cfg`
+(2 bytes, window 2, each path dies once, one candidate, one move, a
+reset): 202,279 distinct states, depth 38, 3.5 min with both liveness
+properties (`make spec`). `DirectPathWide.cfg` (`DirectPath.cfg` with two
+candidates, the rogue's then the peer's): 2,227,792 distinct states,
+depth 49, 75 s, invariants, in `make spec` only. `-coverage 1` takes every
+action on `DirectPathReset.cfg` and `DirectPath.cfg` (but `AbortBy`,
+`STakeAbort`, `SAnswerAbort` there: no reset); the three that only a
+mutant enables (`SendStale`, `RecvStale`, `SendEndEarly`) take none.
 
 Mutants (`make spec-mutants`), each caught:
 
@@ -1711,13 +1731,19 @@ Mutants (`make spec-mutants`), each caught:
 | `read-stale` | R still reads a stream it left | `InOrder` |
 | `no-bind` | the direct handshake takes whoever answers at the address: the relay redirects | `OnlyPeer` |
 | `keep-dead-path` | a dead direct path is kept, no fallback | `AllDelivered` |
+| `end-early` | S sends END once the application closed, before its last bytes went | `EndAfterData` |
+| `resume-drops-fin` | a RESUME leaves out the END R took: S sends it again and R takes it twice | `EndOnce` |
+| `abort-not-resent` (`DirectPathReset.cfg`) | the ABORT goes once, on the aborter's stream: lost with a path or on a stream the peer left | `ResetReaches` |
 
 Witnesses (each violated): `WitnessDirect` (all delivered, the last on
 the direct path), `WitnessFallback` (direct, then back on the relay, all
 delivered), `WitnessResent` (a byte sent on two streams, delivered once),
 `WitnessRogue` (another holder offered and refused), `WitnessFull` (the
 window full), `WitnessWithheld` (no candidate, a relay death, all
-delivered relayed).
+delivered relayed), `WitnessEndResent` (the END sent on two streams,
+taken once); on `DirectPathReset.cfg`: `WitnessResetAcross` (the ABORT
+sent again on a newer stream, known to both), `WitnessResetDirect` (the
+reset reached both ends on the direct path).
 
 Not modelled: the peer vanishing (link's and quiclink's liveness end the
 session: `Liveness.tla`, `QuicWatch.tla`); the hole punch itself (an

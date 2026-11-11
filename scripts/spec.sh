@@ -190,8 +190,8 @@ check | invariants)
 	# PoolDrain (Min 2: a Drain failing halfway) and QuicWatchStops (two
 	# short stops, ~10 s) only in full: their mutants are CI's.
 	# PoolGrow: background growth (Max above Min).
-	pools="Pool PoolGrow PoolClient Liveness LivenessStarve QuicWatch QuicWatchPTO QuicWatchStarve Join CreditWaiters DirectPath"
-	[ "$1" = invariants ] || pools="$pools PoolDrain QuicWatchStops"
+	pools="Pool PoolGrow PoolClient Liveness LivenessStarve QuicWatch QuicWatchPTO QuicWatchStarve Join CreditWaiters DirectPath DirectPathReset"
+	[ "$1" = invariants ] || pools="$pools PoolDrain QuicWatchStops DirectPathWide"
 	for m in $pools; do
 		echo "== $m.cfg"
 		st=0
@@ -200,9 +200,9 @@ check | invariants)
 		dl=; [ $m = Pool ] || [ $m = PoolGrow ] || [ $m = PoolClient ] || dl=-deadlock
 		mod=$m.tla; case $m in Pool*) mod=Pool.tla ;; Liveness*) mod=Liveness.tla ;; QuicWatch*) mod=QuicWatch.tla ;; CreditWaiters*) mod=CreditWaiters.tla ;; DirectPath*) mod=DirectPath.tla ;; esac
 		cfg=$m.cfg
-		# DirectPath's liveness (AllDelivered, ~1 min) only in full: its
-		# invariants take ~12 s; spec-mutants catches keep-dead-path by it.
-		if [ "$1" = invariants ] && [ $m = DirectPath ]; then
+		# DirectPath's liveness (AllDelivered, ResetReaches: minutes) only in
+		# full; spec-mutants catches keep-dead-path and abort-not-resent by it.
+		if [ "$1" = invariants ] && [ "${m#DirectPath}" != "$m" ]; then
 			sed -e '/^PROPERTIES/,$d' spec/$m.cfg >"$work/$m.cfg"
 			cfg=$work/$m.cfg
 		fi
@@ -399,11 +399,15 @@ mutants)
 	# A session moved between the relayed and the direct path (DirectPath.tla,
 	# lane DIRECTPATH): a byte freed before R had it, sent before R's RESUME,
 	# sent on or read from a stream left, resent from the wrong place, a
-	# stream to whoever the relay pointed at, a dead direct path kept.
-	for m in free-on-send send-before-resume write-stale resume-from-acked read-stale no-bind keep-dead-path; do
+	# stream to whoever the relay pointed at, a dead direct path kept; an
+	# END before the last byte, a RESUME without the END taken (lane
+	# DIRECTPATH2: the END taken twice), a reset sent once only.
+	for m in free-on-send send-before-resume write-stale resume-from-acked read-stale no-bind keep-dead-path end-early resume-drops-fin; do
 		job mutant DirectPath.cfg 'Mutant = "none"' "Mutant = \"$m\"" DirectPath.tla
 	done
-	for w in WitnessDirect WitnessFallback WitnessResent WitnessRogue WitnessFull WitnessWithheld; do job witness DirectPath.cfg $w DirectPath.tla; done
+	job mutant DirectPathReset.cfg 'Mutant = "none"' 'Mutant = "abort-not-resent"' DirectPath.tla
+	for w in WitnessDirect WitnessFallback WitnessResent WitnessRogue WitnessFull WitnessWithheld WitnessEndResent; do job witness DirectPath.cfg $w DirectPath.tla; done
+	for w in WitnessResetAcross WitnessResetDirect; do job witness DirectPathReset.cfg $w DirectPath.tla; done
 	for m in rearm-timeout deadline-from-rx reader-writes never-dead; do
 		job mutant Liveness.cfg 'Mutant = "none"' "Mutant = \"$m\"" Liveness.tla
 	done
