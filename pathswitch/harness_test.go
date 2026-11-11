@@ -192,6 +192,15 @@ func (h *harness) directUp() {
 	h.up["direct"] = true
 }
 
+// punchFails: a candidate that never answers, or answers as someone
+// else (spec Offer, Refuse): the path stays down.
+func (h *harness) punchFails() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	traceEnv(h.c, "Offer", "peer")
+	traceEnv(h.c, "Refuse", "")
+}
+
 // die kills every stream of path p at both ends at once: what is in
 // flight on it is lost (spec Die).
 func (h *harness) die(p string) {

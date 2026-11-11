@@ -45,12 +45,15 @@ func TestInOrderRelayed(t *testing.T) {
 	}
 }
 
-// InOrder across moves both ways: relayed, direct, relayed, direct.
+// InOrder across moves both ways: a punch that fails, then relayed,
+// direct, relayed, direct.
 func TestInOrderAcrossMoves(t *testing.T) {
 	h := newHarness(t, 64, true)
 	a, b := payload(800, 3), payload(800, 4)
 	gs, gc, es, ec := h.transfer(a, b, 20, func(i int) {
 		switch i {
+		case 2:
+			h.punchFails()
 		case 5:
 			h.directUp()
 			h.move("direct")
