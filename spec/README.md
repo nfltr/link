@@ -1647,3 +1647,80 @@ from the stall, lost (A's socket full of the bulk transfer). Not
 reproduced (a qlog of both ends would settle it); the QW1 fix removes
 that path.
 
+
+## Direct paths (DirectPath.tla, 2026-11-11, lane DIRECTPATH)
+
+A design, checked before any code (AGENTS.md "Engineering Quality Bar"):
+nfltr `docs/decisions/direct-paths-2026-11-11.md`. An end-to-end encrypted
+session (organisation-mode tcp first) starts relayed and may move to a
+direct QUIC path between the two machines (hole punched under quiclink),
+and back, with the relayed path as the fallback that always works. The
+layer that moves it sits between the session's byte stream (the end-to-end
+TLS records, opaque to it) and the paths; no code exists yet, so the code
+map has no row for it (the row lands with the code, with a trace recorder).
+
+One direction of one session: S hands bytes `0..Total-1` to the path
+layer, R delivers them. The other direction is the same model with the
+decider's side swapped, so `decider` is chosen at Init: the client (the
+side that dials) is the only side that opens path streams, S on the
+client-to-agent direction, R on the other.
+
+| variable | meaning |
+|---|---|
+| `st[e]` | epoch `e`'s stream: its path (`relay`, `direct`), its holder (`peer`, or `rogue`: whoever the relay pointed at), `dead` |
+| `d[e]`, `k[e]` | frames on stream `e`, S to R (`open`, `data`) and R to S (`resume(n)`, `ack(n)`) |
+| `sEp`, `sWait`, `hi`, `nxt`, `acked` | S's stream; S opened it and waits for R's RESUME; bytes the application handed it; the next it sends; every byte below `acked` freed |
+| `rEp`, `rcvd`, `rAck`, `out` | R's stream (the only one it reads); bytes delivered; the count last told S; the bytes delivered |
+| `relayUp`, `dir` | the relayed path is up; the direct path (`none`, `probing`, `up`, `down`) and its holder |
+
+The protocol: each attach opens a fresh stream (an epoch) on one path. R
+opens one with `RESUME(rcvd)` (decider R), or answers S's `OPEN` with it
+(decider S); from then on R reads only that stream. S sends from `n` of
+the RESUME it took and frees a byte only when R's `ACK` or `RESUME` covers
+it, so it keeps at most `W` bytes R may lack. A stream's data carries no
+offsets: whatever arrives next is byte `rcvd`. A path dies by losing every
+frame in flight on it; the decider then falls back to a path that works
+(`Fallback`); a move on a live stream (`Move`, the policy) is bounded. The
+relay may withhold candidates (no `Offer`) or offer one whose holder is
+not the peer (a forged QAD address or candidate); `Verify` (the peer's
+organisation certificate and the session's exporter token, relay
+`spec/proverif/e2ee_tcp.pv` queries 21-24) takes only the peer's.
+
+| invariant | what |
+|---|---|
+| `InOrder` | R delivers bytes 0, 1, 2, ... once each, in order: none lost, duplicated or reordered, at a switch or ever |
+| `NoLoss` | `acked <= rcvd`: S never frees a byte R lacks |
+| `BufferBound` | `hi - acked <= W`: at most W bytes kept per direction of a session |
+| `OnlyPeer` | no stream to whoever the relay pointed at |
+| `AllDelivered` (liveness) | every byte arrives (paths die at most `MaxDie` times; TLC with `-deadlock`, so a stuck state violates it) |
+
+`DirectPath.cfg` (3 bytes, window 2, each path dies once, two candidates,
+two moves, either decider): 633,769 distinct states, depth 42, about a
+minute with the liveness property (`make spec`), 12 s for the invariants
+(`make spec-invariants`). `-coverage 1` takes every action; the two that
+only a mutant enables (`SendStale`, `RecvStale`) take none.
+
+Mutants (`make spec-mutants`), each caught:
+
+| mutant | the bug | caught by |
+|---|---|---|
+| `free-on-send` | S frees a byte once sent (the path's transport ack), not when R has it: lost at a switch | `NoLoss` |
+| `send-before-resume` | S sends on a stream it opened before R's RESUME, from its own place | `InOrder` |
+| `write-stale` | S still sends on a stream it left (a stale path kept) | `InOrder` |
+| `resume-from-acked` | S resends from what it freed, not from R's RESUME: duplicates | `InOrder` |
+| `read-stale` | R still reads a stream it left | `InOrder` |
+| `no-bind` | the direct handshake takes whoever answers at the address: the relay redirects | `OnlyPeer` |
+| `keep-dead-path` | a dead direct path is kept, no fallback | `AllDelivered` |
+
+Witnesses (each violated): `WitnessDirect` (all delivered, the last on
+the direct path), `WitnessFallback` (direct, then back on the relay, all
+delivered), `WitnessResent` (a byte sent on two streams, delivered once),
+`WitnessRogue` (another holder offered and refused), `WitnessFull` (the
+window full), `WitnessWithheld` (no candidate, a relay death, all
+delivered relayed).
+
+Not modelled: the peer vanishing (link's and quiclink's liveness end the
+session: `Liveness.tla`, `QuicWatch.tla`); the hole punch itself (an
+`Offer` that becomes `up` or `down`); revocation (nfltr
+`spec/enrol/Enrol.tla` `RevocationBound` cuts the session on every path:
+the direct connection carries the same organisation certificates).
