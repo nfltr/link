@@ -125,6 +125,11 @@ type Config struct {
 	// dials.
 	PacketConn net.PacketConn
 	TLS        *tls.Config
+	// Transport, instead of PacketConn, is a quic.Transport the caller
+	// shares (direct.go: one UDP socket for the agent link to the relay,
+	// QAD and direct paths); Serve listens on it and Drain leaves it
+	// open (it closes the listener).
+	Transport *quic.Transport
 	// ServedPeer names the peer of a connection Serve accepted (for
 	// accept); an error closes the connection. nil: the Subject
 	// CommonName of the certificate the peer presented, which TLS
@@ -157,7 +162,7 @@ type Node struct {
 	dialling int           // dials in flight: Drain waits for them
 	cut      bool          // a Drain's ctx ended: close what a dial still brings
 	sessions sync.WaitGroup
-	tr       *quic.Transport
+	tr       io.Closer      // what Drain closes: the Node's socket, or its listener on a shared Transport
 	live     map[*conn]bool // the connections running (run), for Stats
 	ended    link.ConnStats // the counters of those that ended
 }
@@ -173,7 +178,11 @@ var (
 // Window or MaxSessions (as link.Config.Validate).
 func New(cfg Config) (*Node, error) {
 	switch {
-	case cfg.Dial == nil && cfg.PacketConn == nil:
+	case cfg.PacketConn != nil && cfg.Transport != nil:
+		return nil, errors.New("quiclink: Config.PacketConn and Config.Transport are both set: Serve listens on one")
+	case cfg.Transport != nil && cfg.TLS == nil:
+		return nil, errors.New("quiclink: Config.Transport is set but Config.TLS is nil: set the listener's certificate")
+	case cfg.Dial == nil && cfg.PacketConn == nil && cfg.Transport == nil:
 		return nil, errors.New("quiclink: Config.Dial and Config.PacketConn are both nil: set Dial to open sessions to peers, PacketConn (and TLS) to take theirs, or both")
 	case cfg.PacketConn != nil && cfg.TLS == nil:
 		return nil, errors.New("quiclink: Config.PacketConn is set but Config.TLS is nil: set the listener's certificate (and ClientCAs with ClientAuth tls.RequireAndVerifyClientCert, to name peers by their certificates)")
@@ -757,7 +766,7 @@ func (n *Node) Serve(accept func(peer string, header []byte, s peerlink.Session)
 			go n.keep(peer)
 		}
 	}
-	if n.cfg.PacketConn == nil {
+	if n.cfg.PacketConn == nil && n.cfg.Transport == nil {
 		<-n.drained
 		return nil
 	}
@@ -770,18 +779,25 @@ func (n *Node) Serve(accept func(peer string, header []byte, s peerlink.Session)
 		}
 		return n.qc.Clone(), nil // nil would be quic-go's defaults
 	}
-	tr := &quic.Transport{Conn: n.cfg.PacketConn}
+	tr := n.cfg.Transport
+	if tr == nil {
+		tr = &quic.Transport{Conn: n.cfg.PacketConn}
+	}
 	ln, err := tr.Listen(withALPN(n.cfg.TLS), qc)
 	if err != nil {
 		return err
 	}
+	var end io.Closer = tr // the Node's own socket
+	if n.cfg.Transport != nil {
+		end = ln // a shared Transport stays open
+	}
 	n.mu.Lock()
 	if n.draining { // Drain began before the listener was up
 		n.mu.Unlock()
-		_ = tr.Close()
+		_ = end.Close()
 		return nil
 	}
-	n.tr = tr
+	n.tr = end
 	n.mu.Unlock()
 	for {
 		q, err := ln.Accept(context.Background())

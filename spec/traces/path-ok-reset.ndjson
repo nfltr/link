@@ -1,0 +1,8 @@
+{"ev":"Init","by":"","e":0,"n":64,"x":""}
+{"ev":"Abort","by":"server","e":0,"n":0,"x":""}
+{"ev":"Offer","by":"","e":0,"n":0,"x":"peer"}
+{"ev":"Verify","by":"","e":0,"n":0,"x":""}
+{"ev":"Die","by":"","e":0,"n":0,"x":"relay"}
+{"ev":"Open","by":"client","e":2,"n":0,"x":"direct"}
+{"ev":"Attach","by":"server","e":2,"n":0,"x":""}
+{"ev":"TakeAbort","by":"client","e":2,"n":0,"x":""}

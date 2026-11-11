@@ -1,0 +1,5 @@
+Compatible changes:
+- Config.Transport: added
+- MaxCandidates: added
+- Probe: added
+- Punch: added

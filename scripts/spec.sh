@@ -130,6 +130,38 @@ CFG
 	[ $pst != 0 ] && grep -q '^Error: Invariant TraceUnfinished is violated' "$cfg.out"
 }
 
+# dtrace FILE DIR: TLC on one direction (c2a, a2c) of a pathswitch
+# session's recorded trace (spec/TraceDirectPath.tla); it fails unless TLC
+# reaches the trace's end (TraceUnfinished violated). The trace's own
+# constants are counted here: TLC would evaluate them on every state.
+dtrace() {
+	cfg=$work/$(basename "$1").$2.cfg
+	s=client
+	[ "$2" = c2a ] || s=server
+	tot=$(grep -c "\"ev\":\"Write\",\"by\":\"$s\"" "$1" || true)
+	grep -q "\"ev\":\"SendEnd\",\"by\":\"$s\"" "$1" || tot=$((tot + 1))
+	big=$(($(wc -l <"$1") + 1))
+	cat >"$cfg" <<CFG
+CONSTANTS
+    TraceFile = "$1"
+    Dir = "$2"
+    Total = $tot
+    W = $(head -1 "$1" | sed 's/.*"n":\([0-9]*\).*/\1/')
+    MaxDie = $big
+    MaxPunch = $big
+    MaxMoves = $big
+    MaxAbort = 1
+    Mutant = "none"
+INIT TraceInit
+NEXT TraceNext
+INVARIANT TraceUnfinished
+CFG
+	dst=0 # not st: the callers'
+	META=$work/states-$(basename "$1")-$2 tlc "$cfg" TraceDirectPath.tla -deadlock >"$cfg.out" 2>&1 || dst=$?
+	cat "$cfg.out"
+	[ $dst != 0 ] && grep -q '^Error: Invariant TraceUnfinished is violated' "$cfg.out"
+}
+
 # tlcrun CFG: TLC on MCLink.tla with CFG, which must pass.
 tlcrun() {
 	st=0
@@ -319,6 +351,21 @@ mutants)
 	}
 	# poolfixture FILE: a Pool's trace with a bug put in (spec/traces/pool-*):
 	# TracePool.tla must accept pool-ok and reject each other one.
+	# pathfixture FILE: a pathswitch session's trace with a bug put in
+	# (spec/traces/path-*): TraceDirectPath.tla must accept path-ok* in
+	# both directions and reject each other one in at least one.
+	pathfixture() {
+		pst=0
+		for d in c2a a2c; do
+			TLC_WORKERS=1 dtrace "$PWD/$1" $d >"$jw/m.out" 2>&1 || pst=1
+		done
+		case $(basename "$1"):$pst in
+		path-ok*:0) echo "$(basename "$1"): accepted, as expected" ;;
+		path-ok*:*) echo "$(basename "$1"): rejected"; tail -10 "$jw/m.out"; return 1 ;;
+		*:0) echo "$(basename "$1"): accepted (a bug the trace check misses)"; return 1 ;;
+		*) echo "$(basename "$1"): rejected, as expected" ;;
+		esac
+	}
 	poolfixture() {
 		st=0
 		TLC_WORKERS=1 ptrace "$PWD/$1" >"$jw/m.out" 2>&1 || st=$?
@@ -456,6 +503,7 @@ mutants)
 	for f in spec/traces/link-*.ndjson; do job linkfixture "$f"; done
 	for f in spec/traces/join-*.ndjson; do job joinfixture "$f"; done
 	for f in spec/traces/pool-*.ndjson; do job poolfixture "$f"; done
+	for f in spec/traces/path-*.ndjson; do job pathfixture "$f"; done
 	wait
 	fail=0
 	i=0
@@ -577,6 +625,35 @@ traces)
 			[ -z "${TRACE_KEEP:-}" ] || cp "$t" "$TRACE_KEEP/"
 		fi
 	done
+	# The path layer (pathswitch, lane DIRECTPATH2): each session's trace,
+	# both directions, against DirectPath.tla (TraceDirectPath.tla).
+	mkdir -p "$work/dtraces"
+	LINKTRACE=$work/dtraces go test -tags linktrace -count=1 -run "${TRACE_PATHSWITCH_TESTS:-^(TestInOrderRelayed|TestInOrderAcrossMoves|TestNoLossDirectDies|TestAllDeliveredRelayRestart|TestEndOnceResentAcrossSwitch|TestResetReachesFromClient|TestResetReachesFromServer|TestStaleEpochRefused|TestCleanClose)\$}" ./pathswitch/ >"$work/test.out" 2>&1 || {
+		cat "$work/test.out"
+		exit 1
+	}
+	for t in "$work"/dtraces/*.ndjson; do
+		for d in c2a a2c; do
+			n=$((n + 1))
+			if TLC_WORKERS=1 dtrace "$t" $d >"$t.$d.out" 2>&1; then
+				echo "trace $(basename "$t") $d: $(wc -l <"$t" | tr -d ' ') lines: accepted"
+			else
+				bad=$((bad + 1))
+				echo "trace $(basename "$t") $d: $(wc -l <"$t" | tr -d ' ') lines: REJECTED"
+				grep -E 'Error|unknown event' "$t.$d.out" | head -5
+				[ -z "${TRACE_KEEP:-}" ] || cp "$t" "$TRACE_KEEP/"
+			fi
+		done
+	done
+	cat "$work"/dtraces/*.ndjson >"$work/dall"
+	gap=
+	for e in $(grep -o 'E.ev = "[A-Za-z]*"' spec/TraceDirectPath.tla | sed 's/.*"\(.*\)"/\1/' | sort -u); do
+		k=$(grep -c "\"ev\":\"$e\"" "$work/dall" || true)
+		[ "$k" != 0 ] || gap="$gap $e"
+		printf '%s %s; ' "$e" "$k"
+	done
+	echo
+	echo "path layer events no trace took:${gap:- none}"
 	echo "$n traces, $bad rejected"
 	# Action coverage: each event Trace.tla maps (a step of Link), how many
 	# times the traces took it; one never taken is a test gap.
@@ -641,6 +718,9 @@ trace)
 	;;
 jtrace)
 	jtrace "$2"
+	;;
+dtrace)
+	dtrace "$2" "$3"
 	;;
 *)
 	echo "usage: spec.sh check|invariants|nightly|mutants|traces|trace FILE" >&2

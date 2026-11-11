@@ -688,6 +688,7 @@ holds in a `Spec-Reviewed:` trailer).
 | `QuicWatch.tla`, `MBTWatch.tla` | quiclink's liveness: `conn.watch`, `watchState.tick`, `keepAliveAfter`, QUIC's idle timeout as its backstop | `peerlink/quiclink/quiclink.go` |
 | `Join.tla`, `TraceJoin.tla` | `peerlink.Join`'s clean end (`Session.Sync`, hold, the watch) | `peerlink/chain.go`, `join.go`, `peerlink/trace_on.go` |
 | `CreditWaiters.tla` | senders waiting in `Credit.Acquire` on one session: the wait and `wakeAll` | `credit.go` |
+| `DirectPath.tla`, `TraceDirectPath.tla` | the path layer: OPEN, RESUME, ACK, END, ABORT, the window, `Move` and `Attach` | `pathswitch/conn.go`, `pathswitch/frame.go`, `pathswitch/trace_on.go` |
 
 ## Action map (lane CONFORM-link)
 
@@ -1656,8 +1657,9 @@ session (organisation-mode tcp first) starts relayed and may move to a
 direct QUIC path between the two machines (hole punched under quiclink),
 and back, with the relayed path as the fallback that always works. The
 layer that moves it sits between the session's byte stream (the end-to-end
-TLS records, opaque to it) and the paths; no code exists yet, so the code
-map has no row for it (the row lands with the code, with a trace recorder).
+TLS records, opaque to it) and the paths: package `pathswitch` (lane
+DIRECTPATH2), whose trace recorder `make spec-traces` checks against this
+model (`TraceDirectPath.tla`, below).
 
 One direction of one session: S hands bytes `0..Total-1` to the path
 layer, R delivers them. The other direction is the same model with the
@@ -1744,6 +1746,23 @@ delivered relayed), `WitnessEndResent` (the END sent on two streams,
 taken once); on `DirectPathReset.cfg`: `WitnessResetAcross` (the ABORT
 sent again on a newer stream, known to both), `WitnessResetDirect` (the
 reset reached both ends on the direct path).
+
+Trace validation (`TraceDirectPath.tla`, lane DIRECTPATH2): with
+`-tags linktrace` a session's two `pathswitch.Conn`s write one line per
+model step to one file (`pathswitch/trace_on.go`; a step on k bytes is k
+lines, the model's frames being bytes), the test's in-memory paths the
+network's (`Offer`, `Verify`, `Die`, `Revive`: a kill holds both ends'
+locks, so a frame read before it but taken after is dropped as the
+model's `Kill` drops it). `make spec-traces` checks each file twice, once
+per direction (`Dir` `c2a`: the client is S; `a2c`: R), with `Total`, `W`
+and the bounds counted from the file (TLC would evaluate them per state).
+The physical OPEN carries both directions' steps: S's OPEN of `c2a` and
+R's RESUME of `a2c`; the server's `Attach` is R's `TakeOpen` of `c2a` and
+S's `Resume` (or, lingering, `SAnswerAbort`) of `a2c`. Not in the model:
+the ABORT a peer sends back on taking one (it ends the aborter's linger
+early), `Refuse` (no session: the trace has no server end). Fixtures
+`spec/traces/path-*` (`make spec-mutants`): two recorded runs accepted, an
+END taken twice and data sent before the RESUME rejected.
 
 Not modelled: the peer vanishing (link's and quiclink's liveness end the
 session: `Liveness.tla`, `QuicWatch.tla`); the hole punch itself (an

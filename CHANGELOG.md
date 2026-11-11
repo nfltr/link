@@ -8,6 +8,31 @@ version 2 unless an entry says otherwise.
 
 ## Unreleased
 
+- New package `pathswitch`: the path layer of nfltr's direct paths. A
+  session's byte stream runs over a sequence of path streams (a link
+  session through the relay, a QUIC stream on a direct connection) and
+  moves between them, both ways, with no byte lost, duplicated or
+  reordered: OPEN, RESUME, ACK, END and ABORT frames, cumulative positions
+  (no offsets on data), a send window of `Config.Window` bytes kept until
+  the peer acknowledged them, the client the only side that opens streams
+  (`Move`), the server taking them (`ReadOpen`, `Attach`, `Refuse`), a
+  detach bound. Standard library only. Checked as spec/DirectPath.tla
+  (END and ABORT across a switch added first, lane DIRECTPATH2: invariants
+  `EndAfterData`, `EndOnce`, liveness `ResetReaches`; mutants `end-early`,
+  `resume-drops-fin`, `abort-not-resent`), with a trace recorder
+  (`-tags linktrace`) that `make spec-traces` checks per direction
+  against the model (spec/TraceDirectPath.tla). Guards: the tests of
+  `pathswitch/conn_test.go`, one per invariant.
+
+- quiclink (`peerlink/quiclink`): `Config.Transport`, a `quic.Transport`
+  the caller shares (one UDP socket for the agent link to the relay, the
+  relay's address answer and direct paths), which `Serve` listens on and
+  `Drain` leaves open; `Punch` (dial every candidate at once, the first
+  verified handshake wins) and `Probe` (the answering end's datagrams that
+  open its NAT): a Node with `Config.Dial` running `Punch` keeps one direct
+  connection per machine pair, its `Session`s the path streams of
+  `pathswitch`. Guard `TestDirectPairSwitching`.
+
 - An OPEN read once a drain's deadline cut the sessions is refused
   (abort refuse, `CodeDraining`: the opener's `Answered` and reads return
   an `*Abort` matching `ErrOpenRefused`), as HTTP/2's REFUSED_STREAM:
