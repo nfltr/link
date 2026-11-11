@@ -385,7 +385,8 @@ func TestSendOpenAfterCreditOpen(t *testing.T) {
 func TestCloseWriteEndingBothHalvesFreesItsSessionAtOnce(t *testing.T) {
 	lcfg := v2cfg
 	lcfg.MaxSessions = 1
-	dm, _ := v2muxPair(t, func(_ []byte, s *Session) { _, _ = io.Copy(s, s); _ = s.CloseWrite() }, v2cfg, lcfg)
+	hooked := make(chan struct{}) // the listener's CloseWrite waits for the hook below
+	dm, _ := v2muxPair(t, func(_ []byte, s *Session) { _, _ = io.Copy(s, s); <-hooked; _ = s.CloseWrite() }, v2cfg, lcfg)
 	sa, err := dm.Open([]byte("a"))
 	if err != nil {
 		t.Fatal(err)
@@ -424,6 +425,7 @@ func TestCloseWriteEndingBothHalvesFreesItsSessionAtOnce(t *testing.T) {
 	}
 	testHookCloseWriteSent.Store(&h)
 	t.Cleanup(func() { testHookCloseWriteSent.Store(nil) })
+	close(hooked)
 	if _, err := io.ReadAll(sa); err != nil {
 		t.Fatal(err)
 	}
