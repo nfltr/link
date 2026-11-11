@@ -101,6 +101,7 @@ type pstream struct {
 	ctrl  [][]byte // frames this stream sends first: OPEN, RESUME, ABORT
 	dead  bool     // its frames are ignored from now on (spec Kill)
 	ended bool     // released (streamEnded ran)
+	fin   bool     // the peer ended it with FIN after its clean end (the client's: it sends its own after)
 }
 
 // Client starts the dialling end of a session on its first stream
@@ -155,6 +156,9 @@ func (c *Conn) rpos() uint64 {
 
 func (c *Conn) clean() bool { return c.closed && c.acked == c.hi+1 && c.rEnd }
 
+// left: this end's Close ended the session cleanly (shutdown(true)).
+func (c *Conn) left() bool { return c.gone && c.err == io.ErrClosedPipe }
+
 // Epoch returns the session's newest epoch.
 func (c *Conn) Epoch() uint64 {
 	c.mu.Lock()
@@ -167,6 +171,11 @@ func (c *Conn) Epoch() uint64 {
 // a clean end it waits for this end's last ACK and FIN to be written (at
 // most Config.Detach), so that a caller dropping the stream on Done does
 // not leave the peer waiting for that ACK (guard TestDoneAfterTheLastAck).
+// The client's waits for the server's FIN first, which says the server
+// has everything (it closed too): the client alone can open a stream, so
+// it ends last, opening another (OnStreamEnd) if its stream ends before
+// that FIN (spec LeaveLast, CloseEnds; guard
+// TestCloseAfterReattachEndsBeforeTheBound).
 func (c *Conn) Done() <-chan struct{} { return c.done }
 
 // Path returns the path of the session's current stream.
@@ -315,7 +324,7 @@ func (c *Conn) shutdown(clean bool) {
 		return
 	}
 	c.gone = true
-	if clean && !c.cur.dead {
+	if clean && (c.client || !c.cur.dead) { // the client may open another stream for the server's FIN
 		time.AfterFunc(c.cfg.Detach, func() { c.mu.Lock(); c.closeDone(); c.mu.Unlock() })
 	} else {
 		c.closeDone()
@@ -332,6 +341,15 @@ func (c *Conn) shutdown(clean bool) {
 	}
 	c.old = nil
 	c.cond.Broadcast()
+}
+
+func (c *Conn) isDone() bool {
+	select {
+	case <-c.done:
+		return true
+	default:
+		return false
+	}
 }
 
 // closeDone closes done once (under c.mu).
@@ -363,7 +381,7 @@ func (c *Conn) Move(s Stream, path string, token func(epoch uint64) []byte) (uin
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.gone || c.ab == abPeer {
+	if c.gone && !(c.left() && c.cur.ended && !c.isDone()) || c.ab == abPeer {
 		_ = s.Reset()
 		return 0, c.err
 	}
@@ -438,6 +456,15 @@ func (c *Conn) Attach(o Open, path string) error {
 	if o.Epoch <= c.ep {
 		return ErrStaleEpoch
 	}
+	if c.left() && !o.Abort {
+		// this end left after its clean end: its count and FIN, so that a
+		// client whose stream died before them ends cleanly too (spec
+		// RLeftAnswer, SLeftAnswer; guard TestCloseLeftAnswersAReattach)
+		c.ep = o.Epoch
+		c.trace("Attach", "server", o.Epoch, o.rcvd, "left")
+		go answerLeft(o, appendCount(nil, fResume, c.rpos()), c.cfg.Detach)
+		return nil
+	}
 	if c.gone || c.ab == abPeer {
 		Refuse(o)
 		return c.err
@@ -475,6 +502,19 @@ func (c *Conn) Attach(o Open, path string) error {
 	return nil
 }
 
+// answerLeft writes a left end's answer and FIN on o's stream, then reads
+// it to the client's FIN (sent after it took this one's, so the reset
+// after it drops nothing), at most d.
+func answerLeft(o Open, resume []byte, d time.Duration) {
+	t := time.AfterFunc(d, func() { _ = o.s.Reset() })
+	defer t.Stop()
+	if _, err := o.s.Write(resume); err == nil {
+		_ = o.s.CloseWrite()
+		_, _ = io.Copy(io.Discard, o.r)
+	}
+	_ = o.s.Reset()
+}
+
 func strAb(ab int) string {
 	if ab == 1 {
 		return "abort"
@@ -507,6 +547,19 @@ func (c *Conn) streamEnded(ps *pstream, err error) {
 		return
 	}
 	cur := ps == c.cur
+	if cur && c.client && c.clean() && c.ab == abNone && !c.isDone() {
+		if errors.Is(err, io.EOF) { // the server's FIN: this end sends its own and is done
+			ps.fin = true
+			c.trace("TakeFin", "client", ps.epoch, 0, "")
+			c.cond.Broadcast()
+			return
+		}
+		c.release(ps)
+		if c.cfg.OnStreamEnd != nil { // before the server's FIN: another stream gets it
+			go c.cfg.OnStreamEnd(ps.epoch, err)
+		}
+		return
+	}
 	c.release(ps)
 	if !cur || c.gone || c.clean() {
 		return // a stream left, or the session's end (the peer's FIN)
@@ -543,6 +596,16 @@ func (c *Conn) readLoop(ps *pstream) {
 			c.streamEnded(ps, err)
 			c.mu.Unlock()
 			return
+		}
+		if ps == c.cur && !ps.dead && c.client && c.left() {
+			switch f.t {
+			case fResume: // a stream it opened after it left: the server's count
+				c.trace("Resume", "client", ps.epoch, f.n, "")
+			case fAbort: // refused (a server that no longer holds the session): its end
+				c.streamEnded(ps, io.EOF)
+			}
+			c.mu.Unlock()
+			continue
 		}
 		if ps != c.cur || ps.dead || c.gone {
 			c.mu.Unlock()
@@ -650,12 +713,17 @@ func (c *Conn) next(ps *pstream, wbuf []byte) ([]byte, bool) {
 				c.shutdown(true)
 				return nil, true
 			}
-			if ps == c.cur && c.gone && c.err == io.ErrClosedPipe {
+			if ps == c.cur && c.left() {
 				if c.rpos() > c.rAck { // the peer's END acknowledged before the FIN
 					c.rAck = c.rpos()
 					c.trace("Ack", c.end(c.client), ps.epoch, c.rAck, "")
 					return appendCount(wbuf[:0], fAck, c.rAck), true
 				}
+				if c.client && !ps.fin { // the client's after the server's
+					c.cond.Wait()
+					continue
+				}
+				c.trace("Fin", c.end(c.client), ps.epoch, 0, "")
 				return nil, true // a clean end: FIN
 			}
 			if c.ab == abPeer {
@@ -757,9 +825,13 @@ func (c *Conn) writeLoop(ps *pstream) {
 				c.release(ps)
 			}
 			c.closeDone() // the last ACK and FIN are written
-			// the peer's FIN or a reset ends the reader; a peer that
-			// never sends it is reset after the detach bound
-			time.AfterFunc(c.cfg.Detach, func() { c.mu.Lock(); c.release(ps); c.mu.Unlock() })
+			if ps.fin {
+				c.release(ps) // both FINs: the client's goes last
+			} else {
+				// the peer's FIN or a reset ends the reader; a peer that
+				// never sends it is reset after the detach bound
+				time.AfterFunc(c.cfg.Detach, func() { c.mu.Lock(); c.release(ps); c.mu.Unlock() })
+			}
 			c.mu.Unlock()
 			return
 		}

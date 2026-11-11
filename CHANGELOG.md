@@ -31,6 +31,24 @@ version 2 unless an entry says otherwise.
   `TestResetReachesFromClient`); one whose answer's stream died first
   releases the session at once.
 
+- pathswitch: a Close right after a re-attach (a relayed fallback) no
+  longer waits out the 30 s detach bound at the agent. The client left
+  once its last ACK (of the agent's END) and FIN were written; a caller
+  that dropped the stream on `Done` (relay's agent tests, a process
+  exiting) could lose that ACK, and only the client can open another
+  stream, so the agent's `Close` waited the bound (relay's leakcheck: 20
+  goroutines left in 20 loaded runs, `ModelBindings` red on the Linux
+  runner). Now the client ends last: its FIN, and `Done`, come only after
+  the agent's FIN, which says the agent has everything; a stream that ends
+  before it makes the client open another (`OnStreamEnd`, `Move` while
+  closing), which an agent that left answers with its count and FIN
+  instead of a refusal. No new frame. Checked first in spec/DirectPath.tla
+  (lane PSCLOSE: actions `SFin`, `RFin`, `STakeFin`, `RTakeFin`,
+  `RLeftAnswer`, `SLeftAnswer`; invariant `LeaveLast`, liveness
+  `CloseEnds`; mutant `leave-at-complete`), traced (`Fin`, `TakeFin`,
+  `Attach` left). Guards `TestCloseAfterReattachEndsBeforeTheBound`,
+  `TestCloseLeftAnswersAReattach`.
+
 - quiclink (`peerlink/quiclink`): `Config.Transport`, a `quic.Transport`
   the caller shares (one UDP socket for the agent link to the relay, the
   relay's address answer and direct paths), which `Serve` listens on and

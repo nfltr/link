@@ -44,7 +44,15 @@ Step ==
       \* the server took the client's OPEN on e: R's TakeOpen on c2a; on
       \* a2c S's RESUME (the client's count in the OPEN), or its ABORT's
       \* answer; an OPEN carrying the reset is S's TakeAbort (next line)
-      [] E.ev = "Attach" ->
+      \* an end's FIN after its clean end; the client's of the server's
+      [] E.ev = "Fin" ->
+            IF (E.by = SEnd) THEN SFin /\ sEp = E.e ELSE RFin /\ rEp = E.e
+      [] E.ev = "TakeFin" ->
+            IF Dir = "c2a" THEN STakeFin /\ sEp = E.e ELSE RTakeFin /\ rEp = E.e
+      \* a server that left answered the client's OPEN on e (count and FIN)
+      [] E.ev = "Attach" /\ E.x = "left" ->
+            IF Dir = "c2a" THEN RLeftAnswer /\ rEp' = E.e ELSE SLeftAnswer /\ sEp' = E.e
+      [] E.ev = "Attach" /\ E.x # "left" ->
             IF Dir = "c2a" THEN TakeOpen /\ rEp' = E.e
             ELSE IF E.x = "abort" THEN Skip
             ELSE ((Resume /\ nxt' = E.n) \/ SAnswerAbort) /\ sEp' = E.e

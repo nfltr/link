@@ -449,11 +449,12 @@ mutants)
 	# stream to whoever the relay pointed at, a dead direct path kept; an
 	# END before the last byte, a RESUME without the END taken (lane
 	# DIRECTPATH2: the END taken twice), a reset sent once only.
-	for m in free-on-send send-before-resume write-stale resume-from-acked read-stale no-bind keep-dead-path end-early resume-drops-fin; do
+	# Lane PSCLOSE: the client leaving before the agent's FIN.
+	for m in free-on-send send-before-resume write-stale resume-from-acked read-stale no-bind keep-dead-path end-early resume-drops-fin leave-at-complete; do
 		job mutant DirectPath.cfg 'Mutant = "none"' "Mutant = \"$m\"" DirectPath.tla
 	done
 	job mutant DirectPathReset.cfg 'Mutant = "none"' 'Mutant = "abort-not-resent"' DirectPath.tla
-	for w in WitnessDirect WitnessFallback WitnessResent WitnessRogue WitnessFull WitnessWithheld WitnessEndResent; do job witness DirectPath.cfg $w DirectPath.tla; done
+	for w in WitnessDirect WitnessFallback WitnessResent WitnessRogue WitnessFull WitnessWithheld WitnessEndResent WitnessLeftAnswer; do job witness DirectPath.cfg $w DirectPath.tla; done
 	for w in WitnessResetAcross WitnessResetDirect; do job witness DirectPathReset.cfg $w DirectPath.tla; done
 	for m in rearm-timeout deadline-from-rx reader-writes never-dead; do
 		job mutant Liveness.cfg 'Mutant = "none"' "Mutant = \"$m\"" Liveness.tla
@@ -636,7 +637,7 @@ traces)
 	# The path layer (pathswitch, lane DIRECTPATH2): each session's trace,
 	# both directions, against DirectPath.tla (TraceDirectPath.tla).
 	mkdir -p "$work/dtraces"
-	LINKTRACE=$work/dtraces go test -tags linktrace -count=1 -run "${TRACE_PATHSWITCH_TESTS:-^(TestInOrderRelayed|TestInOrderAcrossMoves|TestNoLossDirectDies|TestAllDeliveredRelayRestart|TestEndOnceResentAcrossSwitch|TestResetReachesFromClient|TestResetReachesFromServer|TestStaleEpochRefused|TestCleanClose)\$}" ./pathswitch/ >"$work/test.out" 2>&1 || {
+	LINKTRACE=$work/dtraces go test -tags linktrace -count=1 -run "${TRACE_PATHSWITCH_TESTS:-^(TestInOrderRelayed|TestInOrderAcrossMoves|TestNoLossDirectDies|TestAllDeliveredRelayRestart|TestEndOnceResentAcrossSwitch|TestResetReachesFromClient|TestResetReachesFromServer|TestStaleEpochRefused|TestCleanClose|TestCloseAfterReattachEndsBeforeTheBound|TestCloseLeftAnswersAReattach)\$}" ./pathswitch/ >"$work/test.out" 2>&1 || {
 		cat "$work/test.out"
 		exit 1
 	}

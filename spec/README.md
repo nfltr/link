@@ -1748,6 +1748,29 @@ data and keeps answering every stream the session opens with `ABORT`
 the peer took it, so an ABORT sent on a stream the peer left, or lost
 with a path, is sent again on the next.
 
+The session's close (lane PSCLOSE, after relay's leakcheck found an
+agent's `Close` waiting out the 30 s detach bound after a relayed
+fallback: the client had left once its last ACK, of the agent's END, was
+written, and a stream dropped on the client's `Done` lost it, while only
+the client can open another stream). An end whose view of the direction
+is complete (S: the END acknowledged, `SDone`; R: the END taken and its
+last ACK sent, `RDone`) ends its stream with FIN after its last frame
+(`SFin`, `RFin`) and leaves (`sLeft`, `rLeft`: `Close` returned and
+`Done`). The end that is not the decider (the agent) leaves at its FIN:
+whatever it still lacked would have to come on a stream only the decider
+opens. The decider waits for that FIN (`STakeFin`, `RTakeFin`), which says
+the peer has everything, and only then sends its own and leaves: it ends
+last. Until it took the FIN a stream that ends makes it open another
+(`Fallback` stays enabled), and an end that left answers that stream's
+OPEN with its count and FIN (`RLeftAnswer`, `SLeftAnswer`: a refusal would
+reset a session both ends had ended cleanly). Each end's other direction
+is taken as already complete, the worst case: an end may leave as soon as
+this direction lets it. Invariant `LeaveLast` (the decider leaves only
+once the direction is clean); liveness `CloseEnds` (both ends leave, with
+no reset, across any switch and death: no end waits out a bound while
+both live); `AllDelivered` and `ResetReaches` count an end that left as
+done. A reset needs both ends present (`AbortBy` only before either left).
+
 `DirectPath.cfg` (3 bytes, window 2, each path dies once, one candidate,
 two moves, either decider, no reset): 333,496 distinct states, depth 47,
 7 s for the invariants (`make spec-invariants`). `DirectPathReset.cfg`

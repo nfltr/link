@@ -31,6 +31,17 @@
 (* opens with ABORT (the decider aborting opens one when its stream ended) *)
 (* until the peer took it; an ABORT sent on a stream the peer left, or     *)
 (* lost with a path, is sent again on the next.                            *)
+(*                                                                         *)
+(* The session's close (lane PSCLOSE): the end that is not the decider     *)
+(* (the agent), once its view of the direction is complete (S: the END     *)
+(* acknowledged; R: the END taken and its last ACK sent), ends its stream  *)
+(* with FIN after its last frame and leaves. The decider, complete, waits  *)
+(* for that FIN, which says the peer has everything; then it sends its own *)
+(* FIN and leaves. It ends last because it alone can open a stream: until  *)
+(* it took the FIN, a stream that ends makes it open another, which an end *)
+(* that left answers with its count and FIN. Each end's other direction is *)
+(* taken as complete already (the worst case: an end may leave as soon as  *)
+(* this direction allows).                                                 *)
 EXTENDS Integers, Sequences
 
 CONSTANTS
@@ -68,14 +79,20 @@ VARIABLES
     dies,    \* dies[p]: how often p died
     punches, moves, sends,
     endSends, \* ENDs S sent (on any stream)
-    abSends   \* ABORTs sent (on any stream)
+    abSends,  \* ABORTs sent (on any stream)
+    sFin, rFin, \* the stream the end last sent its FIN on (0: none)
+    sGot, rGot, \* the stream the end (the decider) took the peer's FIN on (0: none)
+    sLeft, rLeft, \* the end left the session after its clean end (Close and Done)
+    answers   \* streams an end that left answered (LeftAnswer)
 
 vars == <<decider, st, d, k, sEp, sWait, hi, nxt, acked, rEp, rcvd, rEnds, rAck, out,
-          ab, sGone, rGone, relayUp, dir, dies, punches, moves, sends, endSends, abSends>>
+          ab, sGone, rGone, relayUp, dir, dies, punches, moves, sends, endSends, abSends,
+          sFin, rFin, sGot, rGot, sLeft, rLeft, answers>>
 sVars == <<sEp, sWait, hi, nxt, acked>>
 rVars == <<rEp, rcvd, rEnds, rAck, out>>
 endVars == <<ab, sGone, rGone, endSends, abSends>>
 pathVars == <<relayUp, dir, dies, punches>>
+closeVars == <<sFin, rFin, sGot, rGot, sLeft, rLeft, answers>>
 
 Init ==
     /\ decider \in {"S", "R"}
@@ -88,6 +105,7 @@ Init ==
     /\ relayUp = TRUE /\ dir = [s |-> "none", h |-> "peer"]
     /\ dies = [p \in Paths |-> 0] /\ punches = 0 /\ moves = 0 /\ sends = 0
     /\ endSends = 0 /\ abSends = 0
+    /\ sFin = 0 /\ rFin = 0 /\ sGot = 0 /\ rGot = 0 /\ sLeft = FALSE /\ rLeft = FALSE /\ answers = 0
 
 Usable(p) == IF p = "relay" THEN relayUp ELSE dir.s = "up"
 Cur == IF decider = "S" THEN sEp ELSE rEp     \* the decider's stream
@@ -102,8 +120,8 @@ Clean == rcvd = Total /\ rEnds > 0 /\ acked = Total + 1
 \* the aborter keeps answering with ABORT; an end that took the peer's is done.
 \* Mutant "abort-not-resent": the ABORT goes once, on the aborter's stream.
 Lingers(x) == ab = x /\ Mutant # "abort-not-resent"
-SLive == ~sGone
-RLive == ~rGone
+SLive == ~sGone /\ ~sLeft
+RLive == ~rGone /\ ~rLeft
 DeciderActs == IF decider = "S" THEN SLive \/ Lingers("S") ELSE RLive \/ Lingers("R")
 Abort == [t |-> "abort"]
 
@@ -115,6 +133,7 @@ Offer(h) ==
     /\ dir.s \in {"none", "down"} /\ punches < MaxPunch
     /\ dir' = [s |-> "probing", h |-> h] /\ punches' = punches + 1
     /\ UNCHANGED <<decider, st, d, k, moves, sends, relayUp, dies>> /\ UNCHANGED <<sVars, rVars, endVars>>
+    /\ UNCHANGED closeVars
 \* The direct QUIC handshake: the peer's organisation certificate (chain,
 \* name, CRL) and the session's exporter token, both ways. Mutant "no-bind":
 \* whoever answers at the address is taken.
@@ -122,11 +141,13 @@ Verify ==
     /\ dir.s = "probing" /\ (dir.h = "peer" \/ Mutant = "no-bind")
     /\ dir' = [dir EXCEPT !.s = "up"]
     /\ UNCHANGED <<decider, st, d, k, moves, sends, relayUp, dies, punches>> /\ UNCHANGED <<sVars, rVars, endVars>>
+    /\ UNCHANGED closeVars
 \* A punch that fails: no answer, or a holder that is not the peer.
 Refuse ==
     /\ dir.s = "probing"
     /\ dir' = [dir EXCEPT !.s = "down"]
     /\ UNCHANGED <<decider, st, d, k, moves, sends, relayUp, dies, punches>> /\ UNCHANGED <<sVars, rVars, endVars>>
+    /\ UNCHANGED closeVars
 \* A path dies: every frame in flight on it is lost, its streams end.
 Kill(p) ==
     /\ st' = [e \in DOMAIN st |-> IF st[e].path = p THEN [st[e] EXCEPT !.dead = TRUE] ELSE st[e]]
@@ -138,11 +159,13 @@ Die(p) ==
     /\ IF p = "relay" THEN relayUp' = FALSE /\ UNCHANGED dir
        ELSE dir' = [dir EXCEPT !.s = "down"] /\ UNCHANGED relayUp
     /\ UNCHANGED <<decider, punches, moves, sends>> /\ UNCHANGED <<sVars, rVars, endVars>>
+    /\ UNCHANGED closeVars
 \* The agents redial the relay (a new agent link): new relayed streams work,
 \* the old ones stay dead.
 Revive ==
     /\ ~relayUp /\ relayUp' = TRUE
     /\ UNCHANGED <<decider, st, d, k, dir, dies, punches, moves, sends>> /\ UNCHANGED <<sVars, rVars, endVars>>
+    /\ UNCHANGED closeVars
 
 \* --- the decider opens a stream ----------------------------------------
 \* On p: R opens it with RESUME(its count) and reads only it from now on;
@@ -170,6 +193,7 @@ Fallback(p) ==
     /\ Open(p)
     /\ UNCHANGED <<decider, hi, nxt, acked, rcvd, rEnds, out, ab, sGone, rGone, endSends>>
     /\ UNCHANGED <<pathVars, moves, sends>>
+    /\ UNCHANGED closeVars
 \* A move on a live stream: to the direct path once it is verified, or back
 \* (the decider's policy; bounded here; none once the session is reset).
 Move(p) ==
@@ -178,12 +202,13 @@ Move(p) ==
     /\ Open(p) /\ moves' = moves + 1
     /\ UNCHANGED <<decider, hi, nxt, acked, rcvd, rEnds, out, ab, sGone, rGone, endSends>>
     /\ UNCHANGED <<pathVars, sends>>
+    /\ UNCHANGED closeVars
 
 \* --- either end resets the session --------------------------------------
 \* The ABORT goes on the aborter's stream if it is alive (the peer may have
 \* left it, or its path may die: Lingers sends it again).
 AbortBy(x) ==
-    /\ MaxAbort > 0 /\ ab = "none" /\ ~Clean
+    /\ MaxAbort > 0 /\ ab = "none" /\ ~Clean /\ ~sLeft /\ ~rLeft
     /\ ab' = x /\ abSends' = abSends + 1
     /\ IF x = "S"
        THEN /\ sGone' = TRUE /\ UNCHANGED <<rGone, k>>
@@ -191,12 +216,14 @@ AbortBy(x) ==
        ELSE /\ rGone' = TRUE /\ UNCHANGED <<sGone, d>>
             /\ k' = IF st[rEp].dead THEN k ELSE [k EXCEPT ![rEp] = Append(@, Abort)]
     /\ UNCHANGED <<decider, st, endSends, moves, sends>> /\ UNCHANGED <<sVars, rVars, pathVars>>
+    /\ UNCHANGED closeVars
 
 \* --- S --------------------------------------------------------------------
 \* The application hands S a byte; S blocks while it keeps W bytes.
 Write ==
     /\ SLive /\ hi < Total /\ hi - acked < W /\ hi' = hi + 1
     /\ UNCHANGED <<decider, st, d, k, sEp, sWait, nxt, acked, moves, sends>> /\ UNCHANGED <<rVars, endVars, pathVars>>
+    /\ UNCHANGED closeVars
 \* S sends position nxt on its stream: byte nxt, or the END after the last.
 \* Mutant "free-on-send": S frees it at once (it trusts the path's transport
 \* ack, not R's). Mutant "send-before-resume": S sends on a stream it opened
@@ -208,6 +235,7 @@ Send ==
     /\ endSends' = endSends + (IF nxt = Total THEN 1 ELSE 0)
     /\ acked' = IF Mutant = "free-on-send" THEN nxt + 1 ELSE acked
     /\ UNCHANGED <<decider, st, k, sEp, sWait, hi, ab, sGone, rGone, abSends, moves>> /\ UNCHANGED <<rVars, pathVars>>
+    /\ UNCHANGED closeVars
 \* Mutant "end-early": S ends its direction once the application closed,
 \* before every byte was sent (the END overtakes data).
 SendEndEarly ==
@@ -215,6 +243,7 @@ SendEndEarly ==
     /\ d' = [d EXCEPT ![sEp] = Append(@, [t |-> "end"])]
     /\ nxt' = Total + 1 /\ sends' = sends + 1 /\ endSends' = endSends + 1
     /\ UNCHANGED <<decider, st, k, sEp, sWait, hi, acked, ab, sGone, rGone, abSends, moves>> /\ UNCHANGED <<rVars, pathVars>>
+    /\ UNCHANGED closeVars
 \* Mutant "write-stale": S still sends on a stream it left.
 SendStale ==
     /\ Mutant = "write-stale"
@@ -223,6 +252,7 @@ SendStale ==
         /\ d' = [d EXCEPT ![e] = Append(@, [t |-> "data", b |-> nxt])]
         /\ nxt' = nxt + 1 /\ sends' = sends + 1
     /\ UNCHANGED <<decider, st, k, sEp, sWait, hi, acked, moves>> /\ UNCHANGED <<rVars, endVars, pathVars>>
+    /\ UNCHANGED closeVars
 \* S takes R's RESUME(n): on the stream it waits on (decider S), or on a
 \* newer one R opened (decider R). It sends from n and frees what is below.
 \* Mutant "resume-from-acked": S resends from what it freed, not from n.
@@ -236,11 +266,13 @@ Resume ==
            /\ acked' = Max(acked, n)
         /\ k' = [k EXCEPT ![e] = Tail(@)] /\ sEp' = e /\ sWait' = FALSE
         /\ UNCHANGED <<decider, st, d, hi, moves, sends>> /\ UNCHANGED <<rVars, endVars, pathVars>>
+        /\ UNCHANGED closeVars
 \* S takes an ACK on its stream: R holds every position below n.
 TakeAck ==
     /\ SLive /\ k[sEp] # <<>> /\ Head(k[sEp]).t = "ack" /\ ~sWait
     /\ acked' = Max(acked, Head(k[sEp]).n) /\ k' = [k EXCEPT ![sEp] = Tail(@)]
     /\ UNCHANGED <<decider, st, d, sEp, sWait, hi, nxt, moves, sends>> /\ UNCHANGED <<rVars, endVars, pathVars>>
+    /\ UNCHANGED closeVars
 \* S takes R's ABORT: on its stream, or (decider R) on a newer one R opened.
 STakeAbort ==
     \E e \in DOMAIN k :
@@ -250,6 +282,7 @@ STakeAbort ==
         /\ sGone' = TRUE /\ sEp' = e /\ k' = [k EXCEPT ![e] = Tail(@)]
         /\ UNCHANGED <<decider, st, d, sWait, hi, nxt, acked, ab, rGone, endSends, abSends, moves, sends>>
         /\ UNCHANGED <<rVars, pathVars>>
+        /\ UNCHANGED closeVars
 \* S reset the session and R (the decider) opened a newer stream: S answers
 \* its RESUME with the ABORT.
 SAnswerAbort ==
@@ -261,6 +294,7 @@ SAnswerAbort ==
         /\ abSends' = abSends + 1
         /\ UNCHANGED <<decider, st, sWait, hi, nxt, acked, ab, sGone, rGone, endSends, moves, sends>>
         /\ UNCHANGED <<rVars, pathVars>>
+        /\ UNCHANGED closeVars
 
 \* --- R --------------------------------------------------------------------
 \* R takes the OPEN of a newer stream (decider S): it reads only that one
@@ -276,6 +310,7 @@ TakeOpen ==
         /\ rEp' = e /\ rAck' = RResume
         /\ UNCHANGED <<decider, st, rcvd, rEnds, out, ab, sGone, rGone, endSends, moves, sends>>
         /\ UNCHANGED <<sVars, pathVars>>
+        /\ UNCHANGED closeVars
 \* R takes the next frame of its stream: the stream has no offsets, so a
 \* byte is byte rcvd, an END the end of the direction, an ABORT the reset.
 \* Mutant "read-stale": R reads a stream it left too.
@@ -289,6 +324,7 @@ RecvOn(e) ==
     /\ d' = [d EXCEPT ![e] = Tail(@)]
     /\ UNCHANGED <<decider, st, k, rEp, rAck, ab, sGone, endSends, abSends, moves, sends>>
     /\ UNCHANGED <<sVars, pathVars>>
+    /\ UNCHANGED closeVars
 Recv == RecvOn(rEp)
 RecvStale == Mutant = "read-stale" /\ \E e \in 1..(rEp - 1) : RecvOn(e)
 \* R acknowledges what it took, on its stream.
@@ -296,6 +332,52 @@ Ack ==
     /\ RLive /\ RPos > rAck /\ ~st[rEp].dead
     /\ k' = [k EXCEPT ![rEp] = Append(@, [t |-> "ack", n |-> RPos])] /\ rAck' = RPos
     /\ UNCHANGED <<decider, st, d, rEp, rcvd, rEnds, out, moves, sends>> /\ UNCHANGED <<sVars, endVars, pathVars>>
+    /\ UNCHANGED closeVars
+
+\* --- the close (lane PSCLOSE) ------------------------------------------
+Fin == [t |-> "fin"]
+\* the end's view of the direction is complete
+SDone == acked = Total + 1
+RDone == rEnds > 0 /\ rAck = RPos
+\* An end complete in its view ends its stream with FIN after its last
+\* frame and leaves; the decider only once it took the peer's FIN on that
+\* stream. Mutant "leave-at-complete": the decider does not wait for it
+\* (its last ACK may then be lost with a path, and nobody opens another).
+Waits(x) == decider = x /\ Mutant # "leave-at-complete"
+SFin ==
+    /\ SLive /\ SDone /\ sFin # sEp /\ ~st[sEp].dead /\ (Waits("S") => sGot = sEp)
+    /\ d' = [d EXCEPT ![sEp] = Append(@, Fin)] /\ sFin' = sEp /\ sLeft' = TRUE
+    /\ UNCHANGED <<decider, st, k, rFin, sGot, rGot, rLeft, moves, sends, answers>> /\ UNCHANGED <<sVars, rVars, endVars, pathVars>>
+RFin ==
+    /\ RLive /\ RDone /\ rFin # rEp /\ ~st[rEp].dead /\ (Waits("R") => rGot = rEp)
+    /\ k' = [k EXCEPT ![rEp] = Append(@, Fin)] /\ rFin' = rEp /\ rLeft' = TRUE
+    /\ UNCHANGED <<decider, st, d, sFin, sGot, rGot, sLeft, moves, sends, answers>> /\ UNCHANGED <<sVars, rVars, endVars, pathVars>>
+\* The decider, complete, takes the peer's FIN on its stream.
+STakeFin ==
+    /\ SLive /\ decider = "S" /\ SDone /\ k[sEp] # <<>> /\ Head(k[sEp]).t = "fin"
+    /\ k' = [k EXCEPT ![sEp] = Tail(@)] /\ sGot' = sEp
+    /\ UNCHANGED <<decider, st, d, sFin, rFin, rGot, sLeft, rLeft, moves, sends, answers>> /\ UNCHANGED <<sVars, rVars, endVars, pathVars>>
+RTakeFin ==
+    /\ RLive /\ decider = "R" /\ RDone /\ d[rEp] # <<>> /\ Head(d[rEp]).t = "fin"
+    /\ d' = [d EXCEPT ![rEp] = Tail(@)] /\ rGot' = rEp
+    /\ UNCHANGED <<decider, st, k, sFin, rFin, sGot, sLeft, rLeft, moves, sends, answers>> /\ UNCHANGED <<sVars, rVars, endVars, pathVars>>
+\* An end that left answers a newer stream the decider opened with its
+\* count (R: the RESUME) and FIN.
+RLeftAnswer ==
+    \E e \in DOMAIN d :
+        /\ rLeft /\ ~rGone /\ e > rEp /\ d[e] # <<>> /\ Head(d[e]).t = "open"
+        /\ d' = [d EXCEPT ![e] = Tail(@)]
+        /\ k' = [k EXCEPT ![e] = @ \o <<[t |-> "resume", n |-> RResume], Fin>>]
+        /\ rEp' = e /\ rFin' = e /\ answers' = answers + 1
+        /\ UNCHANGED <<decider, st, rcvd, rEnds, rAck, out, sFin, sGot, rGot, sLeft, rLeft, moves, sends>>
+        /\ UNCHANGED <<sVars, endVars, pathVars>>
+SLeftAnswer ==
+    \E e \in DOMAIN k :
+        /\ sLeft /\ ~sGone /\ e > sEp /\ k[e] # <<>> /\ Head(k[e]).t = "resume"
+        /\ k' = [k EXCEPT ![e] = Tail(@)] /\ d' = [d EXCEPT ![e] = Append(@, Fin)]
+        /\ sEp' = e /\ sFin' = e /\ answers' = answers + 1
+        /\ UNCHANGED <<decider, st, sWait, hi, nxt, acked, rFin, sGot, rGot, sLeft, rLeft, moves, sends>>
+        /\ UNCHANGED <<rVars, endVars, pathVars>>
 
 Next ==
     \/ \E h \in {"peer", "rogue"} : Offer(h)
@@ -304,6 +386,7 @@ Next ==
     \/ \E x \in {"S", "R"} : AbortBy(x)
     \/ Write \/ Send \/ SendEndEarly \/ SendStale \/ Resume \/ TakeAck \/ STakeAbort \/ SAnswerAbort
     \/ TakeOpen \/ Recv \/ RecvStale \/ Ack
+    \/ SFin \/ RFin \/ STakeFin \/ RTakeFin \/ RLeftAnswer \/ SLeftAnswer
 
 \* Every step of the ends is taken while enabled; the relay is redialled;
 \* a decider whose stream ended falls back. Moves, offers, deaths and
@@ -314,6 +397,8 @@ Fairness ==
     /\ WF_vars(STakeAbort) /\ WF_vars(SAnswerAbort)
     /\ WF_vars(TakeOpen) /\ WF_vars(Recv) /\ WF_vars(Ack) /\ WF_vars(Revive)
     /\ WF_vars(\E p \in Paths : Fallback(p))
+    /\ WF_vars(SFin) /\ WF_vars(RFin) /\ WF_vars(STakeFin) /\ WF_vars(RTakeFin)
+    /\ WF_vars(RLeftAnswer) /\ WF_vars(SLeftAnswer)
 
 Spec == Init /\ [][Next]_vars /\ Fairness
 
@@ -324,6 +409,7 @@ TypeOK ==
     /\ 0 <= acked /\ acked <= Sendable /\ hi <= Total /\ nxt <= Sendable
     /\ rcvd = Len(out) /\ rEnds \in Nat
     /\ ab \in {"none", "S", "R"} /\ sGone \in BOOLEAN /\ rGone \in BOOLEAN
+    /\ {sFin, rFin, sGot, rGot} \subseteq 0..Len(st) /\ sLeft \in BOOLEAN /\ rLeft \in BOOLEAN /\ answers \in Nat
 \* R delivers bytes 0, 1, 2, ... once each, in order: none lost, none
 \* twice, none out of place (at a switch or ever).
 InOrder == \A i \in 1..Len(out) : out[i] = i - 1
@@ -340,9 +426,16 @@ EndOnce == rEnds <= 1
 \* Every byte and the END arrive and S frees them all, if paths stop dying
 \* (they do here: MaxDie), or the session's reset reached both ends. TLC
 \* runs with -deadlock: a stuck state violates this.
-AllDelivered == <>(Clean \/ (sGone /\ rGone))
-\* A reset, across any switch, reaches both ends.
-ResetReaches == (ab # "none") ~> (sGone /\ rGone)
+AllDelivered == <>(Clean \/ ((sGone \/ sLeft) /\ (rGone \/ rLeft)))
+\* A reset, across any switch, reaches both ends (or an end that had left).
+ResetReaches == (ab # "none") ~> ((sGone \/ sLeft) /\ (rGone \/ rLeft))
+\* The decider (the one end that can open a stream) leaves only once the
+\* direction is clean: the peer has every byte, the END and its count.
+LeaveLast == (IF decider = "S" THEN sLeft ELSE rLeft) => Clean
+\* Both ends leave (Close, then Done) after a clean end, across any path
+\* switch and death, unless the session was reset: no end waits out a
+\* bound while both live (lane PSCLOSE).
+CloseEnds == <>((sLeft /\ rLeft) \/ ab # "none")
 
 \* Witnesses (spec-mutants: TLC must violate each).
 \* every byte delivered, the last ones on the direct path
@@ -363,4 +456,7 @@ WitnessEndResent == ~(Clean /\ endSends > 1)
 WitnessResetAcross == ~(sGone /\ rGone /\ abSends > 1)
 \* the reset reached both ends on the direct path
 WitnessResetDirect == ~(sGone /\ rGone /\ st[rEp].path = "direct" /\ st[sEp].path = "direct")
+\* both ends left, the decider after it opened a stream to the end that
+\* had left (that end's FIN lost with a path) and took its answer
+WitnessLeftAnswer == ~(sLeft /\ rLeft /\ answers > 0)
 =============================================================================

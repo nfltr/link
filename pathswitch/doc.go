@@ -24,7 +24,11 @@
 // stream; the client resets the streams it left once both counts are in.
 // A direction's end is END after its last byte, kept and resent like a
 // byte; ABORT is the session's reset, which the aborter sends again on
-// every stream the session opens until the peer answered it.
+// every stream the session opens until the peer answered it. A clean end
+// (Close at both ends) ends the current stream with FIN at each end: the
+// server's once it has everything, the client's only after the server's,
+// since the client alone can open another stream for it (a server that
+// left answers one with its count and FIN).
 //
 // Wire: one type byte, then uvarints.
 //
