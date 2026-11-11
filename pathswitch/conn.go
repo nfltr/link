@@ -633,27 +633,62 @@ func (c *Conn) next(ps *pstream, wbuf []byte) ([]byte, bool) {
 			return nil, false
 		}
 		if c.ab == abNone {
-			if c.ackDue() {
-				c.rAck = c.rpos()
-				c.trace("Ack", c.end(c.client), ps.epoch, c.rAck, "")
-				return appendCount(wbuf[:0], fAck, c.rAck), true
-			}
-			if !c.sWait && c.nxt < c.sendable() {
-				if c.nxt == c.hi {
-					c.nxt++
-					c.trace("SendEnd", c.end(c.client), ps.epoch, 0, "")
-					return appendCount(wbuf[:0], fEnd, c.hi), true
-				}
-				k := min(c.hi-c.nxt, maxFrame)
-				off := c.nxt - c.acked
-				f := appendData(wbuf[:0], c.buf.bytes()[off:off+k])
-				c.nxt += k
-				c.traceN("Send", c.end(c.client), ps.epoch, k)
+			if f, ok := c.frame(ps, wbuf[:0]); ok {
 				return f, true
 			}
 		}
 		c.cond.Wait()
 	}
+}
+
+// writeBatch: the most bytes of frames a writer sends with one Write (and
+// a frame more), and at most a quarter window, so that an ACK waits for
+// no longer write than that.
+const writeBatch = 256 << 10
+
+// batches: the writers' batch buffers (more), each held only while its
+// batch is written, so that an idle stream or one just opened holds none.
+var batches = sync.Pool{New: func() any { b := make([]byte, 0, writeBatch+maxFrame+16); return &b }}
+
+// more appends to b the frames ps may send now without waiting (under
+// c.mu), so that its writer sends them with one Write: one wake of the
+// writer and one stream Write per batch instead of per 16 KiB frame
+// (docs/performance.md in this repository "pathswitch: a writer sends
+// what it may in one Write"; guard TestWriterBatchesFrames).
+func (c *Conn) more(ps *pstream, b []byte) []byte {
+	lim := int(min(writeBatch, c.w/4)) // #nosec G115 -- at most writeBatch
+	for len(b) < lim && ps == c.cur && !ps.ended && !ps.dead && len(ps.ctrl) == 0 && !c.gone && c.ab == abNone {
+		f, ok := c.frame(ps, b)
+		if !ok {
+			break
+		}
+		b = f
+	}
+	return b
+}
+
+// frame appends to b the ACK, DATA or END ps may send now, if any (spec
+// Ack, Send, SendEnd).
+func (c *Conn) frame(ps *pstream, b []byte) ([]byte, bool) {
+	if c.ackDue() {
+		c.rAck = c.rpos()
+		c.trace("Ack", c.end(c.client), ps.epoch, c.rAck, "")
+		return appendCount(b, fAck, c.rAck), true
+	}
+	if c.sWait || c.nxt >= c.sendable() {
+		return b, false
+	}
+	if c.nxt == c.hi {
+		c.nxt++
+		c.trace("SendEnd", c.end(c.client), ps.epoch, 0, "")
+		return appendCount(b, fEnd, c.hi), true
+	}
+	k := min(c.hi-c.nxt, maxFrame)
+	off := c.nxt - c.acked
+	b = appendData(b, c.buf.bytes()[off:off+k])
+	c.nxt += k
+	c.traceN("Send", c.end(c.client), ps.epoch, k)
+	return b, true
 }
 
 func (c *Conn) writeLoop(ps *pstream) {
@@ -665,13 +700,19 @@ func (c *Conn) writeLoop(ps *pstream) {
 			c.mu.Unlock()
 			return
 		}
+		var bp *[]byte
+		if f != nil {
+			bp = batches.Get().(*[]byte)
+			f = c.more(ps, append((*bp)[:0], f...))
+		}
 		c.mu.Unlock()
 		var err error
 		if f == nil {
 			err = ps.s.CloseWrite()
 		} else {
 			_, err = ps.s.Write(f)
-			wbuf = f
+			*bp = f[:0]
+			batches.Put(bp)
 		}
 		c.mu.Lock()
 		if f == nil {

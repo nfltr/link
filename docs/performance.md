@@ -508,6 +508,51 @@ does not show in the window-bound throughput runs. Evidence:
 Guard: `TestCreditOpenMakesNoWakeChannel` (an Open allocates its credit
 alone); `TestConcurrentAcquiresShareAGrant` for the fix.
 
+## pathswitch: a writer sends what it may in one Write (2026-11-11, lane PATHPERF, unreleased)
+
+- **Where**: `pathswitch/conn.go`: `more`, `frame`, `batches`, `writeLoop`.
+- **Why it was slow**: a stream's writer took one frame (at most 16 KiB of
+  DATA) per wake and wrote it with one stream `Write`, so every 16 KiB
+  cost a park and wake of the writer and a `Write` into the link session,
+  each a handoff to link's own goroutines. 70 to 77 % of the CPU of
+  `BenchmarkPathswitchRelayed` was the scheduler parking and waking threads
+  (`pthread_cond_wait`/`signal`); the path layer moved 2.2 GiB/s over a
+  session that alone moves 10.1 (the DIRECTPATH2 baseline,
+  `~/nfltr-evidence/profiles/2026-11-11-DIRECTPATH2/`, measured 0.9 against
+  3.4 before link v0.12.8 and go1.27.4).
+- **What it does now**: once woken, the writer appends every frame it may
+  send now (ACK, DATA, END; `frame`, the same choice in the same order as
+  `next` made one at a time) to one batch of at most `writeBatch` (256 KiB)
+  and at most a quarter window, and writes it with one `Write`. The batch
+  buffer comes from a `sync.Pool` and goes back after the write, so an idle
+  stream holds none. Frames, their order, and each step's trace line (under
+  `c.mu`, in the order the frames are put on the stream) are unchanged.
+- **Tried and left**: a condition variable per stream's writer, woken only
+  when it may have a frame (no broadcast on every `Read` and DATA), and
+  taking every frame already read ahead under one lock: in quick
+  interleaved runs (3 to 4 rounds) no clear gain alone, and with the
+  batching both slower than the batching alone (6.6 against 7.1 GiB/s),
+  so neither landed.
+- **Gain**: the base (link 9d62711) and new test binaries interleaved, 8
+  rounds, GOMAXPROCS=4, load average 3.2 to 4.6:
+  `BenchmarkPathswitchRelayed` 2.16 -> 6.70 GiB/s (+210 %, p=0.000),
+  285.6 -> 172.5 KiB/op (-40 %), 144.5 -> 81.5 allocs/op (-44 %);
+  `BenchmarkPathswitchMoves` (a move every 8 MiB) 2.11 -> 6.58 GiB/s
+  (+212 %), 1.26 -> 1.13 MiB/op (-10.5 %), 507 -> 459.5 allocs/op (-9 %);
+  `BenchmarkRelayedLinkSession` (link alone) no change (p=0.16). The path
+  layer now costs a third of the link session's throughput (6.7 of 10.0
+  GiB/s), not four fifths. Evidence:
+  `~/nfltr-evidence/profiles/2026-11-11-PATHPERF/` (benchstat.txt, ab/,
+  base-profiles/, after-profiles/).
+- **Guarantee at risk**: no byte lost, duplicated or reordered across
+  moves, the window, END once, reset reaching both ends: every pathswitch
+  test x20 under `-race`, and `make spec-traces` (the traces against
+  `spec/TraceDirectPath.tla`).
+- **Guard**: `TestWriterBatchesFrames` (1 MiB written at once leaves in
+  at most 16 stream Writes; 64 at the base, 4 now).
+- **Don't undo**: no stream `Write` per frame. A new frame kind the writer
+  may send at once goes through `frame`, so `more` batches it too.
+
 ## What was looked at and left
 
 - **TLS writes**: link writes a coalesced batch with one `Write` on the

@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -294,5 +295,38 @@ func TestCleanClose(t *testing.T) {
 	}
 	if d := time.Since(start); d > time.Second {
 		t.Fatalf("Close took %v", d)
+	}
+}
+
+// countStream counts its Writes.
+type countStream struct {
+	*memStream
+	writes atomic.Int64
+}
+
+func (s *countStream) Write(b []byte) (int, error) { s.writes.Add(1); return s.memStream.Write(b) }
+
+// The writer sends what it may in one Write (more, docs/performance.md
+// "pathswitch: a writer sends what it may in one Write"): 1 MiB written at
+// once goes out in a few stream Writes, not one per 16 KiB frame (64
+// before).
+func TestWriterBatchesFrames(t *testing.T) {
+	a, b := memPair()
+	cs := &countStream{memStream: a}
+	c, s := Client(cs, "relay", Config{}), Server(b, "relay", Config{})
+	t.Cleanup(func() { c.Abort(); s.Abort() })
+	p := payload(1<<20, 3)
+	done := make(chan error, 1)
+	go func() { _, err := c.Write(p); done <- err }()
+	got := make([]byte, len(p))
+	if _, err := io.ReadFull(s, got); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	checkBytes(t, "server", got, p, nil)
+	if n := cs.writes.Load(); n > 16 {
+		t.Fatalf("1 MiB took %d stream Writes, want at most 16 (64 frames of 16 KiB)", n)
 	}
 }
