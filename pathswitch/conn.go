@@ -163,7 +163,10 @@ func (c *Conn) Epoch() uint64 {
 }
 
 // Done is closed once the session is over: both directions ended and
-// acknowledged, reset (either end), or detached past Config.Detach.
+// acknowledged, reset (either end), or detached past Config.Detach. After
+// a clean end it waits for this end's last ACK and FIN to be written (at
+// most Config.Detach), so that a caller dropping the stream on Done does
+// not leave the peer waiting for that ACK (guard TestDoneAfterTheLastAck).
 func (c *Conn) Done() <-chan struct{} { return c.done }
 
 // Path returns the path of the session's current stream.
@@ -312,7 +315,11 @@ func (c *Conn) shutdown(clean bool) {
 		return
 	}
 	c.gone = true
-	close(c.done)
+	if clean && !c.cur.dead {
+		time.AfterFunc(c.cfg.Detach, func() { c.mu.Lock(); c.closeDone(); c.mu.Unlock() })
+	} else {
+		c.closeDone()
+	}
 	c.fail(ErrReset)
 	if c.detach != nil {
 		c.detach.Stop()
@@ -325,6 +332,15 @@ func (c *Conn) shutdown(clean bool) {
 	}
 	c.old = nil
 	c.cond.Broadcast()
+}
+
+// closeDone closes done once (under c.mu).
+func (c *Conn) closeDone() {
+	select {
+	case <-c.done:
+	default:
+		close(c.done)
+	}
 }
 
 func (c *Conn) release(ps *pstream) {
@@ -715,6 +731,9 @@ func (c *Conn) writeLoop(ps *pstream) {
 	for {
 		f, ok := c.next(ps, wbuf)
 		if !ok {
+			if c.gone && ps == c.cur {
+				c.closeDone()
+			}
 			c.mu.Unlock()
 			return
 		}
@@ -737,6 +756,7 @@ func (c *Conn) writeLoop(ps *pstream) {
 			if err != nil {
 				c.release(ps)
 			}
+			c.closeDone() // the last ACK and FIN are written
 			// the peer's FIN or a reset ends the reader; a peer that
 			// never sends it is reset after the detach bound
 			time.AfterFunc(c.cfg.Detach, func() { c.mu.Lock(); c.release(ps); c.mu.Unlock() })

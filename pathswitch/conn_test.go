@@ -301,6 +301,35 @@ func TestCleanClose(t *testing.T) {
 	waitDone(t, h.s)
 }
 
+// Done after a clean Close: each end's last ACK and FIN are written by
+// then (or the peer's FIN came first, the peer done: the stream reset), so
+// that a caller that drops the stream on Done (a process that
+// exits) does not leave its peer waiting out Detach for that ACK (lane
+// DIRECTPATH3, relay's leakcheck after spec-bindings).
+func TestDoneAfterTheLastAck(t *testing.T) {
+	for i := range 50 {
+		h := newHarness(t, 64, true)
+		a, b := payload(200, 16), payload(200, 17)
+		gs, gc, es, ec := h.transfer(a, b, 50, nil)
+		checkBytes(t, "server", gs, a, es)
+		checkBytes(t, "client", gc, b, ec)
+		go func() { _ = h.s.Close() }()
+		go func() { _ = h.c.Close() }()
+		for _, e := range []struct {
+			c *Conn
+			p *pipe
+		}{{h.c, h.str[0].cl.w}, {h.s, h.str[0].sv.w}} {
+			waitDone(t, e.c)
+			e.p.mu.Lock()
+			fin := e.p.fin || e.p.broken
+			e.p.mu.Unlock()
+			if !fin {
+				t.Fatalf("run %d: Done before the stream's FIN", i)
+			}
+		}
+	}
+}
+
 // waitDone: Done is closed once the session is over.
 func waitDone(t *testing.T, c *Conn) {
 	t.Helper()
