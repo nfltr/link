@@ -326,11 +326,13 @@ closed whole (a client still writing is never left on a half-open
 session). Mutants: `close-at-write-fail` (the code before, caught by
 `TailDelivered`), `no-whole` (the failed write leaves A to a half close,
 caught by `AClosedInTheEnd`). Witnesses: `WitnessFailFirst`,
-`WitnessHalfThenWhole`. Guards: `TestJoinWholeCloseDeliversTheTail` in
-`link` and in `peerlink` (both failed before, 5 of 5: the client read
-the first window, or nothing, then EOF). Open: the joint's trace
-recorder logs no `over`/`whole` step yet, so `TraceJoin.tla` does not
-check this path.
+`WitnessHalfThenWhole`. Guards: `link` `TestJoinWholeCloseDeliversTheTail`
+and `peerlink` `TestPeerWholeCloseDeliversTheTail` (both failed before,
+5 of 5: the client read the first window, or nothing, then EOF). Open:
+the joint's trace recorder logs no step of this path (a failed write,
+`over`, `whole`), so no trace is checked against `JoinClose.tla`, and
+`TraceJoin.tla` (whose `Join.tla` leaves the whole close out) would
+reject one: the peerlink guard is outside spec-traces' `^TestJoin`.
 
 ## Join's clean end (Join.tla, 2026-11-03, lane SPECTRIM)
 
@@ -843,7 +845,7 @@ session):
 Unmapped code, outside `Join.tla` on purpose: `Forward`'s answer wait
 (`pending`, `held`, `answered`: an onward hop, not a plain Join), a write
 deadline's abort of both sides, and the peer's whole close (`cleanClose`:
-Join 6, decided). The joint's fields are in package `peerlink`, not
+Join 6, decided; modelled since in `JoinClose.tla`, above). The joint's fields are in package `peerlink`, not
 covered by `TestSpecWritesMapped`.
 
 ## Conformance (lane CONFORM-link, 2026-11-04)

@@ -15,14 +15,16 @@ import (
 	"github.com/nfltr/link/peerlink"
 )
 
-// TestJoinWholeCloseDeliversTheTail: the agent writes its tail and closes
+// TestPeerWholeCloseDeliversTheTail (not TestJoin*: spec-traces checks
+// those against TraceJoin.tla, which leaves the whole close to
+// JoinClose.tla, untraced): the agent writes its tail and closes
 // the session whole (a TLS server's alert, then its close); the client,
 // not reading yet, writes a byte whose write onto the session fails. The
 // client then reads the whole tail, then EOF: the failed write does not
 // close the client before the other direction wrote the tail to it
 // (spec/JoinClose.tla TailDelivered, mutant close-at-write-fail; nfltr
 // lane REFUSALFLAKE: a refused client read EOF without the alert).
-func TestJoinWholeCloseDeliversTheTail(t *testing.T) {
+func TestPeerWholeCloseDeliversTheTail(t *testing.T) {
 	tail := bytes.Repeat([]byte("alert"), 1000)
 	ln, rn := tcpPair(t)
 	ctx := context.Background()

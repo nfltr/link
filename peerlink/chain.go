@@ -461,7 +461,7 @@ func (j *joint) ended(i int, n int64, err, werr error) {
 			// dst's peer closed it whole: src's close waits for the
 			// other direction's last bytes to src (it ends src, and
 			// finish closes both; spec/JoinClose.tla TailDelivered,
-			// TestJoinWholeCloseDeliversTheTail)
+			// TestJoinWholeCloseDeliversTheTail, TestPeerWholeCloseDeliversTheTail)
 			if !j.failed() && j.otherOver(i) {
 				_ = src.Close()
 			}
