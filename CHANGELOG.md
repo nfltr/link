@@ -24,7 +24,12 @@ version 2 unless an entry says otherwise.
   against the model (spec/TraceDirectPath.tla). Guards: the tests of
   `pathswitch/conn_test.go`, one per invariant. `Conn.Done`, closed once
   the session is over (lane DIRECTPATH3: a TLS session above it ends
-  with it).
+  with it). The end that takes the peer's ABORT ends its stream with a
+  FIN after its answer, never a reset that could drop the answer unread
+  (the aborter then lingered and opened another stream, a step the model
+  has not: `make spec-traces` rejected about 1 run in 3 of
+  `TestResetReachesFromClient`); one whose answer's stream died first
+  releases the session at once.
 
 - quiclink (`peerlink/quiclink`): `Config.Transport`, a `quic.Transport`
   the caller shares (one UDP socket for the agent link to the relay, the

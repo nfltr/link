@@ -495,6 +495,10 @@ func (c *Conn) streamEnded(ps *pstream, err error) {
 	if !cur || c.gone || c.clean() {
 		return // a stream left, or the session's end (the peer's FIN)
 	}
+	if c.ab == abPeer {
+		c.shutdown(false) // its answer's stream died first: nothing lingers here
+		return
+	}
 	if c.ab == abNone || c.ab == abLocal {
 		d := c.cfg.Detach
 		c.detach = time.AfterFunc(d, func() {
@@ -622,6 +626,14 @@ func (c *Conn) next(ps *pstream, wbuf []byte) ([]byte, bool) {
 			return append(wbuf[:0], f...), true
 		}
 		if c.gone || c.ab == abPeer {
+			if c.ab == abPeer && !c.gone && ps == c.cur {
+				// The answer to the peer's ABORT went out (ctrl first): a FIN
+				// after it, never a reset, which could drop it unread and
+				// leave the aborter lingering to open another stream
+				// (spec-traces, TestResetReachesFromClient, lane DIRECTPATH3).
+				c.shutdown(true)
+				return nil, true
+			}
 			if ps == c.cur && c.gone && c.err == io.ErrClosedPipe {
 				if c.rpos() > c.rAck { // the peer's END acknowledged before the FIN
 					c.rAck = c.rpos()
