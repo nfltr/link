@@ -298,6 +298,40 @@ an `Open` logged after the close to the refusal). The interface's refused
 open is any failed Open (ErrGoAway, the connection's end), before any
 byte. Severity: low (model only).
 
+## A joint's side closed whole (JoinClose.tla, 2026-11-12, lane REFUSALFLAKE)
+
+nfltr's connect conformance `TestE2EE/exit_10` flaked on Linux: a client
+refused by an organisation service read EOF without the agent's TLS
+alert ("cut in transit", exit 6 for 10). The agent writes the alert,
+then closes its session whole; the relay's joint (`link.Join`, and
+`peerlink.Join` toward a plain conn) copies the alert toward the client
+while the client's own bytes (its last handshake flight's tail) go the
+other way. Once the agent's CLOSE is read, the write onto its session
+fails (`io.ErrClosedPipe`), and `ended` closed the client's side at
+once: the other direction, still writing the alert, failed and dropped
+it, and the client read a clean close without it. Silent loss of the
+peer's last bytes, whatever they are.
+
+Design: the failed write ends its direction only. The client's side is
+closed whole by the later of the two directions: by the other direction
+at its end (link's `ended`: `Close` rather than the half close it gives
+after the peer's FIN, `joint.whole`; peerlink's: its end, then `finish`
+closes both), or by the failing direction when the other ended first
+(`joint.over`). `JoinClose.tla` (`JoinClose.cfg`, `make spec` and
+`make spec-invariants`, 199 states, every action taken): B's peer writes
+K bytes, maybe its FIN, then its whole close; the joint's two directions;
+A's peer writes a byte and reads. Invariant `TailDelivered`: A's peer
+reads all K bytes before A's end. Liveness `AClosedInTheEnd`: A is
+closed whole (a client still writing is never left on a half-open
+session). Mutants: `close-at-write-fail` (the code before, caught by
+`TailDelivered`), `no-whole` (the failed write leaves A to a half close,
+caught by `AClosedInTheEnd`). Witnesses: `WitnessFailFirst`,
+`WitnessHalfThenWhole`. Guards: `TestJoinWholeCloseDeliversTheTail` in
+`link` and in `peerlink` (both failed before, 5 of 5: the client read
+the first window, or nothing, then EOF). Open: the joint's trace
+recorder logs no `over`/`whole` step yet, so `TraceJoin.tla` does not
+check this path.
+
 ## Join's clean end (Join.tla, 2026-11-03, lane SPECTRIM)
 
 relay-core finding 23: `peerlink.Join` of a client's TCP conn and a link
@@ -687,6 +721,7 @@ holds in a `Spec-Reviewed:` trailer).
 | `Pool.tla`, `TracePool.tla` | `Pool`: Min, Max, `Open`'s pick, dial and growth, `Drain`, `Close` | `pool.go`, `trace_pool_on.go` |
 | `QuicWatch.tla`, `MBTWatch.tla` | quiclink's liveness: `conn.watch`, `watchState.tick`, `keepAliveAfter`, QUIC's idle timeout as its backstop | `peerlink/quiclink/quiclink.go` |
 | `Join.tla`, `TraceJoin.tla` | `peerlink.Join`'s clean end (`Session.Sync`, hold, the watch) | `peerlink/chain.go`, `join.go`, `peerlink/trace_on.go` |
+| `JoinClose.tla` | a joint's side closed whole by its peer while the other side writes: who closes the other side, and when | `join.go`, `peerlink/chain.go` |
 | `CreditWaiters.tla` | senders waiting in `Credit.Acquire` on one session: the wait and `wakeAll` | `credit.go` |
 | `DirectPath.tla`, `TraceDirectPath.tla` | the path layer: OPEN, RESUME, ACK, END, ABORT, the window, `Move` and `Attach` | `pathswitch/conn.go`, `pathswitch/frame.go`, `pathswitch/trace_on.go` |
 
@@ -886,6 +921,7 @@ each checked here):
 | sessions end once both applications ended them; a closed connection goes down on both sides; a drained one closes | `SessionsEnd`, `ConnEnds`, `DrainEnds` (`Link.tla` liveness) |
 | a dead peer is declared within Interval + Timeout + 2 x Late of its last bytes, never a live one | `Liveness.tla` `DetectBound` (tight), `NoFalseDead`, `NeverEarly` |
 | `peerlink.Join`: a clean end to a plain conn only once the peer read its bytes and FIN; a dead link connection ends the conn however idle | `Join.tla` `NoSilentLoss`, `LostEnds` |
+| `Join` and `peerlink.Join`: a side closed whole by its peer has every byte it sent delivered to the other side before that side's close, and the other side is closed whole in the end | `JoinClose.tla` `TailDelivered`, `AClosedInTheEnd` |
 | a Pool: no session on a connection going away, within Max but Drain's make-before-break, Min held, every Open progresses and every waiting Open wakes, ErrFull only with the room full and no dial in flight, nothing left after Close | `Pool.tla` `NoSessionOnLeaving`, `MaxHolds`, `MakeBeforeBreak`, `MinHeld`, `OpensProgress`, `WaitWakes`, `FullOnlyAtMax`, `NoLeak`, `CloseEnds` |
 
 Not a guarantee (stated above, "The session interface"): a session that

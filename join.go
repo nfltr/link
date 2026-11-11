@@ -209,7 +209,13 @@ type joint struct {
 	err     error     // the Abort that ended it; nil: a clean end
 	pending bool      // Forward waits for the onward answer: direction 0's failure waits (held)
 	held    func()
-	moved   [2]atomic.Int64 // bytes written [0]->[1] and [1]->[0] (HopEvent.Moved)
+	over    [2]bool // direction i ended (ended took it)
+	// whole: a write onto the other side failed (its peer closed it whole)
+	// while the direction toward this side still ran: that direction's
+	// clean end closes this side whole, after its last byte
+	// (spec/JoinClose.tla TailDelivered, AClosedInTheEnd).
+	whole bool
+	moved [2]atomic.Int64 // bytes written [0]->[1] and [1]->[0] (HopEvent.Moved)
 }
 
 // movedBytes is HopEvent.Moved.
@@ -321,6 +327,7 @@ func (j *joint) ended(i int, n int64, err, werr error) {
 		j.mu.Unlock()
 		return
 	}
+	j.over[i] = true
 	j.mu.Unlock()
 	src, dst := j.s[i], j.s[1-i]
 	switch {
@@ -332,18 +339,40 @@ func (j *joint) ended(i int, n int64, err, werr error) {
 			a := &Abort{Code: CodeTimeout, Msg: "write deadline"}
 			j.abort(src, a)
 			_ = dst.AbortWith(a)
-		case !j.failed():
-			_ = src.Close() // dst's peer closed it: a full close
+		case !j.failed() && j.closeNow(i):
+			// dst's peer closed it whole: a full close of src, once the
+			// other direction wrote dst's last bytes to src (it closes
+			// src when it ends, else here: TestJoinWholeCloseDeliversTheTail)
+			_ = src.Close()
 		}
 	case err != nil:
 		j.abort(dst, abortFor(err))
 	case j.failed(): // ended by the other direction's abort
-	case src.peerHalf.Load():
+	case src.peerHalf.Load() && !j.closeWhole():
 		_ = dst.CloseWrite()
 	default:
 		_ = dst.Close()
 	}
 	j.finish()
+}
+
+// closeNow reports whether direction i, whose write failed because its
+// destination's peer closed it whole, closes its source now: when the
+// other direction ended already; else that one closes it whole (whole).
+func (j *joint) closeNow(i int) bool {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if !j.over[1-i] {
+		j.whole = true
+	}
+	return j.over[1-i]
+}
+
+// closeWhole: the other direction's write failed first (whole).
+func (j *joint) closeWhole() bool {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.whole
 }
 
 // finish counts a direction's end; after the last, HopEnded and done.

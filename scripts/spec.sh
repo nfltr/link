@@ -4,13 +4,13 @@
 
 # spec.sh check|mutants|traces: the TLA+ model of spec/ (spec/README.md).
 #   check    TLC on spec/Link.cfg, LinkDrain.cfg and LinkSess.cfg (no crash),
-#            LinkCrash.cfg, then spec/Pool.cfg, Liveness.cfg, Join.cfg and
-#            CreditWaiters.cfg, DirectPath.cfg:
+#            LinkCrash.cfg, then spec/Pool.cfg, Liveness.cfg, Join.cfg,
+#            JoinClose.cfg and CreditWaiters.cfg, DirectPath.cfg:
 #            every invariant and liveness property, and Refines.
 #   invariants  the same, Link's invariants only, Refines only on
 #            LinkCrash.cfg (CI's; Pool's liveness is checked too, seconds).
 #   nightly  Link.cfg with its crash: invariants and Refines.
-#   mutants  each Mutant of Link.tla, Pool.tla, Liveness.tla and Join.tla must be
+#   mutants  each Mutant of Link.tla, Pool.tla, Liveness.tla, Join.tla and JoinClose.tla must be
 #            caught (a TLC violation); each Mutant of Link.tla must also
 #            fail the session interface alone (Refines, LinkSession.tla),
 #            each witness must be violated, and each trace fixture of
@@ -222,7 +222,7 @@ check | invariants)
 	# PoolDrain (Min 2: a Drain failing halfway) and QuicWatchStops (two
 	# short stops, ~10 s) only in full: their mutants are CI's.
 	# PoolGrow: background growth (Max above Min).
-	pools="Pool PoolGrow PoolClient Liveness LivenessStarve QuicWatch QuicWatchPTO QuicWatchStarve Join CreditWaiters DirectPath DirectPathReset"
+	pools="Pool PoolGrow PoolClient Liveness LivenessStarve QuicWatch QuicWatchPTO QuicWatchStarve Join JoinClose CreditWaiters DirectPath DirectPathReset"
 	[ "$1" = invariants ] || pools="$pools PoolDrain QuicWatchStops DirectPathWide"
 	for m in $pools; do
 		echo "== $m.cfg"
@@ -257,7 +257,7 @@ mutants)
 		else
 			sed -e "s/$2/$3/" "spec/$1" >"$jw/Mutant.cfg"
 		fi
-		dl=; [ "$mod" != Liveness.tla ] && [ "$mod" != QuicWatch.tla ] && [ "$mod" != Join.tla ] && [ "$mod" != CreditWaiters.tla ] && [ "$mod" != DirectPath.tla ] && [ "$1" != PoolDrain.cfg ] || dl=-deadlock
+		dl=; [ "$mod" != Liveness.tla ] && [ "$mod" != QuicWatch.tla ] && [ "$mod" != Join.tla ] && [ "$mod" != JoinClose.tla ] && [ "$mod" != CreditWaiters.tla ] && [ "$mod" != DirectPath.tla ] && [ "$1" != PoolDrain.cfg ] || dl=-deadlock
 		if tlc "$jw/Mutant.cfg" "$mod" $dl >"$jw/m.out" 2>&1; then
 			echo "$3: not caught"
 			return 1
@@ -290,7 +290,7 @@ mutants)
 		# WitnessAct*: an action property (checked as a PROPERTY).
 		case $2 in WitnessAct*) kind=PROPERTY what="Action property" ;; *) kind=INVARIANT what=Invariant ;; esac
 		printf '%s %s\n' "$kind" "$2" >>"$jw/Witness.cfg"
-		dl=; [ "${3:-}" != Join.tla ] && [ "${3:-}" != Liveness.tla ] && [ "${3:-}" != QuicWatch.tla ] && [ "${3:-}" != CreditWaiters.tla ] && [ "${3:-}" != DirectPath.tla ] || dl=-deadlock
+		dl=; [ "${3:-}" != Join.tla ] && [ "${3:-}" != JoinClose.tla ] && [ "${3:-}" != Liveness.tla ] && [ "${3:-}" != QuicWatch.tla ] && [ "${3:-}" != CreditWaiters.tla ] && [ "${3:-}" != DirectPath.tla ] || dl=-deadlock
 		if tlc "$jw/Witness.cfg" "${3:-MCLink.tla}" $dl >"$jw/m.out" 2>&1; then
 			echo "$2: never violated (vacuous)"
 			return 1
@@ -490,6 +490,14 @@ mutants)
 	for w in WitnessDead WitnessLateAlive WitnessTight; do job witness Liveness.cfg $w Liveness.tla; done
 	job witness LivenessStarve.cfg WitnessStarved Liveness.tla
 	for w in WitnessClean WitnessReset WitnessHeld WitnessCleanDown WitnessDrained; do job witness Join.cfg $w Join.tla; done
+	# A joint's onward side closed whole while the origin writes
+	# (JoinClose.tla, nfltr lane REFUSALFLAKE): closing the origin at the
+	# failed write drops the other direction's tail (the code before);
+	# leaving it to a half close leaves the origin half open.
+	for m in close-at-write-fail no-whole; do
+		job mutant JoinClose.cfg 'Mutant = "none"' "Mutant = \"$m\"" JoinClose.tla
+	done
+	for w in WitnessFailFirst WitnessHalfThenWhole; do job witness JoinClose.cfg $w JoinClose.tla; done
 	# Credit's waiters (CreditWaiters.tla, lane LINKWAKE): the one-slot
 	# wake (the code before) strands a waiter and leaves its Acquire for
 	# good; passing the token on strands one that needs less (a stall

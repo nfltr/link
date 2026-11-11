@@ -282,6 +282,7 @@ type joint struct {
 	err     error
 	pending bool // Forward waits for the onward answer: direction 0's failure waits (held)
 	held    func()
+	over    [2]bool         // direction i ended (ended took it)
 	moved   [2]atomic.Int64 // bytes written [0]->[1] and [1]->[0] (HopEvent.Moved)
 	// syncing: a direction's CloseWrite onto a link session waits for its
 	// Sync; the other direction's clean end waits meanwhile (fin).
@@ -450,13 +451,18 @@ func (j *joint) ended(i int, n int64, err, werr error) {
 		j.mu.Unlock()
 		return
 	}
+	j.over[i] = true
 	j.mu.Unlock()
 	src, dst := j.c[i], j.c[1-i]
 	switch {
 	case werr != nil:
 		switch {
 		case cleanClose(werr):
-			if !j.failed() {
+			// dst's peer closed it whole: src's close waits for the
+			// other direction's last bytes to src (it ends src, and
+			// finish closes both; spec/JoinClose.tla TailDelivered,
+			// TestJoinWholeCloseDeliversTheTail)
+			if !j.failed() && j.otherOver(i) {
 				_ = src.Close()
 			}
 		case !errors.Is(werr, link.ErrConnClosed) && errors.Is(werr, os.ErrDeadlineExceeded):
@@ -487,6 +493,13 @@ func (j *joint) ended(i int, n int64, err, werr error) {
 		}
 	}
 	j.finish()
+}
+
+// otherOver reports whether the direction other than i ended.
+func (j *joint) otherOver(i int) bool {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.over[1-i]
 }
 
 // watch aborts src once the connection of the session its bytes go to
