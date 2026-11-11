@@ -208,6 +208,7 @@ func TestResetReachesFromServer(t *testing.T) {
 	if _, err := io.ReadAll(h.c); !errors.Is(err, ErrReset) {
 		t.Fatalf("client read: %v, want ErrReset", err)
 	}
+	waitDone(t, h.c)
 }
 
 // OnlyPeer is the binding check's (relay client/agent, the token); here:
@@ -295,6 +296,18 @@ func TestCleanClose(t *testing.T) {
 	}
 	if d := time.Since(start); d > time.Second {
 		t.Fatalf("Close took %v", d)
+	}
+	waitDone(t, h.c)
+	waitDone(t, h.s)
+}
+
+// waitDone: Done is closed once the session is over.
+func waitDone(t *testing.T, c *Conn) {
+	t.Helper()
+	select {
+	case <-c.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("Done not closed after the session ended")
 	}
 }
 

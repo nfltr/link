@@ -22,7 +22,9 @@ version 2 unless an entry says otherwise.
   `resume-drops-fin`, `abort-not-resent`), with a trace recorder
   (`-tags linktrace`) that `make spec-traces` checks per direction
   against the model (spec/TraceDirectPath.tla). Guards: the tests of
-  `pathswitch/conn_test.go`, one per invariant.
+  `pathswitch/conn_test.go`, one per invariant. `Conn.Done`, closed once
+  the session is over (lane DIRECTPATH3: a TLS session above it ends
+  with it).
 
 - quiclink (`peerlink/quiclink`): `Config.Transport`, a `quic.Transport`
   the caller shares (one UDP socket for the agent link to the relay, the

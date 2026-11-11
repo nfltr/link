@@ -86,8 +86,9 @@ type Conn struct {
 	rEnd       bool
 
 	ab     int
-	err    error // set once: why Read and Write fail
-	gone   bool  // the session's streams are released
+	err    error         // set once: why Read and Write fail
+	gone   bool          // the session's streams are released
+	done   chan struct{} // closed with gone
 	detach *time.Timer
 	tr     traceState
 }
@@ -116,7 +117,7 @@ func start(first Stream, path string, cfg Config, client bool) *Conn {
 	if cfg.Detach <= 0 {
 		cfg.Detach = 30 * time.Second
 	}
-	c := &Conn{cfg: cfg, w: uint64(cfg.Window), client: client, ep: 1} // #nosec G115 -- Window > 0 above
+	c := &Conn{cfg: cfg, w: uint64(cfg.Window), client: client, ep: 1, done: make(chan struct{})} // #nosec G115 -- Window > 0 above
 	c.cond = sync.NewCond(&c.mu)
 	ps := &pstream{s: first, r: bufio.NewReaderSize(first, 32<<10), epoch: 1, path: path}
 	c.cur = ps
@@ -160,6 +161,10 @@ func (c *Conn) Epoch() uint64 {
 	defer c.mu.Unlock()
 	return c.ep
 }
+
+// Done is closed once the session is over: both directions ended and
+// acknowledged, reset (either end), or detached past Config.Detach.
+func (c *Conn) Done() <-chan struct{} { return c.done }
 
 // Path returns the path of the session's current stream.
 func (c *Conn) Path() string {
@@ -307,6 +312,7 @@ func (c *Conn) shutdown(clean bool) {
 		return
 	}
 	c.gone = true
+	close(c.done)
 	c.fail(ErrReset)
 	if c.detach != nil {
 		c.detach.Stop()
