@@ -50,65 +50,66 @@ func readAll(c *Conn) chan error {
 // stream as soon as Done: the client is done only after the agent's FIN,
 // which says the agent has everything (spec/DirectPath.tla LeaveLast,
 // CloseEnds; lane PSCLOSE: relay's leakcheck found the agent's Close
-// waiting out the bound). In "die" the held path dies instead, and the
-// client opens another stream.
-func TestCloseAfterReattachEndsBeforeTheBound(t *testing.T) {
-	for _, then := range []string{"drop", "die"} {
-		t.Run(then, func(t *testing.T) {
-			h := reattached(t)
-			rs, rc := readAll(h.s), readAll(h.c)
-			if _, err := h.c.Write(payload(100, 1)); err != nil {
-				t.Fatal(err)
-			}
-			_ = h.c.CloseWrite()
-			if err := <-rs; err != nil {
-				t.Fatal(err)
-			}
-			waitFor(t, func() bool {
-				return retained(h.c) == 0 && func() bool { h.c.mu.Lock(); defer h.c.mu.Unlock(); return h.c.acked == h.c.hi+1 }()
-			})
-			st := h.cur()
-			st.cl.w.set(func(p *pipe) { p.stalled = true })      // the client's ACKs held
-			if _, err := h.s.Write(payload(20, 2)); err != nil { // within the window: no ACK needed
-				t.Fatal(err)
-			}
-			_ = h.s.CloseWrite()
-			if err := <-rc; err != nil {
-				t.Fatal(err)
-			}
-			start := time.Now()
-			go func() { _ = h.s.Close() }()
-			_ = h.c.Close()
-			select {
-			case <-h.c.Done(): // the caller drops the stream
-				st.cl.kill()
-			case <-time.After(time.Second):
-			}
-			switch then {
-			case "drop":
-				st.cl.w.set(func(p *pipe) { p.stalled = false })
-			case "die":
-				h.die("relay")
-			}
-			for _, c := range []*Conn{h.s, h.c} {
-				select {
-				case <-c.Done():
-				case <-time.After(3 * time.Second):
-					t.Fatalf("the %s's Done waits out the detach bound", c.end(c.client))
-				}
-			}
-			if d := time.Since(start); d > 2*time.Second {
-				t.Fatalf("Close took %v", d)
-			}
-			for _, c := range []*Conn{h.s, h.c} {
-				c.mu.Lock()
-				clean := c.err == io.ErrClosedPipe
-				c.mu.Unlock()
-				if !clean {
-					t.Fatalf("the %s's end is not clean", c.end(c.client))
-				}
-			}
-		})
+// waiting out the bound).
+func TestCloseAfterReattachEndsBeforeTheBound(t *testing.T) { closeAfterReattach(t, "drop") }
+
+// TestCloseAfterReattachPathDiesBeforeTheFIN: as above, the held path
+// dying instead.
+func TestCloseAfterReattachPathDiesBeforeTheFIN(t *testing.T) { closeAfterReattach(t, "die") }
+
+func closeAfterReattach(t *testing.T, then string) {
+	h := reattached(t)
+	rs, rc := readAll(h.s), readAll(h.c)
+	if _, err := h.c.Write(payload(100, 1)); err != nil {
+		t.Fatal(err)
+	}
+	_ = h.c.CloseWrite()
+	if err := <-rs; err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		return retained(h.c) == 0 && func() bool { h.c.mu.Lock(); defer h.c.mu.Unlock(); return h.c.acked == h.c.hi+1 }()
+	})
+	st := h.cur()
+	st.cl.w.set(func(p *pipe) { p.stalled = true })      // the client's ACKs held
+	if _, err := h.s.Write(payload(20, 2)); err != nil { // within the window: no ACK needed
+		t.Fatal(err)
+	}
+	_ = h.s.CloseWrite()
+	if err := <-rc; err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	go func() { _ = h.s.Close() }()
+	_ = h.c.Close()
+	select {
+	case <-h.c.Done(): // the caller drops the stream
+		st.cl.kill()
+	case <-time.After(time.Second):
+	}
+	switch then {
+	case "drop":
+		st.cl.w.set(func(p *pipe) { p.stalled = false })
+	case "die":
+		h.die("relay")
+	}
+	for _, c := range []*Conn{h.s, h.c} {
+		select {
+		case <-c.Done():
+		case <-time.After(3 * time.Second):
+			t.Fatalf("the %s's Done waits out the detach bound", c.end(c.client))
+		}
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("Close took %v", d)
+	}
+	for _, c := range []*Conn{h.s, h.c} {
+		c.mu.Lock()
+		clean := c.err == io.ErrClosedPipe
+		c.mu.Unlock()
+		if !clean {
+			t.Fatalf("the %s's end is not clean", c.end(c.client))
+		}
 	}
 }
 

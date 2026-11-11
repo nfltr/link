@@ -47,6 +47,7 @@ version 2 unless an entry says otherwise.
   `RLeftAnswer`, `SLeftAnswer`; invariant `LeaveLast`, liveness
   `CloseEnds`; mutant `leave-at-complete`), traced (`Fin`, `TakeFin`,
   `Attach` left). Guards `TestCloseAfterReattachEndsBeforeTheBound`,
+  `TestCloseAfterReattachPathDiesBeforeTheFIN`,
   `TestCloseLeftAnswersAReattach`.
 
 - quiclink (`peerlink/quiclink`): `Config.Transport`, a `quic.Transport`

@@ -1772,13 +1772,14 @@ both live); `AllDelivered` and `ResetReaches` count an end that left as
 done. A reset needs both ends present (`AbortBy` only before either left).
 
 `DirectPath.cfg` (3 bytes, window 2, each path dies once, one candidate,
-two moves, either decider, no reset): 333,496 distinct states, depth 47,
-7 s for the invariants (`make spec-invariants`). `DirectPathReset.cfg`
+two moves, either decider, no reset): 430,763 distinct states, depth 48
+(333,496 and 47 before the close, lane PSCLOSE), 3 min with the liveness
+properties, invariants only in `make spec-invariants`. `DirectPathReset.cfg`
 (2 bytes, window 2, each path dies once, one candidate, one move, a
-reset): 202,279 distinct states, depth 38, 3.5 min with both liveness
+reset): 221,178 distinct states, depth 38, 1.5 min with the liveness
 properties (`make spec`). `DirectPathWide.cfg` (`DirectPath.cfg` with two
-candidates, the rogue's then the peer's): 2,227,792 distinct states,
-depth 49, 75 s, invariants, in `make spec` only. `-coverage 1` takes every
+candidates, the rogue's then the peer's): 2,896,776 distinct states,
+depth 50, 2 min, invariants, in `make spec` only. `-coverage 1` takes every
 action on `DirectPathReset.cfg` and `DirectPath.cfg` (but `AbortBy`,
 `STakeAbort`, `SAnswerAbort` there: no reset); the three that only a
 mutant enables (`SendStale`, `RecvStale`, `SendEndEarly`) take none.
@@ -1793,9 +1794,10 @@ Mutants (`make spec-mutants`), each caught:
 | `resume-from-acked` | S resends from what it freed, not from R's RESUME: duplicates | `InOrder` |
 | `read-stale` | R still reads a stream it left | `InOrder` |
 | `no-bind` | the direct handshake takes whoever answers at the address: the relay redirects | `OnlyPeer` |
-| `keep-dead-path` | a dead direct path is kept, no fallback | `AllDelivered` |
+| `keep-dead-path` | a dead direct path is kept, no fallback | `AllDelivered`, `CloseEnds` |
 | `end-early` | S sends END once the application closed, before its last bytes went | `EndAfterData` |
 | `resume-drops-fin` | a RESUME leaves out the END R took: S sends it again and R takes it twice | `EndOnce` |
+| `leave-at-complete` | the decider (the client) leaves at its own FIN, not after the peer's: its last ACK lost with a path, the agent waits for a stream nobody opens (the code before lane PSCLOSE) | `LeaveLast`; `CloseEnds` without it |
 | `abort-not-resent` (`DirectPathReset.cfg`) | the ABORT goes once, on the aborter's stream: lost with a path or on a stream the peer left | `ResetReaches` |
 
 Witnesses (each violated): `WitnessDirect` (all delivered, the last on
@@ -1804,7 +1806,8 @@ delivered), `WitnessResent` (a byte sent on two streams, delivered once),
 `WitnessRogue` (another holder offered and refused), `WitnessFull` (the
 window full), `WitnessWithheld` (no candidate, a relay death, all
 delivered relayed), `WitnessEndResent` (the END sent on two streams,
-taken once); on `DirectPathReset.cfg`: `WitnessResetAcross` (the ABORT
+taken once), `WitnessLeftAnswer` (both ends left, the decider after an
+end that had left answered its new stream); on `DirectPathReset.cfg`: `WitnessResetAcross` (the ABORT
 sent again on a newer stream, known to both), `WitnessResetDirect` (the
 reset reached both ends on the direct path).
 
@@ -1819,7 +1822,14 @@ per direction (`Dir` `c2a`: the client is S; `a2c`: R), with `Total`, `W`
 and the bounds counted from the file (TLC would evaluate them per state).
 The physical OPEN carries both directions' steps: S's OPEN of `c2a` and
 R's RESUME of `a2c`; the server's `Attach` is R's `TakeOpen` of `c2a` and
-S's `Resume` (or, lingering, `SAnswerAbort`) of `a2c`. Not in the model:
+S's `Resume` (or, lingering, `SAnswerAbort`) of `a2c`; a server that
+left answers with `Attach` x `left`, `RLeftAnswer` of `c2a` and
+`SLeftAnswer` of `a2c`. An end's `Fin` is `SFin` of the direction it
+sends and `RFin` of the other; the client's `TakeFin` is `STakeFin` of
+`c2a` and `RTakeFin` of `a2c` (lane PSCLOSE: the close tests
+`TestCloseAfterReattachEndsBeforeTheBound`,
+`TestCloseAfterReattachPathDiesBeforeTheFIN`,
+`TestCloseLeftAnswersAReattach` are traced too). Not in the model:
 the ABORT a peer sends back on taking one (it ends the aborter's linger
 early), `Refuse` (no session: the trace has no server end). Fixtures
 `spec/traces/path-*` (`make spec-mutants`): two recorded runs accepted, an
