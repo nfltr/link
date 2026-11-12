@@ -246,7 +246,8 @@ func (c *Conn) CloseWrite() error {
 // Close ends the session: CloseWrite, then it waits (at most
 // Config.Detach) until the peer acknowledged every byte and the END. If
 // the peer's direction had not ended, or the wait ran out, the session is
-// reset (an ABORT, as TCP's RST); otherwise its streams end cleanly.
+// reset (an ABORT, as TCP's RST); otherwise its streams end cleanly. After
+// this end's Abort it returns at once and the reset lingers as Abort's.
 func (c *Conn) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -259,6 +260,12 @@ func (c *Conn) Close() error {
 		c.waitFor(c.cfg.Detach, func() bool { return c.err != nil || c.acked == c.hi+1 })
 	}
 	switch {
+	case c.ab == abLocal:
+		// this end reset the session: it lingers, answering the peer's
+		// streams with the ABORT, until the peer has it or Config.Detach
+		// (abort's timer; spec AbortBy, SAnswerAbort). A shutdown here
+		// dropped an ABORT still in flight with its stream, and the peer
+		// re-attached until its detach bound (TestAbortThenCloseLingers).
 	case c.err != nil:
 		c.shutdown(false)
 	case c.clean():

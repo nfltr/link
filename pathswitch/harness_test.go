@@ -93,6 +93,10 @@ type harness struct {
 	auto bool // the client falls back on its own (OnStreamEnd)
 	// refuse: the server's acceptor knows no session (Refuse)
 	refuse bool
+	// forget: the server's acceptor forgets the session once it is Done
+	// and resets a stream that names it, as a stranger's (relay's
+	// client/agent directServer)
+	forget bool
 }
 
 type hstream struct {
@@ -175,6 +179,10 @@ func (h *harness) accept(sv *memStream, p string) {
 	}
 	if h.refuse {
 		Refuse(o)
+		return
+	}
+	if h.forget && h.s.isDone() {
+		_ = sv.Reset()
 		return
 	}
 	if !bytes.Equal(o.Token, token(o.Epoch)) {

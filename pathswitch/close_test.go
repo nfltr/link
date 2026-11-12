@@ -4,6 +4,7 @@
 package pathswitch
 
 import (
+	"errors"
 	"io"
 	"testing"
 	"time"
@@ -152,5 +153,37 @@ func TestCloseLeftAnswersAReattach(t *testing.T) {
 	h.c.mu.Unlock()
 	if err != io.ErrClosedPipe {
 		t.Fatalf("the client's end: %v, want a clean end", err)
+	}
+}
+
+// An end that reset the session and then closed it (nfltr's revocation
+// cut: tlsend's Reset, then its Close) lingers as a reset end: its ABORT
+// lost with the dying path, the peer's next stream is answered with the
+// ABORT and the peer's session ends at once as reset, never by the detach
+// bound (spec AbortBy, SAnswerAbort, ResetReaches; lane REVOKEDIRECT: the
+// Close shut the session down at once, the agent forgot it and reset the
+// client's re-attaches until the bound).
+func TestAbortThenCloseLingers(t *testing.T) {
+	h := newHarness(t, 64, true)
+	h.forget = true
+	h.directUp()
+	h.move("direct")
+	waitFor(t, func() bool { return h.c.Path() == "direct" && h.s.Path() == "direct" })
+	rc := readAll(h.c)
+	h.cur().sv.w.set(func(p *pipe) { p.stalled = true }) // the agent's ABORT held
+	h.s.Abort()
+	_ = h.s.Close()
+	h.die("direct") // and lost: the client falls back to a relayed stream
+	start := time.Now()
+	select {
+	case err := <-rc:
+		if !errors.Is(err, ErrReset) {
+			t.Fatalf("the client's session ended with %v, want the reset", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the client's session did not take the reset")
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("the reset took %v", d)
 	}
 }
