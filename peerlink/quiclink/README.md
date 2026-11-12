@@ -212,3 +212,29 @@ session behind one loss; on long lossy paths it moves as much or more.
 On a short path it moves less (quic-go's recovery at 2 ms) and on a fast
 one it costs 2-2.5 times the CPU per byte on Linux and about 15 times on
 macOS (no UDP offloads there).
+
+### CPU per MB
+
+`BenchmarkBulkCPU` (`cpu_bench_test.go`): two Nodes in one process on
+loopback, 64 KiB writes, 1 and 8 sessions, as fast as they go or held to
+20 MB/s; `cpu-ms/MB` is the process's user + system CPU (both ends) per
+MB. Run old and new test binaries interleaved (`-test.count 1`, six
+rounds) and compare with `benchstat`. macOS, Apple M5, 10 CPUs, load
+10.8-18 (other work), medians of 6:
+
+| quic-go | link/TLS, 1 / 8 sessions | quiclink, 1 / 8 sessions | quiclink at 20 MB/s, 1 / 8 |
+|---|---|---|---|
+| fork 88368f5b | 1.05 / 1.09 ms | 18.8 / 19.6 ms, 231 / 235 MiB/s | 30.8 / 27.9 ms |
+| fork 05c187a2 (ACK decimation, inline send on darwin) | 1.06 / 1.11 ms | 11.5 / 13.1 ms, 276 / 270 MiB/s | 24.2 / 18.6 ms |
+
+Where it goes (CPU profile): sendmsg and recvmsg, one per 1452-byte
+packet, about half; the Go scheduler waking goroutines across the
+packet's handoffs (socket reader, connection loop, send queue, stream
+reader) and idle Ps spinning for them, most of the rest; QUIC itself
+(packing, AEAD, frames) about 5 %. Raw UDP on the same host costs 5.5 µs
+of CPU per packet, sender and receiver (sendmsg_x batches of 32: 4.3):
+about 4 ms per MB, already 3.5-4 times link's, so 1452-byte datagrams
+without offloads cannot reach 2-3 times. `GOMAXPROCS=2` on the same
+binary halves quiclink's CPU per MB (7.0 ms) at the same throughput; it
+is the process's choice, not this package's.
+
