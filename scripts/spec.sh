@@ -10,6 +10,8 @@
 #   invariants  the same, Link's invariants only, Refines only on
 #            LinkCrash.cfg (CI's; Pool's liveness is checked too, seconds).
 #   nightly  Link.cfg with its crash: invariants and Refines.
+#   nightly-wide  the configurations wider than make spec's: PoolWide.cfg,
+#            PoolClient.cfg with a third slot, LinkBoth.cfg, LinkCutHalf.cfg.
 #   mutants  each Mutant of Link.tla, Pool.tla, Liveness.tla, Join.tla and JoinClose.tla must be
 #            caught (a TLC violation); each Mutant of Link.tla must also
 #            fail the session interface alone (Refines, LinkSession.tla),
@@ -175,11 +177,16 @@ tlcrun() {
 
 case ${1:-} in
 nightly)
-	# Link.cfg with its crash: invariants and Refines (20 million states;
-	# its liveness with the crash is past any bound here).
+	# Link.cfg with its crash: invariants and Refines (45 million states,
+	# 35 min on the runner; its liveness with the crash is past any bound
+	# here).
 	echo "== Link.cfg (crash, invariants and Refines)"
 	sed -e '/^PROPERTIES/,$d' spec/Link.cfg >"$work/Link.cfg"
 	tlcrun "$work/Link.cfg"
+	;;
+nightly-wide)
+	# Its own nightly job: after spec and Link.cfg's crash (about 60 min on
+	# the runner) these (about 35 min) went past the job's 90 min bound.
 	# The Pool wider than Pool.cfg (review r2 L5): two Opens, Min below Max.
 	echo "== PoolWide.cfg"
 	st=0

@@ -567,7 +567,7 @@ ended both halves (README "The drop's split" below).
 `CutForget` 1,640, `CutSend` 787, `CutFlush` 2,303, `CutClose` 12,658,
 `CutEnd` 40,696, `CutReturn` 61,866 distinct states (every cut action
 taken). `LinkCutHalf.cfg` (with CloseWrite, `Ends {1, 3, 5}`): 2,931,298
-states, 2.5 min (`make spec-nightly`). `LinkDrain.cfg` no longer has the
+states, 2.5 min (`make spec-nightly-wide`). `LinkDrain.cfg` no longer has the
 cut (with it: past 6.4 million states): `Ends {0, 1}`, 299,581 states.
 
 **Traces**: the recorder writes `Cut` (n: the snapshot's size),
@@ -1032,7 +1032,7 @@ requires TLC to catch.
 | LinkSession 4: an application's `Abort` modelled as `Mux.cut`'s (kept open) | low | **decided** (lane CONFORM-link): a refusal drops (`End`); `Session.Abort`'s drop of an accepted session is the interface's either-or (drop or cut, `GEnds`), and `Link.tla` checks the cut, the one with more steps after it |
 | LinkSession 5: data after the peer's FIN is a protocol error in the model, dropped (and its charge kept) in the code | low | **decided**: keep both. The model's flag is how `write-race` and `turns-no-recheck` are caught (this side never sends it); the code tolerates a faulty or older peer (link before the F1 fix could send it in a race) rather than end every session on the connection; the charge it keeps is on a session whose reads have ended |
 | LinkSession 6: `GReads` allowed bytes at a side whose session is `none` | low | **fixed**: `GReads` requires the session not `none` |
-| LinkSession 7: configurations miss a listener-opened session, crossed opens, data both ways | low | **done** (lane CONFORM-link): `LinkBoth.cfg` (a session of each side opened at once, a byte each way on each, a FIN each way; invariants and `Refines`) in `make spec-nightly` |
+| LinkSession 7: configurations miss a listener-opened session, crossed opens, data both ways | low | **done** (lane CONFORM-link): `LinkBoth.cfg` (a session of each side opened at once, a byte each way on each, a FIN each way; invariants and `Refines`) in `make spec-nightly-wide` |
 | LinkSession 8: traces cover no answers (refusal code 4, `Drop`) | low | **done** (lane CONFORM-link): `Trace.tla` maps code 4 (W5-LINK); the refusal tests are traced, 29 refusals accepted ("Conformance") |
 | Join 2: a dead link connection does not end the joint while the client is idle | medium | **fixed** (lane CONFORM-link, C2): `joint.watch`, `LostEnds`, mutant `no-watch`, `TestJoinLostWhileTheClientIsIdle` |
 | Join 3: `link.Join` (two sessions, a forwarding hop) passes a FIN on without a sync | medium | **decided**: a clean end is per link: `Join.tla` models one link, `link.Join`'s doc says so; end to end over several hops needs the far end's answer (an application acknowledgement), not a sync per hop |
@@ -1045,7 +1045,7 @@ requires TLC to catch.
 | LINKREVIEW: the model's OPEN waits for no pending close, stricter than the code's ticket order | low | **decided**: a sound reduction. The code's OPEN may check while a close waits its turn, but that close's ticket is earlier, its credit is already forgotten (the count the check reads is the same) and it goes out first: the same frames in the same order. A trace with `OpenWait` between a `Forget` and its `Close` would be rejected (a false alarm, never a missed bug); no test logs one |
 | LINKREVIEW: the recorder logs steps the model lacks when a test closes mid-write | low | **decided** (lane CONFORM-link, C4): such tests are not traced; a step after `ConnClose` stays a rejection |
 | LINKPOOL L1: two Drains at once replace the same connections twice | low | **decided**: one at a time; `Pool.Drain`'s doc says so (a second Drain while one runs holds both sets of replacements beside the old ones) |
-| LINKPOOL L5: `Pool.cfg` is the smallest shape only | low | **done**: `PoolWide.cfg` (two Opens racing for the last of Max 2, Min 1) in `make spec-nightly`. It found that `OpensOpen` does not hold with two Opens: one that closes and opens again can take the room the other picked each time, and the other re-picks forever. **Decided**: the Pool promises progress, not fairness among Opens (`OpensProgress`); a queue of Opens is the fix if a starved Open is ever seen |
+| LINKPOOL L5: `Pool.cfg` is the smallest shape only | low | **done**: `PoolWide.cfg` (two Opens racing for the last of Max 2, Min 1) in `make spec-nightly-wide`. It found that `OpensOpen` does not hold with two Opens: one that closes and opens again can take the room the other picked each time, and the other re-picks forever. **Decided**: the Pool promises progress, not fairness among Opens (`OpensProgress`); a queue of Opens is the fix if a starved Open is ever seen |
 | LINKPOOL M5: background growth not modelled | medium | **done** (lane CONFORM-link): `gr`, `Pick`'s growth, `GrowDial`; `PoolGrow.cfg` in `make spec`, mutant `grow-past-max` |
 | LINKPOOL M6: no trace recorder for the Pool | medium | **done** (lane CONFORM-link): `trace_pool_on.go`, `TracePool.tla`, the Pool tests in `make spec-traces`, fixtures `pool-*` in `make spec-mutants`; it found C6 |
 | LINKPOOL L2: Drain's wait and deadline cut | low | **decided**, then **superseded** (lane LINKATOMIC, 2026-11-09): the cut as one connection's end hid CONNDRAINFLAKE's race (Drain returned while the other call's ABORTs were unsent, fixed in 7dabd5e); the cut is now modelled in its steps with Drain's return (`DrainReturnsAfterCut`, "The drain's cut") |
@@ -1281,7 +1281,7 @@ racing `maintain`, three connection slots, two environment events; about
   with the room full (every connection that counts against Max at its Cap,
   no slot to dial one more). `PoolClient.cfg` (Min 0, Max 2, Cap 1, two
   `Open`s, under a second; in `make spec`, and with a third slot and an
-  environment event, 487 thousand states, in `make spec-nightly`): mutant
+  environment event, 487 thousand states, in `make spec-nightly-wide`): mutant
   `full-below-max` (a full connection fails the `Open`: one connection
   only, the code before) caught by `FullOnlyAtMax`; witness
   `WitnessActFull` (an `ErrFull` is reached; `WitnessAct*` are action
