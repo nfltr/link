@@ -31,6 +31,8 @@ Step ==
       [] E.ev = "Refuse" -> Refuse
       [] E.ev = "Die" -> Die(E.x)
       [] E.ev = "Revive" -> Revive
+      [] E.ev = "Rebind" -> Rebind
+      [] E.ev = "RePunch" -> RePunch
       [] E.ev = "Open" -> (Fallback(E.x) \/ Move(E.x)) /\ Len(st') = E.e
       [] E.ev = "Abort" -> AbortBy(IF E.by = SEnd THEN "S" ELSE "R")
       [] E.ev = "Write" -> IF E.by = SEnd THEN Write ELSE Skip

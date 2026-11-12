@@ -1835,6 +1835,38 @@ early), `Refuse` (no session: the trace has no server end). Fixtures
 `spec/traces/path-*` (`make spec-mutants`): two recorded runs accepted, an
 END taken twice and data sent before the RESUME rejected.
 
+The agent's address changes (lane DIRECTREBIND, nfltr
+`docs/decisions/direct-paths-2026-11-11.md` "Lane DIRECTREBIND"). The
+agent is the QUIC server of the direct connection, and QUIC migrates only
+its client, so the path to the old address dies (`Rebind`: the agent's
+`addr` goes up, and a connection or punch toward the old one dies with
+every frame on it). The client then punches once at once on a fresh
+exchange (`RePunch`), whose candidate is the agent's address now (`dir.a`).
+A verified connection keys its streams' tokens (`tok`: the address of the
+connection the client's token key comes from, kept per stream as `c`
+beside the connection it runs on, `a`). `blocked` (chosen at Init when
+`MaxRebind` > 0) is a new network that lets no punch through: the session
+stays relayed. Otherwise a punch of the agent's address passes
+(`Refuse` is not taken for it), and the re-punch and its handshake are
+fair. Invariant `TokenFresh`: a direct stream's tokens are made for its
+connection. Liveness `DirectAgain`: after the change, the pair is direct
+again at the new address unless `blocked`. `DirectPathRebind.cfg` (2
+bytes, window 2, no other path death, one candidate, two moves, one
+change): 157,066 distinct states, depth 37, about 2 min with liveness.
+`-coverage 1` takes every action except `Die` and `Revive` (none here:
+`DirectPath.cfg` takes them), the reset's (`DirectPathReset.cfg`) and the
+mutant-only ones. Mutants, each caught there: `stale-token` (the client
+keeps the first connection's token key after a re-punch: `TokenFresh`, 7
+states deep), `repunch-cached` (it punches the candidates of its last
+exchange, the old address: `DirectAgain`, 18), `no-repunch` (no punch
+after the change: `DirectAgain`, 17), `write-stale` (data on both paths:
+`InOrder`, 10). Witnesses `WitnessRedirect` (direct, the change, relayed,
+direct again on the new address, every byte delivered: 13 states) and
+`WitnessRebindRelayed` (blocked: relayed after the change, clean: 15).
+The time bound, direct again within one exchange of the fallback, is the
+relay client SDK's test (`TestDirectAgentRebindDirectAgain`). Traced:
+`TestDirectAgainAfterRebind` (`Rebind`, `RePunch` events).
+
 Not modelled: the peer vanishing (link's and quiclink's liveness end the
 session: `Liveness.tla`, `QuicWatch.tla`); the hole punch itself (an
 `Offer` that becomes `up` or `down`); revocation (nfltr

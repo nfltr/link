@@ -42,6 +42,14 @@
 (* that left answers with its count and FIN. Each end's other direction is *)
 (* taken as complete already (the worst case: an end may leave as soon as  *)
 (* this direction allows).                                                 *)
+(*                                                                         *)
+(* The agent's address changes (lane DIRECTREBIND: a NAT rebinding, a new  *)
+(* network): its direct connection, a QUIC server's, does not migrate, so  *)
+(* the path to the old address dies (Rebind). The client re-punches once   *)
+(* at once (RePunch) with a fresh control exchange, so the candidate names *)
+(* the agent's new address; a new connection means a new exporter, so the  *)
+(* tokens of the streams on it are made for it (TokenFresh). If the new    *)
+(* network lets no punch through (blocked), the session stays relayed.     *)
 EXTENDS Integers, Sequences
 
 CONSTANTS
@@ -51,6 +59,7 @@ CONSTANTS
     MaxPunch, \* candidates the relay may offer (hole punches)
     MaxMoves, \* voluntary moves (relayed to direct, direct to relayed)
     MaxAbort, \* 0 or 1: whether an end may reset the session
+    MaxRebind, \* how often the agent's address may change
     Mutant    \* "none" or a bug put back (spec-mutants)
 
 Paths == {"relay", "direct"}
@@ -83,29 +92,37 @@ VARIABLES
     sFin, rFin, \* the stream the end last sent its FIN on (0: none)
     sGot, rGot, \* the stream the end (the decider) took the peer's FIN on (0: none)
     sLeft, rLeft, \* the end left the session after its clean end (Close and Done)
-    answers   \* streams an end that left answered (LeftAnswer)
+    answers,  \* streams an end that left answered (LeftAnswer)
+    addr,     \* the agent's address now (1, 2, ...): a candidate of the peer names it
+    rebinds,  \* how often it changed
+    repunched, \* the client's re-punches after a change
+    blocked,  \* the agent's new network lets no punch through
+    tok       \* the connection (its address) the client's direct tokens are made for
 
 vars == <<decider, st, d, k, sEp, sWait, hi, nxt, acked, rEp, rcvd, rEnds, rAck, out,
           ab, sGone, rGone, relayUp, dir, dies, punches, moves, sends, endSends, abSends,
-          sFin, rFin, sGot, rGot, sLeft, rLeft, answers>>
+          sFin, rFin, sGot, rGot, sLeft, rLeft, answers, addr, rebinds, repunched, blocked, tok>>
 sVars == <<sEp, sWait, hi, nxt, acked>>
 rVars == <<rEp, rcvd, rEnds, rAck, out>>
 endVars == <<ab, sGone, rGone, endSends, abSends>>
-pathVars == <<relayUp, dir, dies, punches>>
+rbVars == <<addr, rebinds, repunched, blocked, tok>>
+pathVars == <<relayUp, dir, dies, punches, addr, rebinds, repunched, blocked, tok>>
 closeVars == <<sFin, rFin, sGot, rGot, sLeft, rLeft, answers>>
 
 Init ==
     /\ decider \in {"S", "R"}
     \* a session starts relayed: epoch 1, on the relay, attached at both ends
-    /\ st = <<[path |-> "relay", h |-> "peer", dead |-> FALSE]>>
+    /\ st = <<[path |-> "relay", h |-> "peer", dead |-> FALSE, c |-> 0, a |-> 0]>>
     /\ d = <<<<>>>> /\ k = <<<<>>>>
     /\ sEp = 1 /\ sWait = FALSE /\ hi = 0 /\ nxt = 0 /\ acked = 0
     /\ rEp = 1 /\ rcvd = 0 /\ rEnds = 0 /\ rAck = 0 /\ out = <<>>
     /\ ab = "none" /\ sGone = FALSE /\ rGone = FALSE
-    /\ relayUp = TRUE /\ dir = [s |-> "none", h |-> "peer"]
+    /\ relayUp = TRUE /\ dir = [s |-> "none", h |-> "peer", a |-> 0]
     /\ dies = [p \in Paths |-> 0] /\ punches = 0 /\ moves = 0 /\ sends = 0
     /\ endSends = 0 /\ abSends = 0
     /\ sFin = 0 /\ rFin = 0 /\ sGot = 0 /\ rGot = 0 /\ sLeft = FALSE /\ rLeft = FALSE /\ answers = 0
+    /\ addr = 1 /\ rebinds = 0 /\ repunched = 0 /\ tok = 0
+    /\ blocked \in IF MaxRebind > 0 THEN BOOLEAN ELSE {FALSE}
 
 Usable(p) == IF p = "relay" THEN relayUp ELSE dir.s = "up"
 Cur == IF decider = "S" THEN sEp ELSE rEp     \* the decider's stream
@@ -131,23 +148,32 @@ Abort == [t |-> "abort"]
 \* or point at another holder through the address).
 Offer(h) ==
     /\ dir.s \in {"none", "down"} /\ punches < MaxPunch
-    /\ dir' = [s |-> "probing", h |-> h] /\ punches' = punches + 1
+    /\ dir' = [s |-> "probing", h |-> h, a |-> IF h = "peer" THEN addr ELSE 0] /\ punches' = punches + 1
     /\ UNCHANGED <<decider, st, d, k, moves, sends, relayUp, dies>> /\ UNCHANGED <<sVars, rVars, endVars>>
-    /\ UNCHANGED closeVars
+    /\ UNCHANGED closeVars /\ UNCHANGED rbVars
 \* The direct QUIC handshake: the peer's organisation certificate (chain,
 \* name, CRL) and the session's exporter token, both ways. Mutant "no-bind":
-\* whoever answers at the address is taken.
+\* whoever answers at the address is taken. A new connection's exporter keys
+\* the tokens of the streams on it. Mutant "stale-token": the client keeps
+\* its first connection's key after a re-punch. No punch passes the new
+\* network when blocked.
 Verify ==
     /\ dir.s = "probing" /\ (dir.h = "peer" \/ Mutant = "no-bind")
+    /\ ~(blocked /\ rebinds > 0)
     /\ dir' = [dir EXCEPT !.s = "up"]
+    /\ tok' = IF Mutant = "stale-token" /\ tok # 0 THEN tok ELSE dir.a
     /\ UNCHANGED <<decider, st, d, k, moves, sends, relayUp, dies, punches>> /\ UNCHANGED <<sVars, rVars, endVars>>
-    /\ UNCHANGED closeVars
-\* A punch that fails: no answer, or a holder that is not the peer.
+    /\ UNCHANGED closeVars /\ UNCHANGED <<addr, rebinds, repunched, blocked>>
+\* A punch that fails: no answer, or a holder that is not the peer. After a
+\* change of the agent's address the new path works unless blocked: a
+\* punch of the agent's address now passes (the liveness DirectAgain asks
+\* only this).
 Refuse ==
     /\ dir.s = "probing"
+    /\ ~(rebinds > 0 /\ ~blocked /\ dir.h = "peer" /\ dir.a = addr)
     /\ dir' = [dir EXCEPT !.s = "down"]
     /\ UNCHANGED <<decider, st, d, k, moves, sends, relayUp, dies, punches>> /\ UNCHANGED <<sVars, rVars, endVars>>
-    /\ UNCHANGED closeVars
+    /\ UNCHANGED closeVars /\ UNCHANGED rbVars
 \* A path dies: every frame in flight on it is lost, its streams end.
 Kill(p) ==
     /\ st' = [e \in DOMAIN st |-> IF st[e].path = p THEN [st[e] EXCEPT !.dead = TRUE] ELSE st[e]]
@@ -159,13 +185,35 @@ Die(p) ==
     /\ IF p = "relay" THEN relayUp' = FALSE /\ UNCHANGED dir
        ELSE dir' = [dir EXCEPT !.s = "down"] /\ UNCHANGED relayUp
     /\ UNCHANGED <<decider, punches, moves, sends>> /\ UNCHANGED <<sVars, rVars, endVars>>
-    /\ UNCHANGED closeVars
+    /\ UNCHANGED closeVars /\ UNCHANGED rbVars
 \* The agents redial the relay (a new agent link): new relayed streams work,
 \* the old ones stay dead.
 Revive ==
     /\ ~relayUp /\ relayUp' = TRUE
     /\ UNCHANGED <<decider, st, d, k, dir, dies, punches, moves, sends>> /\ UNCHANGED <<sVars, rVars, endVars>>
-    /\ UNCHANGED closeVars
+    /\ UNCHANGED closeVars /\ UNCHANGED rbVars
+\* The agent's address changes: the direct connection to the old one (and a
+\* punch toward it) dies, every frame on it lost; the relayed path stays
+\* (the agent link migrates or redials: Die("relay") is the network's).
+Rebind ==
+    /\ rebinds < MaxRebind
+    /\ addr' = addr + 1 /\ rebinds' = rebinds + 1
+    /\ IF dir.s \in {"up", "probing"} /\ dir.a = addr
+       THEN Kill("direct") /\ dir' = [dir EXCEPT !.s = "down"]
+       ELSE UNCHANGED <<st, d, k, dir>>
+    /\ UNCHANGED <<decider, relayUp, dies, punches, repunched, blocked, tok, moves, sends>>
+    /\ UNCHANGED <<sVars, rVars, endVars>> /\ UNCHANGED closeVars
+\* The client re-punches once after a change, at once, on a fresh control
+\* exchange: the candidate is the agent's address now (QAD on its side).
+\* Mutant "repunch-cached": it punches the candidates of its last exchange.
+\* Mutant "no-repunch": it does not (the next punch waits for the policy).
+RePunch ==
+    /\ repunched < rebinds /\ dir.s \in {"none", "down"} /\ Mutant # "no-repunch"
+    /\ LET a == IF Mutant = "repunch-cached" THEN dir.a ELSE addr IN
+       dir' = [s |-> "probing", h |-> IF a = addr THEN "peer" ELSE "gone", a |-> a]
+    /\ repunched' = repunched + 1
+    /\ UNCHANGED <<decider, st, d, k, relayUp, dies, punches, addr, rebinds, blocked, tok, moves, sends>>
+    /\ UNCHANGED <<sVars, rVars, endVars>> /\ UNCHANGED closeVars
 
 \* --- the decider opens a stream ----------------------------------------
 \* On p: R opens it with RESUME(its count) and reads only it from now on;
@@ -173,7 +221,8 @@ Revive ==
 \* aborter opens it with its ABORT instead (S: after the OPEN).
 Open(p) ==
     LET e == Len(st) + 1 IN
-    /\ st' = Append(st, [path |-> p, h |-> IF p = "direct" THEN dir.h ELSE "peer", dead |-> FALSE])
+    /\ st' = Append(st, [path |-> p, h |-> IF p = "direct" THEN dir.h ELSE "peer", dead |-> FALSE,
+                         c |-> IF p = "direct" THEN tok ELSE 0, a |-> IF p = "direct" THEN dir.a ELSE 0])
     /\ IF decider = "R"
        THEN /\ d' = Append(d, <<>>)
             /\ k' = Append(k, <<IF rGone THEN Abort ELSE [t |-> "resume", n |-> RResume]>>)
@@ -381,7 +430,7 @@ SLeftAnswer ==
 
 Next ==
     \/ \E h \in {"peer", "rogue"} : Offer(h)
-    \/ Verify \/ Refuse \/ Revive
+    \/ Verify \/ Refuse \/ Revive \/ Rebind \/ RePunch
     \/ \E p \in Paths : Die(p) \/ Fallback(p) \/ Move(p)
     \/ \E x \in {"S", "R"} : AbortBy(x)
     \/ Write \/ Send \/ SendEndEarly \/ SendStale \/ Resume \/ TakeAck \/ STakeAbort \/ SAnswerAbort
@@ -399,6 +448,9 @@ Fairness ==
     /\ WF_vars(\E p \in Paths : Fallback(p))
     /\ WF_vars(SFin) /\ WF_vars(RFin) /\ WF_vars(STakeFin) /\ WF_vars(RTakeFin)
     /\ WF_vars(RLeftAnswer) /\ WF_vars(SLeftAnswer)
+    \* after a change of the agent's address (none in the configurations
+    \* without one): the client's re-punch, its handshake's outcome
+    /\ WF_vars(RePunch) /\ WF_vars(rebinds > 0 /\ (Verify \/ Refuse))
 
 Spec == Init /\ [][Next]_vars /\ Fairness
 
@@ -410,6 +462,7 @@ TypeOK ==
     /\ rcvd = Len(out) /\ rEnds \in Nat
     /\ ab \in {"none", "S", "R"} /\ sGone \in BOOLEAN /\ rGone \in BOOLEAN
     /\ {sFin, rFin, sGot, rGot} \subseteq 0..Len(st) /\ sLeft \in BOOLEAN /\ rLeft \in BOOLEAN /\ answers \in Nat
+    /\ addr = rebinds + 1 /\ repunched <= rebinds /\ blocked \in BOOLEAN /\ tok \in 0..addr
 \* R delivers bytes 0, 1, 2, ... once each, in order: none lost, none
 \* twice, none out of place (at a switch or ever).
 InOrder == \A i \in 1..Len(out) : out[i] = i - 1
@@ -419,6 +472,13 @@ NoLoss == acked <= RPos
 BufferBound == hi - acked <= W
 \* A stream goes only to the peer: never to whoever the relay pointed at.
 OnlyPeer == \A e \in DOMAIN st : st[e].h = "peer"
+\* A direct stream's tokens are made for the connection it runs on (a
+\* stale key: the agent refuses every move after a re-punch).
+TokenFresh == \A e \in DOMAIN st : st[e].path = "direct" => st[e].c = st[e].a
+\* After the agent's (last) address change, the pair is direct again at the
+\* new address, if the new network lets a punch through.
+DirectAgain == (MaxRebind > 0 /\ ~blocked /\ <>(rebinds = MaxRebind)) =>
+               <>(rebinds = MaxRebind /\ dir.s = "up" /\ dir.a = addr)
 \* R ends the direction once, and only after its last byte: an END never
 \* overtakes data, and one sent again is never taken twice.
 EndAfterData == rEnds > 0 => rcvd = Total
@@ -459,4 +519,11 @@ WitnessResetDirect == ~(sGone /\ rGone /\ st[rEp].path = "direct" /\ st[sEp].pat
 \* both ends left, the decider after it opened a stream to the end that
 \* had left (that end's FIN lost with a path) and took its answer
 WitnessLeftAnswer == ~(sLeft /\ rLeft /\ answers > 0)
+\* direct, the agent's address changed, back on the relay, then direct
+\* again on the new address, every byte delivered
+WitnessRedirect == ~(rcvd = Total /\ rebinds > 0 /\ st[rEp].path = "direct" /\ st[rEp].a = addr
+                     /\ \E e \in DOMAIN st : st[e].path = "relay" /\ e > 1)
+\* the new network blocks every punch: relayed after the change, clean
+WitnessRebindRelayed == ~(Clean /\ blocked /\ rebinds > 0 /\ st[rEp].path = "relay"
+                          /\ \E e \in DOMAIN st : st[e].path = "direct")
 =============================================================================

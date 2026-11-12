@@ -94,6 +94,31 @@ func TestNoLossDirectDies(t *testing.T) {
 	}
 }
 
+// DirectAgain (lane DIRECTREBIND): the agent's address changes while the
+// session is direct: it falls back to the relay, the client re-punches the
+// new address and moves back, every byte once in order.
+func TestDirectAgainAfterRebind(t *testing.T) {
+	h := newHarness(t, 64, true)
+	a, b := payload(800, 11), payload(800, 12)
+	gs, gc, es, ec := h.transfer(a, b, 20, func(i int) {
+		switch i {
+		case 3:
+			h.directUp()
+			h.move("direct")
+		case 10:
+			h.rebind()
+		case 20:
+			h.repunch()
+			h.move("direct")
+		}
+	})
+	checkBytes(t, "server", gs, a, es)
+	checkBytes(t, "client", gc, b, ec)
+	if h.c.Path() != "direct" {
+		t.Fatalf("path %q", h.c.Path())
+	}
+}
+
 // AllDelivered: the relay dies while the session is direct (the session
 // stays); later the relayed path is back and the direct one dies.
 func TestAllDeliveredRelayRestart(t *testing.T) {

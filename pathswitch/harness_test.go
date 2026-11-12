@@ -203,7 +203,23 @@ func (h *harness) punchFails() {
 
 // die kills every stream of path p at both ends at once: what is in
 // flight on it is lost (spec Die).
-func (h *harness) die(p string) {
+func (h *harness) die(p string) { h.kill(p, "Die", p) }
+
+// rebind: the agent's address changes; its direct connection dies as a
+// QUIC server's does not migrate (spec Rebind).
+func (h *harness) rebind() { h.kill("direct", "Rebind", "") }
+
+// repunch: the client's punch at once after the change, on a fresh
+// exchange: the agent's new address, verified (spec RePunch, Verify).
+func (h *harness) repunch() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	traceEnv(h.c, "RePunch", "")
+	traceEnv(h.c, "Verify", "")
+	h.up["direct"] = true
+}
+
+func (h *harness) kill(p, ev, x string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.c.mu.Lock()
@@ -222,7 +238,7 @@ func (h *harness) die(p string) {
 		st.cl.kill()
 	}
 	h.up[p] = false
-	traceEnv(h.c, "Die", p)
+	traceEnv(h.c, ev, x)
 	h.s.mu.Unlock()
 	h.c.mu.Unlock()
 }
