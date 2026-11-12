@@ -10,6 +10,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
+	"os"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -126,6 +127,16 @@ func benchBulkCPU(b *testing.B, tr string, sessions int, rate float64) {
 	b.ReportMetric(float64(cpuTime()-cpu0)/1e6/mb, "cpu-ms/MB")
 }
 
+// benchHost is the address both ends use: QUICLINK_BENCH_HOST (this
+// host's LAN address measures the send path to a non-loopback address,
+// which on macOS costs more per unconnected datagram) or 127.0.0.1.
+func benchHost() string {
+	if h := os.Getenv("QUICLINK_BENCH_HOST"); h != "" {
+		return h
+	}
+	return "127.0.0.1"
+}
+
 // cpuTime is this process's user + system CPU time.
 func cpuTime() time.Duration {
 	var ru syscall.Rusage
@@ -134,7 +145,7 @@ func cpuTime() time.Duration {
 }
 
 func quicBenchPair(tb testing.TB) pathLink {
-	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	pc, err := net.ListenPacket("udp", net.JoinHostPort(benchHost(), "0"))
 	if err != nil {
 		tb.Fatal(err)
 	}
@@ -146,7 +157,7 @@ func quicBenchPair(tb testing.TB) pathLink {
 
 // tlsBenchPair is link over TLS 1.3 on TCP with the same certificates.
 func tlsBenchPair(tb testing.TB) pathLink {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := net.Listen("tcp", net.JoinHostPort(benchHost(), "0"))
 	if err != nil {
 		tb.Fatal(err)
 	}

@@ -238,3 +238,17 @@ without offloads cannot reach 2-3 times. `GOMAXPROCS=2` on the same
 binary halves quiclink's CPU per MB (7.0 ms) at the same throughput; it
 is the process's choice, not this package's.
 
+On a non-loopback address the unconnected socket costs more: macOS looks
+up the route and policy on every send to it (raw UDP to the host's own
+LAN address, both ends: 16.6 µs a packet unconnected, 2.9 µs connected).
+The fork at 40e0a257 sends a connection's packets on a socket connected
+to the peer once it has sent 64 (the fork's README). `GOMAXPROCS=2`,
+`QUICLINK_BENCH_HOST` set to the address both ends use, interleaved n=6,
+load 27-46, medians:
+
+| quiclink, 1 / 8 sessions | fork 265fe82a | fork 40e0a257 (connected sends) |
+|---|---|---|
+| 192.168.1.12 (own LAN address) | 15.2 / 14.6 ms, 98 / 102 MiB/s | 3.5 / 3.5 ms, 508 / 530 MiB/s |
+| 127.0.0.1 | 7.8 / 7.0 ms, 213 / 243 MiB/s | 4.4 / 4.1 ms, 386 / 431 MiB/s |
+| at 20 MB/s, 192.168.1.12 | 30.3 / 19.8 ms | 13.7 / 11.1 ms |
+
