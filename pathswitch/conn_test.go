@@ -397,3 +397,37 @@ func TestWriterBatchesFrames(t *testing.T) {
 		t.Fatalf("1 MiB took %d stream Writes, want at most 16 (64 frames of 16 KiB)", n)
 	}
 }
+
+// WaitAcked (lane DIRECTSTALL; spec DirectPath.tla Proof): the client's
+// first bytes (a handshake) are held on a stalled relayed stream, so
+// WaitAcked of them runs out; once the server read them it returns true,
+// and a Move after it reaches a server that took them on the old stream.
+func TestWaitAckedThenMove(t *testing.T) {
+	h := newHarness(t, 64, true)
+	h.stall("relay")
+	proof := []byte("hello")
+	if _, err := h.c.Write(proof); err != nil {
+		t.Fatal(err)
+	}
+	n := h.c.Written()
+	if n != uint64(len(proof)) || h.c.WaitAcked(n, 50*time.Millisecond) {
+		t.Fatalf("written %d, acked before the server held it", n)
+	}
+	h.str[0].cl.stall(false)
+	got := make([]byte, len(proof))
+	if _, err := io.ReadFull(h.s, got); err != nil || !bytes.Equal(got, proof) {
+		t.Fatalf("server read %q, %v", got, err)
+	}
+	if !h.c.WaitAcked(n, 5*time.Second) {
+		t.Fatal("not acked after the server read it")
+	}
+	h.directUp()
+	h.move("direct")
+	a, b := payload(300, 11), payload(300, 12)
+	gs, gc, es, ec := h.transfer(a, b, 30, nil)
+	checkBytes(t, "server", gs, a, es)
+	checkBytes(t, "client", gc, b, ec)
+	if h.c.Path() != "direct" {
+		t.Fatalf("path %q", h.c.Path())
+	}
+}

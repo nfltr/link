@@ -154,6 +154,7 @@ CONSTANTS
     MaxMoves = $big
     MaxAbort = 1
     MaxRebind = $big
+    Proof = 0
     Mutant = "none"
 INIT TraceInit
 NEXT TraceNext
@@ -230,7 +231,7 @@ check | invariants)
 	# PoolDrain (Min 2: a Drain failing halfway) and QuicWatchStops (two
 	# short stops, ~10 s) only in full: their mutants are CI's.
 	# PoolGrow: background growth (Max above Min).
-	pools="Pool PoolGrow PoolClient Liveness LivenessStarve QuicWatch QuicWatchPTO QuicWatchStarve Join JoinClose CreditWaiters DirectPath DirectPathReset DirectPathRebind"
+	pools="Pool PoolGrow PoolClient Liveness LivenessStarve QuicWatch QuicWatchPTO QuicWatchStarve Join JoinClose CreditWaiters DirectPath DirectPathReset DirectPathRebind DirectPathProof"
 	[ "$1" = invariants ] || pools="$pools PoolDrain QuicWatchStops DirectPathWide"
 	for m in $pools; do
 		echo "== $m.cfg"
@@ -462,6 +463,9 @@ mutants)
 		job mutant DirectPath.cfg 'Mutant = "none"' "Mutant = \"$m\"" DirectPath.tla
 	done
 	job mutant DirectPathReset.cfg 'Mutant = "none"' 'Mutant = "abort-not-resent"' DirectPath.tla
+	# Lane DIRECTSTALL: a move before the agent acknowledged the client's
+	# handshake (the token's key) stalls the session.
+	job mutant DirectPathProof.cfg 'Mutant = "none"' 'Mutant = "move-before-proof"' DirectPath.tla
 	# Lane DIRECTREBIND: the agent's address changes; a token kept from the
 	# old connection, a re-punch of the old candidates, none, data on both
 	# paths (the stale stream kept).
@@ -471,6 +475,7 @@ mutants)
 	for w in WitnessRedirect WitnessRebindRelayed; do job witness DirectPathRebind.cfg $w DirectPath.tla; done
 	for w in WitnessDirect WitnessFallback WitnessResent WitnessRogue WitnessFull WitnessWithheld WitnessEndResent WitnessLeftAnswer; do job witness DirectPath.cfg $w DirectPath.tla; done
 	for w in WitnessResetAcross WitnessResetDirect; do job witness DirectPathReset.cfg $w DirectPath.tla; done
+	job witness DirectPathProof.cfg WitnessDirect DirectPath.tla
 	for m in rearm-timeout deadline-from-rx reader-writes never-dead; do
 		job mutant Liveness.cfg 'Mutant = "none"' "Mutant = \"$m\"" Liveness.tla
 	done
@@ -652,7 +657,7 @@ traces)
 	# The path layer (pathswitch, lane DIRECTPATH2): each session's trace,
 	# both directions, against DirectPath.tla (TraceDirectPath.tla).
 	mkdir -p "$work/dtraces"
-	LINKTRACE=$work/dtraces go test -tags linktrace -count=1 -run "${TRACE_PATHSWITCH_TESTS:-^(TestInOrderRelayed|TestInOrderAcrossMoves|TestNoLossDirectDies|TestDirectAgainAfterRebind|TestAllDeliveredRelayRestart|TestEndOnceResentAcrossSwitch|TestResetReachesFromClient|TestResetReachesFromServer|TestStaleEpochRefused|TestCleanClose|TestCloseAfterReattachEndsBeforeTheBound|TestCloseAfterReattachPathDiesBeforeTheFIN|TestCloseLeftAnswersAReattach)\$}" ./pathswitch/ >"$work/test.out" 2>&1 || {
+	LINKTRACE=$work/dtraces go test -tags linktrace -count=1 -run "${TRACE_PATHSWITCH_TESTS:-^(TestInOrderRelayed|TestInOrderAcrossMoves|TestNoLossDirectDies|TestDirectAgainAfterRebind|TestAllDeliveredRelayRestart|TestEndOnceResentAcrossSwitch|TestResetReachesFromClient|TestResetReachesFromServer|TestStaleEpochRefused|TestCleanClose|TestCloseAfterReattachEndsBeforeTheBound|TestCloseAfterReattachPathDiesBeforeTheFIN|TestCloseLeftAnswersAReattach|TestWaitAckedThenMove)\$}" ./pathswitch/ >"$work/test.out" 2>&1 || {
 		cat "$work/test.out"
 		exit 1
 	}

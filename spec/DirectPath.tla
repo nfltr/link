@@ -50,6 +50,18 @@
 (* the agent's new address; a new connection means a new exporter, so the  *)
 (* tokens of the streams on it are made for it (TokenFresh). If the new    *)
 (* network lets no punch through (blocked), the session stays relayed.     *)
+(*                                                                         *)
+(* The agent's proof (lane DIRECTSTALL): the token is made with the key of *)
+(* the session's TLS, which the agent has only once its handshake ended:   *)
+(* once R holds the client's first Proof bytes (decider S), so R takes an  *)
+(* OPEN only then (its caller's gate). The client moves only once S's      *)
+(* bytes up to Proof are acknowledged: a move before left those bytes to   *)
+(* the new stream, which R takes only after them, and the session stalled  *)
+(* (mutant "move-before-proof"; nfltr                                      *)
+(* docs/decisions/perf-command-2026-11-12.md: a session opened after its   *)
+(* pair was direct reset at the agent's TLS bound). A path death or a      *)
+(* reset before R holds the proof is the handshake's failure (a TLS error, *)
+(* the agent's bound), not this layer's: not modelled.                     *)
 EXTENDS Integers, Sequences
 
 CONSTANTS
@@ -60,6 +72,7 @@ CONSTANTS
     MaxMoves, \* voluntary moves (relayed to direct, direct to relayed)
     MaxAbort, \* 0 or 1: whether an end may reset the session
     MaxRebind, \* how often the agent's address may change
+    Proof,    \* bytes R must hold before it takes an OPEN (decider S): the handshake; 0: none
     Mutant    \* "none" or a bug put back (spec-mutants)
 
 Paths == {"relay", "direct"}
@@ -124,6 +137,9 @@ Init ==
     /\ addr = 1 /\ rebinds = 0 /\ repunched = 0 /\ tok = 0
     /\ blocked \in IF MaxRebind > 0 THEN BOOLEAN ELSE {FALSE}
 
+\* R's caller holds the session's proof (the other direction, decider R, is
+\* complete already)
+Proved == decider = "R" \/ rcvd >= Proof
 Usable(p) == IF p = "relay" THEN relayUp ELSE dir.s = "up"
 Cur == IF decider = "S" THEN sEp ELSE rEp     \* the decider's stream
 \* the positions S may send: its bytes, and the END once it wrote them all
@@ -180,7 +196,7 @@ Kill(p) ==
     /\ d' = [e \in DOMAIN d |-> IF st[e].path = p THEN <<>> ELSE d[e]]
     /\ k' = [e \in DOMAIN k |-> IF st[e].path = p THEN <<>> ELSE k[e]]
 Die(p) ==
-    /\ Usable(p) /\ dies[p] < MaxDie
+    /\ Usable(p) /\ dies[p] < MaxDie /\ Proved
     /\ Kill(p) /\ dies' = [dies EXCEPT ![p] = @ + 1]
     /\ IF p = "relay" THEN relayUp' = FALSE /\ UNCHANGED dir
        ELSE dir' = [dir EXCEPT !.s = "down"] /\ UNCHANGED relayUp
@@ -244,9 +260,12 @@ Fallback(p) ==
     /\ UNCHANGED <<pathVars, moves, sends>>
     /\ UNCHANGED closeVars
 \* A move on a live stream: to the direct path once it is verified, or back
-\* (the decider's policy; bounded here; none once the session is reset).
+\* (the decider's policy; bounded here; none once the session is reset),
+\* once R acknowledged the proof (decider S). Mutant "move-before-proof":
+\* right after the client's handshake.
 Move(p) ==
     /\ ~st[Cur].dead /\ st[Cur].path # p /\ Usable(p) /\ moves < MaxMoves
+    /\ ((decider = "S" /\ Mutant # "move-before-proof") => acked >= Proof)
     /\ SLive /\ RLive
     /\ Open(p) /\ moves' = moves + 1
     /\ UNCHANGED <<decider, hi, nxt, acked, rcvd, rEnds, out, ab, sGone, rGone, endSends>>
@@ -257,7 +276,7 @@ Move(p) ==
 \* The ABORT goes on the aborter's stream if it is alive (the peer may have
 \* left it, or its path may die: Lingers sends it again).
 AbortBy(x) ==
-    /\ MaxAbort > 0 /\ ab = "none" /\ ~Clean /\ ~sLeft /\ ~rLeft
+    /\ MaxAbort > 0 /\ ab = "none" /\ ~Clean /\ ~sLeft /\ ~rLeft /\ Proved
     /\ ab' = x /\ abSends' = abSends + 1
     /\ IF x = "S"
        THEN /\ sGone' = TRUE /\ UNCHANGED <<rGone, k>>
@@ -352,6 +371,7 @@ SAnswerAbort ==
 TakeOpen ==
     \E e \in DOMAIN d :
         /\ RLive \/ Lingers("R")
+        /\ Proved
         /\ e > rEp /\ d[e] # <<>> /\ Head(d[e]).t = "open"
         /\ d' = [d EXCEPT ![e] = Tail(@)]
         /\ k' = [k EXCEPT ![e] = Append(@, IF rGone THEN Abort ELSE [t |-> "resume", n |-> RResume])]

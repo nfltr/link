@@ -1,0 +1,3 @@
+Compatible changes:
+- ./pathswitch.(*Conn).WaitAcked: added
+- ./pathswitch.(*Conn).Written: added

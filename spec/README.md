@@ -1784,6 +1784,26 @@ action on `DirectPathReset.cfg` and `DirectPath.cfg` (but `AbortBy`,
 `STakeAbort`, `SAnswerAbort` there: no reset); the three that only a
 mutant enables (`SendStale`, `RecvStale`, `SendEndEarly`) take none.
 
+The agent's proof (lane DIRECTSTALL, 2026-11-13, after nfltr's lane
+PERFCMD saw sessions opened after their pair was direct reset at the
+agent's 10 s TLS bound): the token is made with the key of the session's
+TLS, which the agent has only once its handshake ended, so its caller
+takes an OPEN only once R holds the client's first `Proof` bytes (decider
+S: `Proved` guards `TakeOpen`). A move leaves the bytes S has not sent
+yet to the new stream (S sends nothing on it before the RESUME), so a
+move right after the client's handshake, its last flight still in the
+send buffer, waited for an OPEN the agent could not take: the session
+stalled. The client therefore moves only once S's bytes below `Proof`
+are acknowledged (`Move`'s guard; `pathswitch` `Conn.WaitAcked`, which
+relay `client/agent` `DirectSession.loop` calls before its first move).
+A path death or a reset before R holds the proof is the handshake's
+failure (a TLS error, the agent's bound), not this layer's: `Die` and
+`AbortBy` need `Proved`. `DirectPathProof.cfg` (2 bytes, `Proof` 1, one
+candidate, one move, each path dies once): 32,953 distinct states, 14 s
+with the liveness properties; `WitnessDirect` holds there too (a move
+does happen). The other configurations and the trace check have `Proof`
+0 (the path layer alone has no gate).
+
 Mutants (`make spec-mutants`), each caught:
 
 | mutant | the bug | caught by |
@@ -1798,6 +1818,7 @@ Mutants (`make spec-mutants`), each caught:
 | `end-early` | S sends END once the application closed, before its last bytes went | `EndAfterData` |
 | `resume-drops-fin` | a RESUME leaves out the END R took: S sends it again and R takes it twice | `EndOnce` |
 | `leave-at-complete` | the decider (the client) leaves at its own FIN, not after the peer's: its last ACK lost with a path, the agent waits for a stream nobody opens (the code before lane PSCLOSE) | `LeaveLast`; `CloseEnds` without it |
+| `move-before-proof` | the client moves before the agent acknowledged its handshake's bytes: they wait on the new stream, which the agent takes only after them (relay `client/agent` before lane DIRECTSTALL) | `AllDelivered`, `CloseEnds` (`DirectPathProof.cfg`) |
 | `abort-not-resent` (`DirectPathReset.cfg`) | the ABORT goes once, on the aborter's stream: lost with a path or on a stream the peer left | `ResetReaches` |
 
 Witnesses (each violated): `WitnessDirect` (all delivered, the last on

@@ -8,6 +8,12 @@ version 2 unless an entry says otherwise.
 
 ## Unreleased
 
+- `pathswitch`: `Conn.Written` and `Conn.WaitAcked` (lane DIRECTSTALL):
+  a client whose peer takes a `Move` only once it holds the session's
+  first bytes (its TLS handshake: the token's key) waits until the peer
+  acknowledged them, since a `Move` leaves bytes not yet sent to the new
+  stream. spec/DirectPath.tla: constant `Proof`, `DirectPathProof.cfg`,
+  mutant `move-before-proof`; guard `TestWaitAckedThenMove`.
 - New package `pathswitch`: the path layer of nfltr's direct paths. A
   session's byte stream runs over a sequence of path streams (a link
   session through the relay, a QUIC stream on a direct connection) and

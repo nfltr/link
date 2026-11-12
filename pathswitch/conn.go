@@ -211,6 +211,28 @@ func (c *Conn) Write(p []byte) (int, error) {
 	return n, nil
 }
 
+// Written is the count of bytes handed to Write so far: the position
+// WaitAcked waits for to have the peer hold every one of them.
+func (c *Conn) Written() uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.hi
+}
+
+// WaitAcked waits until the peer acknowledged every byte below n (ACK,
+// RESUME: it holds them), at most d; false when d passed or the session
+// failed first. A client whose peer takes a Move only once it holds some
+// of the session's first bytes (a TLS handshake, whose key makes the
+// token) moves after WaitAcked of them, never before: a Move leaves the
+// bytes not yet sent to the new stream (spec DirectPath.tla Proof, mutant
+// move-before-proof; TestWaitAckedThenMove).
+func (c *Conn) WaitAcked(n uint64, d time.Duration) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.waitFor(d, func() bool { return c.acked >= n || c.err != nil })
+	return c.acked >= n
+}
+
 // Read reads the peer's bytes; io.EOF after its END.
 func (c *Conn) Read(p []byte) (int, error) {
 	c.mu.Lock()
