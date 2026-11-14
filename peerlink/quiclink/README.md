@@ -170,7 +170,7 @@ What it costs, and when not to use it:
   holds 32 frames, fails with `ErrNoDatagrams` toward a peer that offers
   none (QUIC's negotiation: no version flag) and with
   `*quic.DatagramTooLargeError` (the caller's maximum) when the bytes do
-  not fit in a packet. `TestSessionDatagrams*`.
+  not fit in a packet. `TestSessionDatagrams*`; the rate: `BenchmarkSessionDatagrams` (1200-byte datagrams one way; delivered% the share that arrived).
 
 ## Checks
 

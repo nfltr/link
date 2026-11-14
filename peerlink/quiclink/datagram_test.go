@@ -6,6 +6,7 @@ package quiclink_test
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,7 +18,7 @@ import (
 
 // dgPair is a session's two ends between Nodes a (listening) and b
 // (dialling), with Datagrams as given; b opened them.
-func dgPair(t *testing.T, aDG, bDG bool, n int) (a, b *quiclink.Node, opened, accepted []*quiclink.Session) {
+func dgPair(t testing.TB, aDG, bDG bool, n int) (a, b *quiclink.Node, opened, accepted []*quiclink.Session) {
 	t.Helper()
 	pc := listenUDP(t)
 	a = mustNew(t, quiclink.Config{PacketConn: pc, TLS: serverTLS("a"), Liveness: link.LivenessFast, Datagrams: aDG})
@@ -143,4 +144,26 @@ func TestSessionDatagramsNeedBothEnds(t *testing.T) {
 			}
 		}
 	}
+}
+
+// BenchmarkSessionDatagrams: one session's datagrams of 1200 bytes, one
+// way over loopback, as fast as the sender goes; the op is one datagram
+// sent, delivered% the share that arrived (datagrams are lossy: a
+// receiver that falls behind loses them, never the sender waits).
+func BenchmarkSessionDatagrams(b *testing.B) {
+	_, _, opened, accepted := dgPair(b, true, true, 1)
+	var got atomic.Int64
+	accepted[0].OnDatagram(func([]byte) { got.Add(1) })
+	msg := make([]byte, 1200)
+	b.SetBytes(int64(len(msg)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		if err := opened[0].SendDatagram(msg); err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.StopTimer()
+	time.Sleep(100 * time.Millisecond) // the last ones in flight
+	b.ReportMetric(100*float64(got.Load())/float64(b.N), "delivered%")
 }

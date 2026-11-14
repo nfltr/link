@@ -80,7 +80,7 @@ func clientTLS(name, peer string, protos ...string) *tls.Config {
 		NextProtos: protos, MinVersion: tls.VersionTLS13}
 }
 
-func listenUDP(t *testing.T) net.PacketConn {
+func listenUDP(t testing.TB) net.PacketConn {
 	t.Helper()
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
