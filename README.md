@@ -474,7 +474,7 @@ or `go build -tags linkdebug`), link reports on stderr:
 | report | means |
 |---|---|
 | `session 3 (header "x") opened and garbage-collected, never closed`, with the stack that opened it | this side never called `Close`, `CloseWrite`, `Reset` or `Abort` (a session `Join` or `Forward` took counts as closed) |
-| `concurrent Reads on session ...` (or `Writes`), with both stacks | two goroutines in `Read`/`WriteTo` (or `Write`/`WriteBuffers`) of one session at once: their bytes interleave |
+| `concurrent Reads on session ...` (or `Writes`), with both stacks | two goroutines in `Read`/`WriteTo` (or `Write`/`WriteBuffers`) of one session at once: safe (each byte goes to one reader, or out once), but their bytes interleave |
 | `session ... and open 30s with no Read or Write`, with the stack that opened it | with `LINKDEBUG_IDLE=30s` (any duration): a session open that long with no IO, once each; the leak a collector cannot see, since the Mux holds every session until it ends |
 
 Each Read and Write records a stack in this mode: for tests and

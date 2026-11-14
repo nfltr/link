@@ -5,7 +5,7 @@
 # spec.sh check|mutants|traces: the TLA+ model of spec/ (spec/README.md).
 #   check    TLC on spec/Link.cfg, LinkDrain.cfg and LinkSess.cfg (no crash),
 #            LinkCrash.cfg, then spec/Pool.cfg, Liveness.cfg, Join.cfg,
-#            JoinClose.cfg and CreditWaiters.cfg, DirectPath.cfg:
+#            JoinClose.cfg and CreditWaiters.cfg, SessionRead.cfg, DirectPath.cfg:
 #            every invariant and liveness property, and Refines.
 #   invariants  the same, Link's invariants only, Refines only on
 #            LinkCrash.cfg (CI's; Pool's liveness is checked too, seconds).
@@ -231,13 +231,13 @@ check | invariants)
 	# PoolDrain (Min 2: a Drain failing halfway) and QuicWatchStops (two
 	# short stops, ~10 s) only in full: their mutants are CI's.
 	# PoolGrow: background growth (Max above Min).
-	pools="Pool PoolGrow PoolClient Liveness LivenessStarve QuicWatch QuicWatchPTO QuicWatchStarve Join JoinClose CreditWaiters DirectPath DirectPathReset DirectPathRebind DirectPathProof"
+	pools="Pool PoolGrow PoolClient Liveness LivenessStarve QuicWatch QuicWatchPTO QuicWatchStarve Join JoinClose CreditWaiters SessionRead DirectPath DirectPathReset DirectPathRebind DirectPathProof"
 	[ "$1" = invariants ] || pools="$pools PoolDrain QuicWatchStops DirectPathWide"
 	for m in $pools; do
 		echo "== $m.cfg"
 		st=0
 		# Liveness explores a horizon of ticks, Join one session,
-		# CreditWaiters a fixed number of Acquires: their last states end there; PoolDrain has no Open to keep it going.
+		# CreditWaiters a fixed number of Acquires, SessionRead a fixed number of bytes: their last states end there; PoolDrain has no Open to keep it going.
 		dl=; [ $m = Pool ] || [ $m = PoolGrow ] || [ $m = PoolClient ] || dl=-deadlock
 		mod=$m.tla; case $m in Pool*) mod=Pool.tla ;; Liveness*) mod=Liveness.tla ;; QuicWatch*) mod=QuicWatch.tla ;; CreditWaiters*) mod=CreditWaiters.tla ;; DirectPath*) mod=DirectPath.tla ;; esac
 		cfg=$m.cfg
@@ -266,7 +266,7 @@ mutants)
 		else
 			sed -e "s/$2/$3/" "spec/$1" >"$jw/Mutant.cfg"
 		fi
-		dl=; [ "$mod" != Liveness.tla ] && [ "$mod" != QuicWatch.tla ] && [ "$mod" != Join.tla ] && [ "$mod" != JoinClose.tla ] && [ "$mod" != CreditWaiters.tla ] && [ "$mod" != DirectPath.tla ] && [ "$1" != PoolDrain.cfg ] || dl=-deadlock
+		dl=; [ "$mod" != Liveness.tla ] && [ "$mod" != QuicWatch.tla ] && [ "$mod" != Join.tla ] && [ "$mod" != JoinClose.tla ] && [ "$mod" != CreditWaiters.tla ] && [ "$mod" != SessionRead.tla ] && [ "$mod" != DirectPath.tla ] && [ "$1" != PoolDrain.cfg ] || dl=-deadlock
 		if tlc "$jw/Mutant.cfg" "$mod" $dl >"$jw/m.out" 2>&1; then
 			echo "$3: not caught"
 			return 1
@@ -299,7 +299,7 @@ mutants)
 		# WitnessAct*: an action property (checked as a PROPERTY).
 		case $2 in WitnessAct*) kind=PROPERTY what="Action property" ;; *) kind=INVARIANT what=Invariant ;; esac
 		printf '%s %s\n' "$kind" "$2" >>"$jw/Witness.cfg"
-		dl=; [ "${3:-}" != Join.tla ] && [ "${3:-}" != JoinClose.tla ] && [ "${3:-}" != Liveness.tla ] && [ "${3:-}" != QuicWatch.tla ] && [ "${3:-}" != CreditWaiters.tla ] && [ "${3:-}" != DirectPath.tla ] || dl=-deadlock
+		dl=; [ "${3:-}" != Join.tla ] && [ "${3:-}" != JoinClose.tla ] && [ "${3:-}" != Liveness.tla ] && [ "${3:-}" != QuicWatch.tla ] && [ "${3:-}" != CreditWaiters.tla ] && [ "${3:-}" != SessionRead.tla ] && [ "${3:-}" != DirectPath.tla ] || dl=-deadlock
 		if tlc "$jw/Witness.cfg" "${3:-MCLink.tla}" $dl >"$jw/m.out" 2>&1; then
 			echo "$2: never violated (vacuous)"
 			return 1
@@ -528,6 +528,13 @@ mutants)
 	done
 	job mutant CreditWaitersLive.cfg 'Mutant = "none"' 'Mutant = "one-slot"' CreditWaiters.tla
 	for w in WitnessTwoWait WitnessTooLittle WitnessWakeAll; do job witness CreditWaiters.cfg $w CreditWaiters.tla; done
+	# Session reads (SessionRead.tla, lane LINKREAD): no lock on s.rest
+	# (two readers) and the deadline flag looked at again after the
+	# queue's unlock (a cleared deadline read as io.EOF), the code before.
+	for m in no-read-lock flag-outside-lock; do
+		job mutant SessionRead.cfg 'Mutant = "none"' "Mutant = \"$m\"" SessionRead.tla
+	done
+	for w in WitnessTimeout WitnessEOF WitnessBothRead WitnessSharedTail; do job witness SessionRead.cfg $w SessionRead.tla; done
 	for f in spec/traces/*.ndjson.live; do job livetrace "$f"; done
 	for f in spec/traces/link-*.ndjson; do job linkfixture "$f"; done
 	for f in spec/traces/join-*.ndjson; do job joinfixture "$f"; done

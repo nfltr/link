@@ -161,7 +161,10 @@ func (q *Queue) PushWithin(b []byte, stall time.Duration) error {
 
 // Pop removes and returns the oldest slice, waiting for one. After Close it
 // still returns every slice pushed before, then false.
-func (q *Queue) Pop() ([]byte, bool) { return q.PopUnless(nil) }
+func (q *Queue) Pop() ([]byte, bool) {
+	b, ok, _ := q.PopUnless(nil)
+	return b, ok
+}
 
 // Wake makes waiting poppers recheck their stop flag (PopUnless).
 func (q *Queue) Wake() {
@@ -170,18 +173,29 @@ func (q *Queue) Wake() {
 	q.mu.Unlock()
 }
 
-// PopUnless is Pop that also gives up, reporting false, once stop is set
-// and Wake is called: a conn's read deadline.
-func (q *Queue) PopUnless(stop *atomic.Bool) ([]byte, bool) {
+// PopUnless is Pop that also gives up once stop is set and Wake is called:
+// a conn's read deadline. stopped says why it gave up: stop was set, or
+// (false) the queue is closed and drained. It decides under the queue's
+// lock in one look, so a caller never looks at stop again: a stop
+// cleared since would read as the queue's end (spec/SessionRead.tla,
+// flag-outside-lock).
+func (q *Queue) PopUnless(stop *atomic.Bool) (b []byte, ok, stopped bool) {
 	q.mu.Lock()
-	for q.queued() == 0 && !q.closed && (stop == nil || !stop.Load()) {
+	for {
+		if stop != nil && stop.Load() {
+			q.mu.Unlock()
+			return nil, false, true
+		}
+		if q.queued() > 0 {
+			break
+		}
+		if q.closed {
+			q.mu.Unlock()
+			return nil, false, false
+		}
 		q.cond.Wait()
 	}
-	if q.queued() == 0 || stop != nil && stop.Load() {
-		q.mu.Unlock()
-		return nil, false
-	}
-	b := q.bufs[q.head]
+	b = q.bufs[q.head]
 	q.bufs[q.head] = nil
 	q.trim(1)
 	q.size -= len(b)
@@ -189,7 +203,7 @@ func (q *Queue) PopUnless(stop *atomic.Bool) ([]byte, bool) {
 	q.cond.Broadcast()
 	q.mu.Unlock()
 	q.popped(len(b))
-	return b, true
+	return b, true, false
 }
 
 // PopBatch waits like Pop, then appends to dst the queued slices up to max

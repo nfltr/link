@@ -414,6 +414,44 @@ x 150 (failed 3 of 4 before; after, 0 in 30 such rounds).
 | the ping and its pong | `mux.go` (`Session.Sync`), `conn.go` (`sync`, `synced`, `pingTime`, `keepAlive`) |
 | `ARecv` | `conn.go` (`recv`: a ping handed to `keepAlive` after every frame before it) |
 
+## Session reads (SessionRead.tla, 2026-11-14, lane LINKREAD)
+
+`Link.tla` gives a session one reader and takes a `Read` as one pop of
+its queue; a read deadline changes nothing it models. `SessionRead.tla`
+is the `Read` itself: `Readers` goroutines reading one session at once
+(net.Conn allows it; relay's `client/nfnet` nettest does it), the read
+deadline's flag (`dlPast`) set by its timer and cleared or moved by
+`SetReadDeadline` at any time, the peer pushing `Slices` slices of two
+bytes and ending; each read takes one byte.
+
+| action | the Go it models |
+|---|---|
+| `Push`, `Close` | `Mux.data`'s push, the queue's `Close` at the peer's end |
+| `Fire`, `Clear` | the deadline's timer (or a past deadline) and `Wake`; `SetReadDeadline` clearing or moving it |
+| `Begin(r)` | `Session.Read`: `rmu` taken, `s.rest` looked at |
+| `Pop(r)` | `bytequeue.PopUnless`: the wait, then the deadline, a slice or the end, in one look under the queue's lock |
+| `Copy(r)` | `copy(b, s.rest)` and `s.rest = s.rest[n:]` |
+| `End(r)` | `Read` returns, `rmu` let go |
+| `Decide(r)`, `Cut(r)` | mutants only (`flag-outside-lock`, `no-read-lock`) |
+
+- **`Once`**: each byte goes to one reader, once.
+- **`NoForgedEOF`**: a reader reads `io.EOF` only at the peer's end,
+  every byte it sent read: a deadline, set or cleared, never reads as
+  the end.
+
+`SessionRead.cfg` (in `make spec` and `spec-invariants`): two readers,
+two slices: 1,090 distinct states, depth 27, about a second; every
+action taken but the mutants' (`-coverage 1`). Mutants (`make
+spec-mutants`): `no-read-lock` (the code before: no lock on `s.rest`;
+two readers' pops overwrite each other's slice, or both copy one tail)
+and `flag-outside-lock` (the code before: `PopUnless` gave up and `Read`
+looked at `dlPast` again after the queue's unlock) each break
+`NoForgedEOF`. Witnesses (violated): `WitnessTimeout`, `WitnessEOF`,
+`WitnessBothRead`, `WitnessSharedTail` (a reader copying a tail left by
+the other one's pop). Guards: `TestSessionConcurrentReads` (red every
+run before, and -race's report) and
+`TestSessionReadDeadlineClearedNeverEOF` (20,000 rounds: red 6 runs in 10 before, green after, with -race).
+
 ## Credit's waiters (CreditWaiters.tla, 2026-11-05, lane LINKWAKE)
 
 `Credit`'s methods are safe from any goroutine, so several senders may
@@ -725,6 +763,7 @@ holds in a `Spec-Reviewed:` trailer).
 | `Join.tla`, `TraceJoin.tla` | `peerlink.Join`'s clean end (`Session.Sync`, hold, the watch) | `peerlink/chain.go`, `join.go`, `peerlink/trace_on.go` |
 | `JoinClose.tla` | a joint's side closed whole by its peer while the other side writes: who closes the other side, and when | `join.go`, `peerlink/chain.go` |
 | `CreditWaiters.tla` | senders waiting in `Credit.Acquire` on one session: the wait and `wakeAll` | `credit.go` |
+| `SessionRead.tla` | `Session.Read` from several goroutines, the read deadline set and cleared meanwhile | `mux.go`, `internal/bytequeue/` |
 | `DirectPath.tla`, `TraceDirectPath.tla` | the path layer: OPEN, RESUME, ACK, END, ABORT, the window, `Move` and `Attach` | `pathswitch/conn.go`, `pathswitch/frame.go`, `pathswitch/trace_on.go` |
 
 ## Action map (lane CONFORM-link)

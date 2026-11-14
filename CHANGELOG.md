@@ -8,6 +8,17 @@ version 2 unless an entry says otherwise.
 
 ## Unreleased
 
+- `Session.Read` from several goroutines at once (net.Conn allows it;
+  lane LINKREAD): each byte goes to one reader. Two readers took the same
+  unread tail, so bytes went twice or never and a buffer went back to the
+  pool twice. Read now holds a lock of the session's own (`rmu`).
+- A read deadline that fired while `SetReadDeadline` cleared or moved it
+  no longer ends a live session's Read with `io.EOF`: the queue says why
+  it gave up (the deadline or its end), decided under its lock in one
+  look. spec/SessionRead.tla (invariants `Once`, `NoForgedEOF`; mutants
+  `no-read-lock`, `flag-outside-lock`); guards
+  `TestSessionConcurrentReads`, `TestSessionReadDeadlineClearedNeverEOF`.
+
 - `pathswitch`: `Conn.Written` and `Conn.WaitAcked` (lane DIRECTSTALL):
   a client whose peer takes a `Move` only once it holds the session's
   first bytes (its TLS handshake: the token's key) waits until the peer

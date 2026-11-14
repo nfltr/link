@@ -618,15 +618,18 @@ func (m *Mux) closeIdle() {
 // network's error). Write sends on credit; past such an end it returns
 // io.ErrClosedPipe wrapping the same error. A read deadline ends a
 // pending Read, and a write deadline a pending Write, with
-// os.ErrDeadlineExceeded.
+// os.ErrDeadlineExceeded. Several goroutines may Read at once (as
+// net.Conn): each byte goes to one of them. WriteTo and Pump take the
+// session's bytes for themselves, not beside a Read.
 type Session struct {
 	m      *Mux
 	dbg    debugState // linkdebug builds only (debug_on.go); zero size otherwise
 	id     string
 	header []byte
 	q      *bytequeue.Queue
-	rest   []byte // unread tail of the last slice taken from q
-	cur    []byte // that slice, released once read
+	rmu    sync.Mutex // Read's: one reader at a time on rest and cur
+	rest   []byte     // unread tail of the last slice taken from q
+	cur    []byte     // that slice, released once read
 
 	closed     atomic.Bool // Close called, or the session ended
 	peerClosed atomic.Bool // the peer closed it (or the connection ended): Close sends nothing
@@ -756,10 +759,12 @@ func (s *Session) Read(b []byte) (int, error) {
 	if debugOn {
 		defer debugEnter(s, debugRead)()
 	}
+	s.rmu.Lock()
+	defer s.rmu.Unlock()
 	if len(s.rest) == 0 {
-		data, ok := s.q.PopUnless(&s.dlPast)
+		data, ok, stopped := s.q.PopUnless(&s.dlPast)
 		if !ok {
-			if s.dlPast.Load() {
+			if stopped {
 				return 0, os.ErrDeadlineExceeded
 			}
 			return 0, s.end()
