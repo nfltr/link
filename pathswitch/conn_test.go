@@ -431,3 +431,35 @@ func TestWaitAckedThenMove(t *testing.T) {
 		t.Fatalf("path %q", h.c.Path())
 	}
 }
+
+// TestCurrent: Current is the session's stream at each end, the new one
+// after a move (the server's once it attached it), and nil once the
+// session was reset, at once at the end that reset it.
+func TestCurrent(t *testing.T) {
+	h := newHarness(t, 1<<10, false)
+	if h.c.Current() != Stream(h.str[0].cl) || h.s.Current() != Stream(h.str[0].sv) {
+		t.Fatal("Current is not the first stream")
+	}
+	h.directUp()
+	h.move("direct")
+	if h.c.Current() != Stream(h.str[1].cl) {
+		t.Fatal("the client's Current is not the stream it moved to")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for h.s.Current() != Stream(h.str[1].sv) {
+		if time.Now().After(deadline) {
+			t.Fatal("the server's Current is not the stream it attached")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	h.s.Abort()
+	if h.s.Current() != nil {
+		t.Fatal("Current after Abort: the stream, want nil")
+	}
+	for h.c.Current() != nil {
+		if time.Now().After(deadline) {
+			t.Fatal("the client's Current after the peer's ABORT: the stream, want nil")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}

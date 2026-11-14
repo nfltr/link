@@ -144,6 +144,10 @@ type Config struct {
 	// MaxSessions is how many sessions the peer may have open toward this
 	// side on one connection (0: link.MaxSessions, 1024).
 	MaxSessions int
+	// Datagrams offers QUIC DATAGRAM frames (RFC 9221) on this Node's
+	// connections: a session's SendDatagram and OnDatagram (datagram.go),
+	// where the peer offers them too.
+	Datagrams bool
 }
 
 // Node is a peerlink.Link over QUIC. Sessions are *Session: read and write
@@ -165,6 +169,8 @@ type Node struct {
 	tr       io.Closer      // what Drain closes: the Node's socket, or its listener on a shared Transport
 	live     map[*conn]bool // the connections running (run), for Stats
 	ended    link.ConnStats // the counters of those that ended
+
+	dgDropped atomic.Uint64 // DatagramsDropped
 }
 
 var (
@@ -209,6 +215,7 @@ func New(cfg Config) (*Node, error) {
 		// A reset delivers what was written before it (RESET_STREAM_AT)
 		// where both ends support it: an Abort after bytes, as link's.
 		EnableStreamResetPartialDelivery: true,
+		EnableDatagrams:                  cfg.Datagrams,
 	}
 	return n, nil
 }
@@ -261,6 +268,8 @@ type conn struct {
 	active int
 	idle   chan struct{} // closed when active drops to 0
 	ctl    *quic.SendStream
+
+	dg dgrams // datagram receivers (datagram.go)
 }
 
 func (n *Node) newConn(q *quic.Conn, peer string) *conn {
@@ -999,6 +1008,7 @@ type Session struct {
 	c     *conn
 	once  sync.Once
 	reset atomic.Bool
+	over  atomic.Bool // ended: no datagram receiver from now on
 
 	// Answers (ALPNChain).
 	accepter bool
@@ -1014,7 +1024,13 @@ type Session struct {
 
 var _ net.Conn = (*Session)(nil)
 
-func (s *Session) ended() { s.once.Do(s.c.end) }
+func (s *Session) ended() {
+	s.once.Do(func() {
+		s.over.Store(true)
+		s.c.forgetDatagrams(s.StreamID())
+		s.c.end()
+	})
+}
 
 // CloseWrite ends this side's writes: the peer reads io.EOF after them.
 func (s *Session) CloseWrite() error {

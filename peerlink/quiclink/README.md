@@ -160,6 +160,17 @@ What it costs, and when not to use it:
   `ALPN`, or a v0.3 listener, gets plain sessions (`Answers()` false).
   `TestChainQUIC*` run paths of 2 to 5 links over QUIC, and over QUIC
   and TCP in turn.
+- Datagrams (`Config.Datagrams`, nfltr's datagram services on direct
+  paths): QUIC DATAGRAM frames (RFC 9221) of a session, lossy and
+  unordered, beside its stream. A frame's payload is the session's tag,
+  its QUIC stream id (uvarint), then the caller's bytes; it reaches only
+  the peer's session of that stream, while that one has a receiver
+  (`OnDatagram`) and has not ended; any other is dropped and counted
+  (`DatagramsDropped`). `SendDatagram` waits while quic-go's send queue
+  holds 32 frames, fails with `ErrNoDatagrams` toward a peer that offers
+  none (QUIC's negotiation: no version flag) and with
+  `*quic.DatagramTooLargeError` (the caller's maximum) when the bytes do
+  not fit in a packet. `TestSessionDatagrams*`.
 
 ## Checks
 

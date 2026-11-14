@@ -185,6 +185,21 @@ func (c *Conn) Path() string {
 	return c.cur.path
 }
 
+// Current returns the session's current stream while the session runs;
+// nil once it was reset (either end), detached or ended. A caller carrying
+// something beside the stream on its path (a direct path's datagrams:
+// nfltr docs/decisions/nf1-udp-2026-11-14.md) checks it per item, so that
+// nothing of the session is taken after a reset however late the streams'
+// cleanup comes, nor on a stream the session left.
+func (c *Conn) Current() Stream {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.err != nil || c.gone {
+		return nil
+	}
+	return c.cur.s
+}
+
 // Write hands bytes to the session; it blocks while the window holds W
 // bytes the peer has not acknowledged (spec Write).
 func (c *Conn) Write(p []byte) (int, error) {
