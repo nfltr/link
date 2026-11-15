@@ -452,6 +452,40 @@ the other one's pop). Guards: `TestSessionConcurrentReads` (red every
 run before, and -race's report) and
 `TestSessionReadDeadlineClearedNeverEOF` (20,000 rounds: red 6 runs in 10 before, green after, with -race).
 
+## Session writes (SessionWrite.tla, 2026-11-15, lane P2PLEFT)
+
+`Link.tla` takes a `Write` as one step and `CreditWaiters.tla` the wait
+for a grant; neither models the write deadline. `SessionWrite.tla` is the
+wait in `Session.acquire`: `Writers` goroutines each take the deadline's
+channel (`writeWait`), look at the flags, then wait in `Credit.acquire`
+for a grant or that channel's close, while `Sets` calls of
+`SetWriteDeadline` (past, future or zero), the deadline's timer and a
+grant happen at any time.
+
+| action | the Go it models |
+|---|---|
+| `Set(kind)` | `SetWriteDeadline`: the old channel closed, a new one, `wd.past`, a timer for a future deadline |
+| `Fire` | the timer of a future deadline, its generation current |
+| `Grant` | the peer's window update (`Credit.Grant`, `wakeAll`) |
+| `Take(w)` | `writeWait` under `wdMu` |
+| `Check(w)` | `acquire`'s look at `wd.past`, then the credit |
+| `Wake(w)` | `Credit.acquire`'s select: a grant, or the channel closed (look again) |
+
+- **`NoStrandedWriter`**: a Write waiting for credit past its deadline
+  holds a closed channel, so it looks again and returns
+  `os.ErrDeadlineExceeded`.
+
+`SessionWrite.cfg` (in `make spec` and `spec-invariants`): two writers,
+two `SetWriteDeadline` calls: 4,592 distinct states, about a second;
+every action taken (`-coverage 1`). Mutant (`make spec-mutants`):
+`nil-channel` (the code before: `writeWait` returned `wdCh`, nil until a
+first `SetWriteDeadline`, so a Write waiting when the first deadline was
+set waited on nil) breaks `NoStrandedWriter`. Witnesses (violated):
+`WitnessTimeout`, `WitnessWokenWaiter`, `WitnessGranted`. Guard:
+`TestSessionWriteWaitingForCreditSeesFirstDeadline` (write_test.go; red
+every run before; found by nettest's PresentTimeout, 1 run in 40, through
+relay's `client/nfnet` `TestConnIsANetConn`).
+
 ## Credit's waiters (CreditWaiters.tla, 2026-11-05, lane LINKWAKE)
 
 `Credit`'s methods are safe from any goroutine, so several senders may
@@ -764,6 +798,7 @@ holds in a `Spec-Reviewed:` trailer).
 | `JoinClose.tla` | a joint's side closed whole by its peer while the other side writes: who closes the other side, and when | `join.go`, `peerlink/chain.go` |
 | `CreditWaiters.tla` | senders waiting in `Credit.Acquire` on one session: the wait and `wakeAll` | `credit.go` |
 | `SessionRead.tla` | `Session.Read` from several goroutines, the read deadline set and cleared meanwhile | `mux.go`, `internal/bytequeue/` |
+| `SessionWrite.tla` | `Session.Write` waiting for credit while `SetWriteDeadline` and its timer run | `mux.go`, `credit.go` |
 | `DirectPath.tla`, `TraceDirectPath.tla` | the path layer: OPEN, RESUME, ACK, END, ABORT, the window, `Move` and `Attach` | `pathswitch/conn.go`, `pathswitch/frame.go`, `pathswitch/trace_on.go` |
 
 ## Action map (lane CONFORM-link)
