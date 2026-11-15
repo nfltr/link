@@ -8,6 +8,15 @@ version 2 unless an entry says otherwise.
 
 ## Unreleased
 
+- A `Session.Write` already waiting for credit when the session's first
+  write deadline was set now sees it: it waited on a channel that did not
+  exist yet (nil until a first `SetWriteDeadline`), so a past deadline
+  never woke it and it hung until a grant (lane P2PLEFT; found by
+  nettest's PresentTimeout through relay's `client/nfnet`). writeWait
+  makes the channel. spec/SessionWrite.tla (invariant `NoStrandedWriter`,
+  mutant `nil-channel`); guard
+  `TestSessionWriteWaitingForCreditSeesFirstDeadline` (red every run
+  before).
 - `peerlink/quiclink`: datagrams of a session (lane UDP3, nfltr's
   datagram services on direct paths): `Config.Datagrams` offers QUIC
   DATAGRAM frames (RFC 9221); `Session.SendDatagram`, `Session.OnDatagram`,

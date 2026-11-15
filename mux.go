@@ -650,7 +650,7 @@ type Session struct {
 	wdMu    sync.Mutex
 	wdTimer *time.Timer
 	wdGen   uint64        // the write deadline's generation: a stale timer does nothing
-	wdCh    chan struct{} // closed when the write deadline passes or changes; under wdMu
+	wdCh    chan struct{} // closed when the write deadline passes or changes; under wdMu, made by the first writeWait or SetWriteDeadline
 	wd      writeDeadline
 
 	pump    atomic.Pointer[pump] // set by Pump
@@ -1066,11 +1066,16 @@ func (s *Session) flush() error {
 	return s.m.c.Flush()
 }
 
-// writeWait is closed once the write deadline passes or changes (nil while
-// none was ever set).
+// writeWait is closed once the write deadline passes or changes. It is
+// made here when none was set yet, so that the first SetWriteDeadline
+// wakes a Write already waiting for credit (spec/SessionWrite.tla,
+// TestSessionWriteWaitingForCreditSeesFirstDeadline).
 func (s *Session) writeWait() <-chan struct{} {
 	s.wdMu.Lock()
 	defer s.wdMu.Unlock()
+	if s.wdCh == nil {
+		s.wdCh = make(chan struct{})
+	}
 	return s.wdCh
 }
 
