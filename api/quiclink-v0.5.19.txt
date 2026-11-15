@@ -1,0 +1,7 @@
+Compatible changes:
+- (*Node).DatagramsDropped: added
+- (*Session).OnDatagram: added
+- (*Session).SendDatagram: added
+- (*Session).TagLen: added
+- Config.Datagrams: added
+- ErrNoDatagrams: added

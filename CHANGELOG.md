@@ -8,6 +8,17 @@ version 2 unless an entry says otherwise.
 
 ## Unreleased
 
+- `peerlink/quiclink`: datagrams of a session (lane UDP3, nfltr's
+  datagram services on direct paths): `Config.Datagrams` offers QUIC
+  DATAGRAM frames (RFC 9221); `Session.SendDatagram`, `Session.OnDatagram`,
+  `Session.TagLen`, `Node.DatagramsDropped`, `ErrNoDatagrams`. A frame
+  carries its session's QUIC stream id and reaches only that session's
+  peer end while it runs. Additive: without `Datagrams` nothing changes.
+  Guards `TestSessionDatagrams`, `TestSessionDatagramsNeedBothEnds`; rate
+  `BenchmarkSessionDatagrams`.
+- `pathswitch`: `Conn.Current`, the path stream the session is on now
+  (nil once it ended), so a caller checks per datagram that a stream is
+  still the session's (lane UDP3). Guard `TestCurrent`.
 - `Session.Read` from several goroutines at once (net.Conn allows it;
   lane LINKREAD): each byte goes to one reader. Two readers took the same
   unread tail, so bytes went twice or never and a buffer went back to the
