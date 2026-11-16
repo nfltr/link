@@ -469,7 +469,7 @@ func (c counting) Read(b []byte) (int, error) {
 	return k, err
 }
 
-// Fairness: on a path throttled to 1 MiB/s, 8 sessions the accepter writes
+// Fairness: on a path throttled to 2 MiB/s, 8 sessions the accepter writes
 // to as fast as they take each get at least a quarter of a fair share and
 // none waits long for its turn.
 func testFairness(t *testing.T, newPair func(*testing.T) Pair) {
@@ -502,6 +502,16 @@ func (f fairness) String() string {
 // build -a); a scheduler that let one of 8 sessions wait while the others
 // moved 2.4 s of a 1 MiB/s path (TestTurnsKeepTheirPlace in link) waited
 // ~60%. TestFairnessCatchesAWait is the mutant.
+//
+// A path that buffers more than the sessions' windows in front of the
+// throttle (a loaded Linux host's autotuned socket buffers) holds every
+// session at its credit: each then moves a grant at a time in turn, and
+// one waits while the others move theirs (link: 8 x a quarter of its 1 MiB
+// window, about 2 MiB, whatever the rate). At 1 MiB/s that round was half
+// the run, and the verdict failed a fair Link (KiB per session [512 x 8],
+// waits 43-55%, once its run was in that phase; link fbc982501,
+// 5f322678d); at 2 MiB/s it is a quarter. TestFairnessOnADeepPath is that
+// path.
 func (f fairness) verdict() error {
 	if f.total == 0 || slices.Min(f.per) < f.total>>10/int64(4*len(f.per)) || f.worst > f.total/2 {
 		return fmt.Errorf("a session fell behind: %v", f)
@@ -510,7 +520,7 @@ func (f fairness) verdict() error {
 }
 
 func measureFairness(t *testing.T, newPair func(*testing.T) Pair) fairness {
-	const n, rate, warm, run = 8, 1 << 20, 2 * time.Second, 4 * time.Second
+	const n, rate, warm, run = 8, 2 << 20, 2 * time.Second, 4 * time.Second
 	var accepted atomic.Int32
 	start := make(chan struct{})
 	p := pair(t, newPair, func(_ string, _ []byte, s peerlink.Session) {

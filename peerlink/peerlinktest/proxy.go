@@ -22,6 +22,13 @@ type Proxy struct {
 	stop   chan struct{} // closed by the test's cleanup
 	once   sync.Once
 	rate   atomic.Int64 // bytes per second each way; 0: unthrottled
+	// deep, set before a connection is relayed, buffers up to that many of
+	// its bytes each way in front of the throttle, read as fast as the
+	// sender writes (0: the kernel's buffers only): the backlog a loaded
+	// Linux host's autotuned socket buffers hold (several MiB), made
+	// certain. A path that deep holds more than a Link's sessions may have
+	// in flight, so they wait on credit, not on the Link's turns.
+	deep atomic.Int64
 
 	mu    sync.Mutex
 	conns []*net.TCPConn
@@ -100,9 +107,13 @@ func (p *Proxy) accept() {
 // closes anything.
 func (p *Proxy) pipe(dst, src *net.TCPConn, ended *atomic.Int32) {
 	buf := make([]byte, 16<<10)
+	read := src.Read
+	if d := p.deep.Load(); d > 0 {
+		read = p.deepRead(src, int(d))
+	}
 	var due time.Time // when the bytes relayed so far are due at the rate
 	for {
-		n, err := src.Read(buf)
+		n, err := read(buf)
 		select {
 		case <-p.hole:
 			<-p.stop
@@ -139,5 +150,46 @@ func (p *Proxy) pipe(dst, src *net.TCPConn, ended *atomic.Int32) {
 			}
 			return
 		}
+	}
+}
+
+// deepRead reads src into a buffer of n bytes from a goroutine of its
+// own (deep) and returns the buffer's reader.
+func (p *Proxy) deepRead(src *net.TCPConn, n int) func([]byte) (int, error) {
+	type chunk struct {
+		b   []byte
+		err error
+	}
+	q := make(chan chunk, max(n/(16<<10), 1))
+	go func() {
+		for {
+			b := make([]byte, 16<<10)
+			k, err := src.Read(b)
+			select {
+			case q <- chunk{b[:k], err}:
+			case <-p.stop:
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	var rest []byte
+	var rerr error
+	return func(b []byte) (int, error) {
+		if len(rest) == 0 && rerr == nil {
+			select {
+			case c := <-q:
+				rest, rerr = c.b, c.err
+			case <-p.stop:
+				return 0, net.ErrClosed
+			}
+		}
+		k := copy(b, rest)
+		if rest = rest[k:]; len(rest) > 0 {
+			return k, nil
+		}
+		return k, rerr
 	}
 }

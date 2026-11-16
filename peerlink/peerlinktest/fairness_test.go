@@ -20,33 +20,59 @@ import (
 // scheduler once one waited 2.4 s) fails the verdict on its wait.
 func TestFairnessCatchesAWait(t *testing.T) {
 	f := measureFairness(t, func(t *testing.T) Pair {
-		ln, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = ln.Close() })
-		px := NewProxy(t, ln.Addr().String())
-		b, err := peerlink.New(peerlink.Config{Listener: ln, Link: link.Config{Auth: link.NameAuth("b")}})
-		if err != nil {
-			t.Fatal(err)
-		}
-		a, err := peerlink.New(peerlink.Config{
-			Link: link.Config{Auth: link.NameAuth("a")},
-			Dial: func(ctx context.Context, _ string) (net.Conn, error) {
-				var d net.Dialer
-				return d.DialContext(ctx, "tcp", px.Addr())
-			},
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return Pair{A: &holdFirst{Link: a}, B: b, AName: "a", BName: "b",
-			DeadAfter: a.DeadAfter(), BlackHole: px.BlackHole, Cut: px.Cut, Throttle: px.Throttle}
+		p := linkPair(t, 0)
+		p.A = &holdFirst{Link: p.A}
+		return p
 	})
 	t.Logf("%v", f)
 	if f.worst <= f.total/2 || f.verdict() == nil {
 		t.Fatalf("the verdict passes a session that waited: %v", f)
 	}
+}
+
+// TestFairnessOnADeepPath: on a path that buffers more than the 8
+// sessions' windows (8 MiB with link's 1 MiB DefaultWindow) in front of
+// the throttle, as a loaded Linux host's autotuned socket buffers did on
+// the CI runner, the sessions wait on credit: each moves a grant (a
+// quarter window, 256 KiB) at a time, in turn, so one waits while the 7
+// others move theirs, about 2 MiB. Fairness's verdict holds there: the run
+// moves enough that this round of grants is not half of it (at 1 MiB/s
+// over 4 s it was, and Fairness failed a fair Link: link fbc982501,
+// 5f322678d).
+func TestFairnessOnADeepPath(t *testing.T) {
+	f := measureFairness(t, func(t *testing.T) Pair { return linkPair(t, 16<<20) })
+	t.Logf("%v", f)
+	if err := f.verdict(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// linkPair is a Pair of link Nodes through a Proxy whose path buffers
+// deep bytes (Proxy.deep; 0: the kernel's).
+func linkPair(t *testing.T, deep int) Pair {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	px := NewProxy(t, ln.Addr().String())
+	px.deep.Store(int64(deep))
+	b, err := peerlink.New(peerlink.Config{Listener: ln, Link: link.Config{Auth: link.NameAuth("b")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := peerlink.New(peerlink.Config{
+		Link: link.Config{Auth: link.NameAuth("a")},
+		Dial: func(ctx context.Context, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "tcp", px.Addr())
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return Pair{A: a, B: b, AName: "a", BName: "b",
+		DeadAfter: a.DeadAfter(), BlackHole: px.BlackHole, Cut: px.Cut, Throttle: px.Throttle}
 }
 
 // holdFirst holds its first opened session's reads for 4 s, from 2.5 s
