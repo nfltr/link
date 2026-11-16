@@ -181,7 +181,7 @@ spec:
 spec-invariants:
 	./scripts/spec.sh invariants
 
-spec-mutants:
+spec-mutants: test-cicache
 	./scripts/spec.sh mutants
 
 spec-traces:
@@ -206,3 +206,10 @@ spec-nightly: spec
 
 spec-nightly-wide:
 	./scripts/spec.sh nightly-wide
+
+# scripts/cicache.sh (the same file in every nfltr repository): the result
+# cache of TLC runs and ProVerif models; a hit skips a check whose inputs
+# did not change. Its soundness test, ahead of the first check using it.
+.PHONY: test-cicache
+test-cicache:
+	./scripts/cicache_test.sh

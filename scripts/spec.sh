@@ -30,13 +30,17 @@ tools=$(scripts/fetch-tla.sh)
 java=$(echo "$tools" | sed -n 1p)
 jar=$(echo "$tools" | sed -n 2p)
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+# TLC runs go through scripts/cicache.sh: kept only when this script passes.
+cicache=$PWD/scripts/cicache.sh
+CICACHE_STAGE=$("$cicache" begin || true)
+export CICACHE_STAGE
+trap 'st=$?; "$cicache" end "$CICACHE_STAGE" $st || st=1; rm -rf "$work"; exit $st' EXIT
 
 # tlc CFG MODULE [args]: TLC in spec/, its state files in $META (default $work/states).
 tlc() {
 	c=$1 mod=$2
 	shift 2
-	(cd spec && "$java" -XX:+UseParallelGC -cp "$jar" tlc2.TLC -workers "${TLC_WORKERS:-4}" \
+	(cd spec && "$cicache" tlc -- "$java" -XX:+UseParallelGC -cp "$jar" tlc2.TLC -workers "${TLC_WORKERS:-4}" \
 		-noGenerateSpecTE -metadir "${META:-$work/states}" -config "$c" "$@" "$mod")
 }
 

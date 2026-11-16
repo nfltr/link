@@ -533,6 +533,12 @@ workflow still runs on GitHub as an extra signal, and every fuzz target
 for 5 minutes weekly. `make fuzz-long FUZZTIME=30m`
 is the long fuzz run ([FUZZING.md](FUZZING.md)).
 
+A TLC run whose inputs did not change is not checked again:
+`scripts/cicache.sh` keys each by the sha256 of what it reads (config,
+models, jars, arguments) and replays a stored pass (`CICACHE=off`
+disables it, `CICACHE_VERIFY=1` reruns every hit and fails on a different
+verdict; `make test-cicache` is its soundness test).
+
 ## Status and compatibility
 
 The latest release is the newest `vX.Y.Z` tag
