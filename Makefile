@@ -4,7 +4,7 @@
 GOVULNCHECK_VERSION := v1.8.0
 
 .PHONY: check test-identity build vet check-fmt test test-race test-linkdebug test-ci fuzz-short fuzz-long check-gosec check-semgrep check-govulncheck
-check: build vet check-fmt test-identity test-ci check-gosec check-semgrep check-govulncheck
+check: build vet check-fmt test-identity check-gosec check-semgrep check-govulncheck test-ci
 
 # check-fmt: gofmt (the toolchain's, not one on PATH) changes no tracked Go
 # file (vendor/ aside); go vet and the tests accept unformatted code.
