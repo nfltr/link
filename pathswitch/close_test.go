@@ -6,6 +6,8 @@ package pathswitch
 import (
 	"errors"
 	"io"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -186,4 +188,37 @@ func TestAbortThenCloseLingers(t *testing.T) {
 	if d := time.Since(start); d > time.Second {
 		t.Fatalf("the reset took %v", d)
 	}
+}
+
+// writers counts the goroutines in a Conn's writeLoop.
+func writers() int {
+	buf := make([]byte, 1<<20)
+	return strings.Count(string(buf[:runtime.Stack(buf, true)]), "pathswitch.(*Conn).writeLoop(")
+}
+
+// A client that closed cleanly waits for the server's FIN; when its stream
+// dies before the FIN arrives, its writer is released with the stream and
+// exits, never left waiting (spec/DirectPath.tla assumes every enabled step
+// runs: a release wakes the writer; lane AFTER68, found by lane HALFCLOSE).
+func TestCleanCloseThenStreamDiesEndsTheWriter(t *testing.T) {
+	before := writers()
+	h := newHarness(t, 64, false)
+	rc := readAll(h.c)
+	_ = h.s.CloseWrite() // the server's END, not its FIN
+	if err := <-rc; err != nil {
+		t.Fatal(err)
+	}
+	_ = h.c.Close() // clean: the server acknowledged the client's END
+	h.c.mu.Lock()
+	left := h.c.left()
+	h.c.mu.Unlock()
+	if !left {
+		t.Fatal("the client's Close was not clean")
+	}
+	// its last ACK out: the writer waits for the server's FIN
+	waitFor(t, func() bool { h.c.mu.Lock(); defer h.c.mu.Unlock(); return h.c.rAck == h.c.rpos() })
+	time.Sleep(10 * time.Millisecond) // into its wait (sooner, its write fails and it ends anyway)
+	h.die("relay")                    // before the server's FIN
+	_ = h.s.Close()
+	waitFor(t, func() bool { return writers() <= before })
 }

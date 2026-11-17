@@ -405,10 +405,13 @@ func (c *Conn) closeDone() {
 	}
 }
 
+// release ends ps and wakes its writer, which may wait for a frame or the
+// server's FIN that ps no longer carries (TestCleanCloseThenStreamDiesEndsTheWriter).
 func (c *Conn) release(ps *pstream) {
 	if !ps.ended {
 		ps.ended, ps.dead = true, true
 		_ = ps.s.Reset()
+		c.cond.Broadcast()
 	}
 }
 
@@ -843,7 +846,9 @@ func (c *Conn) writeLoop(ps *pstream) {
 	for {
 		f, ok := c.next(ps, wbuf)
 		if !ok {
-			if c.gone && ps == c.cur {
+			// a client that left is done only with the server's FIN, which
+			// another stream may bring (streamEnded's OnStreamEnd)
+			if c.gone && ps == c.cur && !(c.client && c.left() && !ps.fin) {
 				c.closeDone()
 			}
 			c.mu.Unlock()

@@ -8,6 +8,15 @@ version 2 unless an entry says otherwise.
 
 ## Unreleased
 
+- `pathswitch`: a client whose clean Close waited for the server's FIN
+  no longer leaks its writer goroutine when its stream dies before the
+  FIN: releasing a stream now wakes its writer (it waited on the Conn's
+  cond for a FIN that stream would never carry; lane AFTER68, found by
+  lane HALFCLOSE). The woken writer leaves Done to the server's FIN on
+  another stream or the detach bound, as before. Guard
+  `TestCleanCloseThenStreamDiesEndsTheWriter` (red every run before),
+  also checked against spec/TraceDirectPath.tla by `make spec-traces`.
+
 - A `Session.Write` already waiting for credit when the session's first
   write deadline was set now sees it: it waited on a channel that did not
   exist yet (nil until a first `SetWriteDeadline`), so a past deadline
