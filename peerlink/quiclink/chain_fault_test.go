@@ -165,6 +165,7 @@ func echoIntact(l peerlink.Link, n int) (tr link.Trace, got int64, intact bool, 
 // of up to 4 MiB in flight; every echo either fails with an error or
 // comes back intact, none ends cleanly with other bytes.
 func TestChainMiddleHopFaultsMixed(t *testing.T) {
+	t.Parallel() // waits on timers and peers, not the CPU: overlaps the others
 	if testing.Short() {
 		t.Skip("a liveness bound per partition")
 	}
@@ -189,6 +190,7 @@ func TestChainMiddleHopFaultsMixed(t *testing.T) {
 	runs := map[string]int{"kill": 5, "drain": 5, "partition": 3}
 	for name, fault := range faults {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			var bad, failed, ok atomic.Int64
 			for run := range runs[name] {
 				quic := make([]bool, 6)
@@ -246,6 +248,7 @@ func TestChainMiddleHopFaultsMixed(t *testing.T) {
 // leaks: quic-go's SetReliableBoundary after the stream's reset counted
 // its frames again (panic: numOutStandingFrames negative).
 func TestAbortAfterPeerAbort(t *testing.T) {
+	t.Parallel() // waits on timers and peers, not the CPU: overlaps the others
 	pc := listenUDP(t)
 	b := mustNew(t, quiclink.Config{PacketConn: pc, TLS: serverTLS("b"), Liveness: link.LivenessFast})
 	a := mustNew(t, quiclink.Config{Dial: dialer("a", "b", pc.LocalAddr().String()), Liveness: link.LivenessFast})

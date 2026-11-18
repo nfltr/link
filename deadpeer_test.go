@@ -206,6 +206,7 @@ func (o *pongCut) PingRTT(time.Duration) {
 // both ends end it Interval + Timeout after the last frame each received,
 // plus their timers' lateness (checkDeadAfter, spec/Liveness.tla).
 func TestDeadPeerWorstCaseIdle(t *testing.T) {
+	t.Parallel() // waits on timers and peers, not the CPU: overlaps the others
 	for _, name := range testPresets() {
 		for _, side := range []string{"dialer", "listener"} {
 			t.Run(name+"/"+side, func(t *testing.T) {

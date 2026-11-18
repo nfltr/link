@@ -104,6 +104,7 @@ func dialer(name, peer, addr string, protos ...string) func(context.Context, str
 // TestConformanceWithoutChain: a dialler offering only ALPN (quiclink
 // before v0.4.0) gets plain sessions, which keep the contract.
 func TestConformanceWithoutChain(t *testing.T) {
+	t.Parallel() // waits on timers and peers, not the CPU: overlaps the others
 	peerlinktest.Run(t, func(t *testing.T) peerlinktest.Pair {
 		pc := listenUDP(t)
 		px := peerlinktest.NewUDPProxy(t, pc.LocalAddr().String())
@@ -118,6 +119,7 @@ func TestConformanceWithoutChain(t *testing.T) {
 }
 
 func TestConformance(t *testing.T) {
+	t.Parallel() // waits on timers and peers, not the CPU: overlaps the others
 	peerlinktest.Run(t, func(t *testing.T) peerlinktest.Pair {
 		pc := listenUDP(t)
 		px := peerlinktest.NewUDPProxy(t, pc.LocalAddr().String())
@@ -134,6 +136,7 @@ func TestConformance(t *testing.T) {
 // TestConformanceReverse: A listens and opens its sessions on the
 // connection B dialled (Config.Connect).
 func TestConformanceReverse(t *testing.T) {
+	t.Parallel() // waits on timers and peers, not the CPU: overlaps the others
 	peerlinktest.Run(t, func(t *testing.T) peerlinktest.Pair {
 		pc := listenUDP(t)
 		px := peerlinktest.NewUDPProxy(t, pc.LocalAddr().String())

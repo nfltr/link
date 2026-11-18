@@ -460,6 +460,7 @@ func (b *blackHole) Write(p []byte) (int, error) {
 // see it dead within the liveness bound and abort their other side; the
 // origin reads CodeConnLost.
 func TestChainBlackHole(t *testing.T) {
+	t.Parallel() // waits on timers and peers, not the CPU: overlaps the others
 	if testing.Short() {
 		t.Skip("waits a liveness bound")
 	}
@@ -488,6 +489,7 @@ func TestChainBlackHole(t *testing.T) {
 // its session: the origin's writes stop within sum(windows) + (n-1) x
 // 256 KiB, and another session through the same hops keeps moving.
 func TestChainStalledFarReader(t *testing.T) {
+	t.Parallel() // waits on timers and peers, not the CPU: overlaps the others
 	for n := 1; n <= 4; n++ {
 		t.Run(fmt.Sprintf("links=%d", n), func(t *testing.T) {
 			stuck := make(chan struct{})
@@ -571,6 +573,7 @@ func TestChainMaxHops(t *testing.T) {
 // CodeDraining, and at the drain's deadline the rest end with
 // CodeDrainDeadline from hop k (Hops k-1).
 func TestChainDrainMiddleHop(t *testing.T) {
+	t.Parallel() // waits on timers and peers, not the CPU: overlaps the others
 	for _, k := range []int{2, 3} {
 		t.Run(fmt.Sprintf("hop=%d", k), func(t *testing.T) {
 			r := newChainRig(t, rigOpts{n: 4}, farEcho)
@@ -610,6 +613,7 @@ func TestChainDrainMiddleHop(t *testing.T) {
 // today's semantics on it: Answers false there, and the hop before it
 // accepts once its Route returned.
 func TestChainMixedLegs(t *testing.T) {
+	t.Parallel() // waits on timers and peers, not the CPU: overlaps the others
 	t.Run("origin leg", func(t *testing.T) {
 		r := newChainRig(t, rigOpts{n: 3, noChainAt: func(i int) bool { return i == 0 }}, farEcho)
 		s := r.open("x")

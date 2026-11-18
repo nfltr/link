@@ -112,6 +112,7 @@ func hop3(r *chainRig) (in, out *Mux) { return r.links[2].lm, r.links[3].dm }
 // every echo either fails with an error or comes back intact; none ends
 // cleanly with other bytes (a cut connection taken for a clean close).
 func TestChainMiddleHopFaultsIntegrity(t *testing.T) {
+	t.Parallel() // waits on timers and peers, not the CPU: overlaps the others
 	runs := 30
 	if testing.Short() {
 		runs = 8
@@ -146,6 +147,7 @@ func TestChainMiddleHopFaultsIntegrity(t *testing.T) {
 	}
 	for name, f := range faults {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			runs := runs
 			if name == "partition" { // a liveness bound each
 				if testing.Short() {

@@ -76,6 +76,7 @@ it in full. In short:
 
 ```go
 func TestConformance(t *testing.T) {
+	t.Parallel() // waits on timers and peers, not the CPU: overlaps the others
 	peerlinktest.Run(t, func(t *testing.T) peerlinktest.Pair {
 		pc := listenUDP(t)
 		px := peerlinktest.NewUDPProxy(t, pc.LocalAddr().String())
