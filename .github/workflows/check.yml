@@ -18,9 +18,37 @@ on:
 permissions:
   contents: read
 jobs:
-  # Fail fast: the cheap checks (each under a minute) run first (make ci
-  # runs the jobs in order), before make check's tests, the modules' -race
-  # tests and the TLC model.
+  # The long parts as jobs of their own, longest first: make ci
+  # (scripts/ci.sh) starts the jobs in this order, at most one per CPU at
+  # once, in one checkout; each job's steps run in order. make check is
+  # check-static, the race and linkdebug tests and fuzz-short (Makefile).
+  quiclink:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: make check-quiclink
+  race:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: make test-race
+      - run: make test-linkdebug
+  # The cheap checks (each under a minute) fail the run while the others
+  # still run.
   static:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
@@ -37,7 +65,8 @@ jobs:
       - run: make check-api
       - run: make check-soak
       - run: make check-compare
-  check:
+      - run: make check-static
+  fuzz-short:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -48,7 +77,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      - run: make check
+      - run: make fuzz-short
   modules:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
@@ -56,7 +85,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [check-grpclink, check-quiclink, check-linkvet]
+        target: [check-grpclink, check-linkvet]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
