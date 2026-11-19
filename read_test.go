@@ -98,3 +98,90 @@ func TestSessionReadDeadlineClearedNeverEOF(t *testing.T) {
 		}
 	}
 }
+
+// sumWriter counts and sums what it is given; as an OwnedWriter it keeps
+// the slices (and never hands them back to the pool).
+type sumWriter struct {
+	mu       sync.Mutex
+	got, sum int
+}
+
+func (w *sumWriter) add(b []byte) {
+	w.mu.Lock()
+	w.got += len(b)
+	for _, x := range b {
+		w.sum += int(x)
+	}
+	w.mu.Unlock()
+}
+
+func (w *sumWriter) Write(b []byte) (int, error) { w.add(b); return len(b), nil }
+
+type ownedSumWriter struct{ *sumWriter }
+
+func (w ownedSumWriter) WriteOwned(b []byte) error { w.add(b); return nil }
+
+// A Read beside WriteTo (io.Copy(dst, sess): misuse, but nothing stopped
+// it) or Pump on one session: each byte goes to one of them, none twice,
+// none lost, and no buffer goes back to the pool while it is read
+// (SessionRead.tla, SessionReadWriteTo.cfg). Before, WriteTo and Pump
+// wrote the unread tail of a Read (s.rest) without rmu, then cut it and
+// released its buffer: the bytes went twice, or a Read's new tail was cut
+// (go test -race reports it at once; without -race the sum is off).
+func TestSessionReadBesideWriteTo(t *testing.T) {
+	got := make(chan *Session, 1)
+	dm, _ := v2muxPair(t, func(_ []byte, s *Session) { got <- s }, v2cfg, v2cfg)
+	msg := make([]byte, 1000)
+	want := 0
+	for i := range msg {
+		msg[i] = byte(i%251) + 1
+		want += int(msg[i])
+	}
+	for i := range 300 {
+		p, err := dm.Open([]byte("h"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := <-got
+		if _, err := p.Write(msg); err != nil {
+			t.Fatal(err)
+		}
+		_ = p.CloseWrite()
+		w := &sumWriter{}
+		one := make([]byte, 1)
+		if _, err := io.ReadFull(s, one); err != nil { // leaves a tail
+			t.Fatal(err)
+		}
+		w.add(one)
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			b := make([]byte, 7)
+			for {
+				m, err := s.Read(b)
+				w.add(b[:m])
+				if err != nil {
+					return
+				}
+			}
+		})
+		switch i % 3 {
+		case 0:
+			_, err = s.WriteTo(w)
+		case 1:
+			_, err = s.WriteTo(ownedSumWriter{w})
+		default:
+			done := make(chan error, 1)
+			s.Pump(w, func(_ int64, err error) { done <- err })
+			err = <-done
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		wg.Wait()
+		if w.got != len(msg) || w.sum != want {
+			t.Fatalf("round %d: handed out %d bytes summing %d; want %d summing %d", i, w.got, w.sum, len(msg), want)
+		}
+		_ = s.Close()
+		_ = p.Close()
+	}
+}

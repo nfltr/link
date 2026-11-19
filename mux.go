@@ -621,7 +621,8 @@ func (m *Mux) closeIdle() {
 // pending Read, and a write deadline a pending Write, with
 // os.ErrDeadlineExceeded. Several goroutines may Read at once (as
 // net.Conn): each byte goes to one of them. WriteTo and Pump take the
-// session's bytes for themselves, not beside a Read.
+// session's bytes for themselves; a Read beside them is safe too (each
+// byte to one of them, once), but their bytes interleave.
 type Session struct {
 	m      *Mux
 	dbg    debugState // linkdebug builds only (debug_on.go); zero size otherwise
@@ -797,12 +798,10 @@ func (s *Session) WriteTo(w io.Writer) (int64, error) {
 		return s.writeOwned(ow)
 	}
 	var total int64
-	if len(s.rest) > 0 {
-		n, err := w.Write(s.rest)
+	if rest, cur := s.takeRest(); len(rest) > 0 {
+		n, err := w.Write(rest)
 		total += int64(n)
-		s.rest = nil
-		releaseData(s.cur)
-		s.cur = nil
+		releaseData(cur)
 		if err != nil {
 			return total, err
 		}
@@ -820,6 +819,19 @@ func (s *Session) WriteTo(w io.Writer) (int64, error) {
 			return total, err
 		}
 	}
+}
+
+// takeRest takes the unread tail of a Read (s.rest) and its slice
+// (s.cur) for WriteTo or Pump, which own them from here: under rmu, so a
+// Read beside them (misuse, but nothing stops it) neither hands the same
+// bytes out again nor reads a slice they released (spec/SessionRead.tla,
+// writeto-no-lock).
+func (s *Session) takeRest() (rest, cur []byte) {
+	s.rmu.Lock()
+	rest, cur = s.rest, s.cur
+	s.rest, s.cur = nil, nil
+	s.rmu.Unlock()
+	return rest, cur
 }
 
 // batchWriter writes batches of received slices in one net.Buffers write
@@ -880,9 +892,7 @@ func (s *Session) drain() {
 	p := s.pump.Load()
 	ow, owned := p.w.(OwnedWriter)
 	var err error
-	if len(s.rest) > 0 { // the tail of a Read before Pump
-		b := s.rest
-		s.rest, s.cur = nil, nil
+	if b, _ := s.takeRest(); len(b) > 0 { // the tail of a Read before Pump
 		if err = writeOwnedOrCopy(p.w, ow, owned, b); err != nil {
 			p.done(p.total, err)
 			return
@@ -934,9 +944,8 @@ func writeOwnedOrCopy(w io.Writer, ow OwnedWriter, owned bool, b []byte) error {
 
 func (s *Session) writeOwned(w OwnedWriter) (int64, error) {
 	var total int64
+	b, _ := s.takeRest() // owned by w from here
 	for {
-		b := s.rest
-		s.rest, s.cur = nil, nil // owned by w from here
 		if len(b) == 0 {
 			var ok bool
 			if b, ok = s.q.Pop(); !ok {
@@ -947,6 +956,7 @@ func (s *Session) writeOwned(w OwnedWriter) (int64, error) {
 			return total, err
 		}
 		total += int64(len(b))
+		b = nil
 	}
 }
 

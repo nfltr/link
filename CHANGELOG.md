@@ -8,6 +8,16 @@ version 2 unless an entry says otherwise.
 
 ## Unreleased
 
+- A Read beside WriteTo (io.Copy(dst, sess) while another goroutine
+  reads) or Pump on one session no longer hands the unread tail of a Read
+  out twice, cuts a tail a Read left after it, or reads a buffer already
+  back in the pool: WriteTo, its OwnedWriter path and Pump take the tail
+  under the session's read lock (`takeRest`). Before, outside `-tags
+  linkdebug` nothing stopped it: duplicated or lost bytes, a
+  use-after-release, or a panic. Lane LINKREADWRITE; spec/SessionRead.tla
+  (`SessionReadWriteTo.cfg`), mutant `writeto-no-lock`; guard
+  `TestSessionReadBesideWriteTo` (red every run before, without -race).
+
 - A session this side resets, aborts or refuses now ends its own reads
   and writes with that end (an `*Abort`, `errors.Is` `ErrReset`; `Err`
   too), never a clean end: before, its Read returned io.EOF and its
