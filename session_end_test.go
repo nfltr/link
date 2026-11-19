@@ -400,3 +400,56 @@ func TestWriteAfterRefuseSendsNoData(t *testing.T) {
 	default:
 	}
 }
+
+// A session this side resets or aborts ends its own reads and writes with
+// that reset, never a clean end: a reader blocked meanwhile (another
+// goroutine) must not take a cut stream for a complete one (lane
+// LINKABORT; spec/LinkSession.tla GEnds "here", mutant local-abort-eof).
+func TestLocalAbortReadsTyped(t *testing.T) {
+	ends := map[string]func(s *Session) error{
+		"reset":  (*Session).Reset,
+		"abort":  func(s *Session) error { return s.Abort(CodeApp+7, "revoked") },
+		"refuse": func(s *Session) error { return s.Refuse(CodeApp+7, "revoked") },
+	}
+	for name, end := range ends {
+		for _, side := range []string{"opener", "accepter"} {
+			if name == "refuse" && side == "opener" {
+				continue
+			}
+			t.Run(name+"/"+side, func(t *testing.T) {
+				s, p := openPair(t, v2cfg, v2cfg)
+				if side == "accepter" {
+					s, p = p, s
+				}
+				_ = p
+				read := make(chan error, 1)
+				go func() { _, err := io.ReadAll(s); read <- err }()
+				time.Sleep(10 * time.Millisecond) // the reader blocked (either order must hold)
+				if err := end(s); err != nil {
+					t.Fatal(err)
+				}
+				err := <-read
+				if err == nil || errors.Is(err, io.EOF) || !errors.Is(err, ErrReset) {
+					t.Fatalf("read after a local %s: %v; want the reset", name, err)
+				}
+				if name != "reset" {
+					if a := errAbort(t, err); a.Code != CodeApp+7 || a.Msg != "revoked" {
+						t.Fatalf("read's abort %+v", a)
+					}
+				}
+				if _, err := s.Read(make([]byte, 1)); !errors.Is(err, ErrReset) {
+					t.Fatalf("second read: %v", err)
+				}
+				if _, err := s.Write([]byte("x")); !errors.Is(err, io.ErrClosedPipe) || !errors.Is(err, ErrReset) {
+					t.Fatalf("write after a local %s: %v", name, err)
+				}
+				if _, err := s.WriteTo(io.Discard); !errors.Is(err, ErrReset) {
+					t.Fatalf("WriteTo after a local %s: %v", name, err)
+				}
+				if !errors.Is(s.Err(), ErrReset) {
+					t.Fatalf("Err after a local %s: %v", name, s.Err())
+				}
+			})
+		}
+	}
+}

@@ -832,3 +832,30 @@ func TestChainMovedLive(t *testing.T) {
 		}
 	}
 }
+
+// TestChainMiddleHopAbortsItsInbound: a hop that aborts its own inbound
+// session (a relay ending a revoked credential's sessions) ends the
+// onward one with that abort, never a clean close: the joint reads the
+// local abort, not io.EOF (lane LINKABORT, TestLocalAbortReadsTyped).
+func TestChainMiddleHopAbortsItsInbound(t *testing.T) {
+	got := make(chan error, 1)
+	r := newChainRig(t, rigOpts{n: 2}, func(_ []byte, s *Session) {
+		_ = s.Accept()
+		_, err := io.ReadAll(s)
+		got <- err
+	})
+	ins := make(chan *Session, 1)
+	r.routeHook = func(_ int, in *Session) { ins <- in }
+	s := r.open("x")
+	if err := s.Answered(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	_ = (<-ins).Abort(CodeApp+5, "revoked")
+	if a := errAbort(t, <-got); a.Code != CodeApp+5 || a.Hops != 0 || a.Msg != "revoked" {
+		t.Fatalf("far end's abort %+v", a)
+	}
+	if a := errAbort(t, func() error { _, err := io.ReadAll(s); return err }()); a.Code != CodeApp+5 || a.Hops != 0 {
+		t.Fatalf("origin's abort %+v", a)
+	}
+	r.idle()
+}

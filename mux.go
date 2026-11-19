@@ -613,7 +613,8 @@ func (m *Mux) closeIdle() {
 
 // Session is one session of a Mux. Read and WriteTo take the peer's bytes
 // in order, then io.EOF once the peer closed the session (or its write
-// side), or the error that cut it: ErrReset (the peer's Reset), or
+// side), or the error that cut it: ErrReset (the peer's Reset), an
+// *Abort (the peer's, or this side's own Reset or Abort: never io.EOF), or
 // ErrConnClosed wrapping why the connection ended (ErrDeadPeer, the
 // network's error). Write sends on credit; past such an end it returns
 // io.ErrClosedPipe wrapping the same error. A read deadline ends a
@@ -711,8 +712,8 @@ func (s *Session) Done() <-chan struct{} { return s.done }
 
 // Err is why the session ended, once Done is closed: nil for a clean end
 // (both sides closed it), else ErrReset (the peer's Reset), the peer's
-// *Abort (FeatureChain), or ErrConnClosed wrapping why the connection
-// ended. A layer that joins the session to another conn watches it with
+// *Abort (FeatureChain), this side's own Reset or Abort (an *Abort), or
+// ErrConnClosed wrapping why the connection ended. A layer that joins the session to another conn watches it with
 // Done and Err (peerlink.Join: an idle client whose connection died).
 func (s *Session) Err() error {
 	if e := s.err.Load(); e != nil {
@@ -1218,12 +1219,14 @@ func (s *Session) Close() error {
 // Reset ends the session as failed: the peer reads ErrReset (a peer of
 // link v0.3.0 or later, which reads CLOSE code 2; an older one reads a
 // close).
-// Reads here end as after Close.
+// Reads and writes here end with an *Abort (errors.Is ErrReset), never a
+// clean end.
 func (s *Session) Reset() error {
 	if debugOn {
 		debugReleased(s)
 	}
 	s.once.Do(func() {
+		s.endHere(nil)
 		defer s.m.drop(s) // after the reset: a leaving connection closes after it
 		if s.peerClosed.Load() {
 			return

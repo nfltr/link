@@ -8,6 +8,17 @@ version 2 unless an entry says otherwise.
 
 ## Unreleased
 
+- A session this side resets, aborts or refuses now ends its own reads
+  and writes with that end (an `*Abort`, `errors.Is` `ErrReset`; `Err`
+  too), never a clean end: before, its Read returned io.EOF and its
+  WriteTo nil, so a reader on another goroutine, or a join passing the
+  session's end on, took a cut stream for a complete one (a relay
+  revoking a credential closed the joined agent leg cleanly). A join
+  passes such an abort on as it is (Hops unchanged). Local state only:
+  the wire is unchanged. Lane LINKABORT; spec/LinkSession.tla `GEnds`
+  ("here"), mutant `local-abort-eof`, witness `WitnessHere`; guards
+  `TestLocalAbortReadsTyped`, `TestChainMiddleHopAbortsItsInbound`.
+
 - `pathswitch`: a client whose clean Close waited for the server's FIN
   no longer leaks its writer goroutine when its stream dies before the
   FIN: releasing a stream now wakes its writer (it waited on the Conn's

@@ -78,6 +78,23 @@ type Abort struct {
 	Code    uint32 // link's below CodeApp, the application's from CodeApp
 	Hops    uint8  // joins the abort crossed: 0 = this side's peer itself
 	Msg     string // at most MaxAbortMsg bytes of UTF-8
+	here    bool   // this side's own: what its reads and writes end with
+}
+
+// endHere records this side's Reset (a nil) or Abort as the session's end
+// before it ends: its own reads and writes then fail with it, not a clean
+// end (spec/LinkSession.tla GEnds "here"; TestLocalAbortReadsTyped). A
+// session already ended keeps its end.
+func (s *Session) endHere(a *Abort) {
+	if closed(s.done) {
+		return
+	}
+	h := Abort{Code: CodeUnspecified}
+	if a != nil {
+		h = *a
+	}
+	h.here = true
+	s.fail(&h)
 }
 
 // Error says what ended the session, where on the path and why.
@@ -94,7 +111,9 @@ func (a *Abort) Error() string {
 		code = fmt.Sprintf("application code %d", a.Code-CodeApp)
 	}
 	s := fmt.Sprintf("link: session %s (%s) %d hop(s) beyond the peer", what, code, a.Hops)
-	if a.Hops == 0 {
+	if a.here {
+		s = fmt.Sprintf("link: session %s (%s) by this side", what, code)
+	} else if a.Hops == 0 {
 		s = fmt.Sprintf("link: session %s (%s) by the peer", what, code)
 	}
 	if a.Msg != "" {
@@ -184,6 +203,10 @@ func (a *Abort) passed() *Abort {
 func abortFor(err error) *Abort {
 	var a *Abort
 	switch {
+	case errors.As(err, &a) && a.here: // this side's own: on as it is
+		p := *a
+		p.here = false
+		return &p
 	case errors.As(err, &a):
 		return a.passed()
 	case errors.Is(err, ErrReset):
@@ -299,8 +322,9 @@ func (s *Session) Refuse(code uint32, msg string) error {
 }
 
 // Abort resets the session with a reason, either side, any time: the
-// peer reads an *Abort with code and msg (errors.Is ErrReset). Reads here
-// end as after Close. On a connection without FeatureChain it is Reset.
+// peer reads an *Abort with code and msg (errors.Is ErrReset). Reads and
+// writes here end with the abort too (an *Abort, errors.Is ErrReset),
+// never a clean end. On a connection without FeatureChain it is Reset.
 func (s *Session) Abort(code uint32, msg string) error {
 	return s.AbortWith(&Abort{Code: code, Msg: msg})
 }
@@ -323,6 +347,7 @@ func (s *Session) AbortWith(a *Abort) error {
 		}
 	}
 	s.once.Do(func() {
+		s.endHere(a)
 		defer s.m.drop(s) // after the frame: a leaving connection closes after it
 		if s.peerClosed.Load() {
 			return
