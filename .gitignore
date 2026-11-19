@@ -2,3 +2,5 @@ soak/out/
 compare/out/
 /compare/compare
 /soak/soak
+# TLC trace-explorer dumps (a run without -noGenerateSpecTE)
+spec/*_TTrace_*
