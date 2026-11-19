@@ -37,13 +37,14 @@ export CICACHE_STAGE
 trap 'st=$?; "$cicache" end "$CICACHE_STAGE" $st || st=1; rm -rf "$work"; exit $st' EXIT
 
 # tlc CFG MODULE [args]: TLC in spec/, its state files in $META (default $work/states).
-# The heap: TLC_RAM_PERCENT of the machine's (or container's) memory, 60 by
-# default: Link.cfg's liveness (make spec) ran out of Java's default 25%
-# of a runner's 8 GB once LINKABORT's "here" added 10% of its states.
+# The heap: TLC_RAM_PERCENT (scripts/fetch-tla.sh's java) of the job's
+# memory, 60 by default: Link.cfg's liveness (make spec) ran out of Java's
+# default 25% of a runner's 8 GB once LINKABORT's "here" added 10% of its
+# states. A caller running TLCs at once sets TLC_JVMS, so they share it.
 tlc() {
 	c=$1 mod=$2
 	shift 2
-	(cd spec && "$cicache" tlc -- "$java" -XX:+UseParallelGC -XX:MaxRAMPercentage="${TLC_RAM_PERCENT:-60}" -cp "$jar" tlc2.TLC -workers "${TLC_WORKERS:-4}" \
+	(cd spec && TLC_RAM_PERCENT=${TLC_RAM_PERCENT:-60} "$cicache" tlc -- "$java" -XX:+UseParallelGC -cp "$jar" tlc2.TLC -workers "${TLC_WORKERS:-4}" \
 		-noGenerateSpecTE -metadir "${META:-$work/states}" -config "$c" "$@" "$mod")
 }
 
@@ -403,7 +404,7 @@ mutants)
 	n=0
 	job() {
 		n=$((n + 1))
-		(jw=$work/job$n && mkdir -p "$jw" && META=$jw/states TLC_WORKERS=1 "$@" >"$work/job$n.txt" 2>&1 || touch "$work/job$n.fail") &
+		(jw=$work/job$n && mkdir -p "$jw" && export TLC_JVMS="${SPEC_JOBS:-3}" && META=$jw/states TLC_WORKERS=1 "$@" >"$work/job$n.txt" 2>&1 || touch "$work/job$n.fail") &
 		[ $((n % ${SPEC_JOBS:-3})) != 0 ] || wait
 	}
 	for m in fin-skips-queue grant-early write-race turns-no-recheck release-early abort-as-fin lost-as-eof local-abort-eof; do
@@ -680,7 +681,7 @@ traces)
 	n=0
 	for t in "$work"/traces/*.ndjson; do
 		n=$((n + 1))
-		(TLC_WORKERS=1 trace "$t" >"$t.out" 2>&1 && touch "$t.ok") &
+		(export TLC_JVMS="${TLC_WORKERS:-4}" && TLC_WORKERS=1 trace "$t" >"$t.out" 2>&1 && touch "$t.ok") &
 		[ $((n % ${TLC_WORKERS:-4})) != 0 ] || wait
 	done
 	wait
