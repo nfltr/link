@@ -177,7 +177,7 @@ spec:
 spec-invariants:
 	./scripts/spec.sh invariants
 
-spec-mutants: test-cicache
+spec-mutants: test-cicache test-fetch-tla
 	./scripts/spec.sh mutants
 
 spec-traces:
@@ -209,3 +209,9 @@ spec-nightly-wide:
 .PHONY: test-cicache
 test-cicache:
 	./scripts/cicache_test.sh
+
+# scripts/fetch-tla.sh: concurrent fetchers sharing one cache never see
+# another's partial download; a good cache is used with no fetch.
+.PHONY: test-fetch-tla
+test-fetch-tla:
+	./scripts/fetch-tla_test.sh
