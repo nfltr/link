@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"sync"
 	"time"
 )
@@ -34,6 +35,13 @@ type Config struct {
 	// stream ended before it resets the session (ErrDetached); an
 	// aborter (Abort) and a Close wait as long for the peer. 0: 30 s.
 	Detach time.Duration
+	// Linger bounds how long a Close (and WaitAcked) waits with nothing
+	// heard from the peer (no frame: an ACK, a byte, its END): a peer
+	// silent that long is taken as gone and a Close resets the session,
+	// as TCP's user timeout (RFC 5482; spec DirectPath.tla LingerOut,
+	// CloseBounded; guard TestCloseGonePeerWithinLinger). A peer that
+	// keeps answering is waited for up to Detach. 0: 5 s.
+	Linger time.Duration
 	// OnStreamEnd, a client's only: the current stream ended (its path
 	// died); the caller opens one on a path that works and calls Move
 	// (spec Fallback). Called on its own goroutine, no lock held.
@@ -84,6 +92,8 @@ type Conn struct {
 	rbuf       fifo
 	rcvd, rAck uint64
 	rEnd       bool
+	rShut      bool   // this end's application closed its reading (CloseRead, Close)
+	heard      uint64 // frames read from the peer (Config.Linger's silence)
 
 	ab     int
 	err    error         // set once: why Read and Write fail
@@ -117,6 +127,9 @@ func start(first Stream, path string, cfg Config, client bool) *Conn {
 	}
 	if cfg.Detach <= 0 {
 		cfg.Detach = 30 * time.Second
+	}
+	if cfg.Linger <= 0 {
+		cfg.Linger = 5 * time.Second
 	}
 	c := &Conn{cfg: cfg, w: uint64(cfg.Window), client: client, ep: 1, done: make(chan struct{})} // #nosec G115 -- Window > 0 above
 	c.cond = sync.NewCond(&c.mu)
@@ -244,27 +257,58 @@ func (c *Conn) Written() uint64 {
 func (c *Conn) WaitAcked(n uint64, d time.Duration) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.waitFor(d, func() bool { return c.acked >= n || c.err != nil })
+	c.waitHeard(d, func() bool { return c.acked >= n || c.err != nil })
 	return c.acked >= n
 }
 
-// Read reads the peer's bytes; io.EOF after its END.
+// Read reads the peer's bytes; io.EOF after its END. Bytes this end took
+// stay readable after a reset (the peer freed them on this end's ACK, so
+// its application holds them delivered: spec DirectPath.tla TakenRead;
+// relay PIPEMATRIX defect 1, TestResetKeepsACleanDirection), then the
+// reset's error, or io.EOF if the peer's END came before it. After
+// CloseRead or Close it returns net.ErrClosed, a Read already waiting
+// too (spec CloseWakes, TestCloseWakesABlockedRead).
 func (c *Conn) Read(p []byte) (int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for c.rbuf.len() == 0 && !c.rEnd && c.err == nil {
+	for c.rbuf.len() == 0 && !c.rEnd && c.err == nil && !c.rShut {
 		c.cond.Wait()
 	}
-	if c.err != nil {
-		return 0, c.err
+	if c.rShut {
+		return 0, net.ErrClosed
 	}
-	if c.rbuf.len() == 0 {
+	if c.rbuf.len() > 0 {
+		n := copy(p, c.rbuf.bytes())
+		c.rbuf.drop(n)
+		c.traceN("Read", c.end(c.client), 0, uint64(n)) // #nosec G115 -- n >= 0
+		c.cond.Broadcast()                              // an ACK may be due
+		return n, nil
+	}
+	if c.rEnd {
 		return 0, io.EOF
 	}
-	n := copy(p, c.rbuf.bytes())
-	c.rbuf.drop(n)
-	c.cond.Broadcast() // an ACK may be due
-	return n, nil
+	return 0, c.err
+}
+
+// CloseRead ends this end's reading: a Read waiting returns
+// net.ErrClosed at once, as every later one. The peer's bytes are still
+// taken and acknowledged, then dropped, so its direction ends cleanly
+// (spec RClose).
+func (c *Conn) CloseRead() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.closeRead()
+	return nil
+}
+
+func (c *Conn) closeRead() {
+	if c.rShut {
+		return
+	}
+	c.rShut = true
+	c.rbuf.drop(c.rbuf.len())
+	c.trace("CloseRead", c.end(c.client), 0, 0, "")
+	c.cond.Broadcast() // the Read waiting; an ACK may be due
 }
 
 // CloseWrite ends this end's direction: END after its last byte,
@@ -280,21 +324,24 @@ func (c *Conn) CloseWrite() error {
 	return nil
 }
 
-// Close ends the session: CloseWrite, then it waits (at most
-// Config.Detach) until the peer acknowledged every byte and the END. If
-// the peer's direction had not ended, or the wait ran out, the session is
-// reset (an ABORT, as TCP's RST); otherwise its streams end cleanly. After
-// this end's Abort it returns at once and the reset lingers as Abort's.
+// Close ends the session: CloseRead (a Read waiting returns at once),
+// CloseWrite, then it waits until the peer acknowledged every byte and
+// the END and ended its own direction: at most Config.Detach, and at most
+// Config.Linger with nothing heard from the peer (it is gone: spec
+// LingerOut). If the wait ran out, the session is reset (an ABORT, as
+// TCP's RST); otherwise its streams end cleanly. After this end's Abort
+// it returns at once and the reset lingers as Abort's.
 func (c *Conn) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.closeRead()
 	if c.gone {
 		return nil
 	}
 	if c.err == nil {
 		c.closed = true
 		c.cond.Broadcast()
-		c.waitFor(c.cfg.Detach, func() bool { return c.err != nil || c.acked == c.hi+1 })
+		c.waitHeard(c.cfg.Detach, func() bool { return c.err != nil || c.acked == c.hi+1 && c.rEnd })
 	}
 	switch {
 	case c.ab == abLocal:
@@ -306,37 +353,72 @@ func (c *Conn) Close() error {
 	case c.err != nil:
 		c.shutdown(false)
 	case c.clean():
-		c.err = io.ErrClosedPipe
-		c.cond.Broadcast()
-		c.shutdown(true)
+		c.endClean()
 	default:
 		c.abort(ErrReset)
-		c.waitFor(c.cfg.Detach, func() bool { return c.cur.ended || len(c.cur.ctrl) == 0 })
+		c.waitFor(c.cfg.Linger, func() bool { return c.cur.ended || len(c.cur.ctrl) == 0 })
 		c.shutdown(false)
 	}
 	return nil
 }
 
-// waitFor waits under c.mu until ok or d passed.
+// endClean ends a session clean at this end: both directions ended and
+// acknowledged (shutdown(true)).
+func (c *Conn) endClean() {
+	c.err = io.ErrClosedPipe
+	c.cond.Broadcast()
+	c.shutdown(true)
+}
+
+// waitHeard waits under c.mu until ok, at most d, and at most
+// Config.Linger with no frame heard from the peer; it reports ok().
+func (c *Conn) waitHeard(d time.Duration, ok func() bool) bool {
+	end := time.Now().Add(d)
+	for !ok() {
+		left := time.Until(end)
+		if left <= 0 {
+			return false
+		}
+		h := c.heard
+		c.waitFor(min(c.cfg.Linger, left), func() bool { return ok() || c.heard != h })
+		if c.heard == h && !ok() {
+			return false // silent for Linger, or d passed
+		}
+	}
+	return true
+}
+
+// waitFor waits under c.mu until ok or d passed. The timer's wake ends
+// the wait itself (expired), never a clock read after the timer started:
+// that deadline could still be ahead at the timer's one wake, and the
+// wait then outlived d with nothing else to wake it
+// (TestWaitAckedBoundHoldsOnAnIdleConn; link 9a31a62's test-race hang).
 func (c *Conn) waitFor(d time.Duration, ok func() bool) {
 	if ok() {
 		return
 	}
-	t := time.AfterFunc(d, func() { c.mu.Lock(); c.cond.Broadcast(); c.mu.Unlock() })
+	expired := false // under c.mu
+	t := time.AfterFunc(d, func() { c.mu.Lock(); expired = true; c.cond.Broadcast(); c.mu.Unlock() })
 	defer t.Stop()
-	until := time.Now().Add(d)
-	for !ok() && time.Now().Before(until) {
+	for !ok() && !expired {
 		c.cond.Wait()
 	}
 }
 
 // Abort resets the session (spec AbortBy): Read and Write fail with
-// ErrReset at both ends. This end keeps answering every stream the
-// session opens with ABORT until the peer answered its ABORT or
-// Config.Detach passed.
+// ErrReset at both ends (Read once it returned the bytes taken). This end
+// keeps answering every stream the session opens with ABORT until the
+// peer answered its ABORT or Config.Detach passed. A session clean at this
+// end (both directions ended and acknowledged) is not reset: Abort ends
+// it as Close does (spec AbortBy: no reset once Clean; a stop right after
+// a clean Close, relay PIPEMATRIX defect 1, TestAbortAfterCleanKeepsTheTail).
 func (c *Conn) Abort() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.ab == abNone && !c.gone && c.clean() {
+		c.endClean()
+		return
+	}
 	c.abort(ErrReset)
 }
 
@@ -636,6 +718,9 @@ func (c *Conn) readLoop(ps *pstream) {
 	for {
 		f, err := readFrame(ps.r, &buf)
 		c.mu.Lock()
+		if err == nil {
+			c.heard++
+		}
 		if err != nil {
 			if errors.Is(err, ErrProtocol) && ps == c.cur && !ps.dead {
 				c.abort(err)
@@ -682,7 +767,9 @@ func (c *Conn) take(ps *pstream, f frame) error {
 		if c.rEnd {
 			return fmt.Errorf("%w: DATA after END", ErrProtocol)
 		}
-		c.rbuf.push(f.data)
+		if !c.rShut { // else dropped: its application no longer reads
+			c.rbuf.push(f.data)
+		}
 		c.rcvd += uint64(len(f.data))
 		c.traceN("Recv", c.end(c.client), ps.epoch, uint64(len(f.data)))
 	case fEnd:

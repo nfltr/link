@@ -17,6 +17,28 @@ version 2 unless an entry says otherwise.
   use-after-release, or a panic. Lane LINKREADWRITE; spec/SessionRead.tla
   (`SessionReadWriteTo.cfg`), mutant `writeto-no-lock`; guard
   `TestSessionReadBesideWriteTo` (red every run before, without -race).
+- `pathswitch` (lane DIRECTCLOSE): `Close` (and the new `CloseRead`)
+  wakes a Read waiting in it at once (`net.ErrClosed`, as `net.Conn`'s
+  Close); the peer's bytes are then taken, acknowledged and dropped, so
+  its direction still ends cleanly, and `Close` waits for that end. A
+  `Close` or `WaitAcked` whose peer is gone (nothing heard from it for
+  the new `Config.Linger`, 5 s by default, as TCP's user timeout) gives up
+  then, not at the detach bound (30 s). Bytes an end took stay readable
+  after a reset, then io.EOF if the peer's END came first (before, a
+  reset after the sender's successful Close dropped them: relay
+  PIPEMATRIX defect 1, the dialler's tail cut on lossy direct sessions).
+  `Abort` of a session clean at its end (both directions ended and
+  acknowledged) is the clean end, never an ABORT. `waitFor`'s bound now
+  ends the wait from its timer: a deadline read after the timer started
+  could still be ahead at its one wake, and `WaitAcked(5, 50ms)` hung 10
+  min under `-race` (link 9a31a62). Local behaviour only: the wire is
+  unchanged. spec/DirectPath.tla `CloseWakes`, `TakenRead`,
+  `CloseBounded` (DirectPathClose.cfg), mutants `close-no-wake`,
+  `close-waits-gone-peer`, `reset-drops-taken`, trace fixtures
+  `path-abort-after-clean`, `path-read-after-close`; guards
+  `TestCloseWakesABlockedRead`, `TestCloseGonePeerWithinLinger`,
+  `TestWaitAckedGonePeerWithinLinger`, `TestAbortAfterCleanKeepsTheTail`,
+  `TestResetKeepsACleanDirection`, `TestWaitAckedBoundHoldsOnAnIdleConn`.
 
 - A session this side resets, aborts or refuses now ends its own reads
   and writes with that end (an `*Abort`, `errors.Is` `ErrReset`; `Err`
