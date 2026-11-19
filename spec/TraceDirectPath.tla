@@ -61,6 +61,9 @@ Step ==
       [] E.ev = "TakeAbort" ->
             IF E.by = SEnd THEN STakeAbort /\ sEp' = E.e
             ELSE Recv /\ rEp = E.e /\ Head1(d[rEp]).t = "abort"
+      \* R's application read a byte (Read); closed its end (Close, CloseRead)
+      [] E.ev = "Read" -> IF E.by = REnd THEN AppRead ELSE Skip
+      [] E.ev = "CloseRead" -> IF E.by = REnd THEN RClose ELSE Skip
       [] OTHER -> Print(<<"unknown event", E>>, FALSE)
 
 TraceInit == Init /\ decider = (IF Dir = "c2a" THEN "S" ELSE "R") /\ l = 1

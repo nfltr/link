@@ -1065,6 +1065,8 @@ What the models take of the world below link, and where that is stated.
 | the monotonic clock never goes back (`now`, `rxAt`, ping times) | `Liveness`, `Link` (drain barrier) | Go `time` package docs, "Monotonic Clocks" |
 | a goroutine may pause between any two steps (the scheduler): steps under one lock are atomic, nothing else is | every model | Go memory model (sync.Mutex, sync/atomic: sequentially consistent) |
 | a dial may fail or hang; the peer may refuse (end a connection early) or send GOAWAY at any time | `Pool` | `pool.go` (`Dial`), WIRE.md section 9 |
+| a process may vanish (killed, its host gone) and nothing tells its peer: a direct QUIC path idles out only after its idle timeout (30 s), a relayed stream when the relay sees the agent link end | `DirectPath` (`Vanish`) | RFC 9000 section 10.1 (idle timeout); quic-go `Config.MaxIdleTimeout` (default 30 s) |
+| a live peer answers a closing end within `Config.Linger` (an ACK, a byte, its END or FIN): a peer silent that long is taken as gone, as TCP's user timeout takes unacknowledged data (`LingerOut` fires only once the peer vanished) | `DirectPath` (`LingerOut`) | RFC 5482 (TCP User Timeout); pathswitch `Config.Linger` |
 
 ## Review findings (2026-11-02, lane LINKREVIEW)
 
@@ -1924,6 +1926,9 @@ Mutants (`make spec-mutants`), each caught:
 | `leave-at-complete` | the decider (the client) leaves at its own FIN, not after the peer's: its last ACK lost with a path, the agent waits for a stream nobody opens (the code before lane PSCLOSE) | `LeaveLast`; `CloseEnds` without it |
 | `move-before-proof` | the client moves before the agent acknowledged its handshake's bytes: they wait on the new stream, which the agent takes only after them (relay `client/agent` before lane DIRECTSTALL) | `AllDelivered`, `CloseEnds` (`DirectPathProof.cfg`) |
 | `abort-not-resent` (`DirectPathReset.cfg`) | the ABORT goes once, on the aborter's stream: lost with a path or on a stream the peer left | `ResetReaches` |
+| `close-no-wake` (`DirectPathClose.cfg`) | a Close leaves a Read waiting in it (relay `client/agent` `psConn.Close` before lane DIRECTCLOSE: until the peer's end, or 30 s) | `CloseWakes` |
+| `close-waits-gone-peer` (`DirectPathClose.cfg`) | a closed end whose peer vanished waits for it (pathswitch `Close` and `WaitAcked` before lane DIRECTCLOSE: until the detach bound, 30 s) | `CloseBounded` |
+| `reset-drops-taken` (`DirectPathClose.cfg`) | a reset drops the bytes R took but its application had not read (pathswitch `Read` before lane DIRECTCLOSE; relay PIPEMATRIX defect 1: the listener's stop after its clean Close cut the dialler's tail) | `TakenRead` |
 
 Witnesses (each violated): `WitnessDirect` (all delivered, the last on
 the direct path), `WitnessFallback` (direct, then back on the relay, all
@@ -1934,7 +1939,45 @@ delivered relayed), `WitnessEndResent` (the END sent on two streams,
 taken once), `WitnessLeftAnswer` (both ends left, the decider after an
 end that had left answered its new stream); on `DirectPathReset.cfg`: `WitnessResetAcross` (the ABORT
 sent again on a newer stream, known to both), `WitnessResetDirect` (the
-reset reached both ends on the direct path).
+reset reached both ends on the direct path); on `DirectPathClose.cfg`:
+`WitnessCloseWake` (R's application closed while a Read waited),
+`WitnessLingerOut` (a closed end's peer vanished, the close bound ended
+it), `WitnessResetRead` (R took the reset and its application read every
+byte).
+
+The applications and the close bound (lane DIRECTCLOSE, 2026-11-20,
+after nfltr lane PIPEEXIT: `nfltr cat pipe` on an organisation session
+exited 30 s after SIGINT; and relay lane PIPEMATRIX defect 1: on lossy
+direct sessions the dialler exited 6 with a partial stream, the listener
+0). With `AppSteps`, R's application reads what R took (`AppRead`: `got`),
+waits in a Read when there is nothing (`ReadBlock`, `ReadEnd`) and may
+close its end at any time (`RClose`). Invariant `CloseWakes`: a closed end
+has no Read waiting (pathswitch `Close` and `CloseRead` wake it with
+`net.ErrClosed`; R then takes and drops the peer's bytes, acknowledging
+them, so the peer's direction still ends cleanly). Liveness `TakenRead`:
+R's application reads every byte R took, after a reset too (S freed them
+on R's ACK: S's Close returned, its application holds them delivered).
+With `MaxVanish` 1 an end's process may vanish (`Vanish`): it takes no
+step from then on. `LingerOut` is the close bound (`Config.Linger`:
+nothing heard from the peer for that long): an end whose application
+closed (S: its last byte written; R: `RClose`) and whose peer vanished
+resets and is done. Liveness `CloseBounded`: such an end is done; never
+the detach bound (30 s). The bound is untimed here: it fires only once the
+peer vanished, the environment's assumption that a live peer answers
+within it, so a close with both ends present still delivers everything
+(`AllDelivered`, `CloseEnds`: a vanish counts as their end). A reset
+after this direction is Clean (for the other direction) is outside the
+one-direction model (`AbortBy` needs `~Clean`); the code follows the rule
+where an end can know it: `Abort` of a session clean at its end (both
+directions ended and acknowledged) is the clean end, never an ABORT
+(`TestAbortAfterCleanKeepsTheTail`, traced); a session reset with one
+direction clean keeps that direction readable to its END
+(`TestResetKeepsACleanDirection`, not traced: the trace of the clean
+direction would show the reset the model excludes).
+`DirectPathClose.cfg` (2 bytes, window 2, the relay dies once, no direct
+path, a reset, a vanish): 124,504 distinct states, depth 28, about 1 min
+with the liveness properties; `-coverage 1` takes every action but the
+direct path's, the rebind's and the mutant-only ones.
 
 Trace validation (`TraceDirectPath.tla`, lane DIRECTPATH2): with
 `-tags linktrace` a session's two `pathswitch.Conn`s write one line per
@@ -1954,11 +1997,18 @@ sends and `RFin` of the other; the client's `TakeFin` is `STakeFin` of
 `c2a` and `RTakeFin` of `a2c` (lane PSCLOSE: the close tests
 `TestCloseAfterReattachEndsBeforeTheBound`,
 `TestCloseAfterReattachPathDiesBeforeTheFIN`,
-`TestCloseLeftAnswersAReattach` are traced too). Not in the model:
+`TestCloseLeftAnswersAReattach` are traced too; lane DIRECTCLOSE: an
+application's `Read` per byte is `AppRead` of the direction it reads, the
+first `Close` or `CloseRead` its `RClose`, `TestAbortAfterCleanKeepsTheTail`
+and `TestCloseReadDropsAndAcknowledges` traced). Not in the model:
 the ABORT a peer sends back on taking one (it ends the aborter's linger
 early), `Refuse` (no session: the trace has no server end). Fixtures
-`spec/traces/path-*` (`make spec-mutants`): two recorded runs accepted, an
-END taken twice and data sent before the RESUME rejected.
+`spec/traces/path-*` (`make spec-mutants`): three recorded runs accepted
+(`path-ok-read-after-reset`: R reads its taken bytes after the reset), an
+END taken twice, data sent before the RESUME, a reset after the direction
+was clean (`path-abort-after-clean`: PIPEMATRIX defect 1, the code before
+lane DIRECTCLOSE) and a Read after the end closed (`path-read-after-close`)
+rejected.
 
 The agent's address changes (lane DIRECTREBIND, nfltr
 `docs/decisions/direct-paths-2026-11-11.md` "Lane DIRECTREBIND"). The
@@ -1992,8 +2042,9 @@ The time bound, direct again within one exchange of the fallback, is the
 relay client SDK's test (`TestDirectAgentRebindDirectAgain`). Traced:
 `TestDirectAgainAfterRebind` (`Rebind`, `RePunch` events).
 
-Not modelled: the peer vanishing (link's and quiclink's liveness end the
-session: `Liveness.tla`, `QuicWatch.tla`); the hole punch itself (an
+Not modelled: the peer vanishing while both ends' applications are open
+(link's and quiclink's liveness end the session: `Liveness.tla`,
+`QuicWatch.tla`; a closed end's bound is `LingerOut`, lane DIRECTCLOSE); the hole punch itself (an
 `Offer` that becomes `up` or `down`); revocation (nfltr
 `spec/enrol/Enrol.tla` `RevocationBound` cuts the session on every path:
 the direct connection carries the same organisation certificates).

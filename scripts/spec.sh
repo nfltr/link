@@ -162,6 +162,8 @@ CONSTANTS
     MaxAbort = 1
     MaxRebind = $big
     Proof = 0
+    AppSteps = TRUE
+    MaxVanish = 0
     Mutant = "none"
 INIT TraceInit
 NEXT TraceNext
@@ -238,7 +240,7 @@ check | invariants)
 	# PoolDrain (Min 2: a Drain failing halfway) and QuicWatchStops (two
 	# short stops, ~10 s) only in full: their mutants are CI's.
 	# PoolGrow: background growth (Max above Min).
-	pools="Pool PoolGrow PoolClient Liveness LivenessStarve QuicWatch QuicWatchPTO QuicWatchStarve Join JoinClose CreditWaiters SessionRead SessionReadWriteTo SessionWrite DirectPath DirectPathReset DirectPathRebind DirectPathProof"
+	pools="Pool PoolGrow PoolClient Liveness LivenessStarve QuicWatch QuicWatchPTO QuicWatchStarve Join JoinClose CreditWaiters SessionRead SessionReadWriteTo SessionWrite DirectPath DirectPathReset DirectPathRebind DirectPathProof DirectPathClose"
 	[ "$1" = invariants ] || pools="$pools PoolDrain QuicWatchStops DirectPathWide"
 	for m in $pools; do
 		echo "== $m.cfg"
@@ -473,6 +475,13 @@ mutants)
 	# Lane DIRECTSTALL: a move before the agent acknowledged the client's
 	# handshake (the token's key) stalls the session.
 	job mutant DirectPathProof.cfg 'Mutant = "none"' 'Mutant = "move-before-proof"' DirectPath.tla
+	# Lane DIRECTCLOSE: a Close that leaves a Read waiting, one that waits
+	# for a vanished peer (the detach bound), a reset that drops the bytes
+	# an end took (relay PIPEMATRIX defect 1).
+	for m in close-no-wake close-waits-gone-peer reset-drops-taken; do
+		job mutant DirectPathClose.cfg 'Mutant = "none"' "Mutant = \"$m\"" DirectPath.tla
+	done
+	for w in WitnessCloseWake WitnessLingerOut WitnessResetRead; do job witness DirectPathClose.cfg $w DirectPath.tla; done
 	# Lane DIRECTREBIND: the agent's address changes; a token kept from the
 	# old connection, a re-punch of the old candidates, none, data on both
 	# paths (the stale stream kept).

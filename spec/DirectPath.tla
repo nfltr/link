@@ -62,6 +62,26 @@
 (* pair was direct reset at the agent's TLS bound). A path death or a      *)
 (* reset before R holds the proof is the handshake's failure (a TLS error, *)
 (* the agent's bound), not this layer's: not modelled.                     *)
+(*                                                                         *)
+(* The applications (lane DIRECTCLOSE, AppSteps): R's application reads    *)
+(* the bytes R took (got), waits in a Read when there is none (rBlocked),  *)
+(* and may close its end at any time (RClose: net.Conn's Close). A Close   *)
+(* wakes a Read waiting at once (CloseWakes); R still takes and            *)
+(* acknowledges the peer's bytes after it (dropped), so the peer's         *)
+(* direction ends cleanly. A byte R took stays readable after a reset      *)
+(* (TakenRead): S freed it on R's ACK, so S's application holds it         *)
+(* delivered. An end's process may vanish (Vanish: killed, its host gone): *)
+(* it takes no step from then on, and nothing tells its peer (a QUIC path  *)
+(* idles out only after 30 s). An end whose application closed and whose  *)
+(* peer vanished ends within its close bound (LingerOut: Config.Linger, no *)
+(* frame heard for that long, as TCP's user timeout, RFC 5482), never at   *)
+(* the detach bound (CloseBounded). The bound abstracts time: it fires     *)
+(* only once the peer vanished (a live peer answers within it: the         *)
+(* environment's assumption), so a graceful close still delivers          *)
+(* everything (AllDelivered with no vanish). A reset of the session after  *)
+(* this direction is Clean (for the other direction) is outside this       *)
+(* model; the code resets no session complete at its end (Abort is then   *)
+(* the clean end) and keeps a direction it took the END of readable.      *)
 EXTENDS Integers, Sequences
 
 CONSTANTS
@@ -73,6 +93,8 @@ CONSTANTS
     MaxAbort, \* 0 or 1: whether an end may reset the session
     MaxRebind, \* how often the agent's address may change
     Proof,    \* bytes R must hold before it takes an OPEN (decider S): the handshake; 0: none
+    AppSteps, \* TRUE: R's application's reads and close are modelled (lane DIRECTCLOSE)
+    MaxVanish, \* 0 or 1: whether an end's process may vanish
     Mutant    \* "none" or a bug put back (spec-mutants)
 
 Paths == {"relay", "direct"}
@@ -110,17 +132,24 @@ VARIABLES
     rebinds,  \* how often it changed
     repunched, \* the client's re-punches after a change
     blocked,  \* the agent's new network lets no punch through
-    tok       \* the connection (its address) the client's direct tokens are made for
+    tok,      \* the connection (its address) the client's direct tokens are made for
+    got,      \* the bytes R's application read (a prefix of out)
+    rBlocked, \* R's application waits in a Read
+    rShut,    \* R's application closed its end: "no", "idle", "woke" (a Read was waiting)
+    vanished  \* the end whose process vanished: "none", "S", "R"
 
 vars == <<decider, st, d, k, sEp, sWait, hi, nxt, acked, rEp, rcvd, rEnds, rAck, out,
           ab, sGone, rGone, relayUp, dir, dies, punches, moves, sends, endSends, abSends,
-          sFin, rFin, sGot, rGot, sLeft, rLeft, answers, addr, rebinds, repunched, blocked, tok>>
+          sFin, rFin, sGot, rGot, sLeft, rLeft, answers, addr, rebinds, repunched, blocked, tok,
+          got, rBlocked, rShut, vanished>>
 sVars == <<sEp, sWait, hi, nxt, acked>>
 rVars == <<rEp, rcvd, rEnds, rAck, out>>
 endVars == <<ab, sGone, rGone, endSends, abSends>>
 rbVars == <<addr, rebinds, repunched, blocked, tok>>
 pathVars == <<relayUp, dir, dies, punches, addr, rebinds, repunched, blocked, tok>>
-closeVars == <<sFin, rFin, sGot, rGot, sLeft, rLeft, answers>>
+leaveVars == <<sFin, rFin, sGot, rGot, sLeft, rLeft, answers>>
+appVars == <<got, rBlocked, rShut, vanished>>
+closeVars == <<leaveVars, appVars>>
 
 Init ==
     /\ decider \in {"S", "R"}
@@ -136,6 +165,7 @@ Init ==
     /\ sFin = 0 /\ rFin = 0 /\ sGot = 0 /\ rGot = 0 /\ sLeft = FALSE /\ rLeft = FALSE /\ answers = 0
     /\ addr = 1 /\ rebinds = 0 /\ repunched = 0 /\ tok = 0
     /\ blocked \in IF MaxRebind > 0 THEN BOOLEAN ELSE {FALSE}
+    /\ got = 0 /\ rBlocked = FALSE /\ rShut = "no" /\ vanished = "none"
 
 \* R's caller holds the session's proof (the other direction, decider R, is
 \* complete already)
@@ -152,9 +182,11 @@ RResume == IF Mutant = "resume-drops-fin" THEN rcvd ELSE RPos
 Clean == rcvd = Total /\ rEnds > 0 /\ acked = Total + 1
 \* the aborter keeps answering with ABORT; an end that took the peer's is done.
 \* Mutant "abort-not-resent": the ABORT goes once, on the aborter's stream.
-Lingers(x) == ab = x /\ Mutant # "abort-not-resent"
-SLive == ~sGone /\ ~sLeft
-RLive == ~rGone /\ ~rLeft
+Lingers(x) == ab = x /\ Mutant # "abort-not-resent" /\ vanished # x
+SUp == vanished # "S"
+RUp == vanished # "R"
+SLive == ~sGone /\ ~sLeft /\ SUp
+RLive == ~rGone /\ ~rLeft /\ RUp
 DeciderActs == IF decider = "S" THEN SLive \/ Lingers("S") ELSE RLive \/ Lingers("R")
 Abort == [t |-> "abort"]
 
@@ -276,7 +308,7 @@ Move(p) ==
 \* The ABORT goes on the aborter's stream if it is alive (the peer may have
 \* left it, or its path may die: Lingers sends it again).
 AbortBy(x) ==
-    /\ MaxAbort > 0 /\ ab = "none" /\ ~Clean /\ ~sLeft /\ ~rLeft /\ Proved
+    /\ MaxAbort > 0 /\ ab = "none" /\ ~Clean /\ ~sLeft /\ ~rLeft /\ Proved /\ vanished # x
     /\ ab' = x /\ abSends' = abSends + 1
     /\ IF x = "S"
        THEN /\ sGone' = TRUE /\ UNCHANGED <<rGone, k>>
@@ -416,37 +448,88 @@ Waits(x) == decider = x /\ Mutant # "leave-at-complete"
 SFin ==
     /\ SLive /\ SDone /\ sFin # sEp /\ ~st[sEp].dead /\ (Waits("S") => sGot = sEp)
     /\ d' = [d EXCEPT ![sEp] = Append(@, Fin)] /\ sFin' = sEp /\ sLeft' = TRUE
-    /\ UNCHANGED <<decider, st, k, rFin, sGot, rGot, rLeft, moves, sends, answers>> /\ UNCHANGED <<sVars, rVars, endVars, pathVars>>
+    /\ UNCHANGED <<decider, st, k, rFin, sGot, rGot, rLeft, moves, sends, answers>> /\ UNCHANGED <<sVars, rVars, endVars, pathVars>> /\ UNCHANGED appVars
 RFin ==
     /\ RLive /\ RDone /\ rFin # rEp /\ ~st[rEp].dead /\ (Waits("R") => rGot = rEp)
     /\ k' = [k EXCEPT ![rEp] = Append(@, Fin)] /\ rFin' = rEp /\ rLeft' = TRUE
-    /\ UNCHANGED <<decider, st, d, sFin, sGot, rGot, sLeft, moves, sends, answers>> /\ UNCHANGED <<sVars, rVars, endVars, pathVars>>
+    /\ UNCHANGED <<decider, st, d, sFin, sGot, rGot, sLeft, moves, sends, answers>> /\ UNCHANGED <<sVars, rVars, endVars, pathVars>> /\ UNCHANGED appVars
 \* The decider, complete, takes the peer's FIN on its stream.
 STakeFin ==
     /\ SLive /\ decider = "S" /\ SDone /\ k[sEp] # <<>> /\ Head(k[sEp]).t = "fin"
     /\ k' = [k EXCEPT ![sEp] = Tail(@)] /\ sGot' = sEp
-    /\ UNCHANGED <<decider, st, d, sFin, rFin, rGot, sLeft, rLeft, moves, sends, answers>> /\ UNCHANGED <<sVars, rVars, endVars, pathVars>>
+    /\ UNCHANGED <<decider, st, d, sFin, rFin, rGot, sLeft, rLeft, moves, sends, answers>> /\ UNCHANGED <<sVars, rVars, endVars, pathVars>> /\ UNCHANGED appVars
 RTakeFin ==
     /\ RLive /\ decider = "R" /\ RDone /\ d[rEp] # <<>> /\ Head(d[rEp]).t = "fin"
     /\ d' = [d EXCEPT ![rEp] = Tail(@)] /\ rGot' = rEp
-    /\ UNCHANGED <<decider, st, k, sFin, rFin, sGot, sLeft, rLeft, moves, sends, answers>> /\ UNCHANGED <<sVars, rVars, endVars, pathVars>>
+    /\ UNCHANGED <<decider, st, k, sFin, rFin, sGot, sLeft, rLeft, moves, sends, answers>> /\ UNCHANGED <<sVars, rVars, endVars, pathVars>> /\ UNCHANGED appVars
 \* An end that left answers a newer stream the decider opened with its
 \* count (R: the RESUME) and FIN.
 RLeftAnswer ==
     \E e \in DOMAIN d :
-        /\ rLeft /\ ~rGone /\ e > rEp /\ d[e] # <<>> /\ Head(d[e]).t = "open"
+        /\ rLeft /\ ~rGone /\ RUp /\ e > rEp /\ d[e] # <<>> /\ Head(d[e]).t = "open"
         /\ d' = [d EXCEPT ![e] = Tail(@)]
         /\ k' = [k EXCEPT ![e] = @ \o <<[t |-> "resume", n |-> RResume], Fin>>]
         /\ rEp' = e /\ rFin' = e /\ answers' = answers + 1
         /\ UNCHANGED <<decider, st, rcvd, rEnds, rAck, out, sFin, sGot, rGot, sLeft, rLeft, moves, sends>>
-        /\ UNCHANGED <<sVars, endVars, pathVars>>
+        /\ UNCHANGED <<sVars, endVars, pathVars>> /\ UNCHANGED appVars
 SLeftAnswer ==
     \E e \in DOMAIN k :
-        /\ sLeft /\ ~sGone /\ e > sEp /\ k[e] # <<>> /\ Head(k[e]).t = "resume"
+        /\ sLeft /\ ~sGone /\ SUp /\ e > sEp /\ k[e] # <<>> /\ Head(k[e]).t = "resume"
         /\ k' = [k EXCEPT ![e] = Tail(@)] /\ d' = [d EXCEPT ![e] = Append(@, Fin)]
         /\ sEp' = e /\ sFin' = e /\ answers' = answers + 1
         /\ UNCHANGED <<decider, st, sWait, hi, nxt, acked, rFin, sGot, rGot, sLeft, rLeft, moves, sends>>
-        /\ UNCHANGED <<rVars, endVars, pathVars>>
+        /\ UNCHANGED <<rVars, endVars, pathVars>> /\ UNCHANGED appVars
+
+\* --- the applications (lane DIRECTCLOSE) ---------------------------------
+\* R's application reads a byte R took, after a reset too (S freed it on
+\* R's ACK). Mutant "reset-drops-taken": a reset drops them (pathswitch's
+\* Read before lane DIRECTCLOSE; relay PIPEMATRIX defect 1: the listener's
+\* stop reset the session after its clean Close, the dialler lost its tail).
+AppRead ==
+    /\ AppSteps /\ RUp /\ rShut = "no" /\ got < rcvd
+    /\ (Mutant = "reset-drops-taken" => ~rGone)
+    /\ got' = got + 1 /\ rBlocked' = FALSE
+    /\ UNCHANGED <<decider, st, d, k, moves, sends, rShut, vanished>> /\ UNCHANGED <<sVars, rVars, endVars, pathVars>>
+    /\ UNCHANGED leaveVars
+\* R's application waits in a Read: nothing taken unread, no END, no reset.
+ReadBlock ==
+    /\ AppSteps /\ RLive /\ rShut = "no" /\ ~rBlocked /\ got = rcvd /\ rEnds = 0
+    /\ rBlocked' = TRUE
+    /\ UNCHANGED <<decider, st, d, k, moves, sends, got, rShut, vanished>> /\ UNCHANGED <<sVars, rVars, endVars, pathVars>>
+    /\ UNCHANGED leaveVars
+\* The Read waiting returns the direction's end (EOF) or the reset.
+ReadEnd ==
+    /\ rBlocked /\ RUp /\ got = rcvd /\ (rEnds > 0 \/ rGone)
+    /\ rBlocked' = FALSE
+    /\ UNCHANGED <<decider, st, d, k, moves, sends, got, rShut, vanished>> /\ UNCHANGED <<sVars, rVars, endVars, pathVars>>
+    /\ UNCHANGED leaveVars
+\* R's application closes its end: a Read waiting returns at once. R goes
+\* on taking (and dropping) the peer's bytes. Mutant "close-no-wake": the
+\* Read waits on (relay client/agent psConn.Close before lane DIRECTCLOSE:
+\* until the peer's end, or 30 s).
+RClose ==
+    /\ AppSteps /\ RUp /\ rShut = "no"
+    /\ rShut' = IF rBlocked THEN "woke" ELSE "idle"
+    /\ rBlocked' = (Mutant = "close-no-wake" /\ rBlocked)
+    /\ UNCHANGED <<decider, st, d, k, moves, sends, got, vanished>> /\ UNCHANGED <<sVars, rVars, endVars, pathVars>>
+    /\ UNCHANGED leaveVars
+\* An end's process vanishes (after the handshake: before, it is the
+\* handshake's failure): it takes no step from now on.
+Vanish(x) ==
+    /\ MaxVanish > 0 /\ vanished = "none" /\ Proved
+    /\ vanished' = x
+    /\ UNCHANGED <<decider, st, d, k, moves, sends, got, rBlocked, rShut>> /\ UNCHANGED <<sVars, rVars, endVars, pathVars>>
+    /\ UNCHANGED leaveVars
+\* An end whose application closed (S: wrote its last byte and closed; R:
+\* RClose) hears nothing from its vanished peer for its close bound: it
+\* resets the session and is done. Mutant "close-waits-gone-peer": it
+\* waits for the peer (until the detach bound, 30 s, not modelled).
+LingerOut(x) ==
+    /\ MaxVanish > 0 /\ Mutant # "close-waits-gone-peer" /\ vanished \notin {"none", x}
+    /\ IF x = "S" THEN SLive /\ hi = Total /\ sGone' = TRUE /\ UNCHANGED rGone
+                  ELSE RLive /\ rShut # "no" /\ rGone' = TRUE /\ UNCHANGED sGone
+    /\ UNCHANGED <<decider, st, d, k, moves, sends, ab, endSends, abSends>> /\ UNCHANGED <<sVars, rVars, pathVars>>
+    /\ UNCHANGED closeVars
 
 Next ==
     \/ \E h \in {"peer", "rogue"} : Offer(h)
@@ -456,6 +539,8 @@ Next ==
     \/ Write \/ Send \/ SendEndEarly \/ SendStale \/ Resume \/ TakeAck \/ STakeAbort \/ SAnswerAbort
     \/ TakeOpen \/ Recv \/ RecvStale \/ Ack
     \/ SFin \/ RFin \/ STakeFin \/ RTakeFin \/ RLeftAnswer \/ SLeftAnswer
+    \/ AppRead \/ ReadBlock \/ ReadEnd \/ RClose
+    \/ \E x \in {"S", "R"} : Vanish(x) \/ LingerOut(x)
 
 \* Every step of the ends is taken while enabled; the relay is redialled;
 \* a decider whose stream ended falls back. Moves, offers, deaths and
@@ -471,6 +556,9 @@ Fairness ==
     \* after a change of the agent's address (none in the configurations
     \* without one): the client's re-punch, its handshake's outcome
     /\ WF_vars(RePunch) /\ WF_vars(rebinds > 0 /\ (Verify \/ Refuse))
+    \* R's application reads what it took; the close bound fires (a vanish
+    \* and a close are free choices)
+    /\ WF_vars(AppRead) /\ WF_vars(ReadEnd) /\ WF_vars(\E x \in {"S", "R"} : LingerOut(x))
 
 Spec == Init /\ [][Next]_vars /\ Fairness
 
@@ -483,6 +571,7 @@ TypeOK ==
     /\ ab \in {"none", "S", "R"} /\ sGone \in BOOLEAN /\ rGone \in BOOLEAN
     /\ {sFin, rFin, sGot, rGot} \subseteq 0..Len(st) /\ sLeft \in BOOLEAN /\ rLeft \in BOOLEAN /\ answers \in Nat
     /\ addr = rebinds + 1 /\ repunched <= rebinds /\ blocked \in BOOLEAN /\ tok \in 0..addr
+    /\ got \in 0..rcvd /\ rBlocked \in BOOLEAN /\ rShut \in {"no", "idle", "woke"} /\ vanished \in {"none", "S", "R"}
 \* R delivers bytes 0, 1, 2, ... once each, in order: none lost, none
 \* twice, none out of place (at a switch or ever).
 InOrder == \A i \in 1..Len(out) : out[i] = i - 1
@@ -506,16 +595,26 @@ EndOnce == rEnds <= 1
 \* Every byte and the END arrive and S frees them all, if paths stop dying
 \* (they do here: MaxDie), or the session's reset reached both ends. TLC
 \* runs with -deadlock: a stuck state violates this.
-AllDelivered == <>(Clean \/ ((sGone \/ sLeft) /\ (rGone \/ rLeft)))
+AllDelivered == <>(Clean \/ ((sGone \/ sLeft) /\ (rGone \/ rLeft)) \/ vanished # "none")
 \* A reset, across any switch, reaches both ends (or an end that had left).
-ResetReaches == (ab # "none") ~> ((sGone \/ sLeft) /\ (rGone \/ rLeft))
+ResetReaches == (ab # "none") ~> (((sGone \/ sLeft) /\ (rGone \/ rLeft)) \/ vanished # "none")
 \* The decider (the one end that can open a stream) leaves only once the
 \* direction is clean: the peer has every byte, the END and its count.
 LeaveLast == (IF decider = "S" THEN sLeft ELSE rLeft) => Clean
 \* Both ends leave (Close, then Done) after a clean end, across any path
 \* switch and death, unless the session was reset: no end waits out a
 \* bound while both live (lane PSCLOSE).
-CloseEnds == <>((sLeft /\ rLeft) \/ ab # "none")
+CloseEnds == <>((sLeft /\ rLeft) \/ ab # "none" \/ vanished # "none")
+\* A Close wakes a Read waiting in it at once (lane DIRECTCLOSE).
+CloseWakes == rShut # "no" => ~rBlocked
+\* R's application reads every byte R took, a reset or not, unless it
+\* closed its end (or vanished).
+TakenRead == AppSteps => <>[](got = rcvd \/ rShut # "no" \/ vanished = "R")
+\* An end whose application closed is done within its close bound once
+\* its peer vanished: it never waits for the detach bound.
+CloseBounded ==
+    /\ (hi = Total /\ vanished = "R") ~> (sGone \/ sLeft)
+    /\ (rShut # "no" /\ vanished = "S") ~> (rGone \/ rLeft)
 
 \* Witnesses (spec-mutants: TLC must violate each).
 \* every byte delivered, the last ones on the direct path
@@ -546,4 +645,10 @@ WitnessRedirect == ~(rcvd = Total /\ rebinds > 0 /\ st[rEp].path = "direct" /\ s
 \* the new network blocks every punch: relayed after the change, clean
 WitnessRebindRelayed == ~(Clean /\ blocked /\ rebinds > 0 /\ st[rEp].path = "relay"
                           /\ \E e \in DOMAIN st : st[e].path = "direct")
+\* R's application closed while a Read waited in it (lane DIRECTCLOSE)
+WitnessCloseWake == rShut # "woke"
+\* the peer vanished; the closed end ended by its close bound, no ABORT
+WitnessLingerOut == ~(vanished # "none" /\ (sGone \/ rGone) /\ ab = "none")
+\* R took the reset and its application read every byte
+WitnessResetRead == ~(rGone /\ ab = "S" /\ got = Total)
 =============================================================================
