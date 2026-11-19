@@ -313,6 +313,27 @@ func benchThroughput(b *testing.B, tr string, size, sessions int, both bool) {
 	}
 }
 
+// BenchmarkWriteTo: MB/s of messages over one session on tcp, the far end
+// taking them with WriteTo (io.Copy) instead of Read.
+func BenchmarkWriteTo(b *testing.B) {
+	for _, size := range []int{4 << 10, 64 << 10} {
+		b.Run(fmt.Sprintf("size=%d", size), func(b *testing.B) {
+			r := newPerfRig(b, "tcp", func(_ []byte, s *Session) {
+				_, _ = s.WriteTo(io.Discard)
+				_ = s.Close()
+			})
+			s, err := r.a.Open([]byte("sink"))
+			if err != nil {
+				b.Fatal(err)
+			}
+			b.SetBytes(int64(size))
+			b.ReportAllocs()
+			b.ResetTimer()
+			send(b, s, make([]byte, size), b.N)
+		})
+	}
+}
+
 // BenchmarkLatency: a 64-byte echo round trip on a held session, and a
 // fresh session's open, echo and close (answered: waiting for the far
 // end's answer, Answered, before the echo), with p50 and p99. held-mixed
