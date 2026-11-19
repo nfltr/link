@@ -194,7 +194,7 @@ allows any step in which every guarantee holds, so one step of `Link`
 | `GSessions` | an id goes none, open, gone, once (never reused); the opener opens only before GOAWAY (a failed Open, ErrGoAway or the connection's end, is none to gone); the peer's end opens only an id its opener opened; a session ends with a reason (its own whole close, a FIN each way, the peer's Close or reset, the connection's end) | `open-after-goaway`, `open-no-recheck` |
 | `GWrites` | writes only on a session opened here whose write side is not ended (no data after FIN, Close or reset); credit: the bytes written that the peer's reader has not taken are at most the peer's window | `write-race`, `turns-no-recheck` (data after FIN); `grant-early`, `release-early` (past the window) |
 | `GReads` | a reader gets a prefix of what the peer wrote (in order), at most its window unread, nothing after its end | (a consequence of `GWrites` in Link) |
-| `GEnds` | a writer's end is typed once (`fin`, then perhaps `close` or `reset`); a reader's end is `eof` only after every byte the peer wrote before its FIN or Close, `reset` only from the peer's Reset or Abort, `lost` only with the connection's end | `fin-skips-queue` (EOF before the data), `abort-as-fin` (a reset read as EOF), `lost-as-eof` (a cut session read as EOF) |
+| `GEnds` | a writer's end is typed once (`fin`, then perhaps `close` or `reset`); a reader's end is `eof` only after every byte the peer wrote before its FIN or Close, `reset` only from the peer's Reset or Abort, `lost` only with the connection's end, `here` only from this side's own Reset, Abort or Refuse, and always from it when the reader had no end yet (`shut` typed `close` or `reset`; lane LINKABORT) | `fin-skips-queue` (EOF before the data), `abort-as-fin` (a reset read as EOF), `lost-as-eof` (a cut session read as EOF), `local-abort-eof` (a session this side reset or aborted read as a clean end: the code before LINKABORT; witness `WitnessHere`) |
 | `GConn` | GOAWAY and the connection's end are final; the end ends every session at that side; no protocol error | `abort-forget-early` (open past max_sessions), `reopen-known` (open of an id in use): both only as a protocol error |
 
 The mapping (`MCLink.tla`, `LS`): `st` is `Mux.sess`'s state, `w` the
@@ -202,7 +202,8 @@ bytes buffered (`sent`), `d` the bytes queued for the reader (`dlv`), `c`
 those it took (`dlv - q`); `wend`, `shut` and `rend` come from two history
 fields of a session (`code`: the code of this side's last close, a reset
 kept over a later Close; `got`: the first close received while it was
-open) and `down`; `fault` is `err # {}`. History only: no action of Link
+open; `here`: this side's own Reset, Abort or Refuse ended its reader
+first, `Session.endHere`) and `down`; `fault` is `err # {}`. History only: no action of Link
 reads them, so they change no behaviour (the state count grows by the
 states they tell apart).
 

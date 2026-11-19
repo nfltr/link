@@ -27,9 +27,18 @@ WEnd(code) == CASE code = Half -> "fin" [] code = Full -> "close"
                 [] code \in {RST, ABT, DDL} -> "reset" [] OTHER -> ""
 REnd(p, s) ==
     LET g == ss[p][s].got IN
-    IF g \in {Half, Full} THEN "eof"
+    IF ss[p][s].here THEN "here"
+    ELSE IF g \in {Half, Full} THEN "eof"
     ELSE IF g \in {RST, ABT, DDL} THEN "reset"
     ELSE IF down[p] /\ ss[p][s].st # "none" THEN "lost"
+    ELSE ""
+
+\* How p ended its reads: an application's Reset, Abort or Refuse ("reset";
+\* code kept by a Close after it), its Close or Mux.cut's ("close").
+Shut(p, s) ==
+    LET x == ss[p][s] IN
+    IF x.code \in {RST, ABT} \/ (x.closing - 1 \in {RST, ABT} /\ ~x.refd) THEN "reset"
+    ELSE IF (x.closing # 0 /\ ~x.refd) \/ x.code \in {Full, DDL} THEN "close"
     ELSE ""
 
 LS == INSTANCE LinkSession WITH
@@ -40,7 +49,7 @@ LS == INSTANCE LinkSession WITH
     wend <- [p \in Sides |-> [s \in Sids |-> WEnd(ss[p][s].code)]],
     fin <- [p \in Sides |-> [s \in Sids |-> ss[p][s].fin]],
     \* a drain's refusal due (refd) is no read of an application's ended yet
-    shut <- [p \in Sides |-> [s \in Sids |-> (ss[p][s].closing # 0 /\ ~ss[p][s].refd) \/ ss[p][s].code \in {Full, RST, ABT, DDL}]],
+    shut <- [p \in Sides |-> [s \in Sids |-> Shut(p, s)]],
     rend <- [p \in Sides |-> [s \in Sids |-> REnd(p, s)]],
     up <- [p \in Sides |-> ~down[p]],
     fault <- err # {}
@@ -54,6 +63,7 @@ Refines == LS!Spec
 WitnessEof == \A p \in Sides, s \in Sids : REnd(p, s) # "eof"
 WitnessReset == \A p \in Sides, s \in Sids : REnd(p, s) # "reset"
 WitnessLost == \A p \in Sides, s \in Sids : REnd(p, s) # "lost"
+WitnessHere == \A p \in Sides, s \in Sids : REnd(p, s) # "here"
 WitnessCredit == \A p \in Sides, s \in Sids : sent[p][s] <= Win[Peer(p)]
 \* Not a guarantee (spec/README.md "The session interface"): a session that
 \* ended cleanly at p (FIN each way) had its FIN read by the peer. A crash

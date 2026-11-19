@@ -35,9 +35,11 @@ VARIABLES
     wend,   \* [Sides -> [Sids -> {"", "fin", "close", "reset"}]]: how p ended its writes:
             \*   CloseWrite ("fin"), Close ("close": both ways), Reset or Abort ("reset")
     fin,    \* [Sides -> [Sids -> BOOLEAN]]: p sent its FIN (CloseWrite or Close), perhaps reset after
-    shut,   \* [Sides -> [Sids -> BOOLEAN]]: p ended its own reads (Close, Reset, Abort)
-    rend,   \* [Sides -> [Sids -> {"", "eof", "reset", "lost"}]]: how p's reader learned
-            \*   the peer's end: io.EOF, ErrReset or *Abort, ErrConnClosed
+    shut,   \* [Sides -> [Sids -> {"", "close", "reset"}]]: how p ended its own reads:
+            \*   Close ("close"), Reset, Abort or Refuse ("reset")
+    rend,   \* [Sides -> [Sids -> {"", "eof", "reset", "lost", "here"}]]: how p's reader
+            \*   learned the session's end: the peer's (io.EOF, ErrReset or *Abort,
+            \*   ErrConnClosed) or this side's own Reset or Abort ("here")
     ga,     \* [Sides -> BOOLEAN]: p sent or read GOAWAY
     up,     \* [Sides -> BOOLEAN]: p's connection serves (Mux.Serve has not returned)
     fault   \* the connection failed on a protocol error (ErrFrame, ErrCredit)
@@ -51,7 +53,7 @@ Init ==
     /\ c = [p \in Sides |-> [s \in Sids |-> 0]]
     /\ wend = [p \in Sides |-> [s \in Sids |-> ""]]
     /\ fin = [p \in Sides |-> [s \in Sids |-> FALSE]]
-    /\ shut = [p \in Sides |-> [s \in Sids |-> FALSE]]
+    /\ shut = [p \in Sides |-> [s \in Sids |-> ""]]
     /\ rend = [p \in Sides |-> [s \in Sids |-> ""]]
     /\ ga = [p \in Sides |-> FALSE]
     /\ up = [p \in Sides |-> TRUE]
@@ -69,7 +71,7 @@ Changed(v, p, s) == v'[p][s] # v[p][s]
 Opened(p, s) ==
     IF Owner[s] = p THEN ~ga[p] ELSE st[Peer(p)][s] # "none"
 Reason(p, s) ==
-    \/ shut'[p][s] \/ ~up'[p]
+    \/ shut'[p][s] # "" \/ ~up'[p]
     \/ rend'[p][s] # "" /\ (wend'[p][s] # "" \/ wend'[Peer(p)][s] \in {"close", "reset"})
 GSessions ==
     \A p \in Sides, s \in Sids : Changed(st, p, s) =>
@@ -86,7 +88,7 @@ GSessions ==
 GWrites ==
     \A p \in Sides, s \in Sids : Changed(w, p, s) =>
         /\ w'[p][s] > w[p][s]
-        /\ st[p][s] # "none" /\ wend[p][s] = "" /\ ~shut[p][s]
+        /\ st[p][s] # "none" /\ wend[p][s] = "" /\ shut[p][s] = ""
         /\ w'[p][s] - c[Peer(p)][s] <= Win[Peer(p)]
 
 \* 3. Reads: in order, a prefix of what the peer wrote, never past this
@@ -97,7 +99,7 @@ GReads ==
         /\ Changed(d, p, s) =>
             /\ d'[p][s] > d[p][s] /\ d'[p][s] <= w[Peer(p)][s]
             /\ d'[p][s] - c[p][s] <= Win[p]
-            /\ rend[p][s] = "" /\ ~shut[p][s]
+            /\ rend[p][s] = "" /\ shut[p][s] = ""
             /\ st[p][s] # "none"
         /\ Changed(c, p, s) => c'[p][s] > c[p][s] /\ c'[p][s] <= d'[p][s]
 
@@ -106,22 +108,26 @@ GReads ==
 \* after the peer's FIN (CloseWrite or Close) and every byte it wrote
 \* before (unless this side dropped them: its own whole close), a reset
 \* only from the peer's Reset or Abort, lost only with the connection's
-\* end. The first end a reader learns is its end (a FIN then a reset
-\* reads io.EOF).
+\* end, "here" only from this side's own Reset or Abort, and always from
+\* it when the reader had learned no end: a session this side cut never
+\* reads as complete (lane LINKABORT). The first end a reader learns is
+\* its end (a FIN then a reset reads io.EOF).
 GEnds ==
     \A p \in Sides, s \in Sids :
         /\ Changed(wend, p, s) =>
             /\ \/ wend[p][s] = ""
                \/ wend[p][s] = "fin" /\ wend'[p][s] \in {"close", "reset"}
-            /\ st[p][s] = "open" \/ shut[p][s]
-        /\ Changed(shut, p, s) => ~shut[p][s] /\ st[p][s] = "open"
+            /\ st[p][s] = "open" \/ shut[p][s] # ""
+        /\ Changed(shut, p, s) => shut[p][s] = "" /\ st[p][s] = "open"
+        /\ shut'[p][s] = "reset" /\ shut[p][s] = "" /\ rend[p][s] = "" => rend'[p][s] = "here"
         /\ Changed(rend, p, s) =>
             /\ rend[p][s] = ""
             /\ CASE rend'[p][s] = "eof" ->
                       /\ fin[Peer(p)][s]
-                      /\ shut[p][s] \/ d[p][s] = w[Peer(p)][s]
+                      /\ shut[p][s] # "" \/ d[p][s] = w[Peer(p)][s]
                  [] rend'[p][s] = "reset" -> wend[Peer(p)][s] = "reset"
                  [] rend'[p][s] = "lost" -> ~up'[p]
+                 [] rend'[p][s] = "here" -> shut'[p][s] = "reset"
                  [] OTHER -> FALSE
 
 \* 5. The connection: GOAWAY is final; its end is final and ends every

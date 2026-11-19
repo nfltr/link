@@ -401,11 +401,11 @@ mutants)
 		(jw=$work/job$n && mkdir -p "$jw" && META=$jw/states TLC_WORKERS=1 "$@" >"$work/job$n.txt" 2>&1 || touch "$work/job$n.fail") &
 		[ $((n % ${SPEC_JOBS:-3})) != 0 ] || wait
 	}
-	for m in fin-skips-queue grant-early write-race turns-no-recheck release-early abort-as-fin lost-as-eof; do
+	for m in fin-skips-queue grant-early write-race turns-no-recheck release-early abort-as-fin lost-as-eof local-abort-eof; do
 		job iface Link.cfg $m
 	done
 	for m in open-after-goaway open-no-recheck; do job iface LinkDrain.cfg $m; done
-	for m in abort-forget-early reopen-known; do job iface LinkSess.cfg $m; done
+	for m in abort-forget-early reopen-known local-abort-eof; do job iface LinkSess.cfg $m; done
 	job iface LinkRefuse.cfg refuse-then-write
 	# The drain's cut in its steps (lane LINKATOMIC): the second call
 	# returning before the first ended (the code before 7dabd5e), and the
@@ -421,7 +421,7 @@ mutants)
 		job mutant LinkCut.cfg 'Mutant = "none"' "Mutant = \"$m\""
 	done
 	job witness LinkCut.cfg WitnessDrainRefused
-	for w in WitnessEof WitnessReset WitnessLost WitnessCredit; do job witness Link.cfg $w; done
+	for w in WitnessEof WitnessReset WitnessLost WitnessHere WitnessCredit; do job witness Link.cfg $w; done
 	job witness LinkDrain.cfg WitnessRefused
 	# A witness per invariant of Link (spec/README.md "Witnesses").
 	for w in WitnessNoCredit WitnessWindowFull WitnessQueueHeld WitnessInFlight; do job witness Link.cfg $w; done

@@ -83,8 +83,12 @@ NoCredit == [on |-> FALSE, n |-> 0, held |-> 0, cons |-> 0]
 \* open (NoCode: none), and whether it buffered a FIN (code Half or Full).
 \* refd: a peer's OPEN read after GOAWAY, refused (no Mux session: Mux.refuse);
 \* late: its OPEN read once this side could no longer send (OpensAnswered).
+\* here: this side's Reset, Abort or Refuse ended its reader before any end
+\* reached it (Session.fail(abortedHere) ahead of the drop: lane LINKABORT).
+\* Mutant local-abort-eof (the code before): nothing recorded, the reader
+\* read io.EOF.
 NoSession == [st |-> "none", wfin |-> FALSE, rfin |-> FALSE, pclosed |-> FALSE, q |-> 0, acc |-> FALSE, closing |-> 0,
-              code |-> NoCode, got |-> NoCode, fin |-> FALSE, refd |-> FALSE, late |-> FALSE]
+              code |-> NoCode, got |-> NoCode, fin |-> FALSE, refd |-> FALSE, late |-> FALSE, here |-> FALSE]
 
 Init ==
     /\ out = [p \in Sides |-> <<>>]
@@ -317,11 +321,12 @@ CloseWrite(p, s) ==
 \* Conn.sendClose forgets the credit, then buffers the frame, which may wait
 \* for room in the write buffer meanwhile; then Mux.drop (not after an
 \* abort: Mux.cut leaves the session to the connection's close).
+Here(p, s, code) == code \in {RST, ABT} /\ ss[p][s].got = NoCode /\ Mutant # "local-abort-eof"
 Closing(p, s, code) ==
     /\ ss[p][s].st = "open" /\ ss[p][s].closing = 0
     /\ IF code = ABT THEN cr[p][s].on ELSE Answered(p, s)
     /\ cr' = Forget(p, s)
-    /\ ss' = [ss EXCEPT ![p][s].closing = code + 1]
+    /\ ss' = [ss EXCEPT ![p][s].closing = code + 1, ![p][s].here = @ \/ Here(p, s, code)]
     /\ appDone' = [appDone EXCEPT ![p][s] = @ \/ code # ABT]
     /\ UNCHANGED <<out, pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
                    pings, wshut, closed, down, crashes, err, wt>>
@@ -332,7 +337,7 @@ Closing(p, s, code) ==
 RefuseMark(p, s) ==
     /\ Chain /\ Owner[s] # p /\ ss[p][s].st = "open" /\ ~ss[p][s].acc /\ ss[p][s].closing = 0
     /\ ~ss[p][s].wfin
-    /\ ss' = [ss EXCEPT ![p][s].closing = ABT + 1]
+    /\ ss' = [ss EXCEPT ![p][s].closing = ABT + 1, ![p][s].here = @ \/ Here(p, s, ABT)]
     /\ appDone' = [appDone EXCEPT ![p][s] = TRUE]
     /\ UNCHANGED <<out, cr, pend, gpend, sent, dlv, ga, sentGA, gaPinged, peerGA, drained, pong,
                    pings, wshut, closed, down, crashes, err, wt>>
