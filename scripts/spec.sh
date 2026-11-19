@@ -639,6 +639,16 @@ traces)
 	echo
 	for k in place dial full wait grow closed; do printf 'pick %s %s; ' "$k" "$(grep -c "\"ev\":\"Pick\".*\"t\":\"$k\"\|\"t\":\"$k\".*\"ev\":\"Pick\"" "$work/pall" || true)"; done
 	echo
+	# One connection per file: a second Up (or Live) of a side is another
+	# connection's, and no model accepts two interleaved (the recorder once
+	# named a file by the dialer's port alone, which Linux reuses).
+	for t in "$work"/traces/*.ndjson "$work"/traces/*.ndjson.live; do
+		[ -e "$t" ] || continue
+		for side in d l; do
+			k=$(grep -E '"ev":"(Up|Live)"' "$t" | grep -c "\"side\":\"$side\"" || true)
+			[ "$k" -le 1 ] || { echo "trace $(basename "$t"): $k connections of side $side in one file"; exit 1; }
+		done
+	done
 	# keepAlive's steps (<trace>.ndjson.live), each side's.
 	for t in "$work"/traces/*.ndjson.live; do
 		[ -e "$t" ] || continue
