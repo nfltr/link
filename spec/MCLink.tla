@@ -27,18 +27,19 @@ WEnd(code) == CASE code = Half -> "fin" [] code = Full -> "close"
                 [] code \in {RST, ABT, DDL} -> "reset" [] OTHER -> ""
 REnd(p, s) ==
     LET g == ss[p][s].got IN
-    IF ss[p][s].here THEN "here"
+    IF ss[p][s].own = "here" THEN "here"
     ELSE IF g \in {Half, Full} THEN "eof"
     ELSE IF g \in {RST, ABT, DDL} THEN "reset"
     ELSE IF down[p] /\ ss[p][s].st # "none" THEN "lost"
     ELSE ""
 
-\* How p ended its reads: an application's Reset, Abort or Refuse ("reset";
-\* code kept by a Close after it), its Close or Mux.cut's ("close").
+\* How p ended its reads: its application's Reset, Abort or Refuse
+\* ("reset", own), else its Close, Mux.cut's ABORT or a drain's refusal
+\* ("close": no application reset to tell).
 Shut(p, s) ==
     LET x == ss[p][s] IN
-    IF x.code \in {RST, ABT} \/ (x.closing - 1 \in {RST, ABT} /\ ~x.refd) THEN "reset"
-    ELSE IF (x.closing # 0 /\ ~x.refd) \/ x.code \in {Full, DDL} THEN "close"
+    IF x.own # "" THEN "reset"
+    ELSE IF (x.closing # 0 /\ ~x.refd) \/ x.code \in {Full, RST, ABT, DDL} THEN "close"
     ELSE ""
 
 LS == INSTANCE LinkSession WITH

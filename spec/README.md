@@ -202,8 +202,8 @@ bytes buffered (`sent`), `d` the bytes queued for the reader (`dlv`), `c`
 those it took (`dlv - q`); `wend`, `shut` and `rend` come from two history
 fields of a session (`code`: the code of this side's last close, a reset
 kept over a later Close; `got`: the first close received while it was
-open; `here`: this side's own Reset, Abort or Refuse ended its reader
-first, `Session.endHere`) and `down`; `fault` is `err # {}`. History only: no action of Link
+open; `own`: this side's application Reset, Abort or Refuse, `here` when
+it ended the reader first, `Session.endHere`, else `after`) and `down`; `fault` is `err # {}`. History only: no action of Link
 reads them, so they change no behaviour (the state count grows by the
 states they tell apart).
 
