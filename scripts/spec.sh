@@ -37,10 +37,13 @@ export CICACHE_STAGE
 trap 'st=$?; "$cicache" end "$CICACHE_STAGE" $st || st=1; rm -rf "$work"; exit $st' EXIT
 
 # tlc CFG MODULE [args]: TLC in spec/, its state files in $META (default $work/states).
+# The heap: TLC_RAM_PERCENT of the machine's (or container's) memory, 60 by
+# default: Link.cfg's liveness (make spec) ran out of Java's default 25%
+# of a runner's 8 GB once LINKABORT's "here" added 10% of its states.
 tlc() {
 	c=$1 mod=$2
 	shift 2
-	(cd spec && "$cicache" tlc -- "$java" -XX:+UseParallelGC -cp "$jar" tlc2.TLC -workers "${TLC_WORKERS:-4}" \
+	(cd spec && "$cicache" tlc -- "$java" -XX:+UseParallelGC -XX:MaxRAMPercentage="${TLC_RAM_PERCENT:-60}" -cp "$jar" tlc2.TLC -workers "${TLC_WORKERS:-4}" \
 		-noGenerateSpecTE -metadir "${META:-$work/states}" -config "$c" "$@" "$mod")
 }
 
