@@ -8,6 +8,7 @@ package link
 import (
 	"encoding/hex"
 	"encoding/json"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,8 +18,9 @@ import (
 
 // Trace mode (go test -tags linktrace, LINKTRACE=<dir>) writes one JSON
 // line per step of spec/Link.tla that a Conn takes, to
-// <dir>/<pair>.ndjson, where pair is the dialer's local address: the two
-// sides of one connection write the same file. Each event is written at
+// <dir>/<pair>.ndjson, where pair is the dialer's local address and the
+// listener's (tracePair): the two sides of one connection write the same
+// file. Each event is written at
 // the step's state change, under the lock that changed it, and under one
 // process-wide lock, so a file's order is an order the two sides could
 // have taken; spec/Trace.tla checks it against the model (make
@@ -96,12 +98,7 @@ func traceUp(c *Conn) {
 		side = "d"
 	}
 	if path == "" {
-		pair := c.nc.RemoteAddr().String()
-		if c.dialer {
-			pair = c.nc.LocalAddr().String()
-		}
-		name := strings.NewReplacer(":", "_", "/", "_", "[", "", "]", "").Replace(pair)
-		path = filepath.Join(dir, name+".ndjson")
+		path = filepath.Join(dir, tracePair(c.nc.LocalAddr(), c.nc.RemoteAddr(), c.dialer)+".ndjson")
 	}
 	c.credit.tr = &traceConn{side: side, path: path}
 	chain := 0
@@ -109,6 +106,18 @@ func traceUp(c *Conn) {
 		chain = 1
 	}
 	traceEv(c.credit.tr, traceEvent{ev: "Up", n: c.credit.window, credit: c.credit.peerWindow, held: chain})
+}
+
+// tracePair names a connection's trace file, the same for its two sides:
+// the dialer's address, then the listener's. Not the dialer's address
+// alone: Linux reuses an ephemeral port towards another destination, and
+// one file holding two connections is a trace neither took.
+func tracePair(local, remote net.Addr, dialer bool) string {
+	pair := remote.String() + "-" + local.String()
+	if dialer {
+		pair = local.String() + "-" + remote.String()
+	}
+	return strings.NewReplacer(":", "_", "/", "_", "[", "", "]", "").Replace(pair)
 }
 
 func traceEv(t *traceConn, e traceEvent) {

@@ -1137,7 +1137,10 @@ With `-tags linktrace` and `LINKTRACE=<dir>`, each `Conn` appends one JSON
 line per action to `<dir>/<pair>.ndjson` under one process-wide lock, at
 the point where the state changed and under the lock that changed it, so
 the file's order is an order the two sides could have taken. `pair` is the
-dialer's local address. Each line has the side, the action, the session id
+dialer's local address, then the listener's: the dialer's alone named two
+connections when Linux reused an ephemeral port towards another listener
+(a keepAlive trace rejected in the nightly of 2026-11-17;
+`TestTraceFileNamesTheConnection`). Each line has the side, the action, the session id
 (hex), sizes and the credit after the step, which `Trace.tla` compares with
 the model's. `LINKTRACE_FILE=<file>` puts every connection in one file
 instead, for one test whose two sides have different addresses (the
