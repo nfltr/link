@@ -5,9 +5,12 @@
    This model is the Read itself: several goroutines reading one session
    at once (net.Conn allows it), the read deadline's flag (dlPast) set by
    its timer and cleared or moved by SetReadDeadline at any time, and the
-   peer's slices and end arriving meanwhile.
+   peer's slices and end arriving meanwhile. With Copier set, that reader
+   runs WriteTo instead (lane LINKREADWRITE, 2026-11-20): io.Copy(dst,
+   sess) beside a Read, which WriteTo's doc calls misuse but nothing
+   stopped; Pump's drain takes the tail the same way (takeRest).
 
-   The code before had two bugs, both silent:
+   The code before had three bugs, all silent:
    - Read took the unread tail of the last slice (s.rest) with no lock:
      two readers copied the same bytes, and each cut the tail once, so
      bytes went twice and others never ("no-read-lock").
@@ -15,22 +18,33 @@
      flag again, outside the queue's lock, to tell a deadline from the
      end: a flag cleared in between read as io.EOF on a live session
      ("flag-outside-lock").
+   - WriteTo (and Pump) wrote s.rest, then cut it and released s.cur,
+     all without rmu: a Read copying that tail meanwhile handed the same
+     bytes out again, read a buffer already back in the pool, and a tail
+     a Read left after WriteTo's write was cut and never read
+     ("writeto-no-lock").
 
    The design: Read holds the session's read lock (rmu) from its look at
    s.rest to the end of its copy; PopUnless tells why it gave up (the
    flag or the queue's end), decided under the queue's lock in one look.
+   WriteTo and Pump take s.rest and s.cur under rmu (takeRest) and own
+   them from there: written, then released, by them alone.
 
-   One session; the peer pushes Slices slices of two bytes each, then may
-   end; each Read takes one byte. *)
+   One session; the peer pushes Slices slices of two bytes each (slice k
+   is bytes 2k-1 and 2k), then may end; each Read takes one byte. *)
 EXTENDS Naturals, Sequences
 
 CONSTANTS
     Readers, \* goroutines reading the session
     Slices,  \* slices the peer pushes, two bytes each
-    Mutant   \* "none", "no-read-lock", "flag-outside-lock"
+    Copier,  \* the reader that runs WriteTo instead of Read, or None (0)
+    Mutant   \* "none", "no-read-lock", "flag-outside-lock", "writeto-no-lock"
 
 None == 0
 Bytes == 1..(2 * Slices)
+SliceOf(b) == (b + 1) \div 2
+Range(s) == {s[i] : i \in DOMAIN s}
+ASSUME Copier \in Readers \cup {None}
 
 VARIABLES
     q,      \* the session's queue: slices (sequences of byte ids)
@@ -38,85 +52,107 @@ VARIABLES
     dl,     \* dlPast: the read deadline passed
     next,   \* the next byte id the peer sends
     rest,   \* s.rest: the unread tail of the last slice popped
+    cur,    \* s.cur: that slice (its id), released once read; None if nil
     lock,   \* the reader holding rmu, or None
     pc,     \* [Readers -> step]
     res,    \* [Readers -> {"", "data", "timeout", "eof"}]: a Read's result
-    cnt     \* [Bytes -> Nat]: times each byte was handed to a reader
+    cnt,    \* [Bytes -> Nat]: times each byte was handed to a reader
+    got,    \* [Readers -> Seq(Bytes)]: the bytes each reader was handed
+    ref,    \* [Readers -> slice id or None]: the slice a reader reads from
+    tail,   \* [Readers -> Seq(Bytes)]: what WriteTo took, to write
+    rel     \* [1..Slices -> Nat]: times each slice went back to the pool
 
-vars == <<q, closed, dl, next, rest, lock, pc, res, cnt>>
+vars == <<q, closed, dl, next, rest, cur, lock, pc, res, cnt, got, ref, tail, rel>>
 
 Init ==
     /\ q = <<>> /\ closed = FALSE /\ dl = FALSE /\ next = 1 /\ rest = <<>>
-    /\ lock = None
+    /\ cur = None /\ lock = None
     /\ pc = [r \in Readers |-> "idle"]
     /\ res = [r \in Readers |-> ""]
     /\ cnt = [b \in Bytes |-> 0]
+    /\ got = [r \in Readers |-> <<>>]
+    /\ ref = [r \in Readers |-> None]
+    /\ tail = [r \in Readers |-> <<>>]
+    /\ rel = [k \in 1..Slices |-> 0]
 
 Locked == Mutant # "no-read-lock"
+Plain == Readers \ {Copier}
+
+\* r is handed the bytes of s.
+Hand(r, s) ==
+    /\ cnt' = [b \in Bytes |-> IF b \in Range(s) THEN cnt[b] + 1 ELSE cnt[b]]
+    /\ got' = [got EXCEPT ![r] = @ \o s]
+\* releaseData of slice k (None: nothing).
+Release(k) == rel' = IF k = None THEN rel ELSE [rel EXCEPT ![k] = @ + 1]
 
 \* The peer: a slice (Mux.data's Push), its end (the queue's Close).
 Push ==
     /\ ~closed /\ next + 1 \in Bytes
     /\ q' = Append(q, <<next, next + 1>>) /\ next' = next + 2
-    /\ UNCHANGED <<closed, dl, rest, lock, pc, res, cnt>>
+    /\ UNCHANGED <<closed, dl, rest, cur, lock, pc, res, cnt, got, ref, tail, rel>>
 Close ==
     /\ ~closed /\ closed' = TRUE
-    /\ UNCHANGED <<q, dl, next, rest, lock, pc, res, cnt>>
+    /\ UNCHANGED <<q, dl, next, rest, cur, lock, pc, res, cnt, got, ref, tail, rel>>
 
 \* The deadline: its timer fires (or SetReadDeadline sets a past one) and
 \* Wake; SetReadDeadline clears it or moves it ahead.
-Fire == ~dl /\ dl' = TRUE /\ UNCHANGED <<q, closed, next, rest, lock, pc, res, cnt>>
-Clear == dl /\ dl' = FALSE /\ UNCHANGED <<q, closed, next, rest, lock, pc, res, cnt>>
+Fire == ~dl /\ dl' = TRUE /\ UNCHANGED <<q, closed, next, rest, cur, lock, pc, res, cnt, got, ref, tail, rel>>
+Clear == dl /\ dl' = FALSE /\ UNCHANGED <<q, closed, next, rest, cur, lock, pc, res, cnt, got, ref, tail, rel>>
 
 \* Read's start: rmu taken, then s.rest looked at.
 Begin(r) ==
-    /\ pc[r] = "idle"
+    /\ r \in Plain /\ pc[r] = "idle"
     /\ IF Locked THEN lock = None /\ lock' = r ELSE UNCHANGED lock
     /\ pc' = [pc EXCEPT ![r] = IF rest # <<>> THEN "copy" ELSE "pop"]
-    /\ UNCHANGED <<q, closed, dl, next, rest, res, cnt>>
+    /\ ref' = [ref EXCEPT ![r] = IF rest # <<>> THEN cur ELSE None]
+    /\ UNCHANGED <<q, closed, dl, next, rest, cur, res, cnt, got, tail, rel>>
 
 \* PopUnless: under the queue's lock, it waits (not enabled) until the
 \* flag, a slice or the end; the design decides there, in one look; the
 \* code before only gave up there and decided later (Decide).
+Take(r) == /\ rest' = Head(q) /\ cur' = SliceOf(Head(Head(q))) /\ q' = Tail(q)
+           /\ ref' = [ref EXCEPT ![r] = SliceOf(Head(Head(q)))]
+           /\ pc' = [pc EXCEPT ![r] = "copy"]
 Pop(r) ==
     /\ pc[r] = "pop" /\ (dl \/ q # <<>> \/ closed)
     /\ IF Mutant = "flag-outside-lock"
        THEN IF ~dl /\ q # <<>>
-            THEN /\ rest' = Head(q) /\ q' = Tail(q) /\ pc' = [pc EXCEPT ![r] = "copy"]
-                 /\ UNCHANGED res
-            ELSE /\ pc' = [pc EXCEPT ![r] = "decide"] /\ UNCHANGED <<q, rest, res>>
+            THEN Take(r) /\ UNCHANGED res
+            ELSE /\ pc' = [pc EXCEPT ![r] = "decide"] /\ UNCHANGED <<q, rest, cur, ref, res>>
        ELSE CASE dl -> /\ res' = [res EXCEPT ![r] = "timeout"] /\ pc' = [pc EXCEPT ![r] = "end"]
-                       /\ UNCHANGED <<q, rest>>
-              [] q # <<>> -> /\ rest' = Head(q) /\ q' = Tail(q) /\ pc' = [pc EXCEPT ![r] = "copy"]
-                             /\ UNCHANGED res
+                       /\ UNCHANGED <<q, rest, cur, ref>>
+              [] q # <<>> -> Take(r) /\ UNCHANGED res
               [] OTHER -> /\ res' = [res EXCEPT ![r] = "eof"] /\ pc' = [pc EXCEPT ![r] = "end"]
-                          /\ UNCHANGED <<q, rest>>
-    /\ UNCHANGED <<closed, dl, next, lock, cnt>>
+                          /\ UNCHANGED <<q, rest, cur, ref>>
+    /\ UNCHANGED <<closed, dl, next, lock, cnt, got, tail, rel>>
 
 \* The code before: Read looks at the flag again, the queue unlocked.
 Decide(r) ==
     /\ pc[r] = "decide"
     /\ res' = [res EXCEPT ![r] = IF dl THEN "timeout" ELSE "eof"]
     /\ pc' = [pc EXCEPT ![r] = "end"]
-    /\ UNCHANGED <<q, closed, dl, next, rest, lock, cnt>>
+    /\ UNCHANGED <<q, closed, dl, next, rest, cur, lock, cnt, got, ref, tail, rel>>
 
-\* copy(b, s.rest) of one byte. Under rmu, with s.rest = s.rest[n:]; with
-\* no lock that cut is a step of its own (Cut), from s.rest as it is then.
+\* copy(b, s.rest) of one byte. Under rmu, with s.rest = s.rest[n:] and,
+\* when that empties it, releaseData(s.cur); with no lock that cut is a
+\* step of its own (Cut), from s.rest as it is then.
+CutRest == /\ rest' = IF rest = <<>> THEN rest ELSE Tail(rest)
+           /\ IF Len(rest) = 1 THEN Release(cur) /\ cur' = None ELSE UNCHANGED <<cur, rel>>
 Copy(r) ==
     /\ pc[r] = "copy"
     /\ IF rest = <<>>
-       THEN /\ res' = [res EXCEPT ![r] = "data"] /\ UNCHANGED cnt   \* n = 0
-       ELSE /\ cnt' = [cnt EXCEPT ![Head(rest)] = @ + 1] /\ res' = [res EXCEPT ![r] = "data"]
+       THEN /\ res' = [res EXCEPT ![r] = "data"] /\ UNCHANGED <<cnt, got>>   \* n = 0
+       ELSE /\ Hand(r, <<Head(rest)>>) /\ res' = [res EXCEPT ![r] = "data"]
     /\ IF Locked
-       THEN /\ rest' = IF rest = <<>> THEN rest ELSE Tail(rest)
-            /\ pc' = [pc EXCEPT ![r] = "end"]
-       ELSE /\ pc' = [pc EXCEPT ![r] = "cut"] /\ UNCHANGED rest
-    /\ UNCHANGED <<q, closed, dl, next, lock>>
+       THEN /\ CutRest
+            /\ pc' = [pc EXCEPT ![r] = "end"] /\ ref' = [ref EXCEPT ![r] = None]
+       ELSE /\ pc' = [pc EXCEPT ![r] = "cut"] /\ UNCHANGED <<rest, cur, rel, ref>>
+    /\ UNCHANGED <<q, closed, dl, next, lock, tail>>
 Cut(r) ==
     /\ pc[r] = "cut"
-    /\ rest' = IF rest = <<>> THEN rest ELSE Tail(rest)
-    /\ pc' = [pc EXCEPT ![r] = "end"]
-    /\ UNCHANGED <<q, closed, dl, next, lock, res, cnt>>
+    /\ CutRest
+    /\ pc' = [pc EXCEPT ![r] = "end"] /\ ref' = [ref EXCEPT ![r] = None]
+    /\ UNCHANGED <<q, closed, dl, next, lock, res, cnt, got, tail>>
 
 \* Read returns, rmu let go. A reader that read the end stops; one that
 \* read a byte or the deadline reads again.
@@ -124,34 +160,104 @@ End(r) ==
     /\ pc[r] = "end"
     /\ lock' = IF lock = r THEN None ELSE lock
     /\ pc' = [pc EXCEPT ![r] = IF res[r] = "eof" THEN "done" ELSE "idle"]
-    /\ UNCHANGED <<q, closed, dl, next, rest, res, cnt>>
+    /\ UNCHANGED <<q, closed, dl, next, rest, cur, res, cnt, got, ref, tail, rel>>
+
+\* WriteTo's start, takeRest: under rmu (free: a Read holding it returns
+\* first), s.rest and s.cur become WriteTo's, both nil on the session.
+\* The code before looked at s.rest with no lock and left it there while
+\* it wrote it (WRel cut it after).
+WTake(c) ==
+    /\ c = Copier /\ pc[c] = "idle"
+    /\ IF Mutant = "writeto-no-lock"
+       THEN /\ UNCHANGED <<rest, cur>>
+       ELSE /\ lock = None /\ rest' = <<>> /\ cur' = None
+    /\ tail' = [tail EXCEPT ![c] = rest]
+    /\ ref' = [ref EXCEPT ![c] = IF rest # <<>> THEN cur ELSE None]
+    /\ pc' = [pc EXCEPT ![c] = IF rest # <<>> THEN "write-rest" ELSE "batch"]
+    /\ UNCHANGED <<q, closed, dl, next, lock, res, cnt, got, rel>>
+
+\* w.Write of what WriteTo took: the tail ("rest"), or a slice of a
+\* batch from the queue.
+WWrite(c) ==
+    /\ pc[c] \in {"write", "write-rest"}
+    /\ Hand(c, tail[c]) /\ tail' = [tail EXCEPT ![c] = <<>>]
+    /\ pc' = [pc EXCEPT ![c] = IF pc[c] = "write" THEN "rel" ELSE "rel-rest"]
+    /\ UNCHANGED <<q, closed, dl, next, rest, cur, lock, res, ref, rel>>
+
+\* releaseData of what it wrote. The code before, for the tail: s.rest
+\* cut and s.cur released only now, whatever a Read did with them meanwhile.
+WRel(c) ==
+    /\ pc[c] \in {"rel", "rel-rest"}
+    /\ IF pc[c] = "rel-rest" /\ Mutant = "writeto-no-lock"
+       THEN /\ rest' = <<>> /\ cur' = None /\ Release(cur)
+       ELSE /\ Release(ref[c]) /\ UNCHANGED <<rest, cur>>
+    /\ ref' = [ref EXCEPT ![c] = None]
+    /\ pc' = [pc EXCEPT ![c] = "batch"]
+    /\ UNCHANGED <<q, closed, dl, next, lock, res, cnt, got, tail>>
+
+\* PopBatch: under the queue's lock, it waits until a slice or the end
+\* (WriteTo ignores the read deadline); a batch of one slice here.
+WPop(c) ==
+    /\ pc[c] = "batch" /\ (q # <<>> \/ closed)
+    /\ IF q # <<>>
+       THEN /\ tail' = [tail EXCEPT ![c] = Head(q)] /\ q' = Tail(q)
+            /\ ref' = [ref EXCEPT ![c] = SliceOf(Head(Head(q)))]
+            /\ pc' = [pc EXCEPT ![c] = "write"] /\ UNCHANGED res
+       ELSE /\ res' = [res EXCEPT ![c] = "eof"] /\ pc' = [pc EXCEPT ![c] = "done"]
+            /\ UNCHANGED <<q, tail, ref>>
+    /\ UNCHANGED <<closed, dl, next, rest, cur, lock, cnt, got, rel>>
 
 Next ==
     \/ Push \/ Close \/ Fire \/ Clear
     \/ \E r \in Readers : Begin(r) \/ Pop(r) \/ Decide(r) \/ Copy(r) \/ Cut(r) \/ End(r)
+    \/ \E c \in Readers : WTake(c) \/ WWrite(c) \/ WRel(c) \/ WPop(c)
 
 Spec == Init /\ [][Next]_vars
 
 TypeOK ==
     /\ closed \in BOOLEAN /\ dl \in BOOLEAN /\ next \in 1..(2 * Slices + 1)
-    /\ lock \in Readers \cup {None}
-    /\ pc \in [Readers -> {"idle", "pop", "decide", "copy", "cut", "end", "done"}]
+    /\ cur \in 0..Slices /\ lock \in Readers \cup {None}
+    /\ pc \in [Readers -> {"idle", "pop", "decide", "copy", "cut", "end", "done",
+                           "write", "write-rest", "rel", "rel-rest", "batch"}]
     /\ res \in [Readers -> {"", "data", "timeout", "eof"}]
     /\ cnt \in [Bytes -> Nat]
+    /\ ref \in [Readers -> 0..Slices]
+    /\ rel \in [1..Slices -> Nat]
+
+\* Bytes sent and in no reader's hands yet: queued, a Read's unread tail,
+\* or taken by WriteTo and not yet written.
+Queued == UNION {Range(q[i]) : i \in DOMAIN q}
+InHands == Range(rest) \cup UNION {Range(tail[r]) : r \in Readers}
+Held == Queued \cup InHands
 
 \* Each byte the peer sent goes to one reader at most once.
 Once == \A b \in Bytes : cnt[b] <= 1
 
-\* io.EOF only at the peer's end, once every byte it sent was read: a
+\* Each reader is handed its bytes in the order sent.
+InOrder == \A r \in Readers : \A i \in 1..(Len(got[r]) - 1) : got[r][i] < got[r][i + 1]
+
+\* No byte sent is lost: it was handed to a reader or is still held.
+NoLoss == \A b \in 1..(next - 1) : cnt[b] >= 1 \/ b \in Held
+
+\* A slice goes back to the pool once, and never while a reader reads it.
+ReleaseOnce == \A k \in 1..Slices : rel[k] <= 1
+NoUseAfterRelease == \A r \in Readers : ref[r] # None => rel[ref[r]] = 0
+
+\* io.EOF only at the peer's end, once every byte it sent was read (or is
+\* in another reader's hands: its unread tail, WriteTo's write): a
 \* deadline, set or cleared, never reads as the end.
 NoForgedEOF ==
     \A r \in Readers : res[r] = "eof" =>
         /\ closed
-        /\ \A b \in 1..(next - 1) : cnt[b] = 1
+        /\ \A b \in 1..(next - 1) : cnt[b] = 1 \/ b \in InHands
 
 \* Witnesses (make spec-mutants: TLC must violate each).
 WitnessTimeout == ~\E r \in Readers : res[r] = "timeout"
 WitnessEOF == ~\E r \in Readers : res[r] = "eof"
 WitnessBothRead == ~\A r \in Readers : res[r] = "data"
 WitnessSharedTail == ~\E r \in Readers : pc[r] = "copy" /\ Len(rest) = 1
+\* WriteTo takes a Read's tail (one byte: a batch is two), and both kinds
+\* of reader are handed bytes.
+WitnessWriteToTail == ~\E c \in Readers : pc[c] = "write-rest" /\ Len(tail[c]) = 1
+WitnessBothKinds == ~(Copier # None /\ got[Copier] # <<>> /\ \E r \in Plain : got[r] # <<>>)
 =============================================================================

@@ -434,22 +434,48 @@ bytes and ending; each read takes one byte.
 | `Copy(r)` | `copy(b, s.rest)` and `s.rest = s.rest[n:]` |
 | `End(r)` | `Read` returns, `rmu` let go |
 | `Decide(r)`, `Cut(r)` | mutants only (`flag-outside-lock`, `no-read-lock`) |
+| `WTake(c)` | `Session.WriteTo`'s (and `Pump`'s drain's) `takeRest`: `s.rest` and `s.cur` taken under `rmu`, both nil on the session |
+| `WWrite(c)`, `WRel(c)` | `w.Write` of the tail or of a batch, then `releaseData` of what it wrote |
+| `WPop(c)` | `bytequeue.PopBatch`: a slice, or the end (WriteTo ignores the read deadline) |
 
 - **`Once`**: each byte goes to one reader, once.
+- **`InOrder`**: each reader is handed its bytes in the order sent.
+- **`NoLoss`**: a byte sent was handed to a reader or is still held
+  (queued, a Read's unread tail, taken by WriteTo).
+- **`ReleaseOnce`**, **`NoUseAfterRelease`**: a slice goes back to the
+  pool once, and never while a reader reads it.
 - **`NoForgedEOF`**: a reader reads `io.EOF` only at the peer's end,
-  every byte it sent read: a deadline, set or cleared, never reads as
-  the end.
+  every byte it sent read (or in another reader's hands): a deadline, set
+  or cleared, never reads as the end.
+
+With `Copier` set (lane LINKREADWRITE, 2026-11-20), that reader runs
+`WriteTo` instead of `Read`: `io.Copy(dst, sess)` beside a `Read`, which
+the `Session` doc calls misuse but nothing stopped outside `-tags
+linkdebug`. The code before (mutant `writeto-no-lock`) wrote `s.rest`,
+then cut it and released `s.cur`, all without `rmu`: a `Read` copying
+that tail meanwhile handed the same bytes out again (`Once`), read a
+buffer already back in the pool (`NoUseAfterRelease`), and a tail a
+`Read` left after WriteTo's write was cut and never read (`NoLoss`). The
+design: `WriteTo`, its `OwnedWriter` path and `Pump`'s drain take the
+tail through one helper, `takeRest`, under `rmu`, and own it from there.
 
 `SessionRead.cfg` (in `make spec` and `spec-invariants`): two readers,
-two slices: 1,090 distinct states, depth 27, about a second; every
-action taken but the mutants' (`-coverage 1`). Mutants (`make
+two slices: 3,162 distinct states, depth 27, about a second; every
+action taken but the mutants' and WriteTo's (`-coverage 1`).
+`SessionReadWriteTo.cfg` (the same): a Read and a WriteTo, two slices:
+1,534 distinct states, depth 26; every action taken but the two Read
+mutants'. Mutants (`make
 spec-mutants`): `no-read-lock` (the code before: no lock on `s.rest`;
 two readers' pops overwrite each other's slice, or both copy one tail)
 and `flag-outside-lock` (the code before: `PopUnless` gave up and `Read`
 looked at `dlPast` again after the queue's unlock) each break
 `NoForgedEOF`. Witnesses (violated): `WitnessTimeout`, `WitnessEOF`,
 `WitnessBothRead`, `WitnessSharedTail` (a reader copying a tail left by
-the other one's pop). Guards: `TestSessionConcurrentReads` (red every
+the other one's pop); on `SessionReadWriteTo.cfg`, the mutant
+`writeto-no-lock` (caught by `Once`; also breaks `NoUseAfterRelease`,
+`NoLoss` and `NoForgedEOF` checked alone) and the witnesses
+`WitnessWriteToTail` (WriteTo takes a Read's one-byte tail) and
+`WitnessBothKinds` (both readers are handed bytes). Guards: `TestSessionConcurrentReads` (red every
 run before, and -race's report) and
 `TestSessionReadDeadlineClearedNeverEOF` (20,000 rounds: red 6 runs in 10 before, green after, with -race).
 
@@ -798,7 +824,7 @@ holds in a `Spec-Reviewed:` trailer).
 | `Join.tla`, `TraceJoin.tla` | `peerlink.Join`'s clean end (`Session.Sync`, hold, the watch) | `peerlink/chain.go`, `join.go`, `peerlink/trace_on.go` |
 | `JoinClose.tla` | a joint's side closed whole by its peer while the other side writes: who closes the other side, and when | `join.go`, `peerlink/chain.go` |
 | `CreditWaiters.tla` | senders waiting in `Credit.Acquire` on one session: the wait and `wakeAll` | `credit.go` |
-| `SessionRead.tla` | `Session.Read` from several goroutines, the read deadline set and cleared meanwhile | `mux.go`, `internal/bytequeue/` |
+| `SessionRead.tla` | `Session.Read` from several goroutines (or one running `WriteTo`), the read deadline set and cleared meanwhile | `mux.go`, `internal/bytequeue/` |
 | `SessionWrite.tla` | `Session.Write` waiting for credit while `SetWriteDeadline` and its timer run | `mux.go`, `credit.go` |
 | `DirectPath.tla`, `TraceDirectPath.tla` | the path layer: OPEN, RESUME, ACK, END, ABORT, the window, `Move` and `Attach` | `pathswitch/conn.go`, `pathswitch/frame.go`, `pathswitch/trace_on.go` |
 

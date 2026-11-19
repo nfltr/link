@@ -5,7 +5,7 @@
 # spec.sh check|mutants|traces: the TLA+ model of spec/ (spec/README.md).
 #   check    TLC on spec/Link.cfg, LinkDrain.cfg and LinkSess.cfg (no crash),
 #            LinkCrash.cfg, then spec/Pool.cfg, Liveness.cfg, Join.cfg,
-#            JoinClose.cfg and CreditWaiters.cfg, SessionRead.cfg, SessionWrite.cfg, DirectPath.cfg:
+#            JoinClose.cfg and CreditWaiters.cfg, SessionRead.cfg, SessionReadWriteTo.cfg, SessionWrite.cfg, DirectPath.cfg:
 #            every invariant and liveness property, and Refines.
 #   invariants  the same, Link's invariants only, Refines only on
 #            LinkCrash.cfg (CI's; Pool's liveness is checked too, seconds).
@@ -238,7 +238,7 @@ check | invariants)
 	# PoolDrain (Min 2: a Drain failing halfway) and QuicWatchStops (two
 	# short stops, ~10 s) only in full: their mutants are CI's.
 	# PoolGrow: background growth (Max above Min).
-	pools="Pool PoolGrow PoolClient Liveness LivenessStarve QuicWatch QuicWatchPTO QuicWatchStarve Join JoinClose CreditWaiters SessionRead SessionWrite DirectPath DirectPathReset DirectPathRebind DirectPathProof"
+	pools="Pool PoolGrow PoolClient Liveness LivenessStarve QuicWatch QuicWatchPTO QuicWatchStarve Join JoinClose CreditWaiters SessionRead SessionReadWriteTo SessionWrite DirectPath DirectPathReset DirectPathRebind DirectPathProof"
 	[ "$1" = invariants ] || pools="$pools PoolDrain QuicWatchStops DirectPathWide"
 	for m in $pools; do
 		echo "== $m.cfg"
@@ -246,7 +246,7 @@ check | invariants)
 		# Liveness explores a horizon of ticks, Join one session,
 		# CreditWaiters a fixed number of Acquires, SessionRead a fixed number of bytes, SessionWrite a fixed number of SetWriteDeadlines: their last states end there; PoolDrain has no Open to keep it going.
 		dl=; [ $m = Pool ] || [ $m = PoolGrow ] || [ $m = PoolClient ] || dl=-deadlock
-		mod=$m.tla; case $m in Pool*) mod=Pool.tla ;; Liveness*) mod=Liveness.tla ;; QuicWatch*) mod=QuicWatch.tla ;; CreditWaiters*) mod=CreditWaiters.tla ;; DirectPath*) mod=DirectPath.tla ;; esac
+		mod=$m.tla; case $m in Pool*) mod=Pool.tla ;; Liveness*) mod=Liveness.tla ;; QuicWatch*) mod=QuicWatch.tla ;; CreditWaiters*) mod=CreditWaiters.tla ;; SessionRead*) mod=SessionRead.tla ;; DirectPath*) mod=DirectPath.tla ;; esac
 		cfg=$m.cfg
 		# DirectPath's liveness (AllDelivered, ResetReaches: minutes) only in
 		# full; spec-mutants catches keep-dead-path and abort-not-resent by it.
@@ -542,6 +542,10 @@ mutants)
 		job mutant SessionRead.cfg 'Mutant = "none"' "Mutant = \"$m\"" SessionRead.tla
 	done
 	for w in WitnessTimeout WitnessEOF WitnessBothRead WitnessSharedTail; do job witness SessionRead.cfg $w SessionRead.tla; done
+	# A Read beside WriteTo (lane LINKREADWRITE): WriteTo wrote s.rest,
+	# then cut it and released s.cur, all without rmu (the code before).
+	job mutant SessionReadWriteTo.cfg 'Mutant = "none"' 'Mutant = "writeto-no-lock"' SessionRead.tla
+	for w in WitnessWriteToTail WitnessBothKinds; do job witness SessionReadWriteTo.cfg $w SessionRead.tla; done
 	# Session writes (SessionWrite.tla, lane P2PLEFT): a Write waiting for
 	# credit on the nil channel when the first write deadline is set.
 	job mutant SessionWrite.cfg 'Mutant = "none"' 'Mutant = "nil-channel"' SessionWrite.tla
