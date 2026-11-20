@@ -61,3 +61,6 @@ func TraceMuteForTest(s *Session) {
 		traceEA(s, "RMute")
 	}
 }
+
+// StreamID is s's QUIC stream id (its datagram tag).
+func StreamID(s *Session) int64 { return int64(s.stream.StreamID()) }

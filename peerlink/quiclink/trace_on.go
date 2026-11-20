@@ -48,7 +48,7 @@ func traceEA(s *Session, ev string, kv ...string) {
 	if b < a {
 		a, b = b, a
 	}
-	name := fmt.Sprintf("%d-%d-%d", a, b, s.StreamID())
+	name := fmt.Sprintf("%d-%d-%d", a, b, s.stream.StreamID())
 	m := map[string]string{"ev": ev, "by": "o"}
 	if s.accepter {
 		m["by"] = "a"

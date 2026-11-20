@@ -95,12 +95,12 @@ func (s *Session) answer() error {
 				s.aErr = err
 			case a != nil:
 				s.aErr = a
-				s.Stream.CancelRead(CodeClosed)
+				s.stream.CancelRead(CodeClosed)
 			}
 			return s.aErr
 		}
 		b := make([]byte, need)
-		k, err := s.Stream.Read(b)
+		k, err := s.stream.Read(b)
 		s.abuf = append(s.abuf, b[:k]...)
 		if _, _, need, perr := parseAnswer(s.abuf); err != nil && need == 0 && perr == nil {
 			continue // whole, with the FIN (a refusal's)
@@ -156,7 +156,7 @@ func (s *Session) Read(b []byte) (int, error) {
 			return 0, err
 		}
 	}
-	n, err := s.Stream.Read(b)
+	n, err := s.stream.Read(b)
 	if err == io.EOF {
 		s.readEOF()
 	}
@@ -166,7 +166,7 @@ func (s *Session) Read(b []byte) (int, error) {
 // Write sends b; the accepter's first Write answers the open (accepted).
 func (s *Session) Write(b []byte) (int, error) {
 	s.autoAccept()
-	n, err := s.Stream.Write(b)
+	n, err := s.stream.Write(b)
 	return n, s.mapErr(err)
 }
 
@@ -215,7 +215,7 @@ func (s *Session) AcceptPath(pathLen uint8) error {
 	var err error
 	s.ansOnce.Do(func() {
 		defer s.ans.Store(true)
-		_, err = s.Stream.Write([]byte{0, pathLen})
+		_, err = s.stream.Write([]byte{0, pathLen})
 	})
 	return err
 }
@@ -237,8 +237,8 @@ func (s *Session) Refuse(code uint32, msg string) error {
 func (s *Session) AbortWith(a *link.Abort) error {
 	if !s.c.chain {
 		s.reset.Store(true)
-		s.Stream.CancelWrite(CodeReset)
-		s.Stream.CancelRead(CodeReset)
+		s.stream.CancelWrite(CodeReset)
+		s.stream.CancelRead(CodeReset)
 		s.ended()
 		return nil
 	}
@@ -250,9 +250,9 @@ func (s *Session) AbortWith(a *link.Abort) error {
 		s.ansOnce.Do(func() {
 			refused = true
 			s.ans.Store(true)
-			_, _ = s.Stream.Write(appendAnswer(nil, clipped(a)))
-			_ = s.Stream.Close()
-			s.Stream.CancelRead(CodeRefused)
+			_, _ = s.stream.Write(appendAnswer(nil, clipped(a)))
+			_ = s.stream.Close()
+			s.stream.CancelRead(CodeRefused)
 		})
 		if !refused {
 			return errors.New("quiclink: Refuse of a session already answered (Abort it)")
@@ -266,9 +266,9 @@ func (s *Session) AbortWith(a *link.Abort) error {
 	s.failEnd("RFail")
 	// The bytes written before the abort arrive (RESET_STREAM_AT); once
 	// the write side was reset (the peer's STOP_SENDING) it does nothing.
-	s.Stream.SetReliableBoundary()
-	s.Stream.CancelWrite(abortCode(a))
-	s.Stream.CancelRead(abortCode(a))
+	s.stream.SetReliableBoundary()
+	s.stream.CancelWrite(abortCode(a))
+	s.stream.CancelRead(abortCode(a))
 	s.ended()
 	return nil
 }

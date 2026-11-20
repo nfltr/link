@@ -1,3 +1,16 @@
+Incompatible changes:
+- Session.Stream: removed
+- github.com/nfltr/quic-go.(*Stream).CancelRead, method set of *Session: removed
+- github.com/nfltr/quic-go.(*Stream).CancelWrite, method set of *Session: removed
+- github.com/nfltr/quic-go.(*Stream).Context, method set of *Session: removed
+- github.com/nfltr/quic-go.(*Stream).Peek, method set of *Session: removed
+- github.com/nfltr/quic-go.(*Stream).SetPriority, method set of *Session: removed
+- github.com/nfltr/quic-go.(*Stream).SetReceiveFinalSizeCallback, method set of *Session: removed
+- github.com/nfltr/quic-go.(*Stream).SetReliableBoundary, method set of *Session: removed
+- github.com/nfltr/quic-go.(*Stream).SetSendWindowCallback, method set of *Session: removed
+- github.com/nfltr/quic-go.(*Stream).StreamID, method set of *Session: removed
+- github.com/nfltr/quic-go.(*Stream).TryWriteAll, method set of *Session: removed
+- github.com/nfltr/quic-go.(*Stream).WriteWithLimit, method set of *Session: removed
 Compatible changes:
 - (*Session).AckEnd: added
 - (*Session).AcksEnds: added

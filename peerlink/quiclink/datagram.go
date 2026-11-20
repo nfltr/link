@@ -37,16 +37,17 @@ type dgrams struct {
 
 // SendDatagram sends p as one DATAGRAM frame of the session. It waits
 // while quic-go's send queue is full (32 frames): call it from a sender of
-// its own, never from a reader that must not wait. Errors:
-// errNoDatagrams; *quic.DatagramTooLargeError when p does not fit in one
-// packet now (its MaxDatagramPayloadSize counts the tag: the caller's
-// largest p is MaxDatagramPayloadSize minus tagLen); the connection's
-// error once it closed.
+// its own, never from a reader that must not wait. Errors: one when the
+// connection carries no datagrams (an end did not set Config.Datagrams)
+// or the session was reset, the caller then carries p on the stream;
+// *quic.DatagramTooLargeError when p does not fit in one packet now
+// (its MaxDatagramPayloadSize is the largest p that does, the session's
+// tag taken off); the connection's error once it closed.
 func (s *Session) SendDatagram(p []byte) error {
 	if s.reset.Load() || !s.c.datagrams() {
 		return errNoDatagrams
 	}
-	b := binary.AppendUvarint(make([]byte, 0, binary.MaxVarintLen64+len(p)), uint64(s.StreamID())) // #nosec G115 -- a stream id is at most 2^62
+	b := binary.AppendUvarint(make([]byte, 0, binary.MaxVarintLen64+len(p)), uint64(s.stream.StreamID())) // #nosec G115 -- a stream id is at most 2^62
 	err := s.c.q.SendDatagram(append(b, p...))
 	if e, ok := errors.AsType[*quic.DatagramTooLargeError](err); ok {
 		return &quic.DatagramTooLargeError{MaxDatagramPayloadSize: e.MaxDatagramPayloadSize - int64(s.tagLen())}
@@ -56,7 +57,7 @@ func (s *Session) SendDatagram(p []byte) error {
 
 // tagLen is the bytes the session's tag takes of a frame's payload.
 func (s *Session) tagLen() int {
-	return len(binary.AppendUvarint(nil, uint64(s.StreamID()))) // #nosec G115 -- a stream id is at most 2^62
+	return len(binary.AppendUvarint(nil, uint64(s.stream.StreamID()))) // #nosec G115 -- a stream id is at most 2^62
 }
 
 // OnDatagram sets f to take each datagram the peer sent on the session
@@ -69,7 +70,7 @@ func (s *Session) OnDatagram(f func(p []byte)) {
 	if !c.datagrams() {
 		return
 	}
-	id := s.StreamID()
+	id := s.stream.StreamID()
 	c.dg.mu.Lock()
 	if f == nil {
 		delete(c.dg.on, id)

@@ -80,8 +80,8 @@ func want(t *testing.T, ch chan []byte, w string) {
 // says how much fits, its tag counted.
 func TestSessionDatagrams(t *testing.T) {
 	a, _, opened, accepted := dgPair(t, true, true, 2)
-	if opened[0].StreamID() != accepted[0].StreamID() {
-		t.Fatalf("stream ids %d, %d: the tag is the stream id at both ends", opened[0].StreamID(), accepted[0].StreamID())
+	if quiclink.StreamID(opened[0]) != quiclink.StreamID(accepted[0]) {
+		t.Fatalf("stream ids %d, %d: the tag is the stream id at both ends", quiclink.StreamID(opened[0]), quiclink.StreamID(accepted[0]))
 	}
 	in0, in1, back0 := recv(t, accepted[0]), recv(t, accepted[1]), recv(t, opened[0])
 	for _, w := range []string{"zero", "one"} {

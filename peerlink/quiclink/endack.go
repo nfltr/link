@@ -81,7 +81,7 @@ func (s *Session) track() {
 	if e.byID == nil {
 		e.byID = map[quic.StreamID]*Session{}
 	}
-	e.byID[s.StreamID()] = s
+	e.byID[s.stream.StreamID()] = s
 	e.mu.Unlock()
 }
 
@@ -92,7 +92,7 @@ func (s *Session) untrack() {
 	s.endDone(net.ErrClosed) // a wait in flight ends with the session
 	e := &s.c.ec
 	e.mu.Lock()
-	delete(e.byID, s.StreamID())
+	delete(e.byID, s.stream.StreamID())
 	e.mu.Unlock()
 }
 
@@ -111,7 +111,7 @@ func (s *Session) readEOF() {
 		return
 	}
 	if s.ends.held.Load() {
-		s.c.sendCtl(ctlReceipt, s.StreamID())
+		s.c.sendCtl(ctlReceipt, s.stream.StreamID())
 		return
 	}
 	s.ends.ackMu.Lock()
@@ -122,9 +122,9 @@ func (s *Session) readEOF() {
 		traceEA(s, "REnd", "ack", map[bool]string{true: "1", false: "0"}[sent])
 	}
 	if sent {
-		s.c.sendCtl(ctlReceipt, s.StreamID(), ctlEndAck)
+		s.c.sendCtl(ctlReceipt, s.stream.StreamID(), ctlEndAck)
 	} else {
-		s.c.sendCtl(ctlReceipt, s.StreamID())
+		s.c.sendCtl(ctlReceipt, s.stream.StreamID())
 	}
 }
 
@@ -140,7 +140,7 @@ func (s *Session) ackWith(b byte, ev string) {
 	if traceOn && ev != "" && s.c.q.Context().Err() == nil { // on a closed connection it is no message
 		traceEA(s, ev)
 	}
-	s.c.sendCtl(b, s.StreamID())
+	s.c.sendCtl(b, s.stream.StreamID())
 }
 
 // failEnd: the session failed (ev "RFail") or closed ("RClose") here
@@ -249,7 +249,7 @@ func (s *Session) waitEnd(received func()) (err error) {
 // watchGrants counts the peer's window updates (and calls OnGrant's f).
 func (s *Session) watchGrants() {
 	s.ends.gOnce.Do(func() {
-		s.Stream.SetSendWindowCallback(func(n int64) {
+		s.stream.SetSendWindowCallback(func(n int64) {
 			s.ends.grants.Add(n)
 			if f := s.ends.grantF.Load(); f != nil {
 				(*f)(int(n))

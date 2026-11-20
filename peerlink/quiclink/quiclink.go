@@ -24,7 +24,7 @@
 // Chaining (since v0.4.0): a connection that negotiated ALPNChain
 // carries sessions that answer opens (peerlink.ChainSession): an open's
 // link.Chain precedes its preamble, the accepter's answer precedes its
-// bytes, and an Abort's code and hops travel in the stream error code
+// bytes, and a link.Abort's code and hops travel in the stream error code
 // (chain.go). One that negotiated ALPN is as before. One that negotiated
 // ALPNEndAck also acknowledges ends (CloseWriteSync, endack.go).
 //
@@ -88,7 +88,7 @@ const ALPN = "peerlink"
 // listener, plain sessions from an older one.
 const ALPNChain = "peerlink-chain"
 
-// Stream error codes: the peer reads a *quic.StreamError with one.
+// Codes of a stream's error: the peer reads a *quic.StreamError with one.
 const (
 	CodeRefused quic.StreamErrorCode = 1 // draining, not serving, or a bad preamble
 	CodeReset   quic.StreamErrorCode = 2 // the peer's Reset
@@ -152,7 +152,7 @@ type Config struct {
 }
 
 // Node is a peerlink.Link over QUIC. Sessions are *Session: read and write
-// deadlines.
+// deadlines. Its methods are safe from any goroutine.
 type Node struct {
 	cfg Config
 	qc  *quic.Config
@@ -252,7 +252,7 @@ func (n *Node) DeadAfter() time.Duration {
 	return l.Interval + l.Timeout + l.Timeout/16
 }
 
-// QUICConfig is the Node's QUIC settings, for Config.Dial.
+// QUICConfig is a copy of the Node's QUIC settings, for Config.Dial.
 func (n *Node) QUICConfig() *quic.Config { return n.qc.Clone() }
 
 // conn is one QUIC connection and the sessions this Node has on it.
@@ -518,7 +518,7 @@ func (n *Node) Open(ctx context.Context, peer string, header []byte) (peerlink.S
 		}
 		st, err := c.q.OpenStreamSync(ctx)
 		if err == nil {
-			s := &Session{Stream: st, c: c}
+			s := &Session{stream: st, c: c}
 			s.track()
 			var pre []byte
 			if c.chain {
@@ -727,7 +727,7 @@ func (n *Node) acceptStream(c *conn, st *quic.Stream) {
 		st.CancelRead(CodeRefused)
 		return
 	}
-	s := &Session{Stream: st, c: c, accepter: true, chain: ch}
+	s := &Session{stream: st, c: c, accepter: true, chain: ch}
 	s.track()
 	accept(c.peer, h, s)
 }
@@ -973,13 +973,15 @@ func (n *Node) connsLocked() []*conn {
 
 // Session is a session: a QUIC stream with the net.Conn methods and
 // CloseWrite and Reset; on a connection that negotiated ALPNChain, a
-// peerlink.ChainSession (Answers).
+// peerlink.ChainSession (Answers). The stream itself is not exposed:
+// its own Close, CancelRead and CancelWrite would bypass the answer and
+// the end acknowledgement the session keeps.
 type Session struct {
-	*quic.Stream
-	c     *conn
-	once  sync.Once
-	reset atomic.Bool
-	over  atomic.Bool // ended: no datagram receiver from now on
+	stream *quic.Stream
+	c      *conn
+	once   sync.Once
+	reset  atomic.Bool
+	over   atomic.Bool // ended: no datagram receiver from now on
 
 	// Answers (ALPNChain).
 	accepter bool
@@ -1001,7 +1003,7 @@ func (s *Session) ended() {
 	s.once.Do(func() {
 		s.over.Store(true)
 		s.untrack()
-		s.c.forgetDatagrams(s.StreamID())
+		s.c.forgetDatagrams(s.stream.StreamID())
 		s.c.end()
 	})
 }
@@ -1012,7 +1014,7 @@ func (s *Session) CloseWrite() error {
 		return net.ErrClosed
 	}
 	s.autoAccept()
-	return s.Stream.Close()
+	return s.stream.Close()
 }
 
 // Close ends the session: the peer reads what was written, then io.EOF;
@@ -1021,10 +1023,10 @@ func (s *Session) Close() error {
 	s.autoAccept()
 	var err error
 	if !s.reset.Load() {
-		err = s.Stream.Close()
+		err = s.stream.Close()
 	}
 	s.failEnd("RClose") // the peer's end not read: never acknowledged
-	s.Stream.CancelRead(CodeClosed)
+	s.stream.CancelRead(CodeClosed)
 	s.ended()
 	return err
 }
@@ -1037,8 +1039,8 @@ func (s *Session) Reset() error {
 	}
 	s.reset.Store(true)
 	s.failEnd("RFail")
-	s.Stream.CancelWrite(CodeReset)
-	s.Stream.CancelRead(CodeReset)
+	s.stream.CancelWrite(CodeReset)
+	s.stream.CancelRead(CodeReset)
 	s.ended()
 	return nil
 }
@@ -1049,3 +1051,14 @@ func (s *Session) LocalAddr() net.Addr { return s.c.q.LocalAddr() }
 // RemoteAddr is the QUIC connection's peer address (it changes as the
 // peer migrates).
 func (s *Session) RemoteAddr() net.Addr { return s.c.q.RemoteAddr() }
+
+// SetDeadline sets the read and the write deadline (the stream's).
+func (s *Session) SetDeadline(t time.Time) error { return s.stream.SetDeadline(t) }
+
+// SetReadDeadline makes a pending or later Read return an error that is
+// os.ErrDeadlineExceeded once t passed; zero t clears it.
+func (s *Session) SetReadDeadline(t time.Time) error { return s.stream.SetReadDeadline(t) }
+
+// SetWriteDeadline makes a pending or later Write return an error that
+// is os.ErrDeadlineExceeded once t passed; zero t clears it.
+func (s *Session) SetWriteDeadline(t time.Time) error { return s.stream.SetWriteDeadline(t) }
