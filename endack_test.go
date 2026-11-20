@@ -5,6 +5,7 @@ package link
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net"
 	"sync/atomic"
@@ -171,4 +172,28 @@ func TestEndAckGivesUpWithoutProgress(t *testing.T) {
 	if b, err := io.ReadAll(r.c); !bytes.Equal(b, []byte("tail")) {
 		t.Fatalf("C read %q, %v: the bytes still went", b, err)
 	}
+}
+
+// TestEndAckResetEndsTheWait: a session reset here after its half close
+// (a local side that took the EOF, then failed: nfltr connect's Pump)
+// waits for no ENDACK: a CloseWriteSync after the Reset (nfnet Conn.Close)
+// returns at once with ErrReset, not after the idle bound (30 s).
+func TestEndAckResetEndsTheWait(t *testing.T) {
+	r := newHopRig(t)
+	r.armed.Store(true) // C takes nothing: no ENDACK can come
+	if err := r.a.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	_ = r.a.Reset()
+	ret := make(chan error, 1)
+	go func() { ret <- r.a.CloseWriteSync() }()
+	select {
+	case err := <-ret:
+		if !errors.Is(err, ErrReset) {
+			t.Fatalf("CloseWriteSync after Reset: %v, want ErrReset", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("CloseWriteSync after Reset waited for an ENDACK")
+	}
+	close(r.open)
 }

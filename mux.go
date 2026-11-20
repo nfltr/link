@@ -1364,6 +1364,7 @@ func (s *Session) Reset() error {
 		debugReleased(s)
 	}
 	if s.nack() { // ended here, its end not acknowledged: the peer's wait ends
+		s.m.ackDone(s.id, ErrReset) // and this side's own (spec/RelayedClose.tla AResetWaiting)
 		return nil
 	}
 	s.once.Do(func() {

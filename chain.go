@@ -87,16 +87,16 @@ type Abort struct {
 // end (spec/LinkSession.tla GEnds "here"; TestLocalAbortReadsTyped). A
 // session already ended keeps its end.
 func (s *Session) endHere(a *Abort) {
-	if closed(s.done) {
-		return
-	}
 	h := Abort{Code: CodeUnspecified}
 	if a != nil {
 		h = *a
 	}
 	h.here = true
+	s.m.ackDone(s.id, &h) // also once both halves ended it: its CLOSE's wait (spec/RelayedClose.tla AResetWaiting)
+	if closed(s.done) {
+		return
+	}
 	s.fail(&h)
-	s.m.ackDone(s.id, &h)
 }
 
 // Error says what ended the session, where on the path and why.
@@ -339,6 +339,7 @@ func (s *Session) AbortWith(a *Abort) error {
 		debugReleased(s)
 	}
 	if !a.Refused && s.nack() { // ended here, its end not acknowledged: the peer's wait ends
+		s.m.ackDone(s.id, a) // and this side's own (spec/RelayedClose.tla AResetWaiting)
 		return nil
 	}
 	if a.Refused {
