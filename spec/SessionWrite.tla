@@ -19,8 +19,15 @@
    wdMu, so every waiting Write holds a channel the next
    SetWriteDeadline or timer closes.
 
+   Lane LINKTRACE2 (2026-11-20, for the trace, spec/TraceSessionWrite.tla):
+   acquire looks at wd.past, then Credit.acquire at the credit under its
+   own lock, two steps (CheckPast, CheckCredit), as the code does; the
+   credit is a count, each Write's need its own (Need), and a grant adds
+   to it (the model's one grant: enough for every Write). The model before
+   took the two looks as one step and a grant as credit for all.
+
    Channels are numbered; 0 is nil. *)
-EXTENDS Naturals
+EXTENDS Naturals, FiniteSets
 
 CONSTANTS
     Writers, \* goroutines writing the session
@@ -34,16 +41,23 @@ VARIABLES
     past,   \* s.wd.past
     armed,  \* a future deadline's timer is pending
     sets,   \* SetWriteDeadline calls made
-    granted,\* the peer granted credit: every waiting Write may take it
+    granted,\* the peer granted credit (the model's one grant)
+    cr,     \* the session's send credit
     snap,   \* [Writers -> the channel its wait holds]
     pc,     \* [Writers -> step]
     res     \* [Writers -> {"", "ok", "timeout"}]
 
-vars == <<ch, nextCh, shut, past, armed, sets, granted, snap, pc, res>>
+vars == <<ch, nextCh, shut, past, armed, sets, granted, cr, snap, pc, res>>
+
+\* The credit at the start (a trace's: its Open), what Write w waits for,
+\* and the model's grant.
+Window == 0
+Need(w) == 1
+Gift == Cardinality(Writers)
 
 Init ==
     /\ ch = 0 /\ nextCh = 1 /\ shut = {} /\ past = FALSE /\ armed = FALSE
-    /\ sets = 0 /\ granted = FALSE
+    /\ sets = 0 /\ granted = FALSE /\ cr = Window
     /\ snap = [w \in Writers |-> 0]
     /\ pc = [w \in Writers |-> "take"]
     /\ res = [w \in Writers |-> ""]
@@ -57,16 +71,18 @@ Set(kind) ==
     /\ ch' = nextCh /\ nextCh' = nextCh + 1
     /\ past' = (kind = "past")
     /\ armed' = (kind = "future")
-    /\ UNCHANGED <<granted, snap, pc, res>>
+    /\ UNCHANGED <<granted, cr, snap, pc, res>>
 
 \* The timer of a future deadline (its generation still current).
 Fire ==
     /\ armed /\ armed' = FALSE /\ past' = TRUE
     /\ shut' = shut \cup {ch} /\ ch' = nextCh /\ nextCh' = nextCh + 1
-    /\ UNCHANGED <<sets, granted, snap, pc, res>>
+    /\ UNCHANGED <<sets, granted, cr, snap, pc, res>>
 
-\* The peer's window update.
-Grant == ~granted /\ granted' = TRUE /\ UNCHANGED <<ch, nextCh, shut, past, armed, sets, snap, pc, res>>
+\* The peer's window update of k bytes (a trace's: its own; a refund's
+\* too); the model's: one, enough for every Write.
+GrantOf(k) == granted' = TRUE /\ cr' = cr + k /\ UNCHANGED <<ch, nextCh, shut, past, armed, sets, snap, pc, res>>
+Grant == ~granted /\ GrantOf(Gift)
 
 \* writeWait, under wdMu: the design makes a channel when there is none.
 Take(w) ==
@@ -75,35 +91,43 @@ Take(w) ==
        THEN /\ ch' = nextCh /\ nextCh' = nextCh + 1 /\ snap' = [snap EXCEPT ![w] = nextCh]
        ELSE /\ snap' = [snap EXCEPT ![w] = ch] /\ UNCHANGED <<ch, nextCh>>
     /\ pc' = [pc EXCEPT ![w] = "check"]
-    /\ UNCHANGED <<shut, past, armed, sets, granted, res>>
+    /\ UNCHANGED <<shut, past, armed, sets, granted, cr, res>>
 
-\* acquire's look at wd.past, then Credit.acquire's look at the credit.
-Check(w) ==
+\* acquire's look at wd.past.
+CheckPast(w) ==
     /\ pc[w] = "check"
-    /\ CASE past -> /\ res' = [res EXCEPT ![w] = "timeout"] /\ pc' = [pc EXCEPT ![w] = "done"]
-         [] granted -> /\ res' = [res EXCEPT ![w] = "ok"] /\ pc' = [pc EXCEPT ![w] = "done"]
-         [] OTHER -> /\ pc' = [pc EXCEPT ![w] = "wait"] /\ UNCHANGED res
+    /\ IF past THEN res' = [res EXCEPT ![w] = "timeout"] /\ pc' = [pc EXCEPT ![w] = "done"]
+       ELSE pc' = [pc EXCEPT ![w] = "credit"] /\ UNCHANGED res
+    /\ UNCHANGED <<ch, nextCh, shut, past, armed, sets, granted, cr, snap>>
+
+\* Credit.acquire's look at the credit, under its lock: taken, or it waits.
+Taken(w) == /\ cr' = cr - Need(w) /\ res' = [res EXCEPT ![w] = "ok"] /\ pc' = [pc EXCEPT ![w] = "done"]
+CheckCredit(w) ==
+    /\ pc[w] = "credit"
+    /\ IF cr >= Need(w) THEN Taken(w) ELSE pc' = [pc EXCEPT ![w] = "wait"] /\ UNCHANGED <<cr, res>>
     /\ UNCHANGED <<ch, nextCh, shut, past, armed, sets, granted, snap>>
 
-\* Credit.acquire's select: a grant (taken), or its channel closed (stopped:
-\* acquire takes the channel again and looks again). Never on channel 0.
+\* Credit.acquire's select: a grant (it looks at the credit again and takes
+\* it; with too little it waits on, a step that changes nothing), or its
+\* channel closed (stopped: acquire takes the channel again and looks
+\* again). Never on channel 0.
 Wake(w) ==
     /\ pc[w] = "wait"
-    /\ \/ granted /\ res' = [res EXCEPT ![w] = "ok"] /\ pc' = [pc EXCEPT ![w] = "done"]
-       \/ snap[w] # 0 /\ snap[w] \in shut /\ pc' = [pc EXCEPT ![w] = "take"] /\ UNCHANGED res
+    /\ \/ cr >= Need(w) /\ Taken(w)
+       \/ snap[w] # 0 /\ snap[w] \in shut /\ pc' = [pc EXCEPT ![w] = "take"] /\ UNCHANGED <<cr, res>>
     /\ UNCHANGED <<ch, nextCh, shut, past, armed, sets, granted, snap>>
 
 Next ==
     \/ Set("past") \/ Set("future") \/ Set("zero") \/ Fire \/ Grant
-    \/ \E w \in Writers : Take(w) \/ Check(w) \/ Wake(w)
+    \/ \E w \in Writers : Take(w) \/ CheckPast(w) \/ CheckCredit(w) \/ Wake(w)
 
 Spec == Init /\ [][Next]_vars
 
 TypeOK ==
     /\ ch \in Nat /\ nextCh \in Nat /\ shut \subseteq Nat
-    /\ past \in BOOLEAN /\ armed \in BOOLEAN /\ granted \in BOOLEAN
+    /\ past \in BOOLEAN /\ armed \in BOOLEAN /\ granted \in BOOLEAN /\ cr \in Nat
     /\ snap \in [Writers -> Nat]
-    /\ pc \in [Writers -> {"take", "check", "wait", "done"}]
+    /\ pc \in [Writers -> {"take", "check", "credit", "wait", "done"}]
     /\ res \in [Writers -> {"", "ok", "timeout"}]
 
 \* A Write waiting for credit past its deadline is woken: the channel it
