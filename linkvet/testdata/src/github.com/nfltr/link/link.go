@@ -29,7 +29,7 @@ type Chain struct{}
 type Mux struct{}
 
 func (m *Mux) Open(ctx context.Context, header []byte) (*Session, error) { return nil, nil }
-func (m *Mux) Serve(accept func(open []byte, s *Session)) error   { return nil }
+func (m *Mux) Serve(accept func(open []byte, s *Session)) error          { return nil }
 
 type Pool struct{}
 
