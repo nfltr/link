@@ -8,7 +8,8 @@
 (* peer's 'E' or 'A' read by the peer) is no step. The bytes are not logged *)
 (* (S's writes, R's receipt before the FIN) and neither is S's stream      *)
 (* reset (quic-go's): TLC takes any of them between two logged steps, with *)
-(* K = 1. SRet is an observation, no step: what S's wait returned must be  *)
+(* K = 1; SClose's w: "0" when S wrote no byte, else "1" (lane QUICEND).   *)
+(* SRet is an observation, no step: what S's wait returned must be         *)
 (* the model's ret. The trace is accepted when TLC reaches its end:        *)
 (* TraceUnfinished violated.                                               *)
 EXTENDS TraceLog, EndAckLeg, TLC
@@ -31,7 +32,7 @@ Env == SWrite \/ (RRecv /\ ~finSeen /\ ~finSeen') \/ SReset
 Step ==
     \/ Other /\ UNCHANGED vars
     \/ Mine /\
-       CASE E.ev = "SClose" -> SClose
+       CASE E.ev = "SClose" -> SClose /\ ("w" \in DOMAIN E => ((E.w = "0") = (sw = 0)))
          [] E.ev = "SRet" -> UNCHANGED vars /\ ret = E.r
          [] E.ev = "SRecv" -> SRecv /\ Head(back) = E.t
          [] E.ev = "SIdle" -> SIdle

@@ -1189,8 +1189,21 @@ Lane PIPERESET2 (2026-11-21): S may end its stream after any number of
 bytes, and on link R's clean whole close (`RClose`, `rclosed`) is a
 `"close"` frame S reads clean when it wrote nothing (`EmptyClosed`,
 `NoFalseReset`, `AckTruth` admits it; mutant `close-resets`, witness
-`WitnessEmptyClosed`). QUIC keeps R's close an abort ('A'): quiclink
-does not tell a clean close from a failure (follow-up).
+`WitnessEmptyClosed`).
+
+Lane QUICEND (2026-11-21): QUIC too (`CloseKinds`). quiclink's clean
+`Close` sends 'C' 'A' on the control stream, a `Reset` (or an abort, a
+refusal) a bare 'A'; the waiter reads 'C' 'A' as R's `"close"`: nil when
+its session wrote no byte, else `ErrReset`. When R's STOP_SENDING
+(`CodeClosed`, sent only by a clean `Close`) reaches S before S's own
+FIN, `CloseWrite` fails and S reads the same from the stream's error
+(`SClose` with `sfail`). An older peer ignores 'C' (no varint follows it)
+and reads 'A' as before; an older closer's bare 'A' is a reset, as
+before. `EndAckLegQuic.cfg` checks `NoFalseReset` (686 states); mutant
+`close-resets` there is quiclink before (`NoFalseReset`), witness
+`WitnessEmptyClosed`. The recorder logs `SClose`'s `w` ("0": no byte
+written) and `SRecv`'s `t` "close"; fixtures `ok-empty-close` (accepted)
+and `close-resets` (rejected).
 
 `RelayedClose.tla` and `HopHold.tla` model a leg as one FIFO whose far
 end acknowledges on in-order receipt. `EndAckLeg.tla` checks that each
@@ -1226,8 +1239,9 @@ quiclink (lane ENDACKQUIC) is the `quic` leg on a connection that
 negotiated `ALPNEndAck` ("peerlink-chain-endack"): its control stream
 carries 'R' (receipt), 'E' (the end acknowledgement, `back`'s "eack") and
 'A' (`back`'s "abort"), each with the stream's id (RFC 9000 varint).
-`RClose` is the receiver's whole `Close` before it read the end: 'A', the
-end not known delivered (mutant `close-acks`, `AckTruth`). The protocol is
+`RClose` is the receiver's whole `Close` before it read the end: 'C' 'A'
+(`back`'s "close"), the end not known delivered (mutant `close-acks`,
+`AckTruth`) unless the stream carried no byte (lane QUICEND). The protocol is
 fixed at the handshake, so negotiation is no state of this model: on a
 connection without `ALPNEndAck` (an older peer) `CloseWriteSync` is
 `CloseWrite`, the contract before (`ack-at-write`, best effort, as a link

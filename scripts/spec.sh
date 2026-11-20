@@ -184,6 +184,7 @@ INVARIANTS
     AckTruth
     ErrTruth
     IdleTruth
+    NoFalseReset
     TraceUnfinished
 CFG
 	east=0
@@ -774,11 +775,13 @@ mutants)
 	for m in ack-at-write liveness-counts-as-progress total-bound close-acks close-resets; do
 		job mutant EndAckLeg.cfg 'Mutant = "none"' "Mutant = \"$m\"" EndAckLeg.tla
 	done
-	for m in ack-at-final-size wait-on-stream-reset close-acks; do
+	# QUIC: a clean Close's bare 'A', read as a reset of an empty stream
+	# (quiclink before lane QUICEND).
+	for m in ack-at-final-size wait-on-stream-reset close-acks close-resets; do
 		job mutant EndAckLegQuic.cfg 'Mutant = "none"' "Mutant = \"$m\"" EndAckLeg.tla
 	done
 	for w in WitnessClean WitnessIdle WitnessEmptyClosed; do job witness EndAckLeg.cfg $w EndAckLeg.tla; done
-	job witness EndAckLegQuic.cfg WitnessFinFirst EndAckLeg.tla
+	for w in WitnessFinFirst WitnessEmptyClosed; do job witness EndAckLegQuic.cfg $w EndAckLeg.tla; done
 	# Credit's waiters (CreditWaiters.tla, lane LINKWAKE): the one-slot
 	# wake (the code before) strands a waiter and leaves its Acquire for
 	# good; passing the token on strands one that needs less (a stall

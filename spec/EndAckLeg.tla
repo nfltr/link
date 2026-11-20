@@ -14,7 +14,8 @@
 (*           travels on the connection's control stream (quiclink's 'E'),   *)
 (*           which is not ordered with the session's stream, so a          *)
 (*           RESET_STREAM of the session may arrive before it; the receiver *)
-(*           sends its later failure on the control stream too ('A').       *)
+(*           sends its later failure on the control stream too ('A'), its   *)
+(*           clean whole close as 'C' 'A' (lane QUICEND).                   *)
 (* Progress (the idle bound, link's waitAck): the wait gives up only while  *)
 (* nothing of the session is acknowledged (the far end is mute), whatever   *)
 (* the connection's liveness says; time is abstract (Stalled).             *)
@@ -41,7 +42,8 @@ CONSTANTS
              \* close ends the wait with an error also when S wrote nothing
              \* (link's closeAckErr and closedFirst after lane ENDACKTRUTH:
              \* relay-core TestConnIsANetConn/BasicIO, whose second Close
-             \* read a reset; lane PIPERESET2)
+             \* read a reset; lane PIPERESET2; on QUIC quiclink's 'A' at a
+             \* clean Close, which said no clean close: lane QUICEND)
 
 VARIABLES
     sw,      \* bytes S wrote
@@ -71,7 +73,10 @@ InOrder == finSeen /\ got = sw  \* R holds every byte and the FIN in order
 \* A clean whole close of R loses nothing of a stream that carried no byte
 \* (link; as a TCP close(2) in FIN_WAIT_2 still ACKs a bare FIN): S's wait
 \* reads it clean. With a byte written, R may not have taken it: an error.
-EmptyClosed == Kind = "link" /\ rclosed /\ sw = 0 /\ Mutant # "close-resets"
+\* QUIC too: R's close says it is clean ('C' before its 'A'; the stream's
+\* STOP_SENDING CodeClosed when it reaches S before S's FIN: sfail).
+CloseKinds == {"link", "quic"}
+EmptyClosed == Kind \in CloseKinds /\ rclosed /\ sw = 0 /\ Mutant # "close-resets"
 
 \* The index R's transport hands up next: the head on a FIFO; on QUIC any
 \* frame in flight (reassembly is R's).
@@ -116,9 +121,10 @@ RFail ==
 
 \* R's app closes the session whole before acknowledging (its FIN had not
 \* reached R): the end is not known delivered (as a TCP close with data
-\* unread is an RST). QUIC: quiclink Session.Close says 'A' on the control
-\* stream (STOP_SENDING); link: the CLOSE frame, which S's wait reads as an
-\* error (closeAckErr: ErrReset, lane ENDACKTRUTH). With the mutant the
+\* unread is an RST). QUIC: quiclink Session.Close says 'C' 'A' on the
+\* control stream (STOP_SENDING; a Reset's is a bare 'A'); link: the CLOSE
+\* frame; S's wait reads either as an error (closeAckErr: ErrReset, lane
+\* ENDACKTRUTH) unless the stream carried no byte (EmptyClosed). With the mutant the
 \* close acknowledges ('E'; link's closeAckErr before: a clean whole close
 \* ended the wait nil). A mute R closes too: its Close still ends the wait.
 RClose ==
@@ -126,7 +132,7 @@ RClose ==
     /\ rfail' = TRUE /\ rclosed' = TRUE
     /\ IF Mutant = "close-acks"
        THEN back' = Append(back, "eack") /\ eackSent' = TRUE
-       ELSE back' = Append(back, IF Kind = "link" THEN "close" ELSE "abort") /\ UNCHANGED eackSent
+       ELSE back' = Append(back, IF Kind \in CloseKinds THEN "close" ELSE "abort") /\ UNCHANGED eackSent
     /\ UNCHANGED <<sw, ret, ch, got, finSeen, sreset, mute, cut, sfail, idled>>
 
 \* S reads its acknowledgement channel (in order).
@@ -189,9 +195,9 @@ TypeOK ==
 \* closed cleanly a stream that carried none.
 AckTruth == ret = "clean" => (InOrder \/ (rclosed /\ sw = 0))
 
-\* R's clean whole close fails no wait of an empty stream (link): an error
-\* there only from a cut, the idle bound or R's failure.
-NoFalseReset == (ret = "err" /\ Kind = "link" /\ rclosed /\ sw = 0) => (cut \/ idled)
+\* R's clean whole close fails no wait of an empty stream (link, quic): an
+\* error there only from a cut, the idle bound or R's failure.
+NoFalseReset == (ret = "err" /\ Kind \in CloseKinds /\ rclosed /\ sw = 0) => (cut \/ idled)
 
 \* An error on a live connection only when R acknowledged nothing: never
 \* once the acknowledgement was sent (it is read first).
