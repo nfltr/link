@@ -367,7 +367,7 @@ func (j *joint) dir(i int) {
 		return
 	}
 	if ds := native(w.c); ds != nil {
-		go j.watch(src, ds)
+		go j.watch(i, src, ds)
 	}
 	go func() {
 		buf := copyBufs.Get().(*[]byte)
@@ -469,6 +469,11 @@ func (j *joint) ended(i int, n int64, err, werr error) {
 			a := &link.Abort{Code: link.CodeTimeout, Msg: "write deadline"}
 			j.abort(src, a)
 			j.abort(dst, a)
+		case native(dst) != nil && !j.otherOver(i):
+			// the session dst was cut while the direction from it still
+			// runs (its Pump ends): that one ends src after the bytes dst
+			// read (spec/RelayedClose.tla TailDelivered, mutant
+			// abort-at-write-fail)
 		default:
 			j.abort(src, abortOf(werr))
 		}
@@ -509,9 +514,12 @@ func (j *joint) otherOver(i int) bool {
 // close) is not watch's: the direction reading the session ends src for
 // it, or Forward answers it, and a second abort would reset what that
 // sent (relay-core TestChainInbandEdges: an in-band refusal, then EOF).
-func (j *joint) watch(src net.Conn, ds *link.Session) {
+// While the direction from ds to src (direction i's other) still runs, it
+// ends src instead, after the bytes ds read: a session cut after its
+// peer's FIN reads them, then io.EOF (spec/RelayedClose.tla).
+func (j *joint) watch(i int, src net.Conn, ds *link.Session) {
 	<-ds.Done()
-	if err := ds.Err(); errors.Is(err, link.ErrConnClosed) {
+	if err := ds.Err(); errors.Is(err, link.ErrConnClosed) && j.otherOver(i) {
 		j.abort(src, abortOf(err))
 	}
 }

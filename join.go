@@ -215,6 +215,11 @@ type joint struct {
 	// clean end closes this side whole, after its last byte
 	// (spec/JoinClose.tla TailDelivered, AClosedInTheEnd).
 	whole bool
+	// cut: a write onto the other side failed (that side was cut after its
+	// peer's FIN) while the direction toward this side still ran: that
+	// direction aborts this side with it after its tail and FIN
+	// (spec/RelayedClose.tla TailDelivered, mutant abort-at-write-fail).
+	cut   *Abort
 	moved [2]atomic.Int64 // bytes written [0]->[1] and [1]->[0] (HopEvent.Moved)
 	jtr   joinTrace       // linktrace builds only (trace_join_on.go); zero size otherwise
 }
@@ -352,7 +357,9 @@ func (j *joint) ended(i int, n int64, err, werr error) {
 	case werr != nil:
 		switch {
 		case errors.Is(werr, ErrReset) || errors.Is(werr, ErrConnClosed): // dst was cut (Session.writeErr)
-			j.abort(src, abortFor(werr))
+			if a := abortFor(werr); !j.cutLater(i, a) {
+				j.abort(src, a)
+			}
 		case errors.Is(werr, os.ErrDeadlineExceeded):
 			a := &Abort{Code: CodeTimeout, Msg: "write deadline"}
 			j.abort(src, a)
@@ -368,6 +375,13 @@ func (j *joint) ended(i int, n int64, err, werr error) {
 	case j.failed(): // ended by the other direction's abort
 	case src.peerHalf.Load() && !j.closeWhole():
 		_ = dst.CloseWrite()
+		// src cut after its FIN (its reads ended cleanly): the failure goes
+		// on after the tail and the FIN, so dst's writes fail too
+		if a := j.takeCut(); a != nil {
+			j.abort(dst, a)
+		} else if e := src.Err(); e != nil {
+			j.abort(dst, abortFor(e))
+		}
 	default:
 		_ = dst.Close()
 	}
@@ -387,6 +401,28 @@ func (j *joint) closeNow(i int) bool {
 		j.traceFail(i, j.over[1-i])
 	}
 	return j.over[1-i]
+}
+
+// cutLater reports whether direction i, whose write failed because its
+// destination was cut, leaves the abort of its source to the other
+// direction, which still runs: that one aborts it after its tail (cut).
+func (j *joint) cutLater(i int, a *Abort) bool {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.over[1-i] {
+		return false
+	}
+	j.cut = a
+	return true
+}
+
+// takeCut is the abort cutLater left, nil when none.
+func (j *joint) takeCut() *Abort {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	a := j.cut
+	j.cut = nil
+	return a
 }
 
 // closeWhole: the other direction's write failed first (whole).

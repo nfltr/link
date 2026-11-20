@@ -8,7 +8,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 	"time"
@@ -296,8 +295,8 @@ func (s *Session) Answered(ctx context.Context) error {
 	if closed(s.answered) {
 		return nil
 	}
-	if err := s.end(); err != io.EOF {
-		return err
+	if e := s.err.Load(); e != nil {
+		return *e
 	}
 	return s.closedPipe()
 }

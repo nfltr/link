@@ -648,6 +648,7 @@ type Session struct {
 	once       sync.Once
 
 	err     atomic.Pointer[error] // why the session was cut; nil: it ends with io.EOF
+	finRead atomic.Bool           // the peer's FIN was read before the cut: reads still end with io.EOF
 	endOnce sync.Once
 	done    chan struct{} // closed once the session ended
 
@@ -707,12 +708,22 @@ func (s *Session) closedPipe() error {
 	return io.ErrClosedPipe
 }
 
-// fail records why the session was cut (the first reason wins).
-func (s *Session) fail(err error) { s.err.CompareAndSwap(nil, &err) }
+// fail records why the session was cut (the first reason wins). A cut
+// after the peer's FIN leaves its reads a clean end: the peer's stream was
+// complete (spec/LinkSession.tla GEnds, "a FIN then a reset reads
+// io.EOF"; spec/RelayedClose.tla ReadsEof, mutant fail-drops-fin). finRead
+// is stored before the cut, so a reader that sees the cut sees it.
+func (s *Session) fail(err error) {
+	if s.err.Load() == nil && s.peerHalf.Load() {
+		s.finRead.Store(true)
+	}
+	s.err.CompareAndSwap(nil, &err)
+}
 
-// end is what Read returns once the queue is drained.
+// end is what Read returns once the queue is drained: io.EOF after the
+// peer's FIN, even when the session was cut since; else the cut.
 func (s *Session) end() error {
-	if e := s.err.Load(); e != nil {
+	if e := s.err.Load(); e != nil && !s.finRead.Load() {
 		return *e
 	}
 	return io.EOF

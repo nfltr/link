@@ -30,6 +30,23 @@ version 2 unless an entry says otherwise.
   nothing changes (the hooks compile away). `make bench`: the benchmark set
   nfltr's perf series measures, `-count 6`, for a CI runner's
   `TARGET=bench`.
+- A session whose peer's FIN was read before it failed (the peer's
+  reset or abort, its connection's end, this side's own reset) reads its
+  bytes, then io.EOF, as spec/LinkSession.tla GEnds and Link.tla always
+  said ("a FIN then a reset reads io.EOF"); `Err` and writes still carry
+  the failure. `Join` and `peerlink.Join` pass such a tail and half close
+  on before the failure (an abort, so the other side's writes fail), and
+  a write onto a session that was cut no longer aborts the other side
+  while the direction from that session still writes its tail (nor does
+  peerlink's watch). Before, a relayed agent that exited (or whose stop
+  reset its session) right after the relay held its tail and FIN left
+  the client with every byte, then a reset, or a cut tail. Lane
+  RELAYCLOSE; spec/RelayedClose.tla, mutants `fail-drops-fin`,
+  `abort-at-write-fail` (and the relay SDK's `close-before-ack`,
+  `ack-lost-hang`); guards `TestFinThenFailureReadsEOF`,
+  `TestJoinFailureAfterFinDeliversTheTail`,
+  `TestPeerFailureAfterFinDeliversTheTail` (each red before). Local
+  behaviour only: the wire is unchanged.
 - A Read beside WriteTo (io.Copy(dst, sess) while another goroutine
   reads) or Pump on one session no longer hands the unread tail of a Read
   out twice, cuts a tail a Read left after it, or reads a buffer already
