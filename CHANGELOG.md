@@ -71,6 +71,15 @@ migration:
   `Node.DatagramsDropped` and `Session.TagLen` are unexported, and
   `Session.Abort` deleted (above); its wire is a section of its README.
 
+- pathswitch: a `Conn.Close` waits for a slow, live tail (lane
+  ENDACKCODE): its wait has no total bound, only `Config.Detach` with
+  nothing acknowledged (as `WaitAcked`) and `Config.Linger` with nothing
+  heard. Before, it reset the session `Detach` (30 s) after the Close
+  whatever the progress, and every frame heard (pings) extended its
+  silence. spec/DirectPath.tla mutant `total-bound` (`CloseKeepsLive`);
+  guard `TestCloseSlowTailNotReset` (reset at 0.63 s before, clean in
+  1.4 s after, Detach 300 ms).
+
 - Two joins whose FINs cross end cleanly (lane ENDACKJOIN): a peerlink
   join held the other direction's clean end until its own
   CloseWriteSync returned at the far end's ENDACK, so with both TCP

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"sync"
 	"time"
@@ -33,14 +34,16 @@ type Config struct {
 	Window int
 	// Detach bounds how long an end waits for a new stream once its
 	// stream ended before it resets the session (ErrDetached); an
-	// aborter (Abort) and a Close wait as long for the peer. 0: 30 s.
+	// aborter (Abort) waits as long for the peer, and a Close (and
+	// WaitAcked) as long with nothing acknowledged. 0: 30 s.
 	Detach time.Duration
 	// Linger bounds how long a Close (and WaitAcked) waits with nothing
 	// heard from the peer (no frame: an ACK, a byte, its END): a peer
 	// silent that long is taken as gone and a Close resets the session,
 	// as TCP's user timeout (RFC 5482; spec DirectPath.tla LingerOut,
 	// CloseBounded; guard TestCloseGonePeerWithinLinger). A peer that
-	// keeps answering is waited for up to Detach. 0: 5 s.
+	// keeps answering is waited for while it acknowledges, Detach with
+	// nothing acknowledged. 0: 5 s.
 	Linger time.Duration
 	// OnStreamEnd, a client's only: the current stream ended (its path
 	// died); the caller opens one on a path that works and calls Move
@@ -331,8 +334,11 @@ func (c *Conn) CloseWrite() error {
 
 // Close ends the session: CloseRead (a Read waiting returns at once),
 // CloseWrite, then it waits until the peer acknowledged every byte and
-// the END and ended its own direction: at most Config.Detach, and at most
-// Config.Linger with nothing heard from the peer (it is gone: spec
+// the END and ended its own direction: with no total bound, at most
+// Config.Detach with no acknowledgement advancing (a slow, live tail ends
+// clean; frames heard, pings, are no progress: spec DirectPath.tla
+// CloseKeepsLive, mutant total-bound, guard TestCloseSlowTailNotReset), and
+// at most Config.Linger with nothing heard from the peer (it is gone: spec
 // LingerOut). If the wait ran out, the session is reset (an ABORT, as
 // TCP's RST); otherwise its streams end cleanly. After this end's Abort
 // it returns at once and the reset lingers as Abort's.
@@ -346,7 +352,7 @@ func (c *Conn) Close() error {
 	if c.err == nil {
 		c.closed = true
 		c.cond.Broadcast()
-		c.waitHeard(c.cfg.Detach, func() bool { return c.err != nil || c.acked == c.hi+1 && c.rEnd }, 0)
+		c.waitHeard(noBound, func() bool { return c.err != nil || c.acked == c.hi+1 && c.rEnd }, c.cfg.Detach)
 	}
 	switch {
 	case c.ab == abLocal:
@@ -374,6 +380,10 @@ func (c *Conn) endClean() {
 	c.cond.Broadcast()
 	c.shutdown(true)
 }
+
+// noBound is a waitHeard without a total bound (Close: only its stall
+// and silence bounds).
+const noBound = time.Duration(math.MaxInt64)
 
 // waitHeard waits under c.mu until ok, at most d, at most Config.Linger
 // with no frame heard from the peer, and (stall > 0) at most stall with
