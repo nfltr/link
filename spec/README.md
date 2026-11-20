@@ -333,8 +333,10 @@ holds no Close (lane V1READY's finding: relay psConn.Close held 600 s);
 prior art TCP's user timeout (RFC 5482), which counts unacknowledged
 data, not keepalives.
 `RelayedClose.tla` (`RelayedClose.cfg`, `make spec` and `make
-spec-invariants`, 30,545 states, every action taken): A writes K bytes
-and closes; A may then exit, be reset, or its connection cut; C's
+spec-invariants`, 35,716 states, every action taken): A writes K bytes
+and closes; A may then exit, be reset, or its connection cut, or reset
+the session while its Close waits (`AResetWaiting`: its other direction
+failed); C's
 connection may be cut; the relay may crash; C may write a byte or turn
 mute (`CMute`); A's and J's idle timers (`AIdle`, `JIdle`) fire only
 while no acknowledgement is under way (`Stalled`: time is abstract).
@@ -347,8 +349,11 @@ Mutants: `close-before-ack` (the SDK's code before) and
 (`CloseEnds`), `sync-hang` (`SyncEnds`), `fail-drops-fin` (link's code
 before) and `abort-at-write-fail` (the joint's code before)
 (`TailDelivered`), `liveness-counts-as-progress` (`CloseEnds`,
-`SyncEnds`). Witnesses: `WitnessExitThenEof`, `WitnessFinThenAbort`,
-`WitnessHeld`, `WitnessCloseErr`, `WitnessIdle`.
+`SyncEnds`), `reset-keeps-endack-wait` (link v0.12.19: `Session.Reset`
+kept the ENDACK wait, so a `CloseWriteSync` after it waited the 30 s idle
+bound; nfltr connect's `Pump`, a local EOF then a local failure)
+(`CloseEnds`). Witnesses: `WitnessExitThenEof`, `WitnessFinThenAbort`,
+`WitnessHeld`, `WitnessCloseErr`, `WitnessIdle`, `WitnessResetWaiting`.
 
 | assumption | source |
 |---|---|
@@ -359,7 +364,7 @@ before) and `abort-at-write-fail` (the joint's code before)
 
 | actions | code |
 |---|---|
-| `AClose`, `ARecv`, `ADown`, `AIdle`, `JIdle` | `mux.go` `CloseWriteSync`, `endack.go` (`waitAck`, `ackDone`, `nack`), `credit.go` `progress`; `pathswitch/conn.go` `WaitAcked` (a direct path's: the same idle rule on its acknowledgements); relay `client/agent/queue_close.go` (an accepted session), `client/nfnet/conn.go` `Conn.Close` and `client/tlsend` `CloseWriteSync` (a dialled one; under TLS) |
+| `AClose`, `ARecv`, `ADown`, `AIdle`, `JIdle`, `AResetWaiting` | `mux.go` `CloseWriteSync`, `Session.Reset`, `endack.go` (`waitAck`, `ackDone`, `nack`), `credit.go` `progress`; `pathswitch/conn.go` `WaitAcked` (a direct path's: the same idle rule on its acknowledgements); relay `client/agent/queue_close.go` (an accepted session), `client/nfnet/conn.go` `Conn.Close` and `client/tlsend` `CloseWriteSync` (a dialled one; under TLS) |
 | `JRecv`, `JDown`, `CRecv`, `CEnd` (`ReadsEof`) | `mux.go` `Mux.handle` (CLOSE, ENDACK), `Mux.close`, `Session.fail`, `Session.end`; `conn.go` (frame 11) |
 | `D1Copy`, `D1End`, `JAck`, `JSyncFail`, `D0CFail`, `D0Fail` | `join.go` `joint.ended` (`onwardTook`), `peerlink/chain.go` `joint.ended`, `sync`, `holdEnds`, `ackEnd` |
 

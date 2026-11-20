@@ -682,11 +682,12 @@ mutants)
 	# (the code before: every byte, then a reset); the joint's failed
 	# write aborting the client before the tail (the code before); an
 	# idle bound that pings restart, so a mute far end holds a Close for
-	# ever (relay psConn.Close before: V1READY's 600 s hang).
-	for m in close-before-ack relay-read-ack ack-lost-hang sync-hang fail-drops-fin abort-at-write-fail liveness-counts-as-progress; do
+	# ever (relay psConn.Close before: V1READY's 600 s hang); a reset
+	# here that keeps the session's ENDACK wait (v0.12.19's Reset).
+	for m in close-before-ack relay-read-ack ack-lost-hang sync-hang fail-drops-fin abort-at-write-fail liveness-counts-as-progress reset-keeps-endack-wait; do
 		job mutant RelayedClose.cfg 'Mutant = "none"' "Mutant = \"$m\"" RelayedClose.tla
 	done
-	for w in WitnessExitThenEof WitnessFinThenAbort WitnessHeld WitnessCloseErr WitnessIdle; do job witness RelayedClose.cfg $w RelayedClose.tla; done
+	for w in WitnessExitThenEof WitnessFinThenAbort WitnessHeld WitnessCloseErr WitnessIdle WitnessResetWaiting; do job witness RelayedClose.cfg $w RelayedClose.tla; done
 	# Credit's waiters (CreditWaiters.tla, lane LINKWAKE): the one-slot
 	# wake (the code before) strands a waiter and leaves its Acquire for
 	# good; passing the token on strands one that needs less (a stall

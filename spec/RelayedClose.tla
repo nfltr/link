@@ -43,12 +43,17 @@ CONSTANTS
              \* toward A aborts C at once, before the tail (the code before);
              \* "liveness-counts-as-progress": the idle timer restarts at
              \* every frame heard (pings), so it never fires on a live
-             \* connection (relay psConn.Close before: V1READY's 600 s hang)
+             \* connection (relay psConn.Close before: V1READY's 600 s hang);
+             \* "reset-keeps-endack-wait": A's own reset while its Close
+             \* waits leaves the wait for an endack that never comes (link
+             \* v0.12.19: Session.Reset kept the ENDACK wait; nfltr connect's
+             \* Pump, EOF then a local failure, waited the 30 s idle bound)
 
 VARIABLES
     aw,      \* bytes A wrote
     ret,     \* A's Close: "no" (not called), "wait", "clean", "err"
-    rst,     \* A's stop reset the session after its Close returned
+    rst,     \* A reset the session (its stop after its Close returned, or
+             \* its other direction's failure while its Close waits)
     exited,  \* A's program exited
     toJ,     \* frames A -> J: "d", "fin", "rst"
     fromJ,   \* frames J -> A: "eack" (endack), "abort"
@@ -138,6 +143,15 @@ AReset ==
     /\ ret \in {"clean", "err"} /\ ~rst /\ ~lost1
     /\ rst' = TRUE /\ toJ' = Append(toJ, "rst")
     /\ UNCHANGED <<aw, ret, exited, afail, fromJ, lost1, gone>> /\ UNCHANGED jVars /\ UNCHANGED <<toC>> /\ UNCHANGED cVars
+
+\* A's other direction fails while its Close waits (a local side that
+\* took the EOF, then failed): A resets the session, which ends its own
+\* wait with an error (Session.Reset ends the ENDACK wait).
+AResetWaiting ==
+    /\ ret = "wait" /\ ~rst /\ ~lost1
+    /\ rst' = TRUE /\ toJ' = Append(toJ, "rst")
+    /\ ret' = IF Mutant = "reset-keeps-endack-wait" THEN ret ELSE "err"
+    /\ UNCHANGED <<aw, exited, afail, fromJ, lost1, gone>> /\ UNCHANGED jVars /\ UNCHANGED <<toC>> /\ UNCHANGED cVars
 
 \* The program exits once Close returned: its connection ends, the frames
 \* J had not read are lost.
@@ -290,13 +304,14 @@ CCut ==
     /\ UNCHANGED <<cw, cq, cfin, crd, cend, mute>>
 
 Next ==
-    \/ AWrite \/ AClose \/ ARecv \/ ADown \/ AIdle \/ AReset \/ Exit \/ Cut
+    \/ AWrite \/ AClose \/ ARecv \/ ADown \/ AIdle \/ AReset \/ AResetWaiting \/ Exit \/ Cut
     \/ JRecv \/ JDown \/ D1Copy \/ D1End \/ JAck \/ JIdle \/ JSyncFail \/ D0CFail \/ D0Fail \/ RelayGone
     \/ CWrite \/ CRecv \/ CRead \/ CEnd \/ CCut \/ CMute
 
 \* A, J and C take their own steps; the program's exit, its stop's reset,
-\* the network's cuts, the relay's crash, C's write and C turning mute are
-\* the environment's (no fairness); the idle timers are A's and J's.
+\* A's reset while its Close waits, the network's cuts, the relay's crash,
+\* C's write and C turning mute are the environment's (no fairness); the
+\* idle timers are A's and J's.
 Fairness ==
     /\ WF_vars(AWrite) /\ WF_vars(AClose) /\ WF_vars(ARecv) /\ WF_vars(ADown)
     /\ WF_vars(JRecv) /\ WF_vars(JDown) /\ WF_vars(D1Copy) /\ WF_vars(D1End) /\ WF_vars(D0Fail)
@@ -339,4 +354,6 @@ WitnessHeld == d0 # "held"
 WitnessCloseErr == ~(ret = "err" /\ ccut /\ ~lost1)
 \* A Close that gives up at the idle bound on a live connection.
 WitnessIdle == ~(ret = "err" /\ mute /\ ~lost1 /\ ~ccut /\ ~gone /\ ~afail)
+\* A Close that ends with an error at A's own reset while it waits.
+WitnessResetWaiting == ~(ret = "err" /\ rst /\ ~mute /\ ~lost1 /\ ~ccut /\ ~gone /\ ~afail)
 =============================================================================
