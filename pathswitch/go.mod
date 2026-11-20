@@ -6,4 +6,4 @@ go 1.27.0
 // library only.
 replace github.com/nfltr/link => ../
 
-require github.com/nfltr/link v0.12.19-0.20261120061826-c16487ccaefe
+require github.com/nfltr/link v0.12.20-0.20261120073640-723c94b8e926
