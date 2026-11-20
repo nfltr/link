@@ -16,8 +16,12 @@ import (
 // heartbeat), the other asks for Interval, the sender states the interval
 // it keeps, and the asker waits DeadAfter(stated).
 type Liveness struct {
+	// Interval is how long a side waits, having received nothing, before
+	// it pings: MinLivenessInterval to MaxLivenessInterval.
 	Interval time.Duration
-	Timeout  time.Duration
+	// Timeout is how long after that ping it waits for any frame before it
+	// ends the connection (ErrDeadPeer): at least Interval.
+	Timeout time.Duration
 }
 
 // The presets. Idle traffic is one small frame each way per Interval per

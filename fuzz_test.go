@@ -117,7 +117,13 @@ func (closingConn) Close() error { return nil }
 
 func FuzzParseLiveness(f *testing.F) {
 	for _, s := range []string{"", "default", "fast", "nat", "datacenter", "mobile", "mobile,timeout=90s",
-		"interval=2s,timeout=6s", "interval=0s", "timeout=-1s", "fast,interval=1h", "x=1", ",", "MOBILE"} {
+		"interval=2s,timeout=6s", "interval=0s", "timeout=-1s", "fast,interval=1h", "x=1", ",", "MOBILE",
+		// the bounds and the parser's edges: spaces, a trailing comma, a key
+		// twice, a preset after a key, units, overflow, empty values.
+		" nat , timeout = 40s ", "fast,", "interval=1s,timeout=1s", "interval=15s,timeout=15s",
+		"interval=999ms", "interval=15001ms", "interval=3s,interval=4s", "timeout=10s,fast",
+		"interval=1e3s", "timeout=9223372036854775807ns", "timeout=", "=", "interval",
+		"datacenter,interval=1.5s,timeout=4.5s", "default\x00", "\tmobile\n"} {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, spec string) {

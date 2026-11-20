@@ -795,6 +795,8 @@ func (s *Session) Read(b []byte) (n int, err error) {
 // OwnedWriter is a writer that may keep the slices it is given: WriteTo
 // hands it the received slices themselves, no copy.
 type OwnedWriter interface {
+	// WriteOwned takes b, which link no longer reads or writes: the
+	// writer may keep it past the call. An error ends WriteTo with it.
 	WriteOwned(b []byte) error
 }
 

@@ -74,6 +74,8 @@ const MaxAbortMsg = 1024
 // errors.Is(a, ErrOpenRefused) for refusals; errors.Is(a, ErrReset) for
 // both (a refused open ends as a reset did before v0.10.0).
 type Abort struct {
+	// Refused is a refusal (ABORT kind 0: the accepter's answer instead
+	// of an accept); false is a reset (kind 1).
 	Refused bool
 	Code    uint32 // link's below CodeApp, the application's from CodeApp
 	Hops    uint8  // joins the abort crossed: 0 = this side's peer itself
@@ -232,7 +234,7 @@ const (
 
 // HopEvent is one hop's event on a path of joined sessions (Observer.Hop).
 type HopEvent struct {
-	Kind    HopKind
+	Kind    HopKind       // which event: HopOpened, HopAnswered or HopEnded
 	Chain   Chain         // the trace and this hop's Hops (the inbound session's)
 	Latency time.Duration // HopAnswered: Route called -> onward answer
 	Err     error         // HopAnswered: the refusal; HopEnded: the abort, nil on a clean end

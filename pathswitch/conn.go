@@ -540,9 +540,9 @@ func (c *Conn) Move(s Stream, path string, token func(epoch uint64) []byte) (uin
 
 // Open is the first frame of a stream the client opened (ReadOpen).
 type Open struct {
-	Epoch uint64
-	Token []byte
-	Abort bool // the client reset the session
+	Epoch uint64 // the epoch Move opened the stream with (Attach refuses one not newer: ErrStaleEpoch)
+	Token []byte // the Move's token(Epoch), for the caller to find and check its session
+	Abort bool   // the client reset the session
 	rcvd  uint64
 	s     Stream
 	r     *bufio.Reader
