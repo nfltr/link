@@ -1,6 +1,4 @@
 Incompatible changes:
-- ./peerlink.ChainSession.Abort: removed
-- ./peerlink.Config.HandshakeError: removed
 - package github.com/nfltr/link/pathswitch: removed
 - ./peerlink/peerlinktest.ChainPath: removed
 - ./peerlink/peerlinktest.NewChainPath: removed
@@ -32,7 +30,10 @@ Incompatible changes:
 - Frame: removed
 - Join: removed
 - MaxSessions: removed
+- ./peerlink.ChainSession.Abort: removed
+- ./peerlink.Config.HandshakeError: removed
 Compatible changes:
+- (*Session).CloseWriteSyncReceived: added
 - DefaultMaxSessions: added
 - MaxData: added
 - MaxFrame: added

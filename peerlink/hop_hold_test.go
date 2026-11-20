@@ -55,7 +55,7 @@ func TestJoinCrossingHalfClosesEnd(t *testing.T) {
 			gm := link.NewMux(gc)
 			go func() { _ = gm.Serve(nil) }()
 			t.Cleanup(func() { _ = gc.Close() })
-			s, err := gm.Open([]byte("h"))
+			s, err := gm.Open(ctx, []byte("h"))
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -36,6 +36,8 @@ migration:
   the relay SDK's conns (`nfnet`, `tlsend`) and relay-core's metrics
   call it through an interface, for the clean end spec/RelayedClose.tla
   checks (the review's "only peerlink calls it" missed them).
+  `CloseWriteSyncReceived` (lane ENDACKJOIN) stays exported next to it:
+  a join's hold ends at the next hop's receipt (spec/HopHold.tla).
 - `FeatureChain` and `FeatureEndAck` are unexported (WIRE.md section 6
   names the bits; every link side announces them).
 - `Session.Abort(code, msg)` is deleted: `AbortWith(&link.Abort{Code:
