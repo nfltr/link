@@ -443,7 +443,11 @@ link f16729b. Nothing of an empty stream can be lost: as a TCP close(2)
 in FIN_WAIT_2 still ACKs a bare FIN (RFC 9293 3.10.4), J's clean close
 (`"close"`, `aclosed`) ends a Close of a stream with no byte clean
 (`EmptyClosed`, `NoFalseReset`; `CloseTruth` admits it), and with a byte
-written still with an error. `RelayedCloseEmpty.cfg` (K = 0) checks it;
+written still with an error. J's answer (`CloseAnswers`): its whole
+close, or once it read A's FIN (both halves of A's session passed in the
+code, where C's end went to A first) a reset, or for an end that carried
+no byte its acknowledgement (the recorded `relayedclose-ok-close-first`
+takes the reset; box spec-mutants found the model sending only the close). `RelayedCloseEmpty.cfg` (K = 0) checks it;
 mutant `close-resets` (the code before) violates `NoFalseReset`, witness
 `WitnessEmptyClosed`. Code: `Session.wrote` (set by the first byte
 sent), `closeAckErr`'s caller and `closedFirst` in `endack.go`; a hop's

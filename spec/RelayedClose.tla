@@ -245,6 +245,16 @@ D1End ==
     /\ d0' = IF d0 = "held" /\ d1' = "done" THEN "done" ELSE d0
     /\ UNCHANGED aVars /\ UNCHANGED <<toJ, fromJ, lost1, gone, jq, jfin, jfail>> /\ UNCHANGED cVars
 
+\* What J's close of A's session (C closed whole first) sends A: its clean
+\* whole close, or, once both halves of A's session passed (C's end went
+\* to A, A's FIN came: no CLOSE goes), an answer to A's end: a reset, or
+\* for an end that carried no byte its acknowledgement (link Session.Close
+\* on a hop, Session.got; lane PIPERESET2).
+CloseAnswers ==
+    IF Mutant = "close-acks" THEN {"eack"}
+    ELSE IF ~jfin THEN {"close"}
+    ELSE {"close", IF aw = 0 /\ Mutant # "close-resets" THEN "eack" ELSE "abort"}
+
 \* C's endack: J's onward wait returns; J acknowledges A's end (when A's
 \* connection is still there), then passes a failure since (A's, or d0's
 \* held one) as C's abort. C's whole close before it held A's end: J's
@@ -257,7 +267,7 @@ JAck ==
     /\ fromC' = Tail(fromC)
     /\ IF Head(fromC) = "close" /\ d1 \in {"run", "sync"}
        THEN /\ d1' = "done"
-            /\ fromJ' = IF lost1 THEN fromJ ELSE Append(fromJ, IF Mutant = "close-acks" THEN "eack" ELSE "close")
+            /\ \E x \in CloseAnswers : fromJ' = IF lost1 THEN fromJ ELSE Append(fromJ, x)
             /\ cabort' = TRUE /\ UNCHANGED toC
             /\ d0' = IF d0 = "held" THEN "done" ELSE d0
        ELSE IF Head(fromC) = "eack" /\ d1 = "sync"
@@ -394,14 +404,14 @@ NoSilentLoss == cend = "eof" => crd = K
 \* A's Close returns clean only once C holds every byte and the FIN (its
 \* Mux received them; C's reads need no network then): a program that
 \* exits then loses nothing it wrote (pipe spec/Pipe.tla CleanExit).
-CloseTruth == ret = "clean" => ((cfin /\ crd + cq = K) \/ (aclosed /\ aw = 0))
+CloseTruth == ret = "clean" => ((cfin /\ crd + cq = K) \/ (aw = 0 /\ cend = "closed"))
 
 \* J's clean close fails no Close of an empty stream: an error there only
 \* from A's reset, a cut, the idle bound or the relay's crash.
-NoFalseReset == (ret = "err" /\ aclosed /\ aw = 0) => (rst \/ lost1 \/ mute \/ ccut \/ gone)
+NoFalseReset == (ret = "err" /\ cend = "closed" /\ aw = 0) => (rst \/ lost1 \/ mute \/ ccut \/ gone)
 
 \* Witness (RelayedCloseEmpty.cfg): an empty stream's Close clean at J's close.
-WitnessEmptyClosed == ~(ret = "clean" /\ aclosed)
+WitnessEmptyClosed == ~(ret = "clean" /\ cend = "closed")
 
 \* Once J read A's FIN, C reads every byte and io.EOF whatever A does
 \* next (exit, a cut, a reset), unless C's connection or the relay ended

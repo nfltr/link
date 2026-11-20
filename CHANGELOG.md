@@ -6,7 +6,6 @@ it (`peerlink/quiclink/vX.Y.Z`, `pathswitch/vX.Y.Z`, `linkvet/vX.Y.Z`;
 format is [WIRE.md](WIRE.md); every release since v0.2.0 speaks the same
 version 2 unless an entry says otherwise.
 
-
 ## Unreleased
 
 - A far end's clean whole close no longer fails the wait for an end of a stream that carried no byte (`CloseWriteSync` returns nil; a hop acknowledges such an end instead of resetting it): nothing of an empty stream can be lost, as a TCP close in FIN_WAIT_2 still ACKs a bare FIN. With a byte written it is still `ErrReset` (ENDACKTRUTH). relay-core `TestConnIsANetConn/BasicIO` read its second Close as a reset since v0.13.1 (spec/EndAckLeg.tla, spec/RelayedClose.tla `NoFalseReset`, mutant `close-resets`; lane PIPERESET2).
