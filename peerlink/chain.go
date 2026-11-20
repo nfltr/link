@@ -111,19 +111,14 @@ type EndAcker interface {
 }
 
 // endSyncer is a conn whose half close returns once its peer took it
-// (a link session's, sessionSyncer; tlsend's, under TLS).
+// (Session.CloseWriteSync; tlsend's, under TLS).
 type endSyncer interface{ CloseWriteSync() error }
-
-// sessionSyncer is a link session's endSyncer (link's closeWriteSync).
-type sessionSyncer struct{ s *link.Session }
-
-func (s sessionSyncer) CloseWriteSync() error { return linkhook.CloseWriteSync(s.s) }
 
 // syncerOf is c's endSyncer: a link session, a Node's, or a conn that
 // passes CloseWriteSync on; nil for any other.
 func syncerOf(c net.Conn) endSyncer {
 	if s := native(c); s != nil {
-		return sessionSyncer{s}
+		return s
 	}
 	if s, ok := c.(endSyncer); ok {
 		return s

@@ -108,7 +108,7 @@ func TestEndAckWaitsForTheFarEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	ret := make(chan error, 1)
-	go func() { ret <- r.a.closeWriteSync() }()
+	go func() { ret <- r.a.CloseWriteSync() }()
 	select {
 	case err := <-ret:
 		t.Fatalf("CloseWriteSync returned %v while C's connection carried nothing", err)
@@ -137,7 +137,7 @@ func TestEndAckFailsWhenTheFarEndIsCut(t *testing.T) {
 		t.Fatal(err)
 	}
 	ret := make(chan error, 1)
-	go func() { ret <- r.a.closeWriteSync() }()
+	go func() { ret <- r.a.CloseWriteSync() }()
 	time.Sleep(100 * time.Millisecond) // the hop holds the end
 	_ = r.hToC.Close()                 // C's connection ends at the hop
 	select {
@@ -161,7 +161,7 @@ func TestEndAckGivesUpWithoutProgress(t *testing.T) {
 		t.Fatal(err)
 	}
 	ret := make(chan error, 1)
-	go func() { ret <- r.a.closeWriteSync() }()
+	go func() { ret <- r.a.CloseWriteSync() }()
 	select {
 	case err := <-ret:
 		if err == nil {

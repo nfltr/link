@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/nfltr/link"
-	"github.com/nfltr/link/internal/linkhook"
 	"github.com/nfltr/link/peerlink"
 )
 
@@ -93,7 +92,7 @@ func TestPeerFailureAfterFinDeliversTheTail(t *testing.T) {
 		}
 		_ = link.NewMux(c).Serve(func(_ []byte, s *link.Session) {
 			_, _ = s.Write(tail)
-			_ = linkhook.CloseWriteSync(s)
+			_ = s.CloseWriteSync()
 			close(agentSent)
 		})
 	}()

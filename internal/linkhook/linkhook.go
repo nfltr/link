@@ -14,12 +14,10 @@ var (
 	// Join is link.join(a, b *link.Session): peerlink.Join of two link
 	// sessions.
 	Join func(a, b any) error
-	// Pump is (*link.Session).pump.
+	// Pump is (*link.Session).startPump.
 	Pump func(s any, w io.Writer, done func(n int64, err error))
 	// WriteBuffers is (*link.Session).writeBuffers.
 	WriteBuffers func(s any, bufs [][]byte) (int64, error)
-	// CloseWriteSync is (*link.Session).closeWriteSync.
-	CloseWriteSync func(s any) error
 	// GoingAway is (*link.Conn).isGoingAway.
 	GoingAway func(c any) bool
 	// Flush is (*link.Conn).flush.

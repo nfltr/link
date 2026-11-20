@@ -30,9 +30,12 @@ migration:
   deleted. Migration: `m.Open(h)` is `m.Open(ctx, h)`;
   `m.OpenChain(h, c)` is `m.Open(link.ContextWithChain(ctx, c), h)`, and
   in a Route `onward.Open(ctx, in.Header())`.
-- `Join`, `Session.Pump`, `WriteBuffers`, `CloseWriteSync` and `Sync`
-  are unexported; `peerlink.Join` and `peerlink.Forward` splice sessions
-  (peerlink reaches link's through an internal package).
+- `Join`, `Session.Pump`, `WriteBuffers` and `Sync` are unexported;
+  `peerlink.Join` and `peerlink.Forward` splice sessions (peerlink
+  reaches link's through an internal package). `CloseWriteSync` stays:
+  the relay SDK's conns (`nfnet`, `tlsend`) and relay-core's metrics
+  call it through an interface, for the clean end spec/RelayedClose.tla
+  checks (the review's "only peerlink calls it" missed them).
 - `FeatureChain` and `FeatureEndAck` are unexported (WIRE.md section 6
   names the bits; every link side announces them).
 - `Session.Abort(code, msg)` is deleted: `AbortWith(&link.Abort{Code:

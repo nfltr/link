@@ -471,7 +471,7 @@ func TestCloseWriteSyncOnALeavingConnection(t *testing.T) {
 		drained := make(chan error, 1)
 		go func() { drained <- lm.Drain(context.Background()) }()
 		waitUntil(t, func() bool { return closed(lm.c.drained) }) // the peer read the GOAWAY
-		if err := s.closeWriteSync(); err != nil {
+		if err := s.CloseWriteSync(); err != nil {
 			t.Fatalf("round %d: CloseWriteSync on a leaving connection: %v", i, err)
 		}
 		if b, err := io.ReadAll(o); err != nil || len(b) != 0 {

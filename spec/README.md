@@ -489,7 +489,7 @@ lost (`PFlush` writes one), and the connection ends cleanly (`ConnEnd`).
 The code before buffered Sync's ping in a step after the CloseWrite, so
 a leave between the two never sent it and the clean end reset the
 client. Invariant `DrainNeverResets`: a reset only after a `Crash`.
-Fixed: `Session.closeWriteSync` buffers the CLOSE and Sync's ping under
+Fixed: `Session.CloseWriteSync` buffers the CLOSE and Sync's ping under
 one write lock (`Conn.sendCloseSync`), the Sync pending before the peer
 can read the CLOSE, and `Mux.leave` closes only once every Sync's pong
 was read (`Leave` not while `d0` is `sync`). A first fix registered the
@@ -1211,7 +1211,7 @@ session):
 |---|---|
 | `CWrite`, `CFin` | the client (environment) |
 | `Copy` | `joint.dir(0)`'s copy: `connWriter.Write` onto the session |
-| `CloseWrite` | `joint.ended(0)` -> `joint.sync`: `syncing` set, `Session.closeWriteSync` (`Conn.sendCloseSync`: the CLOSE, the Sync registered and its ping, under one `wmu`) |
+| `CloseWrite` | `joint.ended(0)` -> `joint.sync`: `syncing` set, `Session.CloseWriteSync` (`Conn.sendCloseSync`: the CLOSE, the Sync registered and its ping, under one `wmu`) |
 | `SyncPing` | mutant `ping-late` only: the code before, `Session.sync`'s ping after `CloseWrite` |
 | `ARecv`, `AFin` | the peer's `Conn.recv` (and `keepAlive`'s pong); the peer's application's `CloseWrite` |
 | `RRecv` (FIN) | `joint.dir(1)`'s Pump ends at the peer's FIN: `joint.ended(1)` -> `hold` while syncing, else `closeWrite` on the client (`Eof`) |

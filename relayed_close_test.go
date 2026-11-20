@@ -47,7 +47,7 @@ func TestFinThenFailureReadsEOF(t *testing.T) {
 			sent := make(chan *Session, 1)
 			c, srv := muxPairCut(t, func(_ []byte, s *Session) {
 				_, _ = s.Write(tail)
-				if err := s.closeWriteSync(); err != nil {
+				if err := s.CloseWriteSync(); err != nil {
 					t.Error(err)
 				}
 				sent <- s
@@ -89,7 +89,7 @@ func TestJoinFailureAfterFinDeliversTheTail(t *testing.T) {
 	agentDone := make(chan struct{})
 	agent, agentSrv := muxPairCut(t, func(_ []byte, s *Session) {
 		_, _ = s.Write(tail)
-		if err := s.closeWriteSync(); err != nil {
+		if err := s.CloseWriteSync(); err != nil {
 			t.Error(err)
 		}
 		close(agentDone)

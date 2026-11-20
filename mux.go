@@ -1215,14 +1215,14 @@ func (s *Session) CloseWrite() error {
 	return err
 }
 
-// closeWriteSync is CloseWrite, then Sync, with Sync's ping buffered with
+// CloseWriteSync is CloseWrite, then Sync, with Sync's ping buffered with
 // the CLOSE under one write lock, so the Sync is pending before the peer
 // can read the CLOSE: a draining connection closes once its sessions
 // ended (Mux.leave), but not before that pong was read, whereas a ping
 // buffered after the close would never be sent, failing a Sync whose
 // CLOSE the peer read (spec/Join.tla DrainNeverResets, lane LINKDRAIN).
 // Once CloseWrite was called (or the session ended) it is Sync.
-func (s *Session) closeWriteSync() error {
+func (s *Session) CloseWriteSync() error {
 	if s.m.c.endAcks() { // the far end's ENDACK, not the next hop's pong
 		if _, err := s.closeWrite(false); err != nil {
 			return err

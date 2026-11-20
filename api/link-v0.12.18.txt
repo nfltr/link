@@ -1,8 +1,4 @@
 Incompatible changes:
-- package github.com/nfltr/link/pathswitch: removed
-- ./peerlink/peerlinktest.ChainPath: removed
-- ./peerlink/peerlinktest.NewChainPath: removed
-- ./peerlink/peerlinktest.Within: removed
 - (*Conn).Credit: removed
 - (*Conn).Drained: removed
 - (*Conn).Err: removed
@@ -21,7 +17,6 @@ Incompatible changes:
 - (*Mux).Open: changed from func([]byte) (*Session, error) to func(context.Context, []byte) (*Session, error)
 - (*Mux).OpenChain: removed
 - (*Session).Abort: removed
-- (*Session).CloseWriteSync: removed
 - (*Session).Pump: removed
 - (*Session).Sync: removed
 - (*Session).WriteBuffers: removed
@@ -31,6 +26,10 @@ Incompatible changes:
 - MaxSessions: removed
 - ./peerlink.ChainSession.Abort: removed
 - ./peerlink.Config.HandshakeError: removed
+- package github.com/nfltr/link/pathswitch: removed
+- ./peerlink/peerlinktest.ChainPath: removed
+- ./peerlink/peerlinktest.NewChainPath: removed
+- ./peerlink/peerlinktest.Within: removed
 Compatible changes:
 - (*Session).AckEnd: added
 - (*Session).HoldEndAck: added
