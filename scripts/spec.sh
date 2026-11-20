@@ -21,7 +21,8 @@
 #            linktrace, each connection's trace checked against the model
 #            (spec/Trace.tla).
 #   trace F  one recorded trace (rtrace F: a session's reads; wtrace F: a
-#            session credit's waiters; swtrace F: a session's writes).
+#            session credit's waiters; swtrace F: a session's writes; jctrace F:
+#            a joint's side closed whole).
 #   behaviours  TLC -simulate walks for the model-based tests (testdata/mbt).
 # TLC_WORKERS (default 4) caps TLC's threads. Java and tla2tools.jar come
 # from scripts/fetch-tla.sh.
@@ -115,6 +116,29 @@ CFG
 	META=$work/states-$(basename "$1") tlc "$cfg" TraceJoin.tla -deadlock >"$cfg.out" 2>&1 || jst=$?
 	cat "$cfg.out"
 	[ $jst != 0 ] && grep -q '^Error: Invariant TraceUnfinished is violated' "$cfg.out"
+}
+
+# jctrace FILE: TLC on one joint's recorded trace of a side closed whole
+# (spec/TraceJoinClose.tla, lane LINKTRACE2); it passes when TLC reaches
+# the trace's end (TraceUnfinished violated).
+jctrace() {
+	cfg=$work/$(basename "$1").cfg
+	cat >"$cfg" <<CFG
+CONSTANTS
+    TraceFile = "$1"
+    K <- TraceK
+    Mutant = "none"
+INIT TraceInit
+NEXT TraceNext
+INVARIANTS
+    TypeOK
+    TailDelivered
+    TraceUnfinished
+CFG
+	jcst=0 # not st: the callers'
+	META=$work/states-$(basename "$1") tlc "$cfg" TraceJoinClose.tla -deadlock >"$cfg.out" 2>&1 || jcst=$?
+	cat "$cfg.out"
+	[ $jcst != 0 ] && grep -q '^Error: Invariant TraceUnfinished is violated' "$cfg.out"
 }
 
 # ptrace FILE: TLC on one Pool's recorded trace (spec/TracePool.tla); it
@@ -444,6 +468,24 @@ mutants)
 			;;
 		esac
 	}
+	# jcfixture FILE: a joint's trace of a side closed whole with a bug put
+	# in (spec/traces/joinclose-*): TraceJoinClose.tla must accept
+	# joinclose-ok and reject each other one.
+	jcfixture() {
+		st=0
+		TLC_WORKERS=1 jctrace "$PWD/$1" >"$jw/m.out" 2>&1 || st=$?
+		case $(basename "$1"):$st in
+		joinclose-ok.*:0) echo "$(basename "$1"): accepted, as expected" ;;
+		joinclose-ok.*:*) echo "$(basename "$1"): rejected"; tail -10 "$jw/m.out"; return 1 ;;
+		*:0) echo "$(basename "$1"): accepted (a bug the trace check misses)"; return 1 ;;
+		*)
+			if grep -q 'Error: TLC threw\|Error: Parsing' "$jw/m.out"; then
+				echo "$(basename "$1"): TLC failed:"; tail -10 "$jw/m.out"; return 1
+			fi
+			echo "$(basename "$1"): rejected, as expected"
+			;;
+		esac
+	}
 	# poolfixture FILE: a Pool's trace with a bug put in (spec/traces/pool-*):
 	# TracePool.tla must accept pool-ok and reject each other one.
 	# pathfixture FILE: a pathswitch session's trace with a bug put in
@@ -667,6 +709,7 @@ mutants)
 	for f in spec/traces/read-*.ndjson; do job okfixture rtrace "$f"; done
 	for f in spec/traces/wait-*.ndjson; do job okfixture wtrace "$f"; done
 	for f in spec/traces/write-*.ndjson; do job okfixture swtrace "$f"; done
+	for f in spec/traces/joinclose-*.ndjson; do job jcfixture "$f"; done
 	wait
 	fail=0
 	i=0
@@ -847,13 +890,15 @@ traces)
 	echo "events no trace took:${gap:- none}"
 	# Session reads (TraceSessionRead.tla), credit's waiters
 	# (TraceCreditWaiters.tla), lane LINKTRACE, and session writes
-	# (TraceSessionWrite.tla), lane LINKTRACE2: each session's file, its
+	# (TraceSessionWrite.tla) and a joint's side closed whole
+	# (TraceJoinClose.tla), lane LINKTRACE2: each session's (joint's) file, its
 	# events counted; an event no trace took is a test gap.
-	for k in read wait write; do
+	for k in read wait write joinclose; do
 		mkdir -p "$work/$k"
 		case $k in
 		read) env=LINKTRACE_READ check=rtrace tests=${TRACE_READ_TESTS:-'^(TestSessionConcurrentReads|TestSessionReadDeadlineClearedNeverEOF|TestSessionReadBesideWriteTo|TestSessionReadAfterPumpRefused|TestSessionPumpErrors)$'} model=TraceSessionRead ;;
 		wait) env=LINKTRACE_WAIT check=wtrace tests=${TRACE_WAIT_TESTS:-'^(TestConcurrentAcquiresShareAGrant|TestSessionWriteWaitingForCreditSeesFirstDeadline|TestMuxSlowSessionIsolated)$'} model=TraceCreditWaiters ;;
+		joinclose) env=LINKTRACE_JOIN check=jctrace tests=${TRACE_JOINCLOSE_TESTS:-'^(TestJoinWholeCloseDeliversTheTail|TestChainHalfClose)$'} model=TraceJoinClose ;;
 		write) env=LINKTRACE_WRITE check=swtrace tests=${TRACE_WRITE_TESTS:-'^(TestSessionWriteWaitingForCreditSeesFirstDeadline|TestWriteDeadline|TestWriteDeadlineStuckNetwork)$'} model=TraceSessionWrite ;;
 		esac
 		env "$env=$work/$k" go test -tags linktrace -count=1 -run "$tests" . >"$work/test.out" 2>&1 || {
@@ -882,7 +927,7 @@ traces)
 		done
 		cat "$work/$k"/*.ndjson >"$work/${k}all"
 		gap=
-		for e in $(grep -o 'E.ev = "[A-Za-z]*"' "spec/$model.tla" | sed 's/.*"\(.*\)"/\1/' | sort -u); do
+		for e in $(grep -o 'E.ev = "[A-Za-z0-9]*"' "spec/$model.tla" | sed 's/.*"\(.*\)"/\1/' | sort -u); do
 			c=$(grep -c "\"ev\":\"$e\"" "$work/${k}all" || true)
 			[ "$c" != 0 ] || gap="$gap $e"
 			printf '%s %s; ' "$e" "$c"
@@ -949,6 +994,9 @@ wtrace)
 	;;
 swtrace)
 	swtrace "$2"
+	;;
+jctrace)
+	jctrace "$2"
 	;;
 *)
 	echo "usage: spec.sh check|invariants|nightly|mutants|traces|trace FILE" >&2

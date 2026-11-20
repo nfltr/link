@@ -216,6 +216,7 @@ type joint struct {
 	// (spec/JoinClose.tla TailDelivered, AClosedInTheEnd).
 	whole bool
 	moved [2]atomic.Int64 // bytes written [0]->[1] and [1]->[0] (HopEvent.Moved)
+	jtr   joinTrace       // linktrace builds only (trace_join_on.go); zero size otherwise
 }
 
 // movedBytes is HopEvent.Moved.
@@ -226,7 +227,11 @@ func newJoint(in, out *Session, obs Observer, done func(error)) *joint {
 		debugReleased(in)
 		debugReleased(out)
 	}
-	return &joint{s: [2]*Session{in, out}, obs: obs, chain: in.chain, done: done, left: 2}
+	j := &joint{s: [2]*Session{in, out}, obs: obs, chain: in.chain, done: done, left: 2}
+	if traceOn {
+		traceJoinUp(j)
+	}
+	return j
 }
 
 // joinWriter writes into a joined session and keeps its write error;
@@ -237,12 +242,16 @@ type joinWriter struct {
 	err   error
 	j     *joint
 	moved *atomic.Int64
+	jt    joinWTrace // linktrace builds only (trace_join_on.go); zero size otherwise
 }
 
 func (w *joinWriter) Write(p []byte) (int, error) {
 	n, err := w.s.Write(p)
 	if err != nil {
 		w.err = err
+	}
+	if traceOn {
+		w.traceCopy(err)
 	}
 	w.wrote(n)
 	return n, err
@@ -252,6 +261,9 @@ func (w *joinWriter) WriteBuffers(b [][]byte) (int64, error) {
 	n, err := w.s.WriteBuffers(b)
 	if err != nil {
 		w.err = err
+	}
+	if traceOn {
+		w.traceCopy(err)
 	}
 	w.wrote(int(n))
 	return n, err
@@ -274,6 +286,9 @@ func (j *joint) dir(i int) {
 	w := &joinWriter{s: j.s[1-i], moved: &j.moved[i]}
 	if i == 1 {
 		w.j = j
+	}
+	if traceOn {
+		w.traceJoinW(j, i)
 	}
 	j.s[i].Pump(w, func(n int64, err error) { j.ended(i, n, err, w.err) })
 }
@@ -328,6 +343,9 @@ func (j *joint) ended(i int, n int64, err, werr error) {
 		return
 	}
 	j.over[i] = true
+	if traceOn { // spec/TraceJoinClose.tla D1End: decided here
+		j.traceOver(i, err, werr)
+	}
 	j.mu.Unlock()
 	src, dst := j.s[i], j.s[1-i]
 	switch {
@@ -364,6 +382,9 @@ func (j *joint) closeNow(i int) bool {
 	defer j.mu.Unlock()
 	if !j.over[1-i] {
 		j.whole = true
+	}
+	if traceOn {
+		j.traceFail(i, j.over[1-i])
 	}
 	return j.over[1-i]
 }
