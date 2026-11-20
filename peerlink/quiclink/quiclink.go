@@ -1023,7 +1023,7 @@ func (s *Session) Close() error {
 	if !s.reset.Load() {
 		err = s.Stream.Close()
 	}
-	s.failEnd() // the peer's end not read: never acknowledged
+	s.failEnd("RClose") // the peer's end not read: never acknowledged
 	s.Stream.CancelRead(CodeClosed)
 	s.ended()
 	return err
@@ -1036,7 +1036,7 @@ func (s *Session) Reset() error {
 		return s.AbortWith(&link.Abort{Code: link.CodeUnspecified, Msg: ""})
 	}
 	s.reset.Store(true)
-	s.failEnd()
+	s.failEnd("RFail")
 	s.Stream.CancelWrite(CodeReset)
 	s.Stream.CancelRead(CodeReset)
 	s.ended()

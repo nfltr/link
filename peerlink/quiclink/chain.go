@@ -258,12 +258,12 @@ func (s *Session) AbortWith(a *link.Abort) error {
 			return errors.New("quiclink: Refuse of a session already answered (Abort it)")
 		}
 		s.reset.Store(true)
-		s.failEnd()
+		s.failEnd("RFail")
 		s.ended()
 		return nil
 	}
 	s.reset.Store(true)
-	s.failEnd()
+	s.failEnd("RFail")
 	// The bytes written before the abort arrive (RESET_STREAM_AT); once
 	// the write side was reset (the peer's STOP_SENDING) it does nothing.
 	s.Stream.SetReliableBoundary()

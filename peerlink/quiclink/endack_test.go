@@ -10,6 +10,8 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
+	"regexp"
 	"testing"
 	"time"
 
@@ -104,13 +106,30 @@ func TestEndAckCloseWaitsForFarEnd(t *testing.T) {
 // stays up, and the session is reset.
 func TestEndAckMuteFarEndIdles(t *testing.T) {
 	a, _, acc := endAckPair(t, 300*time.Millisecond, nil, endAckProtos...)
-	s, _ := openSent(t, a, acc, "tail")
+	s, r := openSent(t, a, acc, "tail")
+	quiclink.TraceMuteForTest(r)
 	start := time.Now()
 	if err := s.CloseWriteSync(); !errors.Is(err, link.ErrEndAckIdle) {
 		t.Fatalf("CloseWriteSync: %v, want ErrEndAckIdle", err)
 	}
 	if d := time.Since(start); d > 5*time.Second {
 		t.Fatalf("gave up after %v", d)
+	}
+}
+
+// TestEndAckConnectionEndFailsTheWait (spec/EndAckLeg.tla Cut): the
+// connection ends while the far end has not read the end: the wait fails
+// with link.ErrConnClosed at once, not at the idle bound.
+func TestEndAckConnectionEndFailsTheWait(t *testing.T) {
+	a, b, acc := endAckPair(t, 0, nil, endAckProtos...)
+	s, _ := openSent(t, a, acc, "tail")
+	done := closeSync(s)
+	time.Sleep(100 * time.Millisecond) // the wait runs
+	cut, cancel := context.WithCancel(context.Background())
+	cancel()
+	_ = b.Drain(cut) // closes the connection (CodeDrainDeadline)
+	if err := wait(t, done, "CloseWriteSync"); !errors.Is(err, link.ErrConnClosed) {
+		t.Fatalf("CloseWriteSync: %v, want link.ErrConnClosed", err)
 	}
 }
 
@@ -123,6 +142,20 @@ func TestEndAckCloseBeforeReadFails(t *testing.T) {
 	done := closeSync(s)
 	_ = r.Close()
 	if err := <-done; !errors.Is(err, link.ErrReset) {
+		t.Fatalf("CloseWriteSync: %v, want link.ErrReset", err)
+	}
+}
+
+// TestEndAckFarEndResetFails (spec/EndAckLeg.tla RFail): a far end that
+// resets the session before it read the end says 'A' on the control
+// stream: the wait fails with link.ErrReset, not at the idle bound.
+func TestEndAckFarEndResetFails(t *testing.T) {
+	a, _, acc := endAckPair(t, 0, nil, endAckProtos...)
+	s, r := openSent(t, a, acc, "tail")
+	done := closeSync(s)
+	time.Sleep(50 * time.Millisecond) // the wait runs
+	_ = r.Reset()
+	if err := wait(t, done, "CloseWriteSync"); !errors.Is(err, link.ErrReset) {
 		t.Fatalf("CloseWriteSync: %v, want link.ErrReset", err)
 	}
 }
@@ -339,5 +372,43 @@ func wait(t *testing.T, ch chan error, what string) error {
 	case <-time.After(90 * time.Second):
 		t.Fatalf("%s: hang", what)
 		return nil
+	}
+}
+
+// TestEndAckTraceEventsMapped: every event the end handshake's recorder
+// writes (traceEA, failEnd's, TraceMuteForTest's) is a step of link's
+// spec/TraceEndAckLeg.tla, and each of its steps has a hook point.
+func TestEndAckTraceEventsMapped(t *testing.T) {
+	code := map[string]bool{}
+	lit := regexp.MustCompile(`traceEA\(s, "([A-Za-z]+)"|failEnd\("([A-Za-z]+)"\)`)
+	for _, f := range []string{"endack.go", "quiclink.go", "chain.go", "export_test.go"} {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range lit.FindAllStringSubmatch(string(b), -1) {
+			code[m[1]+m[2]] = true
+		}
+	}
+	b, err := os.ReadFile("../../spec/TraceEndAckLeg.tla")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := map[string]bool{}
+	for _, m := range regexp.MustCompile(`E\.ev = "([A-Za-z]+)"`).FindAllStringSubmatch(string(b), -1) {
+		spec[m[1]] = true
+	}
+	if len(code) < 8 {
+		t.Fatalf("found only %d end handshake events in the code: the pattern no longer matches the hooks", len(code))
+	}
+	for e := range code {
+		if !spec[e] {
+			t.Errorf("the recorder writes %q, which no step of spec/TraceEndAckLeg.tla maps", e)
+		}
+	}
+	for e := range spec {
+		if !code[e] {
+			t.Errorf("spec/TraceEndAckLeg.tla maps %q, but no hook point of the code writes it", e)
+		}
 	}
 }

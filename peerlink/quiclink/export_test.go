@@ -53,3 +53,11 @@ func DatagramsDroppedForTest(n *Node) uint64 { return n.dgDropped.Load() }
 
 // SetEndAckIdleForTest sets n's CloseWriteSync idle bound.
 func SetEndAckIdleForTest(n *Node, d time.Duration) { n.endAckIdle = d }
+
+// TraceMuteForTest records that s's side reads nothing from now on
+// (spec/EndAckLeg.tla RMute; -tags linktrace).
+func TraceMuteForTest(s *Session) {
+	if traceOn {
+		traceEA(s, "RMute")
+	}
+}

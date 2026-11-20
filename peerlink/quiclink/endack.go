@@ -114,29 +114,40 @@ func (s *Session) readEOF() {
 		s.c.sendCtl(ctlReceipt, s.StreamID())
 		return
 	}
-	s.ackWith(ctlReceipt, ctlEndAck)
+	s.ends.ackMu.Lock()
+	defer s.ends.ackMu.Unlock()
+	sent := !s.ends.acked
+	s.ends.acked = true
+	if traceOn {
+		traceEA(s, "REnd", "ack", map[bool]string{true: "1", false: "0"}[sent])
+	}
+	if sent {
+		s.c.sendCtl(ctlReceipt, s.StreamID(), ctlEndAck)
+	} else {
+		s.c.sendCtl(ctlReceipt, s.StreamID())
+	}
 }
 
-// ackWith sends the end's final word ('E' or 'A'), once, after pre ('R'
-// or 0).
-func (s *Session) ackWith(pre, b byte) {
+// ackWith sends the end's final word ('E' or 'A') once; ev names it in a
+// trace.
+func (s *Session) ackWith(b byte, ev string) {
 	s.ends.ackMu.Lock()
 	defer s.ends.ackMu.Unlock()
 	if s.ends.acked {
-		if pre != 0 {
-			s.c.sendCtl(pre, s.StreamID())
-		}
 		return
 	}
 	s.ends.acked = true
-	s.c.sendCtl(pre, s.StreamID(), b)
+	if traceOn && ev != "" && s.c.q.Context().Err() == nil { // on a closed connection it is no message
+		traceEA(s, ev)
+	}
+	s.c.sendCtl(b, s.StreamID())
 }
 
-// failEnd: the session failed or closed here before its peer's end was
-// acknowledged: 'A' (spec/EndAckLeg.tla RFail, RClose).
-func (s *Session) failEnd() {
+// failEnd: the session failed (ev "RFail") or closed ("RClose") here
+// before its peer's end was acknowledged: 'A' (spec/EndAckLeg.tla).
+func (s *Session) failEnd(ev string) {
 	if s.c.endack {
-		s.ackWith(0, ctlAbort)
+		s.ackWith(ctlAbort, ev)
 	}
 }
 
@@ -150,7 +161,7 @@ func (s *Session) HoldEndAck() { s.ends.held.Store(true) }
 // the peer's FIN was read, it sends nothing.
 func (s *Session) AckEnd() {
 	if s.c.endack && s.ends.eof.Load() {
-		s.ackWith(0, ctlEndAck)
+		s.ackWith(ctlEndAck, "") // a joint's: no step of EndAckLeg (a far end acknowledges at REnd)
 	}
 }
 
@@ -173,6 +184,9 @@ func (s *Session) CloseWriteSync() error { return s.CloseWriteSyncReceived(nil) 
 // join ends its hold there, spec/HopHold.tla). Without ALPNEndAck it runs
 // once the FIN was written.
 func (s *Session) CloseWriteSyncReceived(received func()) error {
+	if traceOn && s.c.endack && !s.reset.Load() {
+		traceEA(s, "SClose") // before the FIN: the peer may read it at once
+	}
 	if err := s.CloseWrite(); err != nil || !s.c.endack {
 		if err == nil && received != nil {
 			received()
@@ -185,7 +199,10 @@ func (s *Session) CloseWriteSyncReceived(received func()) error {
 // waitEnd waits for the peer's 'E' or 'A' (spec/EndAckLeg.tla SRecv),
 // running received at its 'R'; it gives up at the connection's end and
 // at the idle bound with no progress (SIdle: pings are none).
-func (s *Session) waitEnd(received func()) error {
+func (s *Session) waitEnd(received func()) (err error) {
+	if traceOn {
+		defer func() { traceEA(s, "SRet", "r", map[bool]string{true: "clean", false: "err"}[err == nil]) }()
+	}
 	s.watchGrants()
 	t := time.NewTicker(s.c.n.endAckIdle)
 	defer t.Stop()
@@ -206,6 +223,9 @@ func (s *Session) waitEnd(received func()) error {
 				return s.ends.endErr
 			default:
 			}
+			if traceOn {
+				traceEA(s, "Cut")
+			}
 			return fmt.Errorf("%w: %w", link.ErrConnClosed, context.Cause(s.c.q.Context()))
 		case <-t.C:
 			if g := s.ends.grants.Load(); g != last {
@@ -216,6 +236,9 @@ func (s *Session) waitEnd(received func()) error {
 			case <-s.ends.end:
 				return s.ends.endErr
 			default:
+			}
+			if traceOn {
+				traceEA(s, "SIdle")
 			}
 			_ = s.Reset()
 			return link.ErrEndAckIdle
@@ -317,6 +340,9 @@ func (c *conn) control() {
 			c.ec.mu.Unlock()
 			if s == nil {
 				continue
+			}
+			if traceOn && b != ctlReceipt {
+				traceEA(s, "SRecv", "t", map[byte]string{ctlEndAck: "eack", ctlAbort: "abort"}[b])
 			}
 			switch b {
 			case ctlReceipt:
