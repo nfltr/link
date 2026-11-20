@@ -1601,6 +1601,23 @@ joint's (`LINKTRACE_JOIN`, `TraceJoinClose.tla`, one file per joint):
 two peerlink joints' holds (`LINKTRACE_HOPHOLD`, `TraceHopHold.tla`, one
 file per test): "Two joints' holds".
 
+Recorders per spec (lane LINKTRACE2, 2026-11-20):
+
+| spec | recorder | checked |
+|---|---|---|
+| `Link.tla` | `Trace.tla`, `trace_on.go` (`LINKTRACE`) | yes |
+| `Liveness.tla` | `TraceLive.tla` (`.ndjson.live`) | yes |
+| `Pool.tla` | `TracePool.tla`, `trace_pool_on.go` | yes |
+| `Join.tla` | `TraceJoin.tla`, `peerlink/trace_on.go` | yes |
+| `JoinClose.tla` | `TraceJoinClose.tla`, `trace_join_on.go`; peerlink's joint `peerlink/trace_on.go` | yes |
+| `SessionRead.tla`, `SessionWrite.tla`, `CreditWaiters.tla` | `TraceSessionRead.tla`, `TraceSessionWrite.tla`, `TraceCreditWaiters.tla` | yes |
+| `RelayedClose.tla` | `TraceRelayedClose.tla`, `trace_relayed_on.go`: every step but `AWrite`, `D1Copy`, `CWrite`, `CRead`, `CEnd` (TLC's, unlogged) | yes |
+| `HopHold.tla` | `TraceHopHold.tla`, `peerlink/trace_on.go` (`LINKTRACE_HOPHOLD`) | yes |
+| `DirectPath.tla` | `TraceDirectPath.tla`, `pathswitch/trace_on.go` | yes |
+| `QuicWatch.tla` | none: `MBTWatch.tla` drives quiclink's watch from TLC's behaviours (`watch_mbt_test.go`) | MBT |
+| `LinkSession.tla` | none: an interface; `Link.tla` refines it (`Refines`) | refinement |
+| `EndAckLeg.tla` | none: its link leg is `RelayedClose.tla`'s A-J and J-C legs (recorded); its QUIC leg ('E', 'A') is not in quiclink yet; gRPC and TCP legs are relay-core's and the relay SDK's | open |
+
 ## Design of the fixes (2026-11-02)
 
 Findings 1, 3 and 5 below are fixed by this design; it landed before the
