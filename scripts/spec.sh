@@ -674,12 +674,14 @@ mutants)
 	done
 	for w in WitnessFailFirst WitnessHalfThenWhole; do job witness JoinClose.cfg $w JoinClose.tla; done
 	# A relayed session's Close, then the program's exit (RelayedClose.tla,
-	# lane RELAYCLOSE): Close returning before the relay read the tail and
-	# the FIN (the code before), waiting past its connection's end; a
-	# failure after the FIN read as the reads' end (the code before: every
-	# byte, then a reset), the joint's failed write aborting the client
-	# before the tail (the code before).
-	for m in close-before-ack ack-lost-hang fail-drops-fin abort-at-write-fail; do
+	# lane RELAYCLOSE): Close returning before the far end read the tail
+	# and the FIN (the code before), or once the relay read them (the
+	# relay's pong: pipe TestRelayedEndDropAfterLastByte); waiting past
+	# its connection's end; the joint's onward wait past the far end's
+	# connection's end; a failure after the FIN read as the reads' end
+	# (the code before: every byte, then a reset); the joint's failed
+	# write aborting the client before the tail (the code before).
+	for m in close-before-ack relay-read-ack ack-lost-hang sync-hang fail-drops-fin abort-at-write-fail; do
 		job mutant RelayedClose.cfg 'Mutant = "none"' "Mutant = \"$m\"" RelayedClose.tla
 	done
 	for w in WitnessExitThenEof WitnessFinThenAbort WitnessHeld WitnessCloseErr; do job witness RelayedClose.cfg $w RelayedClose.tla; done

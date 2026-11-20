@@ -5,27 +5,31 @@
 (* passes the bytes and the end to the client C on C's own connection.     *)
 (* Bytes are counts; each connection is one FIFO.                          *)
 (*                                                                         *)
-(* The design. A's Close returns clean once J's Mux read every byte and    *)
-(* A's FIN: the CloseWrite's ping (Session.CloseWriteSync) answered, as    *)
-(* peerlink.Join syncs (Join.tla); an error once A's connection ended     *)
-(* first, never a wait past it. After that A may exit (its connection      *)
-(* ends, its unread frames lost) or its stop may reset the session: J then *)
-(* holds the whole stream, and a session whose peer's FIN was read before  *)
-(* the session failed (a reset, the connection's end) reads its bytes and  *)
-(* then io.EOF, at J as at C (LinkSession.tla GEnds: the first end a      *)
-(* reader learns is its end). J's direction A -> C passes the tail, then  *)
-(* the FIN, then the failure (an ABORT, so C's writes fail): C reads every *)
-(* byte and io.EOF. J's direction C -> A, whose write onto A's failed     *)
-(* session fails, leaves C's abort to the other direction while that one  *)
-(* still runs (held), so the abort never overtakes the tail.               *)
+(* The design (FeatureEndAck, WIRE.md section 13). A's Close              *)
+(* (CloseWriteSync) returns clean once the far end acknowledged its end:  *)
+(* C's reads reached io.EOF after every byte, and C sent an endack; J,    *)
+(* whose onward CloseWriteSync onto C returns at that endack, sends its    *)
+(* own endack to A only then. An error once the session failed or A's     *)
+(* connection ended first, never a wait past it: C's cut ends J's onward  *)
+(* wait and J's other direction aborts A's session. After a clean Close A *)
+(* may exit or reset: C already has everything. A session whose peer's    *)
+(* FIN was read before the session failed reads its bytes, then io.EOF,   *)
+(* at J as at C (LinkSession.tla GEnds), and J passes the tail, the FIN,  *)
+(* then the failure (an ABORT); J's direction C -> A, whose write onto A's *)
+(* failed session fails, leaves C's abort to the other direction while    *)
+(* that one runs (held), so the abort never overtakes the tail.           *)
 EXTENDS Naturals, Sequences
 
 CONSTANTS
     K,       \* A's bytes
     Mutant   \* "none"; "close-before-ack": Close returns once the FIN is
              \* buffered (the code before: an accepted relayed Conn's Close
-             \* returned at once); "ack-lost-hang": Close waits for the
-             \* ping's answer only, not for the connection's end;
+             \* returned at once); "relay-read-ack": J acknowledges A's end
+             \* once its own Mux read it (a Sync's pong, lane RELAYCLOSE's
+             \* first fix: pipe TestRelayedEndDropAfterLastByte);
+             \* "ack-lost-hang": Close waits for the endack only, not for
+             \* the connection's end; "sync-hang": J's onward wait ignores
+             \* C's connection's end;
              \* "fail-drops-fin": a failure after the peer's FIN makes
              \* the reads end with the error (the code before: C read every
              \* byte, then a reset); "abort-at-write-fail": J's failed write
@@ -36,14 +40,15 @@ VARIABLES
     ret,     \* A's Close: "no" (not called), "wait", "clean", "err"
     rst,     \* A's stop reset the session after its Close returned
     exited,  \* A's program exited
-    toJ,     \* frames A -> J: "d", "fin", "ping", "rst"
-    fromJ,   \* frames J -> A: "pong"
+    toJ,     \* frames A -> J: "d", "fin", "rst"
+    fromJ,   \* frames J -> A: "eack" (endack), "abort"
+    afail,   \* A's session failed (J's abort)
     lost1,   \* A's connection to the relay ended
     gone,    \* the relay crashed
     jq,      \* A's bytes J's Mux read, not yet written to C
     jfin,    \* J's Mux read A's FIN
     jfail,   \* A's session failed at J (A's reset, its connection's end)
-    d1,      \* J: A -> C, "run" or "done"
+    d1,      \* J: A -> C, "run", "sync" (C's endack awaited), "done"
     d0,      \* J: C -> A, "run", "held" (its abort of C waits for d1), "done"
     cw,      \* C wrote a byte (toward A)
     cabort,  \* J aborted C's session: J's writes onto it fail
@@ -52,20 +57,23 @@ VARIABLES
     cfin,    \* C's Mux read the FIN
     cfail,   \* C's session failed (the abort, its connection's end)
     crd,     \* bytes C read
-    cend     \* how C's reads ended: "", "eof", "err"
+    cend,    \* how C's reads ended: "", "eof", "err"
+    fromC,   \* frames C -> J: "eack"
+    ccut     \* C's connection to the relay ended
 
-vars == <<aw, ret, rst, exited, toJ, fromJ, lost1, gone, jq, jfin, jfail, d1, d0,
-          cw, cabort, toC, cq, cfin, cfail, crd, cend>>
-aVars == <<aw, ret, rst, exited>>
+vars == <<aw, ret, rst, exited, toJ, fromJ, afail, lost1, gone, jq, jfin, jfail, d1, d0,
+          cw, cabort, toC, cq, cfin, cfail, crd, cend, fromC, ccut>>
+aVars == <<aw, ret, rst, exited, afail>>
 jVars == <<jq, jfin, jfail, d1, d0, cabort>>
-cVars == <<cw, cq, cfin, cfail, crd, cend>>
+cVars == <<cw, cq, cfin, cfail, crd, cend, fromC, ccut>>
 
 Init ==
-    /\ aw = 0 /\ ret = "no" /\ rst = FALSE /\ exited = FALSE
+    /\ aw = 0 /\ ret = "no" /\ rst = FALSE /\ exited = FALSE /\ afail = FALSE
     /\ toJ = <<>> /\ fromJ = <<>> /\ lost1 = FALSE /\ gone = FALSE
     /\ jq = 0 /\ jfin = FALSE /\ jfail = FALSE /\ d1 = "run" /\ d0 = "run"
     /\ cw = FALSE /\ cabort = FALSE /\ toC = <<>>
     /\ cq = 0 /\ cfin = FALSE /\ cfail = FALSE /\ crd = 0 /\ cend = ""
+    /\ fromC = <<>> /\ ccut = FALSE
 
 \* A reader's end once its queue drained: io.EOF when the peer's FIN came
 \* (before any failure: frames are read in order), else the failure.
@@ -74,48 +82,54 @@ ReadsEof(fin, fail) == fin /\ (Mutant # "fail-drops-fin" \/ ~fail)
 \* ---- A ----
 
 AWrite ==
-    /\ aw < K /\ ret = "no" /\ ~lost1
+    /\ aw < K /\ ret = "no" /\ ~lost1 /\ ~afail
     /\ aw' = aw + 1 /\ toJ' = Append(toJ, "d")
-    /\ UNCHANGED <<ret, rst, exited, fromJ, lost1, gone>> /\ UNCHANGED jVars /\ UNCHANGED <<toC>> /\ UNCHANGED cVars
+    /\ UNCHANGED <<ret, rst, exited, afail, fromJ, lost1, gone>> /\ UNCHANGED jVars /\ UNCHANGED <<toC>> /\ UNCHANGED cVars
 
-\* Close: the FIN with its ping (CloseWriteSync), then wait for the pong.
+\* Close: the FIN (CloseWriteSync), then wait for J's endack; on a failed
+\* session at once an error.
 AClose ==
-    /\ aw = K /\ ret = "no" /\ ~lost1
-    /\ toJ' = toJ \o <<"fin", "ping">>
-    /\ ret' = IF Mutant = "close-before-ack" THEN "clean" ELSE "wait"
-    /\ UNCHANGED <<aw, rst, exited, fromJ, lost1, gone>> /\ UNCHANGED jVars /\ UNCHANGED <<toC>> /\ UNCHANGED cVars
+    /\ (aw = K \/ afail) /\ ret = "no" /\ ~lost1
+    /\ IF afail
+       THEN ret' = "err" /\ UNCHANGED toJ
+       ELSE /\ toJ' = Append(toJ, "fin")
+            /\ ret' = IF Mutant = "close-before-ack" THEN "clean" ELSE "wait"
+    /\ UNCHANGED <<aw, rst, exited, afail, fromJ, lost1, gone>> /\ UNCHANGED jVars /\ UNCHANGED <<toC>> /\ UNCHANGED cVars
 
-APong ==
+\* J's endack ends the wait clean; its abort fails the session.
+ARecv ==
     /\ fromJ # <<>> /\ ~lost1
     /\ fromJ' = Tail(fromJ)
-    /\ ret' = IF ret = "wait" THEN "clean" ELSE ret
+    /\ IF Head(fromJ) = "eack"
+       THEN ret' = (IF ret = "wait" THEN "clean" ELSE ret) /\ UNCHANGED afail
+       ELSE afail' = TRUE /\ ret' = (IF ret = "wait" THEN "err" ELSE ret)
     /\ UNCHANGED <<aw, rst, exited, toJ, lost1, gone>> /\ UNCHANGED jVars /\ UNCHANGED <<toC>> /\ UNCHANGED cVars
 
-\* The connection's end ends the wait (waitSync: c.Done; a dead relay is
-\* found by the link's liveness).
+\* The connection's end ends the wait (c.Done; a dead relay is found by
+\* the link's liveness).
 ADown ==
     /\ lost1 /\ ret = "wait" /\ Mutant # "ack-lost-hang"
     /\ ret' = "err"
-    /\ UNCHANGED <<aw, rst, exited, toJ, fromJ, lost1, gone>> /\ UNCHANGED jVars /\ UNCHANGED <<toC>> /\ UNCHANGED cVars
+    /\ UNCHANGED <<aw, rst, exited, afail, toJ, fromJ, lost1, gone>> /\ UNCHANGED jVars /\ UNCHANGED <<toC>> /\ UNCHANGED cVars
 
 \* The agent's stop resets the session after its Close returned.
 AReset ==
     /\ ret \in {"clean", "err"} /\ ~rst /\ ~lost1
     /\ rst' = TRUE /\ toJ' = Append(toJ, "rst")
-    /\ UNCHANGED <<aw, ret, exited, fromJ, lost1, gone>> /\ UNCHANGED jVars /\ UNCHANGED <<toC>> /\ UNCHANGED cVars
+    /\ UNCHANGED <<aw, ret, exited, afail, fromJ, lost1, gone>> /\ UNCHANGED jVars /\ UNCHANGED <<toC>> /\ UNCHANGED cVars
 
 \* The program exits once Close returned: its connection ends, the frames
 \* J had not read are lost.
 Exit ==
     /\ ret \in {"clean", "err"} /\ ~exited
     /\ exited' = TRUE /\ lost1' = TRUE /\ toJ' = <<>> /\ fromJ' = <<>>
-    /\ UNCHANGED <<aw, ret, rst, gone>> /\ UNCHANGED jVars /\ UNCHANGED <<toC>> /\ UNCHANGED cVars
+    /\ UNCHANGED <<aw, ret, rst, afail, gone>> /\ UNCHANGED jVars /\ UNCHANGED <<toC>> /\ UNCHANGED cVars
 
 \* The network cuts A's connection.
 Cut ==
     /\ ~lost1
     /\ lost1' = TRUE /\ toJ' = <<>> /\ fromJ' = <<>>
-    /\ UNCHANGED <<aw, ret, rst, exited, gone>> /\ UNCHANGED jVars /\ UNCHANGED <<toC>> /\ UNCHANGED cVars
+    /\ UNCHANGED <<aw, ret, rst, exited, afail, gone>> /\ UNCHANGED jVars /\ UNCHANGED <<toC>> /\ UNCHANGED cVars
 
 \* ---- J ----
 
@@ -123,8 +137,8 @@ JRecv ==
     /\ ~gone /\ toJ # <<>>
     /\ toJ' = Tail(toJ)
     /\ CASE Head(toJ) = "d"    -> jq' = jq + 1 /\ UNCHANGED <<jfin, jfail, fromJ>>
-         [] Head(toJ) = "fin"  -> jfin' = TRUE /\ UNCHANGED <<jq, jfail, fromJ>>
-         [] Head(toJ) = "ping" -> fromJ' = Append(fromJ, "pong") /\ UNCHANGED <<jq, jfin, jfail>>
+         [] Head(toJ) = "fin"  -> /\ jfin' = TRUE /\ UNCHANGED <<jq, jfail>>
+                                  /\ fromJ' = IF Mutant = "relay-read-ack" THEN Append(fromJ, "eack") ELSE fromJ
          [] Head(toJ) = "rst"  -> jfail' = TRUE /\ UNCHANGED <<jq, jfin, fromJ>>
     /\ UNCHANGED aVars /\ UNCHANGED <<lost1, gone, d1, d0, cabort, toC>> /\ UNCHANGED cVars
 
@@ -143,25 +157,54 @@ D1Copy ==
     /\ IF cabort THEN d1' = "done" /\ UNCHANGED toC ELSE toC' = Append(toC, "d") /\ UNCHANGED d1
     /\ UNCHANGED aVars /\ UNCHANGED <<toJ, fromJ, lost1, gone, jfin, jfail, d0, cabort>> /\ UNCHANGED cVars
 
-\* d1's end: A's reads ended. A clean end passes the FIN on, then A's
-\* failure (or d0's held one) as C's abort; a failed one aborts C.
+\* d1's end: A's reads ended. A clean end passes the FIN on and, with A
+\* still there, awaits C's endack (the onward CloseWriteSync); with A's
+\* session failed (or d0's abort held) it passes the FIN, then the failure
+\* as C's abort. A failed end aborts C.
 D1End ==
     /\ ~gone /\ d1 = "run" /\ jq = 0 /\ (jfin \/ jfail)
-    /\ d1' = "done"
     /\ IF ReadsEof(jfin, jfail)
-       THEN IF jfail \/ d0 = "held"
-            THEN /\ toC' = (IF cabort THEN toC ELSE toC \o <<"fin", "abort">>)
-                 /\ cabort' = TRUE
-            ELSE /\ toC' = (IF cabort THEN toC ELSE Append(toC, "fin"))
-                 /\ UNCHANGED cabort
-       ELSE abortC
-    /\ d0' = IF d0 = "held" THEN "done" ELSE d0
+       THEN IF cabort
+            THEN d1' = "done" /\ UNCHANGED <<toC, cabort>>
+            ELSE IF jfail \/ d0 = "held"
+            THEN /\ toC' = toC \o <<"fin", "abort">> /\ cabort' = TRUE /\ d1' = "done"
+            ELSE /\ toC' = Append(toC, "fin") /\ UNCHANGED cabort /\ d1' = "sync"
+       ELSE d1' = "done" /\ abortC
+    /\ d0' = IF d0 = "held" /\ d1' = "done" THEN "done" ELSE d0
     /\ UNCHANGED aVars /\ UNCHANGED <<toJ, fromJ, lost1, gone, jq, jfin, jfail>> /\ UNCHANGED cVars
+
+\* C's endack: J's onward wait returns; J acknowledges A's end (when A's
+\* connection is still there), then passes a failure since (A's, or d0's
+\* held one) as C's abort.
+JAck ==
+    /\ ~gone /\ fromC # <<>>
+    /\ fromC' = Tail(fromC)
+    /\ IF d1 = "sync"
+       THEN /\ d1' = "done"
+            /\ fromJ' = IF lost1 \/ Mutant = "relay-read-ack" THEN fromJ ELSE Append(fromJ, "eack")
+            /\ IF jfail \/ d0 = "held" THEN abortC ELSE UNCHANGED <<toC, cabort>>
+            /\ d0' = IF d0 = "held" THEN "done" ELSE d0
+       ELSE UNCHANGED <<d1, d0, fromJ, toC, cabort>>
+    /\ UNCHANGED aVars /\ UNCHANGED <<toJ, lost1, gone, jq, jfin, jfail>>
+    /\ UNCHANGED <<cw, cq, cfin, cfail, crd, cend, ccut>>
+
+\* C's connection ended: the onward wait fails (link: the session's end).
+JSyncFail ==
+    /\ ~gone /\ d1 = "sync" /\ ccut /\ fromC = <<>> /\ Mutant # "sync-hang"
+    /\ d1' = "done"
+    /\ UNCHANGED aVars /\ UNCHANGED <<toJ, fromJ, lost1, gone, jq, jfin, jfail, d0, cabort, toC>> /\ UNCHANGED cVars
+
+\* d0 reads C's failure (its connection's end) and aborts A's session.
+D0CFail ==
+    /\ ~gone /\ ccut /\ d0 \in {"run", "held"}
+    /\ d0' = "done"
+    /\ fromJ' = IF lost1 THEN fromJ ELSE Append(fromJ, "abort")
+    /\ UNCHANGED aVars /\ UNCHANGED <<toJ, lost1, gone, jq, jfin, jfail, d1, cabort, toC>> /\ UNCHANGED cVars
 
 \* d0: C's byte onto A's failed session fails; C's abort waits for d1.
 D0Fail ==
     /\ ~gone /\ cw /\ d0 = "run" /\ jfail
-    /\ IF d1 = "run" /\ Mutant # "abort-at-write-fail"
+    /\ IF d1 \in {"run", "sync"} /\ Mutant # "abort-at-write-fail"
        THEN d0' = "held" /\ UNCHANGED <<toC, cabort>>
        ELSE d0' = "done" /\ abortC
     /\ UNCHANGED aVars /\ UNCHANGED <<toJ, fromJ, lost1, gone, jq, jfin, jfail, d1>> /\ UNCHANGED cVars
@@ -170,15 +213,16 @@ D0Fail ==
 RelayGone ==
     /\ ~gone
     /\ gone' = TRUE /\ lost1' = TRUE /\ toJ' = <<>> /\ fromJ' = <<>> /\ toC' = <<>> /\ cfail' = TRUE
+    /\ fromC' = <<>> /\ ccut' = TRUE
     /\ UNCHANGED aVars /\ UNCHANGED jVars /\ UNCHANGED <<cw, cq, cfin, crd, cend>>
 
 \* ---- C ----
 
 CWrite ==
-    /\ ~cw /\ cend = ""
+    /\ ~cw /\ cend = "" /\ ~ccut
     /\ cw' = TRUE
     /\ UNCHANGED aVars /\ UNCHANGED <<toJ, fromJ, lost1, gone, toC>> /\ UNCHANGED jVars
-    /\ UNCHANGED <<cq, cfin, cfail, crd, cend>>
+    /\ UNCHANGED <<cq, cfin, cfail, crd, cend, fromC, ccut>>
 
 CRecv ==
     /\ toC # <<>>
@@ -186,57 +230,73 @@ CRecv ==
     /\ CASE Head(toC) = "d"     -> cq' = cq + 1 /\ UNCHANGED <<cfin, cfail>>
          [] Head(toC) = "fin"   -> cfin' = TRUE /\ UNCHANGED <<cq, cfail>>
          [] Head(toC) = "abort" -> cfail' = TRUE /\ UNCHANGED <<cq, cfin>>
-    /\ UNCHANGED aVars /\ UNCHANGED <<toJ, fromJ, lost1, gone>> /\ UNCHANGED jVars /\ UNCHANGED <<cw, crd, cend>>
+    /\ UNCHANGED aVars /\ UNCHANGED <<toJ, fromJ, lost1, gone>> /\ UNCHANGED jVars /\ UNCHANGED <<cw, crd, cend, fromC, ccut>>
 
 CRead ==
     /\ cq > 0 /\ cend = ""
     /\ cq' = cq - 1 /\ crd' = crd + 1
-    /\ UNCHANGED aVars /\ UNCHANGED <<toJ, fromJ, lost1, gone, toC>> /\ UNCHANGED jVars /\ UNCHANGED <<cw, cfin, cfail, cend>>
+    /\ UNCHANGED aVars /\ UNCHANGED <<toJ, fromJ, lost1, gone, toC>> /\ UNCHANGED jVars /\ UNCHANGED <<cw, cfin, cfail, cend, fromC, ccut>>
 
+\* C's reads end; at io.EOF C's Mux sends its endack (the far end).
 CEnd ==
     /\ cend = "" /\ cq = 0 /\ (cfin \/ cfail)
     /\ cend' = IF ReadsEof(cfin, cfail) THEN "eof" ELSE "err"
-    /\ UNCHANGED aVars /\ UNCHANGED <<toJ, fromJ, lost1, gone, toC>> /\ UNCHANGED jVars /\ UNCHANGED <<cw, cq, cfin, cfail, crd>>
+    /\ fromC' = IF cend' = "eof" /\ ~ccut THEN Append(fromC, "eack") ELSE fromC
+    /\ UNCHANGED aVars /\ UNCHANGED <<toJ, fromJ, lost1, gone, toC>> /\ UNCHANGED jVars /\ UNCHANGED <<cw, cq, cfin, cfail, crd, ccut>>
+
+\* The network cuts C's connection: its unread frames are lost both ways,
+\* C's session fails, J's writes onto it fail.
+CCut ==
+    /\ ~ccut /\ ~gone
+    /\ ccut' = TRUE /\ toC' = <<>> /\ fromC' = <<>> /\ cfail' = TRUE /\ cabort' = TRUE
+    /\ UNCHANGED aVars /\ UNCHANGED <<toJ, fromJ, lost1, gone, jq, jfin, jfail, d1, d0>>
+    /\ UNCHANGED <<cw, cq, cfin, crd, cend>>
 
 Next ==
-    \/ AWrite \/ AClose \/ APong \/ ADown \/ AReset \/ Exit \/ Cut
-    \/ JRecv \/ JDown \/ D1Copy \/ D1End \/ D0Fail \/ RelayGone
-    \/ CWrite \/ CRecv \/ CRead \/ CEnd
+    \/ AWrite \/ AClose \/ ARecv \/ ADown \/ AReset \/ Exit \/ Cut
+    \/ JRecv \/ JDown \/ D1Copy \/ D1End \/ JAck \/ JSyncFail \/ D0CFail \/ D0Fail \/ RelayGone
+    \/ CWrite \/ CRecv \/ CRead \/ CEnd \/ CCut
 
 \* A, J and C take their own steps; the program's exit, its stop's reset,
-\* the network's cut, the relay's crash and C's write are the
+\* the network's cuts, the relay's crash and C's write are the
 \* environment's (no fairness).
 Fairness ==
-    /\ WF_vars(AWrite) /\ WF_vars(AClose) /\ WF_vars(APong) /\ WF_vars(ADown)
+    /\ WF_vars(AWrite) /\ WF_vars(AClose) /\ WF_vars(ARecv) /\ WF_vars(ADown)
     /\ WF_vars(JRecv) /\ WF_vars(JDown) /\ WF_vars(D1Copy) /\ WF_vars(D1End) /\ WF_vars(D0Fail)
+    /\ WF_vars(JAck) /\ WF_vars(JSyncFail) /\ WF_vars(D0CFail)
     /\ WF_vars(CRecv) /\ WF_vars(CRead) /\ WF_vars(CEnd)
 
 Spec == Init /\ [][Next]_vars /\ Fairness
 
 TypeOK ==
     /\ aw \in 0..K /\ ret \in {"no", "wait", "clean", "err"}
-    /\ d1 \in {"run", "done"} /\ d0 \in {"run", "held", "done"}
+    /\ d1 \in {"run", "sync", "done"} /\ d0 \in {"run", "held", "done"}
     /\ cend \in {"", "eof", "err"} /\ crd \in 0..K /\ jq \in 0..K /\ cq \in 0..K
 
 \* C reads io.EOF only after every byte A wrote.
 NoSilentLoss == cend = "eof" => crd = K
 
-\* A's Close returns clean only once the relay read every byte and the
-\* FIN: a program that exits then loses nothing it wrote.
-CloseTruth == ret = "clean" => jfin
+\* A's Close returns clean only once C read every byte and io.EOF: a
+\* program that exits then loses nothing it wrote (pipe spec/Pipe.tla
+\* CleanExit).
+CloseTruth == ret = "clean" => (cend = "eof" /\ crd = K)
 
-\* After a clean Close, C reads every byte and io.EOF, whatever A does
-\* next (exit, reset), unless the relay itself crashed.
-TailDelivered == (ret = "clean") ~> ((cend = "eof" /\ crd = K) \/ gone)
+\* Once J read A's FIN, C reads every byte and io.EOF whatever A does
+\* next (exit, a cut, a reset), unless C's connection or the relay ended.
+TailDelivered == jfin ~> ((cend = "eof" /\ crd = K) \/ gone \/ ccut)
 
-\* A Close ends: never a wait past its connection's end.
+\* A Close ends: never a wait past its connection's or the far end's end.
 CloseEnds == (ret = "wait") ~> (ret \in {"clean", "err"})
+
+\* J's onward wait ends (unless the relay crashed).
+SyncEnds == (d1 = "sync") ~> (d1 = "done" \/ gone)
 
 \* Witnesses (make spec-mutants: TLC must violate each): a clean Close,
 \* the program's exit, and C's clean end; C's FIN then its abort read as
-\* io.EOF; d0's abort held for d1; a Close that ends with an error.
+\* io.EOF; d0's abort held for d1; a Close that ends with an error
+\* because C's connection ended (pipe's TestRelayedEndDropAfterLastByte).
 WitnessExitThenEof == ~(ret = "clean" /\ exited /\ cend = "eof")
 WitnessFinThenAbort == ~(cfin /\ cfail /\ cend = "eof" /\ ~gone)
 WitnessHeld == d0 # "held"
-WitnessCloseErr == ret # "err"
+WitnessCloseErr == ~(ret = "err" /\ ccut /\ ~lost1)
 =============================================================================
