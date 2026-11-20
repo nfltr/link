@@ -1098,9 +1098,10 @@ idle bound fires only on a far end that acknowledges nothing); liveness
 `WaitEnds`. Mutants: `ack-at-write` (quiclink's `CloseWrite`, the
 relay's TCP visitor leg "once passed on", the SDK's Close on a gRPC
 stream: the code today: `AckTruth`), `liveness-counts-as-progress`
-(`WaitEnds`), `total-bound` (pathswitch `Conn.Close` today:
-`waitHeard(Detach)` with no stall bound gives up 30 s after the Close
-whatever the progress: `IdleTruth`); on QUIC `ack-at-final-size`
+(`WaitEnds`), `total-bound` (pathswitch `Conn.Close` before lane
+ENDACKCODE: `waitHeard(Detach)` with no stall bound gave up 30 s after
+the Close whatever the progress: `IdleTruth`; DirectPath.tla's
+`CloseKeepsLive`); on QUIC `ack-at-final-size`
 (acknowledging at the FIN's frame, quic-go's final-size callback:
 `AckTruth`) and `wait-on-stream-reset` (`ErrTruth`). Witnesses
 `WitnessClean`, `WitnessIdle`, `WitnessFinFirst` (QUIC only). `SReset`
