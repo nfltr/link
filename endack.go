@@ -158,18 +158,27 @@ func (s *Session) ackAtClose() {
 	}
 }
 
-// closeAckErr is how the peer's whole close ends this side's wait: a
-// clean one (the peer, or the far end a hop passed it from, closed the
-// session: it takes no more, as a TCP peer's close) nil; a reset or an
-// abort its error.
+// closeAckErr is how the peer's whole close ends this side's wait, its
+// ENDACK not read first: never nil. A far end acknowledges an end it holds
+// before its close (AckEnd on receipt, ackAtClose), so a close without one
+// came before this side's FIN reached it: the end is not known delivered,
+// ErrReset (as a TCP close with data unread is an RST; quiclink's 'A');
+// an abort its own error (spec/EndAckLeg.tla RClose, spec/RelayedClose.tla
+// CClose, mutant close-acks: a clean close read as the ENDACK).
 func closeAckErr(f rxFrame) error {
-	switch {
-	case f.Abort != nil:
+	if f.Abort != nil {
 		return f.Abort
-	case f.Reset:
-		return ErrReset
 	}
-	return nil
+	return ErrReset
+}
+
+// closedFirst is CloseWriteSync's error once the peer closed the session
+// whole before this side's FIN: the end is not known delivered.
+func (s *Session) closedFirst() error {
+	if e := s.err.Load(); e != nil {
+		return *e
+	}
+	return ErrReset
 }
 
 // CloseWriteSyncReceived is CloseWriteSync that also reports the next
@@ -214,6 +223,12 @@ func (s *Session) nack() bool {
 	if !closed(s.done) || !s.peerHalf.Load() || s.peerClosed.Load() && !s.finSent.Load() || !s.m.c.endAcks() {
 		return false
 	}
+	return s.sendNack()
+}
+
+// sendNack sends the reset that ends the peer's wait for this session's
+// ENDACK, unless the end was acknowledged (or refused) already.
+func (s *Session) sendNack() bool {
 	s.ackMu.Lock()
 	defer s.ackMu.Unlock()
 	if s.acked {

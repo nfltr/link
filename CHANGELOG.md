@@ -6,6 +6,22 @@ it (`peerlink/quiclink/vX.Y.Z`, `pathswitch/vX.Y.Z`, `linkvet/vX.Y.Z`;
 format is [WIRE.md](WIRE.md); every release since v0.2.0 speaks the same
 version 2 unless an entry says otherwise.
 
+## v0.13.1 (unreleased): a close is no end acknowledgement
+
+- `Session.CloseWriteSync` (FeatureEndAck) never reports a dropped tail
+  as delivered: when the peer closes the session whole (close code 0)
+  before this side's half close reached it, the wait ends with
+  `ErrReset` (before: nil), as quiclink's 'A' does; so does a
+  `CloseWriteSync` after such a close (before: a Sync's nil). A hop
+  whose onward peer closed first resets the source session instead of
+  acknowledging its end (`Session.Close` on a `Config.Hop` connection).
+  No API change: the error is behaviour. WIRE.md section 13 (no byte
+  changes). An older hop still acknowledges such an end. Lane
+  ENDACKTRUTH; spec/RelayedClose.tla `CClose` and spec/EndAckLeg.tla
+  `RClose` on link, mutant `close-acks` (`CloseTruth`, `AckTruth`);
+  guards `TestEndAckFarEndCloseBeforeFinFails`,
+  `TestEndAckFarEndClosedFirstFails`, `TestEndAckPeerClosedWholeFirstFails`.
+
 ## peerlink/quiclink v0.7.0 (unreleased): end acknowledgements
 
 - End acknowledgements (lane ENDACKQUIC, nfltr

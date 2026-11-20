@@ -1222,7 +1222,10 @@ func (s *Session) CloseWrite() error {
 // ended (Mux.leave), but not before that pong was read, whereas a ping
 // buffered after the close would never be sent, failing a Sync whose
 // CLOSE the peer read (spec/Join.tla DrainNeverResets, lane LINKDRAIN).
-// Once CloseWrite was called (or the session ended) it is Sync.
+// Once CloseWrite was called (or the session ended) it is Sync. With
+// FeatureEndAck it waits for the far end's ENDACK instead: nil only then;
+// ErrReset when the peer closed the session before the end reached it
+// (closeAckErr: not known delivered), or its failure.
 func (s *Session) CloseWriteSync() error {
 	if s.m.c.endAcks() { // the far end's ENDACK, not the next hop's pong
 		if _, err := s.closeWrite(false); err != nil {
@@ -1230,6 +1233,9 @@ func (s *Session) CloseWriteSync() error {
 		}
 		if w := s.ack.Load(); w != nil {
 			return s.waitAck(w)
+		}
+		if s.peerClosed.Load() && !s.finSent.Load() { // the peer closed it whole first: no FIN went
+			return s.closedFirst()
 		}
 		return s.sync()
 	}
@@ -1257,10 +1263,11 @@ func (s *Session) closeWrite(sync bool) (<-chan struct{}, error) {
 	traceRCClose(s)
 	if s.m.c.endAcks() { // before the CLOSE: its ENDACK is never missed
 		s.ack.Store(s.m.expectAck(s.id))
-		if s.peerClosed.Load() { // the peer closed whole already: no ENDACK comes
-			s.m.ackDone(s.id, nil)
-		} else if e := s.err.Load(); e != nil { // failed (a Reset racing this one: its ackDone ran before this wait existed): none comes
-			s.m.ackDone(s.id, *e)
+		if s.peerClosed.Load() || s.err.Load() != nil {
+			// the peer closed whole already (not known delivered: closedFirst),
+			// or failed (a Reset racing this one: its ackDone ran before this
+			// wait existed): no ENDACK comes
+			s.m.ackDone(s.id, s.closedFirst())
 		}
 	}
 	var synced <-chan struct{}
@@ -1354,13 +1361,15 @@ func (s *Session) Close() error {
 		}
 		if !s.peerClosed.Load() {
 			_ = s.m.sendClose(s.id, false) // before drop: a leaving connection closes after it
-		} else if s.m.c.hop {
+		} else if s.m.c.hop && s.m.c.endAcks() && s.peerHalf.Load() && s.err.Load() == nil {
 			// both ends' halves passed, so no CLOSE goes: a hop's clean
 			// close of a session whose peer's end its join never passed on
-			// (the onward peer closed whole) still ends the peer's wait,
-			// as a whole close would (closeAckErr; relay-core
-			// TestConnIsANetConn hung on the agent's Close without)
-			s.AckEnd()
+			// (the onward peer closed whole first) ends the peer's wait as
+			// a whole close would: not known delivered, a reset (closeAckErr;
+			// relay-core TestConnIsANetConn hung on the agent's Close
+			// without; an ENDACK here was the lie of spec/RelayedClose.tla
+			// mutant close-acks, TestEndAckFarEndClosedFirstFails)
+			s.sendNack()
 		}
 		s.m.ackDone(s.id, io.ErrClosedPipe)
 		s.m.drop(s)

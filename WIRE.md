@@ -313,13 +313,15 @@ for the acknowledgement knows the far end has every byte, across joins
   (the onward endack, or on a connection without the bit the onward pong
   of a ping sent after the close), or, onto a conn that acknowledges
   nothing (TCP), once it was passed on. A join whose onward peer closed
-  the session with code 0 sends it too (that peer takes no more); one
-  whose onward side failed resets the session instead (code 2, also
-  once both half closes passed).
+  the session (code 0) before acknowledging the end, or whose onward
+  side failed, resets the session instead (code 2, also once both half
+  closes passed): the end was never taken there.
 - **The waiting side.** A sender's wait for the endack ends with it, or
-  with a close code 0 from the peer (a clean end: it takes no more, as a
-  TCP peer's close), or with an error at close code 2, an abort, or the
-  connection's end. It gives up (and resets the session) once nothing of
+  with an error: a close code 0 from the peer without the endack before
+  it (the peer closed the session before the half close reached it: a far
+  end acknowledges what it holds before it closes, so the end is not
+  known delivered, as a TCP close with data unread is an RST), close code
+  2, an abort, or the connection's end. It gives up (and resets the session) once nothing of
   the session was acknowledged (no window update) for its idle bound,
   30 s: pings are no progress. A leaving connection (section 9) closes
   only once no endack is awaited, within its drain deadline.

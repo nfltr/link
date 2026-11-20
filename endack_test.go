@@ -262,3 +262,79 @@ func TestEndAckCloseWriteRacingResetEndsTheWait(t *testing.T) {
 	}
 	close(r.open)
 }
+
+// TestEndAckFarEndCloseBeforeFinFails (spec/RelayedClose.tla CClose,
+// CloseTruth, mutant close-acks): C closes the session whole before A's
+// FIN reached it (C's Mux read neither the tail nor the FIN): the hop's
+// onward wait and so A's CloseWriteSync fail, the end not known
+// delivered, never nil (closeAckErr read the clean close as the ENDACK).
+func TestEndAckFarEndCloseBeforeFinFails(t *testing.T) {
+	r := newHopRig(t)
+	r.armed.Store(true)
+	if _, err := r.a.Write([]byte("tail")); err != nil {
+		t.Fatal(err)
+	}
+	ret := make(chan error, 1)
+	go func() { ret <- r.a.CloseWriteSync() }()
+	time.Sleep(100 * time.Millisecond) // the hop holds the end: its onward wait runs
+	_ = r.c.Close()
+	select {
+	case err := <-ret:
+		if err == nil {
+			t.Fatal("CloseWriteSync returned nil: C closed the session before it took the end")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("CloseWriteSync never returned after C closed the session")
+	}
+	close(r.open)
+}
+
+// TestEndAckFarEndClosedFirstFails (spec/EndAckLeg.tla RClose, AckTruth,
+// mutant close-acks): through a hop, C closed the session whole before A
+// wrote its tail: the hop's write onto C fails and its close of A's
+// session (both halves passed there) must not acknowledge the end it
+// never passed on; A's CloseWriteSync fails, whichever of the hop's close
+// or A's own half close comes first.
+func TestEndAckFarEndClosedFirstFails(t *testing.T) {
+	r := newHopRig(t)
+	_ = r.c.Close()
+	time.Sleep(100 * time.Millisecond) // the hop read C's close
+	if _, err := r.a.Write([]byte("tail")); err != nil {
+		t.Fatal(err)
+	}
+	ret := make(chan error, 1)
+	go func() { ret <- r.a.CloseWriteSync() }()
+	select {
+	case err := <-ret:
+		if err == nil {
+			t.Fatal("CloseWriteSync returned nil: C closed the session before the tail")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("CloseWriteSync never returned after C closed the session")
+	}
+}
+
+// TestEndAckPeerClosedWholeFirstFails (spec/EndAckLeg.tla RClose): the
+// peer closed the session whole, unread bytes and all, before this side's
+// CloseWriteSync: it fails (link.ErrReset), never a Sync's nil.
+func TestEndAckPeerClosedWholeFirstFails(t *testing.T) {
+	accepted := make(chan *Session, 1)
+	am, _ := v2muxPair(t, func(_ []byte, s *Session) { accepted <- s },
+		Config{Window: testWindow, Auth: testToken}, Config{Window: testWindow, Auth: testToken})
+	a, err := am.Open(context.Background(), []byte("p"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Write([]byte("unread")); err != nil {
+		t.Fatal(err)
+	}
+	_ = (<-accepted).Close()
+	select {
+	case <-a.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("the peer's close never ended the session")
+	}
+	if err := a.CloseWriteSync(); !errors.Is(err, ErrReset) {
+		t.Fatalf("CloseWriteSync after the peer's whole close: %v, want ErrReset", err)
+	}
+}
