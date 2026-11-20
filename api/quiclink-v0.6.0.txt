@@ -1,0 +1,7 @@
+Compatible changes:
+- (*Session).AckEnd: added
+- (*Session).AcksEnds: added
+- (*Session).CloseWriteSync: added
+- (*Session).CloseWriteSyncReceived: added
+- (*Session).HoldEndAck: added
+- ALPNEndAck: added

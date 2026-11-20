@@ -6,6 +6,24 @@ it (`peerlink/quiclink/vX.Y.Z`, `pathswitch/vX.Y.Z`, `linkvet/vX.Y.Z`;
 format is [WIRE.md](WIRE.md); every release since v0.2.0 speaks the same
 version 2 unless an entry says otherwise.
 
+## peerlink/quiclink v0.7.0 (unreleased): end acknowledgements
+
+- End acknowledgements (lane ENDACKQUIC, nfltr
+  docs/decisions/endack-every-transport-2026-11-20.md finding 3): ALPN
+  `peerlink-chain-endack` (`ALPNEndAck`, chaining included), offered
+  first by a listener without NextProtos; on it `Session.CloseWriteSync`
+  returns nil only once the far end read every byte and the FIN, through
+  any `peerlink.Join` (`HoldEndAck`, `AckEnd`; `CloseWriteSyncReceived`
+  reports the next hop's receipt, where a join's hold ends), as link's
+  FeatureEndAck. The control stream carries 'R', 'E' and 'A' with a
+  stream id (README "Wire"). `AcksEnds` reports the negotiation; with an
+  older peer `CloseWriteSync` is `CloseWrite`. Migration: a dialler adds
+  `quiclink.ALPNEndAck` first to its `NextProtos`. spec/EndAckLeg.tla
+  (Kind quic, mutant `close-acks`); `TestEndAck*`.
+- peerlink: a join ends its hold at the receipt of any conn with
+  `CloseWriteSyncReceived` (a quiclink session among them), not only a
+  `*link.Session`'s (spec/HopHold.tla `hold-until-ack` over QUIC).
+
 ## v0.13.0 (unreleased): the v1 API cut
 
 The API link v1.0 will freeze (docs/v1-api-review.md, lane LINKAPI; done
@@ -70,21 +88,6 @@ migration:
 - quiclink (v0.6.0): `MaxHeader`, `ErrNoDatagrams`, `Probe`,
   `Node.DatagramsDropped` and `Session.TagLen` are unexported, and
   `Session.Abort` deleted (above); its wire is a section of its README.
-- quiclink (v0.6.0): end acknowledgements (lane ENDACKQUIC, nfltr
-  docs/decisions/endack-every-transport-2026-11-20.md finding 3): ALPN
-  `peerlink-chain-endack` (`ALPNEndAck`, chaining included), offered
-  first by a listener without NextProtos; on it `Session.CloseWriteSync`
-  returns nil only once the far end read every byte and the FIN, through
-  any `peerlink.Join` (`HoldEndAck`, `AckEnd`; `CloseWriteSyncReceived`
-  reports the next hop's receipt, where a join's hold ends), as link's
-  FeatureEndAck. The control stream carries 'R', 'E' and 'A' with a
-  stream id (README "Wire"). `AcksEnds` reports the negotiation; with an
-  older peer `CloseWriteSync` is `CloseWrite`. Migration: a dialler adds
-  `quiclink.ALPNEndAck` first to its `NextProtos`. spec/EndAckLeg.tla
-  (Kind quic, mutant `close-acks`); `TestEndAck*`.
-- peerlink: a join ends its hold at the receipt of any conn with
-  `CloseWriteSyncReceived` (a quiclink session among them), not only a
-  `*link.Session`'s (spec/HopHold.tla `hold-until-ack` over QUIC).
 
 - pathswitch: a `Conn.Close` waits for a slow, live tail (lane
   ENDACKCODE): its wait has no total bound, only `Config.Detach` with
