@@ -380,6 +380,7 @@ type connWriter struct {
 	j     *joint
 	moved *atomic.Int64
 	tj    *joint // linktrace: the client's bytes onto the session, each write a Copy
+	jc    *joint // linktrace: the session's bytes onto the client, each write a D1Copy
 }
 
 func (w *connWriter) Write(p []byte) (int, error) {
@@ -388,6 +389,9 @@ func (w *connWriter) Write(p []byte) (int, error) {
 		w.err = err
 	}
 	w.wrote(int64(n))
+	if traceOn && w.jc != nil {
+		traceJC(w.jc, "D1Copy", "ok", map[bool]int{true: 1, false: 0}[err == nil])
+	}
 	return n, err
 }
 
@@ -425,6 +429,9 @@ func (w *connWriter) WriteBuffers(b [][]byte) (int64, error) {
 		w.err = err
 	}
 	w.wrote(n)
+	if traceOn && w.jc != nil {
+		traceJC(w.jc, "D1Copy", "ok", map[bool]int{true: 1, false: 0}[err == nil])
+	}
 	return n, err
 }
 
@@ -437,6 +444,9 @@ func (j *joint) dir(i int) {
 	}
 	if traceOn && traceClient(j, src) {
 		w.tj = j
+	}
+	if traceOn && traceToClient(j, i) {
+		w.jc = j
 	}
 	end := func(n int64, err error) { j.ended(i, n, err, w.err) }
 	if s := native(src); s != nil {
@@ -539,7 +549,11 @@ func (j *joint) ended(i int, n int64, err, werr error) {
 			// other direction's last bytes to src (it ends src, and
 			// finish closes both; spec/JoinClose.tla TailDelivered,
 			// TestJoinWholeCloseDeliversTheTail, TestPeerWholeCloseDeliversTheTail)
-			if !j.failed() && j.otherOver(i) {
+			now := !j.failed() && j.otherOver(i)
+			if traceOn && traceToClient(j, 1-i) {
+				traceJC(j, "D0Fail", "now", map[bool]int{true: 1, false: 0}[now])
+			}
+			if now {
 				_ = src.Close()
 			}
 		case !errors.Is(werr, link.ErrConnClosed) && errors.Is(werr, os.ErrDeadlineExceeded):
@@ -558,6 +572,9 @@ func (j *joint) ended(i int, n int64, err, werr error) {
 		j.abort(dst, abortOf(err))
 	case j.failed():
 	default:
+		if traceOn && traceToClient(j, i) { // spec/TraceJoinClose.tla D1End
+			traceJC(j, "D1End", "kind", map[bool]string{true: "close", false: "fin"}[native(src) != nil && isClosed(native(src).Done())])
+		}
 		if s := native(src); s != nil && isClosed(s.Done()) {
 			// the peer closed it whole, or its FIN ended it after our
 			// CloseWrite: held while that one syncs (review r2 finding 1).

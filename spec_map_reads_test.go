@@ -11,7 +11,7 @@ import (
 
 // TestSpecReadWaitEventsMapped: every event the read, wait, write and
 // joint recorders write (trace_read_on.go, trace_wait_on.go,
-// trace_write_on.go, trace_join_on.go and their hook points, the queue's
+// trace_write_on.go, trace_join_on.go, peerlink's joint and their hook points, the queue's
 // in internal/bytequeue) is a step of spec/TraceSessionRead.tla,
 // spec/TraceCreditWaiters.tla, spec/TraceSessionWrite.tla or
 // spec/TraceJoinClose.tla, and each of theirs is written by some hook
@@ -28,16 +28,17 @@ func TestSpecReadWaitEventsMapped(t *testing.T) {
 		{"spec/TraceCreditWaiters.tla", []string{"credit.go", "trace_wait_on.go"}},
 		{"spec/TraceSessionWrite.tla", []string{"trace_write_on.go"}},
 		{"spec/TraceJoinClose.tla", []string{"trace_join_on.go"}},
+		{"spec/TraceJoinClose.tla", []string{"peerlink/chain.go"}}, // peerlink's joint (lane LINKTRACE2)
 	} {
 		code := map[string]bool{}
-		lit := regexp.MustCompile(`trace(?:Read|Wait)\("([A-Za-z]+)"|"ev": "([A-Za-z0-9]+)"|q\.trace\("([A-Za-z]+)"|\bev :?= "([A-Za-z]+)"`)
+		lit := regexp.MustCompile(`trace(?:Read|Wait)\("([A-Za-z]+)"|"ev": "([A-Za-z0-9]+)"|q\.trace\("([A-Za-z]+)"|\bev :?= "([A-Za-z]+)"|traceJC\([a-z.]+, "([A-Za-z0-9]+)"`)
 		for _, f := range c.files {
 			b, err := os.ReadFile(f)
 			if err != nil {
 				t.Fatal(err)
 			}
 			for _, m := range lit.FindAllStringSubmatch(string(b), -1) {
-				if e := m[1] + m[2] + m[3] + m[4]; e != "Stopped" && e != "Ended" {
+				if e := m[1] + m[2] + m[3] + m[4] + m[5]; e != "Stopped" && e != "Ended" {
 					code[e] = true
 				}
 			}

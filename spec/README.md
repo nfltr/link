@@ -464,11 +464,8 @@ session). Mutants: `close-at-write-fail` (the code before, caught by
 caught by `AClosedInTheEnd`). Witnesses: `WitnessFailFirst`,
 `WitnessHalfThenWhole`. Guards: `link` `TestJoinWholeCloseDeliversTheTail`
 and `peerlink` `TestPeerWholeCloseDeliversTheTail` (both failed before,
-5 of 5: the client read the first window, or nothing, then EOF). Open:
-the joint's trace recorder logs no step of this path (a failed write,
-`over`, `whole`), so no trace is checked against `JoinClose.tla`, and
-`TraceJoin.tla` (whose `Join.tla` leaves the whole close out) would
-reject one: the peerlink guard is outside spec-traces' `^TestJoin`.
+5 of 5: the client read the first window, or nothing, then EOF). Open (closed by lane LINKTRACE2, below): the joint's trace recorder
+logged no step of this path.
 
 **Traces** (lane LINKTRACE2, 2026-11-20): `link.join`'s and `Forward`'s
 joint (`join.go`) records, with `-tags linktrace` and
@@ -485,8 +482,17 @@ spec-traces`: `TestJoinWholeCloseDeliversTheTail` and
 `TestChainHalfClose`. Code mutant: `close-at-write-fail` put back
 (`closeNow` closes A at once); the guard failed and the trace was
 rejected at the `D0Fail` (fixture `joinclose-close-at-write-fail`);
-`joinclose-ok` accepted. peerlink's joint (a plain conn) is still
-`TraceJoin.tla`'s only.
+`joinclose-ok` accepted. peerlink's joint of a plain conn (A) and a
+link session (B) records the same steps (lane LINKTRACE2,
+`peerlink/trace_on.go`, `<dir>/joinclose-peer-<n>.ndjson`: `D1Copy` per
+write onto A, `D1End` kind close when B's session ended whole, else fin,
+`D0Fail` in `ended`'s clean-close branch); `make spec-traces` checks
+`TestPeerWholeCloseDeliversTheTail`'s; fixtures `joinclose-ok-peerlink`
+accepted, `joinclose-peerlink-close-at-write-fail` (recorded with
+`otherOver` taken out of that branch: the guard failed, the trace is
+rejected at the `D0Fail`) rejected. JoinClose has no failure step, so
+`TestPeerFailureAfterFinDeliversTheTail` (a FIN, then the connection's
+end) is `RelayedClose.tla`'s, not checked here.
 
 ## Join's clean end (Join.tla, 2026-11-03, lane SPECTRIM)
 

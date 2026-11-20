@@ -17,7 +17,8 @@ import (
 
 // TestPeerWholeCloseDeliversTheTail (not TestJoin*: spec-traces checks
 // those against TraceJoin.tla, which leaves the whole close to
-// JoinClose.tla, untraced): the agent writes its tail and closes
+// JoinClose.tla; spec-traces checks this one's against TraceJoinClose.tla,
+// LINKTRACE_JOIN): the agent writes its tail and closes
 // the session whole (a TLS server's alert, then its close); the client,
 // not reading yet, writes a byte whose write onto the session fails. The
 // client then reads the whole tail, then EOF: the failed write does not

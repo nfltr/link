@@ -1094,7 +1094,7 @@ traces)
 	# (TraceSessionWrite.tla) and a joint's side closed whole
 	# (TraceJoinClose.tla), lane LINKTRACE2: each session's (joint's) file, its
 	# events counted; an event no trace took is a test gap.
-	for k in read wait write joinclose relayed hophold; do
+	for k in read wait write joinclose peerjoinclose relayed hophold; do
 		mkdir -p "$work/$k"
 		pkg=
 		case $k in
@@ -1102,6 +1102,7 @@ traces)
 		wait) env=LINKTRACE_WAIT check=wtrace tests=${TRACE_WAIT_TESTS:-'^(TestConcurrentAcquiresShareAGrant|TestSessionWriteWaitingForCreditSeesFirstDeadline|TestMuxSlowSessionIsolated)$'} model=TraceCreditWaiters ;;
 		joinclose) env=LINKTRACE_JOIN check=jctrace tests=${TRACE_JOINCLOSE_TESTS:-'^(TestJoinWholeCloseDeliversTheTail|TestChainHalfClose)$'} model=TraceJoinClose ;;
 		relayed) env=LINKTRACE_RELAYED check=rctrace tests=${TRACE_RELAYED_TESTS:-'^TestEndAck(WaitsForTheFarEnd|FailsWhenTheFarEndIsCut|FailsWhenItsConnectionIsCut|GivesUpWithoutProgress|ResetEndsTheWait|ExitThenTheFarEndWrites|CutThenTheFarEndWrites|CutWhileTheTailCopiesHoldsTheAbort|FailsWhenTheRelayIsGone|FarEndCloseBeforeFinFails)$'} model=TraceRelayedClose ;;
+		peerjoinclose) env=LINKTRACE_JOIN check=jctrace pkg=./peerlink/ tests=${TRACE_PEER_JOINCLOSE_TESTS:-'^TestPeerWholeCloseDeliversTheTail$'} model=TraceJoinClose ;;
 		hophold) env=LINKTRACE_HOPHOLD check=hhtrace pkg=./peerlink/ tests=${TRACE_HOPHOLD_TESTS:-'^TestJoinCrossingHalfClosesEnd$'} model=TraceHopHold ;;
 		write) env=LINKTRACE_WRITE check=swtrace tests=${TRACE_WRITE_TESTS:-'^(TestSessionWriteWaitingForCreditSeesFirstDeadline|TestWriteDeadline|TestWriteDeadlineStuckNetwork)$'} model=TraceSessionWrite ;;
 		esac

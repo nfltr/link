@@ -46,6 +46,31 @@ type joinTrace struct {
 	lost   bool   // Lost written: the client is aborted once (traceMu)
 	hop    string // G or R: a marked joint of spec/HopHold.tla
 	hpath  string
+	jcpath string // LINKTRACE_JOIN: spec/TraceJoinClose.tla's file
+}
+
+// A joint's side closed whole (LINKTRACE_JOIN=<dir>): the steps of
+// spec/JoinClose.tla a joint of a plain conn (A, the client) and a link
+// session (B) takes go to <dir>/joinclose-peer-<n>.ndjson, as link's join's do
+// (trace_join_on.go): D1Copy (a write of B's bytes onto A, ok 1 or 0),
+// D1End (B's bytes ended cleanly: kind fin, A's half close, or close, B's
+// peer closed it whole) and D0Fail (a write onto B failed, its peer closed
+// it whole: now 1, A closed now, or 0, left to direction 1).
+var jcSeq atomic.Int64
+
+// traceJC writes one JoinClose step of j's.
+func traceJC(j *joint, ev string, k string, v any) {
+	if j.tr == nil || j.tr.jcpath == "" {
+		return
+	}
+	traceMu.Lock()
+	defer traceMu.Unlock()
+	traceLine(j.tr.jcpath, map[string]any{"ev": ev, k: v})
+}
+
+// traceToClient reports whether direction i writes onto j's client.
+func traceToClient(j *joint, i int) bool {
+	return j.tr != nil && j.tr.jcpath != "" && 1-i == j.tr.client
 }
 
 var (
@@ -91,10 +116,13 @@ func traceStart(j *joint) {
 	if dir != "" {
 		t.path = filepath.Join(dir, fmt.Sprintf("join-%d.ndjson", traceN.Add(1)))
 	}
+	if jc := os.Getenv("LINKTRACE_JOIN"); jc != "" {
+		t.jcpath = filepath.Join(jc, fmt.Sprintf("joinclose-peer-%d.ndjson", jcSeq.Add(1)))
+	}
 	traceMu.Lock()
 	t.hop, t.hpath = hopRoles[j.c[client]], hopPath
 	traceMu.Unlock()
-	if t.path != "" || t.hop != "" {
+	if t.path != "" || t.hop != "" || t.jcpath != "" {
 		j.tr = t
 	}
 }
