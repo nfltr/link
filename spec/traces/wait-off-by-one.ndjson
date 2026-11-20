@@ -1,0 +1,5 @@
+{"ev":"Open","n":8}
+{"cr":0,"ev":"Check","n":8,"took":1,"w":1}
+{"cr":-1,"ev":"Check","n":1,"took":1,"w":2}
+{"cr":-1,"ev":"Check","n":5,"took":0,"w":3}
+{"cr":-1,"ev":"Check","n":2,"took":0,"w":4}

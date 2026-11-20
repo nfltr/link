@@ -1,0 +1,10 @@
+{"ev":"Open","n":8}
+{"cr":0,"ev":"Check","n":8,"took":1,"w":1}
+{"cr":0,"ev":"Check","n":1,"took":0,"w":2}
+{"cr":0,"ev":"Check","n":5,"took":0,"w":3}
+{"cr":0,"ev":"Check","n":2,"took":0,"w":4}
+{"cr":3,"ev":"Grant","n":3}
+{"cr":2,"ev":"Check","n":1,"took":1,"w":2}
+{"cr":0,"ev":"Check","n":2,"took":1,"w":4}
+{"cr":5,"ev":"Grant","n":5}
+{"cr":0,"ev":"Check","n":5,"took":1,"w":3}

@@ -1,0 +1,13 @@
+{"ev":"Begin","n":0,"r":737}
+{"ev":"Push","n":1000}
+{"ev":"Close","n":0}
+{"ev":"Pop","k":1,"n":1000,"r":737,"res":"data"}
+{"ev":"Copy","n":1,"r":737,"rel":1}
+{"ev":"End","r":737,"res":"data"}
+{"ev":"WTake","n":999,"r":-737}
+{"ev":"WWrite","n":999,"r":-737}
+{"ev":"WRel","n":0,"r":-737}
+{"ev":"Pop","k":0,"n":0,"r":-737,"res":"eof"}
+{"ev":"Begin","n":0,"r":754}
+{"ev":"Pop","k":0,"n":0,"r":754,"res":"eof"}
+{"ev":"End","r":754,"res":"eof"}

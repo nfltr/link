@@ -41,8 +41,11 @@ CfgNeed == <<5, 2, 1>>
 
 T == IF W \div 4 > 1 THEN W \div 4 ELSE 1 \* a window update's least size
 \* Below T bytes the receiver grants nothing, so a waiter needing more than
-\* W - T + 1 could wait for good in any design.
-ASSUME K >= 1 /\ \A w \in Waiters : Need[w] \in 1..(W - T + 1)
+\* W - T + 1 could wait for good in any design (AllDone assumes none does;
+\* a recorded trace, TraceCreditWaiters.tla, may hold one: its receiver is
+\* the test's).
+ASSUME K >= 1 /\ \A w \in Waiters : Need[w] \in 1..W
+Satisfiable == \A w \in Waiters : Need[w] <= W - T + 1
 
 VARIABLES cr, left, pc, token, woken, wire, cons, grants
 vars == <<cr, left, pc, token, woken, wire, cons, grants>>
@@ -121,7 +124,7 @@ NoStrandedWaiter ==
     \A w \in Waiters : pc[w] = "wait" /\ cr >= Need[w] => Woken(w)
 
 \* Every Acquire completes.
-AllDone == <>(\A w \in Waiters : left[w] = 0)
+AllDone == Satisfiable => <>(\A w \in Waiters : left[w] = 0)
 
 \* Witnesses (make spec-mutants: TLC must violate each): two waiters at
 \* once; a waiter with credit there, too little for it; one grant waking

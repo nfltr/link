@@ -1,0 +1,7 @@
+{"ev":"Begin","n":0,"r":737}
+{"ev":"Push","n":1000}
+{"ev":"Close","n":0}
+{"ev":"Pop","k":1,"n":1000,"r":737,"res":"data"}
+{"ev":"Copy","n":1,"r":737,"rel":0}
+{"ev":"End","r":737,"res":"data"}
+{"ev":"WTake","n":1000,"r":-737}
