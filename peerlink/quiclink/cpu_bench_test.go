@@ -64,6 +64,7 @@ func benchBulkCPU(b *testing.B, tr string, sessions int, rate float64) {
 				k, err := s.Read(buf)
 				got.Add(int64(k))
 				if err != nil {
+					_ = s.Close() // a session never closed holds Drain's wait
 					return
 				}
 			}
@@ -84,6 +85,11 @@ func benchBulkCPU(b *testing.B, tr string, sessions int, rate float64) {
 		}
 		ss[i] = s
 	}
+	b.Cleanup(func() { // before Drain, as the sink's Close
+		for _, s := range ss {
+			_ = s.Close()
+		}
+	})
 	const chunk = 64 << 10
 	msg := make([]byte, chunk)
 	b.SetBytes(chunk)

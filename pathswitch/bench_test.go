@@ -112,10 +112,17 @@ func BenchmarkPathswitchMoves(b *testing.B) {
 	m, s, t, more := linkPair(b)
 	c, sv := Client(linkStream{s}, "relay", Config{}), Server(linkStream{t}, "relay", Config{})
 	b.Cleanup(func() { c.Abort(); sv.Abort() })
+	stop := make(chan struct{}) // more stays open: the attacher ends here
+	b.Cleanup(func() { close(stop) })
 	go func() {
-		for st := range more {
-			if o, err := ReadOpen(linkStream{st}); err == nil {
-				_ = sv.Attach(o, "relay")
+		for {
+			select {
+			case st := <-more:
+				if o, err := ReadOpen(linkStream{st}); err == nil {
+					_ = sv.Attach(o, "relay")
+				}
+			case <-stop:
+				return
 			}
 		}
 	}()
