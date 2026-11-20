@@ -679,7 +679,7 @@ func (j *joint) sync(src net.Conn, ds endSyncer) {
 		// other's ENDACK waits for (spec/HopHold.tla, mutant hold-until-ack).
 		var err error
 		if r, ok := ds.(receiptSyncer); ok { // a link session, a quiclink one (ALPNEndAck)
-			err = r.CloseWriteSyncReceived(func() { j.unhold(true) })
+			err = r.CloseWriteSyncReceived(func() { j.unhold(true, true) })
 		} else {
 			err = ds.CloseWriteSync()
 		}
@@ -694,14 +694,19 @@ func (j *joint) sync(src net.Conn, ds endSyncer) {
 				n.EndDelivered()
 			}
 		}
-		j.unhold(err == nil)
+		j.unhold(err == nil, false)
 		j.finish()
 	}()
 }
 
 // unhold ends sync's hold, once: the held end runs when ok, else it only
-// ends.
-func (j *joint) unhold(ok bool) {
+// ends. From the sync's receipt callback (async) the held end runs on its
+// own goroutine: it may wait for its app's read (a QUIC far end
+// acknowledges there), and an app that reads only once its own
+// CloseWriteSync returned waits for this sync to return and pass its
+// ENDACK on (spec/HopHold.tla HopHoldSeq.cfg NoStuck, mutant
+// hold-in-receipt; quiclink TestEndAckRelayedCloseSequentialApp).
+func (j *joint) unhold(ok, async bool) {
 	j.mu.Lock()
 	if !j.syncing {
 		j.mu.Unlock()
@@ -714,11 +719,19 @@ func (j *joint) unhold(ok bool) {
 	fin := j.fin
 	j.fin = nil
 	j.mu.Unlock()
-	if fin != nil {
+	if fin == nil {
+		return
+	}
+	end := func() {
 		if ok {
 			fin()
 		}
 		j.finish()
+	}
+	if async {
+		go end()
+	} else {
+		end()
 	}
 }
 

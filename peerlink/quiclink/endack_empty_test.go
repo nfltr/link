@@ -146,3 +146,58 @@ func TestEndAckEmptyStreamRelayedCloseIsClean(t *testing.T) {
 		_ = s.Close()
 	}
 }
+
+// TestEndAckRelayedCloseSequentialApp (spec/HopHold.tla HopHoldSeq.cfg,
+// mutant hold-in-receipt; lane HOLDCB): the shape of
+// TestEndAckEmptyStreamRelayedCloseIsClean with an agent that reads the
+// session only once its CloseWriteSync returned. The relay's joint holds
+// the client's end while its sync of the agent's FIN runs; that held end
+// waits for the agent's read (a QUIC far end acknowledges at its read).
+// Run inside the sync's receipt callback it kept the sync from passing the
+// agent's ENDACK on, so the agent never read: the idle bound (30 s) reset
+// both.
+func TestEndAckRelayedCloseSequentialApp(t *testing.T) {
+	a, _, acc := endAckPair(t, 0, nil, endAckProtos...)
+	ctx := context.Background()
+	cr, rc := tcpConns(t)
+	client := make(chan *link.Session, 1)
+	go func() {
+		c, _, err := link.Server(ctx, cr, link.Config{Auth: link.NoAuth})
+		if err != nil {
+			return
+		}
+		_ = link.NewMux(c).Serve(func(_ []byte, s *link.Session) { client <- s })
+	}()
+	rconn, err := link.Client(ctx, rc, link.Config{Hop: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rm := link.NewMux(rconn)
+	go func() { _ = rm.Serve(nil) }()
+	t.Cleanup(func() { _ = rconn.Close() })
+	for i := range 10 {
+		s, in := openEmpty(t, a, acc)
+		out, err := rm.Open(ctx, []byte("h"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		go func() { _ = peerlink.Join(in, out) }()
+		cs := <-client
+		if _, err := cs.Write([]byte("x")); err != nil {
+			t.Fatal(err)
+		}
+		go func() { _ = cs.Close() }()
+		start := time.Now()
+		if err := wait(t, closeSync(s), "CloseWriteSync"); err != nil {
+			t.Fatalf("%d: the agent's CloseWriteSync before its read: %v after %v, want nil", i, err, time.Since(start))
+		}
+		if d := time.Since(start); d > 10*time.Second {
+			t.Fatalf("%d: the agent's CloseWriteSync took %v: the joint's held end waited for the agent's read", i, d)
+		}
+		b, err := io.ReadAll(s)
+		if err != nil || string(b) != "x" {
+			t.Fatalf("%d: the agent read %q, %v, want \"x\" and the client's clean end", i, b, err)
+		}
+		_ = s.Close()
+	}
+}
