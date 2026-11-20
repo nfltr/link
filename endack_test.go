@@ -343,8 +343,10 @@ func TestEndAckFailsWhenTheRelayIsGone(t *testing.T) {
 	go func() { ret <- r.a.CloseWriteSync() }()
 	time.Sleep(100 * time.Millisecond) // the hop holds the end
 	traceRCEnv("RelayGone")
-	_ = r.hToC.Close() // the relay's process ends: both its connections
+	// the relay's process ends: both its connections, A's first, so the
+	// hop cannot answer A once C's ended (a crash does neither)
 	_ = r.hFromA.Close()
+	_ = r.hToC.Close()
 	select {
 	case err := <-ret:
 		if err == nil {
@@ -353,6 +355,7 @@ func TestEndAckFailsWhenTheRelayIsGone(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("CloseWriteSync never returned after the relay ended")
 	}
+	traceRelayedOff() // C may still read what its socket holds: the model loses it (RelayGone)
 	close(r.open)
 }
 
