@@ -299,6 +299,57 @@ an `Open` logged after the close to the refusal). The interface's refused
 open is any failed Open (ErrGoAway, the connection's end), before any
 byte. Severity: low (model only).
 
+## A relayed session's Close (RelayedClose.tla, 2026-11-20, lane RELAYCLOSE)
+
+An agent's accepted relayed session (the relay SDK's `QueueConn`, joined
+to its agent-link session by `peerlink.Join`) returned from `Close` at
+once, before its tail left the process; a program that exits then lost
+it. Once the relay held the tail and the FIN, the agent's exit (its link
+connection's end) or its stop's reset still cut it: the relay's session
+toward the agent then read the failure, not io.EOF, after the agent's
+FIN (the code broke `LinkSession.tla` GEnds, "a FIN then a reset reads
+io.EOF", which `Link.tla` keeps: `got` is the first end received), so
+its joint aborted the client, which read every byte and then a reset
+(relay-core `TestRelayedCloseThenExitDeliversTheTail`); and a failed
+write toward the agent aborted the client at once, before the tail.
+
+Design: A's Close returns clean once the relay's Mux read every byte and
+the FIN (`CloseWriteSync`'s ping answered), an error once A's connection
+ended first. A session whose peer's FIN was read before it failed (the
+peer's reset or abort, the connection's end, this side's own reset)
+reads its bytes, then io.EOF; `Err` still names the failure. The
+joint's direction whose source read such an end passes the tail, the
+half close, then the failure (an ABORT: the other side's writes fail);
+the other direction's failed write leaves its abort to that one while it
+runs (`joint.held`). `RelayedClose.tla` (`RelayedClose.cfg`, `make spec`
+and `make spec-invariants`, 3,533 states, every action taken): A writes
+K bytes and closes; A may then exit, be reset by its stop, or its
+connection cut; the relay may crash; the client may write a byte.
+Invariants `NoSilentLoss`, `CloseTruth` (clean only once the relay read
+every byte and the FIN); liveness `TailDelivered` (after a clean Close
+the client reads every byte and io.EOF, unless the relay crashed),
+`CloseEnds`. Mutants: `close-before-ack` (the SDK's code before,
+`CloseTruth`), `ack-lost-hang` (`CloseEnds`), `fail-drops-fin` (link's
+code before, `TailDelivered`), `abort-at-write-fail` (the joint's code
+before, `TailDelivered`). Witnesses: `WitnessExitThenEof`,
+`WitnessFinThenAbort`, `WitnessHeld`, `WitnessCloseErr`.
+
+| assumption | source |
+|---|---|
+| Each link connection is one FIFO; a connection's end loses the frames not yet read | WIRE.md 1, 4; TCP (RFC 9293) |
+| A pong answers every frame buffered before its ping | WIRE.md 8 (`Session.Sync`; Join.tla) |
+| A connection whose peer is gone ends (the dead-peer bound) | `Liveness.tla` `DetectBound` |
+| A program's exit ends its connections; a relay's crash ends both of its | the OS closes a process's sockets |
+
+| actions | code |
+|---|---|
+| `AClose`, `APong`, `ADown` | `mux.go` `CloseWriteSync`, `waitSync`; relay `client/agent/queue_close.go` |
+| `JRecv`, `JDown`, `CRecv`, `CEnd` (`ReadsEof`) | `mux.go` `Mux.handle` (CLOSE), `Mux.close`, `Session.fail`, `Session.end` |
+| `D1Copy`, `D1End`, `D0Fail` | `join.go` `joint.ended`, `peerlink/chain.go` `joint.ended` |
+
+Open: no trace recorder logs these steps yet (the joint's recorder logs
+no failed write; `Trace.tla` checks the Mux's frames, not a reader's end).
+
 ## A joint's side closed whole (JoinClose.tla, 2026-11-12, lane REFUSALFLAKE)
 
 nfltr's connect conformance `TestE2EE/exit_10` flaked on Linux: a client
@@ -949,6 +1000,7 @@ holds in a `Spec-Reviewed:` trailer).
 | `QuicWatch.tla`, `MBTWatch.tla` | quiclink's liveness: `conn.watch`, `watchState.tick`, `keepAliveAfter`, QUIC's idle timeout as its backstop | `peerlink/quiclink/quiclink.go` |
 | `Join.tla`, `TraceJoin.tla` | `peerlink.Join`'s clean end (`Session.Sync`, hold, the watch) | `peerlink/chain.go`, `join.go`, `peerlink/trace_on.go` |
 | `JoinClose.tla`, `TraceJoinClose.tla` | a joint's side closed whole by its peer while the other side writes: who closes the other side, and when | `join.go`, `peerlink/chain.go`, `trace_join_on.go` |
+| `RelayedClose.tla` | a relayed session's Close, then the program's exit or reset: a FIN then a failure reads io.EOF, the joint passes the tail before the failure | `mux.go`, `join.go`, `peerlink/chain.go` |
 | `CreditWaiters.tla`, `TraceCreditWaiters.tla` | senders waiting in `Credit.Acquire` on one session: the wait and `wakeAll` | `credit.go`, `trace_wait_on.go` |
 | `SessionRead.tla`, `TraceSessionRead.tla` | `Session.Read` from several goroutines (or one running `WriteTo` or `Pump`), the read deadline set and cleared meanwhile | `mux.go`, `internal/bytequeue/`, `trace_read_on.go` |
 | `SessionWrite.tla`, `TraceSessionWrite.tla` | `Session.Write` waiting for credit while `SetWriteDeadline` and its timer run | `mux.go`, `credit.go`, `trace_write_on.go` |
@@ -1151,6 +1203,7 @@ each checked here):
 | a dead peer is declared within Interval + Timeout + 2 x Late of its last bytes, never a live one | `Liveness.tla` `DetectBound` (tight), `NoFalseDead`, `NeverEarly` |
 | `peerlink.Join`: a clean end to a plain conn only once the peer read its bytes and FIN; a dead link connection ends the conn however idle | `Join.tla` `NoSilentLoss`, `LostEnds` |
 | `Join` and `peerlink.Join`: a side closed whole by its peer has every byte it sent delivered to the other side before that side's close, and the other side is closed whole in the end | `JoinClose.tla` `TailDelivered`, `AClosedInTheEnd` |
+| a session whose peer's FIN was read before it failed reads io.EOF; `Join` passes such a tail and FIN on before the failure, and holds the other direction's abort for it | `RelayedClose.tla` `TailDelivered`, `NoSilentLoss` |
 | a Pool: no session on a connection going away, within Max but Drain's make-before-break, Min held, every Open progresses and every waiting Open wakes, ErrFull only with the room full and no dial in flight, nothing left after Close | `Pool.tla` `NoSessionOnLeaving`, `MaxHolds`, `MakeBeforeBreak`, `MinHeld`, `OpensProgress`, `WaitWakes`, `FullOnlyAtMax`, `NoLeak`, `CloseEnds` |
 
 Not a guarantee (stated above, "The session interface"): a session that
