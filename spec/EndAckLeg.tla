@@ -34,7 +34,9 @@ CONSTANTS
              \* idle bound restarts at every frame heard; "total-bound": the
              \* wait gives up after a fixed time whatever the progress
              \* (pathswitch Conn.Close today: waitHeard(Detach) with no stall
-             \* bound)
+             \* bound); "close-acks" (quic): R's whole close acknowledges the
+             \* end whatever it holds (link's closeAckErr: a peer's close ends
+             \* the wait clean)
 
 VARIABLES
     sw,      \* bytes S wrote
@@ -101,6 +103,18 @@ RFail ==
     /\ sreset' = (Kind = "quic")
     /\ UNCHANGED <<sw, ret, ch, got, finSeen, eackSent, mute, cut, sfail, idled>>
 
+\* QUIC: R's app closes the session whole (quiclink Session.Close: STOP_SENDING)
+\* before acknowledging: it says 'A' on the control stream, the end not known
+\* delivered (as a TCP close with data unread is an RST); with the mutant 'E'.
+\* A mute R closes too: its Close still sends 'A' (the wait need not idle).
+RClose ==
+    /\ Kind = "quic" /\ ~eackSent /\ ~rfail /\ ~cut
+    /\ rfail' = TRUE
+    /\ IF Mutant = "close-acks"
+       THEN back' = Append(back, "eack") /\ eackSent' = TRUE
+       ELSE back' = Append(back, "abort") /\ UNCHANGED eackSent
+    /\ UNCHANGED <<sw, ret, ch, got, finSeen, sreset, mute, cut, sfail, idled>>
+
 \* S reads its acknowledgement channel (in order).
 SRecv ==
     /\ back # <<>> /\ ~cut
@@ -141,7 +155,7 @@ SIdle ==
     /\ ret' = "err" /\ idled' = TRUE
     /\ UNCHANGED <<sw, ch, got, finSeen, back, sreset, eackSent, rfail, mute, cut, sfail>>
 
-Next == SWrite \/ SClose \/ RRecv \/ RFail \/ SRecv \/ SReset \/ Cut \/ RMute \/ SIdle
+Next == SWrite \/ SClose \/ RRecv \/ RFail \/ RClose \/ SRecv \/ SReset \/ Cut \/ RMute \/ SIdle
 
 \* S's and R's steps are fair; R's failure, the cut and muteness are the
 \* environment's.

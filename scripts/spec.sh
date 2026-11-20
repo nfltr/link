@@ -744,11 +744,12 @@ mutants)
 	# ENDACK2D): acknowledged once written (quiclink, a TCP visitor, a gRPC
 	# Close today), an idle bound pings restart or a fixed one (pathswitch
 	# Close today); on QUIC an acknowledgement at the FIN's frame and a wait
-	# that a stream reset overtaking the acknowledgement ends.
+	# that a stream reset overtaking the acknowledgement ends, and a whole
+	# close before the end was read that acknowledges it (lane ENDACKQUIC).
 	for m in ack-at-write liveness-counts-as-progress total-bound; do
 		job mutant EndAckLeg.cfg 'Mutant = "none"' "Mutant = \"$m\"" EndAckLeg.tla
 	done
-	for m in ack-at-final-size wait-on-stream-reset; do
+	for m in ack-at-final-size wait-on-stream-reset close-acks; do
 		job mutant EndAckLegQuic.cfg 'Mutant = "none"' "Mutant = \"$m\"" EndAckLeg.tla
 	done
 	for w in WitnessClean WitnessIdle; do job witness EndAckLeg.cfg $w EndAckLeg.tla; done

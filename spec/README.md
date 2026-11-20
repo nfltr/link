@@ -1106,7 +1106,19 @@ the Close whatever the progress: `IdleTruth`; DirectPath.tla's
 (acknowledging at the FIN's frame, quic-go's final-size callback:
 `AckTruth`) and `wait-on-stream-reset` (`ErrTruth`). Witnesses
 `WitnessClean`, `WitnessIdle`, `WitnessFinFirst` (QUIC only). `SReset`
-is taken on the QUIC configuration only.
+and `RClose` are taken on the QUIC configuration only.
+
+quiclink (lane ENDACKQUIC) is the `quic` leg on a connection that
+negotiated `ALPNEndAck` ("peerlink-chain-endack"): its control stream
+carries 'R' (receipt), 'E' (the end acknowledgement, `back`'s "eack") and
+'A' (`back`'s "abort"), each with the stream's id (RFC 9000 varint).
+`RClose` is the receiver's whole `Close` before it read the end: 'A', the
+end not known delivered (mutant `close-acks`, `AckTruth`). The protocol is
+fixed at the handshake, so negotiation is no state of this model: on a
+connection without `ALPNEndAck` (an older peer) `CloseWriteSync` is
+`CloseWrite`, the contract before (`ack-at-write`, best effort, as a link
+peer without FeatureEndAck), and no control byte beyond 'G' and 'D' is
+sent, which an older peer would misread (`TestEndAckOldPeer*`).
 
 | assumption | source |
 |---|---|
