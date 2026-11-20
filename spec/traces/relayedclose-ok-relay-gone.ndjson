@@ -1,0 +1,6 @@
+{"ev":"AClose","ret":"wait"}
+{"ev":"JRecv","t":"fin"}
+{"eof":"1","ev":"D1End"}
+{"ev":"RelayGone"}
+{"ev":"ADown"}
+{"ev":"ARet","r":"err"}

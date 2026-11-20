@@ -40,6 +40,10 @@ Step ==
       [] E.ev = "Cut" -> Cut
       [] E.ev = "CCut" -> CCut
       [] E.ev = "CMute" -> CMute
+      [] E.ev = "Exit" -> Exit
+      [] E.ev = "JDown" -> JDown
+      [] E.ev = "D0Fail" -> D0Fail /\ ((E.held = "1") = (d0' = "held"))
+      [] E.ev = "RelayGone" -> RelayGone
       [] OTHER -> Print(<<"unknown event", E>>, FALSE)
 
 TraceInit == Init /\ l = 1

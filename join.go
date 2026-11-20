@@ -360,7 +360,12 @@ func (j *joint) ended(i int, n int64, err, werr error) {
 	case werr != nil:
 		switch {
 		case errors.Is(werr, ErrReset) || errors.Is(werr, ErrConnClosed): // dst was cut (Session.writeErr)
-			if a := abortFor(werr); !j.cutLater(i, a) {
+			a := abortFor(werr)
+			held := j.cutLater(i, a)
+			if traceOn { // spec/TraceRelayedClose.tla
+				traceRC(src.m, src.id, "Jout", "D0Fail", "held", map[bool]string{true: "1", false: "0"}[held])
+			}
+			if !held {
 				j.abort(src, a)
 			}
 		case errors.Is(werr, os.ErrDeadlineExceeded):
@@ -387,7 +392,9 @@ func (j *joint) ended(i int, n int64, err, werr error) {
 		if err := dst.onwardTook(); err == nil { // src's end is the far end's now (FeatureEndAck, spec/RelayedClose.tla JAck)
 			src.AckEnd()
 		} else {
-			if traceOn && !errors.Is(err, ErrEndAckIdle) && !errors.Is(err, ErrReset) { // JIdle is waitAck's, C's close JAck's (traceRCFrame)
+			// JIdle is waitAck's; with C's connection up, d0's abort of dst
+			// (D0Fail) ended the wait; C's close is JAck's (traceRCFrame)
+			if traceOn && !errors.Is(err, ErrEndAckIdle) && !errors.Is(err, ErrReset) && closed(dst.m.c.Done()) {
 				traceRC(src.m, src.id, "Jin", "JSyncFail")
 				traceRC(src.m, src.id, "Jin", "D0CFail")
 			}

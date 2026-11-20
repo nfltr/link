@@ -464,6 +464,9 @@ func (m *Mux) close() {
 	}
 	err := m.connErr()
 	for _, s := range sess {
+		if traceOn && s.err.Load() == nil { // spec/TraceRelayedClose.tla
+			traceRC(m, s.id, "Jin", "JDown")
+		}
 		s.fail(err) // a session cut with its connection never reads a clean end
 		s.peerClosed.Store(true)
 		s.ended()

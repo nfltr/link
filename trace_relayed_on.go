@@ -25,7 +25,8 @@ import (
 //
 //	ev   the action; t: a frame received (fin, abort, eack); ret: AClose's
 //	     wait or err; r: CloseWriteSync's result (ARet: clean or err);
-//	     eof: D1End's clean end ("1") or failure ("0")
+//	     eof: D1End's clean end ("1") or failure ("0"); held: D0Fail's
+//	     abort waits for d1 ("1") or goes now ("0")
 type rcKey struct {
 	m   *Mux
 	sid string
@@ -36,6 +37,7 @@ var rc struct {
 	path  string
 	roles map[rcKey]string // A, Jin, Jout, C
 	rst   map[rcKey]bool   // A's reset was logged (AReset, AIdle)
+	gone  bool             // RelayGone logged: J takes no more steps
 }
 
 // traceRelayed marks a relayed path's sessions for test, when
@@ -50,6 +52,7 @@ func traceRelayed(test string, a, jin, jout, c *Session) {
 	rc.path = filepath.Join(dir, "relayedclose-"+strings.ReplaceAll(test, "/", "-")+".ndjson")
 	rc.roles = map[rcKey]string{{a.m, a.id}: "A", {jin.m, jin.id}: "Jin", {jout.m, jout.id}: "Jout", {c.m, c.id}: "C"}
 	rc.rst = map[rcKey]bool{}
+	rc.gone = false
 }
 
 func traceRelayedOff() {
@@ -64,7 +67,7 @@ func traceRC(m *Mux, sid, role, ev string, kv ...string) {
 	rc.mu.Lock()
 	k := rcKey{m, sid}
 	path, e := rc.path, ev
-	if rc.roles[k] != role {
+	if rc.roles[k] != role || rc.gone && (role == "Jin" || role == "Jout") {
 		e = ""
 	} else if e == "AReset" || e == "AIdle" {
 		if rc.rst[k] { // AIdle's own Reset, or a second one
@@ -79,10 +82,15 @@ func traceRC(m *Mux, sid, role, ev string, kv ...string) {
 	traceRCWrite(path, e, kv)
 }
 
-// traceRCEnv logs a step of the environment the test takes (CCut, CMute).
+// traceRCEnv logs a step of the environment the test takes (Cut, CCut,
+// CMute, Exit, RelayGone: the relay's process is gone, so its Muxes'
+// ends, which the test makes, are no steps of J's).
 func traceRCEnv(ev string) {
 	rc.mu.Lock()
 	path := rc.path
+	if ev == "RelayGone" {
+		rc.gone = true
+	}
 	rc.mu.Unlock()
 	if path != "" {
 		traceRCWrite(path, ev, nil)

@@ -333,7 +333,7 @@ holds no Close (lane V1READY's finding: relay psConn.Close held 600 s);
 prior art TCP's user timeout (RFC 5482), which counts unacknowledged
 data, not keepalives.
 `RelayedClose.tla` (`RelayedClose.cfg`, `make spec` and `make
-spec-invariants`, 87,566 states, every action taken): A writes K bytes
+spec-invariants`, 86,268 states, every action taken): A writes K bytes
 and closes; A may then exit, be reset, or its connection cut, or reset
 the session before or while its Close (`AResetFirst`, `AResetWaiting`:
 its other direction failed); C's
@@ -385,8 +385,12 @@ frame's send logged before its write, its receipt after its read, so
 the order is causal; no vector clocks). Logged: `AClose`, `ARecv`,
 `ADown`, `AIdle`, `AReset` (one of the three resets, by `ret`),
 `JRecv`, `D1End`, `JAck`, `JIdle`, `JSyncFail`, `D0CFail`, `CRecv`,
-`JAck` also for C's clean whole close (lane ENDACKTRUTH), and the
-test's `Cut`, `CCut`, `CMute`, `CClose`; `ARet` is an observation (what A's
+`JAck` also for C's clean whole close (lane ENDACKTRUTH),
+`JDown` (J's Mux ends a live session from A with its connection,
+`Mux.close`), `D0Fail` (`join.go`: `held` 1 when its abort of C waits
+for d1, `cutLater`), and the test's `Cut`, `CCut`, `CMute`, `CClose`, `Exit`,
+`RelayGone` (after it J's steps are not logged: its Muxes' ends, which
+the test makes, are no steps of a crashed process); `ARet` is an observation (what A's
 ENDACK wait returned must be the model's `ret`: `CloseTruth` on the
 code's own result). The bytes are not logged: `TraceRelayedClose.tla`
 lets TLC take them (K = 1). `make spec-traces` checks the traces of
@@ -394,23 +398,39 @@ lets TLC take them (K = 1). `make spec-traces` checks the traces of
 `...FailsWhenItsConnectionIsCut` (`ADown`, the gap the first box run
 named), `...GivesUpWithoutProgress`, `...ResetEndsTheWait`,
 `...FarEndCloseBeforeFinFails` (`CClose`; `CDrop` is taken by TLC,
-C's dropped frames being logged as `CRecv`);
+C's dropped frames being logged as `CRecv`), and (lane
+LINKTRACE2, C not half-closed: `newHopRigWith`)
+`...ExitThenTheFarEndWrites` (`Exit`, `JDown`, `D0Fail`),
+`...CutThenTheFarEndWrites`, `...CutWhileTheTailCopiesHoldsTheAbort`
+(`D0Fail` held) and `...FailsWhenTheRelayIsGone` (`RelayGone`);
 `TestRelayedCloseTraceEventsMapped` keeps the hook points and the
 module's steps the same both ways. Fixtures (`make spec-mutants`):
 `relayedclose-ok`, `relayedclose-ok-idle-abort-in-flight`,
-`relayedclose-ok-close-first` accepted;
+`relayedclose-ok-close-first`, `relayedclose-ok-exit`,
+`relayedclose-ok-abort-after-fin`, `relayedclose-ok-held`,
+`relayedclose-ok-relay-gone` accepted;
 `relayedclose-relay-read-ack`, `relayedclose-close-before-ack`,
-`relayedclose-reset-keeps-wait`, `relayedclose-close-acks` (the mutants
-of those names) and
+`relayedclose-reset-keeps-wait`, `relayedclose-close-acks`,
+`relayedclose-abort-at-write-fail` (the mutants of those names; the
+last recorded from `...CutWhileTheTailCopiesHoldsTheAbort` with
+`cutLater`'s hold taken out, which that test's own assertions miss) and
 `relayedclose-unknown-step` rejected. Finding (the recorder's first
 run): `Stalled` required nothing at all in flight toward A, so the
 code's A giving up at the idle bound while J's abort (after `JIdle`)
 travelled to it was no behaviour of the model; an abort is no
 acknowledgement (`waitAck` counts the session's acknowledged bytes), so
 `Stalled` now excludes only an ENDACK in flight (the mutants still
-fail as before). Not recorded: `Exit`, `JDown`, `D0Fail`,
-`RelayGone` (no hop-rig test takes them), and peerlink's joint
-(`peerlink/join_close_test.go`, the next recorder). A link `Join` hop
+fail as before). Finding (lane LINKTRACE2, `...CutThenTheFarEndWrites`):
+the model held d0's abort of C (`D0Fail`) while d1 synced as well as
+while it copied; the code (`cutLater`) holds it only while d1 copies:
+once the FIN went to C the abort goes at once, behind it on the same
+FIFO, and ends d1's onward wait (no `JSyncFail`: C's connection is up).
+Nothing is lost (C reads every byte, then io.EOF), so the model now
+takes the code's rule (`D0Fail`: held only while d1 runs; d1 done when
+it synced; mutant `abort-at-write-fail` still violates `TailDelivered`),
+and the recorder logs `JSyncFail`, `D0CFail` only once C's connection
+ended. Not recorded: peerlink's joint (`peerlink/join_close_test.go`;
+its holds are `TraceHopHold.tla`'s). A link `Join` hop
 whose onward peer lacks the bit acknowledges at the onward pong (the
 next hop read it).
 

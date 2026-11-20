@@ -273,13 +273,17 @@ D0CFail ==
     /\ fromJ' = IF lost1 THEN fromJ ELSE Append(fromJ, "abort")
     /\ UNCHANGED aVars /\ UNCHANGED <<toJ, lost1, gone, jq, jfin, jfail, d1, cabort, toC>> /\ UNCHANGED cVars
 
-\* d0: C's byte onto A's failed session fails; C's abort waits for d1.
+\* d0: C's byte onto A's failed session fails; C's abort waits for d1
+\* while d1 still copies (run). Once d1 passed the FIN on (sync), the abort
+\* goes at once, behind the FIN, and ends d1's onward wait (link joint.ended:
+\* cutLater holds only while the other direction runs; lane LINKTRACE2,
+\* the recorder's TestEndAckCutThenTheFarEndWrites).
 D0Fail ==
     /\ ~gone /\ cw /\ d0 = "run" /\ jfail
-    /\ IF d1 \in {"run", "sync"} /\ Mutant # "abort-at-write-fail"
-       THEN d0' = "held" /\ UNCHANGED <<toC, cabort>>
-       ELSE d0' = "done" /\ abortC
-    /\ UNCHANGED aVars /\ UNCHANGED <<toJ, fromJ, lost1, gone, jq, jfin, jfail, d1>> /\ UNCHANGED cVars
+    /\ IF d1 = "run" /\ Mutant # "abort-at-write-fail"
+       THEN d0' = "held" /\ UNCHANGED <<toC, cabort, d1>>
+       ELSE d0' = "done" /\ abortC /\ d1' = IF d1 = "sync" THEN "done" ELSE d1
+    /\ UNCHANGED aVars /\ UNCHANGED <<toJ, fromJ, lost1, gone, jq, jfin, jfail>> /\ UNCHANGED cVars
 
 \* The relay crashes: both its connections end.
 RelayGone ==
