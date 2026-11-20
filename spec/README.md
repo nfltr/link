@@ -343,7 +343,7 @@ before, `TailDelivered`). Witnesses: `WitnessExitThenEof`,
 
 | actions | code |
 |---|---|
-| `AClose`, `APong`, `ADown` | `mux.go` `CloseWriteSync`, `waitSync`; relay `client/agent/queue_close.go` |
+| `AClose`, `APong`, `ADown` | `mux.go` `CloseWriteSync`, `waitSync`; relay `client/agent/queue_close.go` (an accepted session), `client/nfnet/conn.go` `Conn.Close` and `client/tlsend` `CloseWriteSync` (a dialled one; under TLS) |
 | `JRecv`, `JDown`, `CRecv`, `CEnd` (`ReadsEof`) | `mux.go` `Mux.handle` (CLOSE), `Mux.close`, `Session.fail`, `Session.end` |
 | `D1Copy`, `D1End`, `D0Fail` | `join.go` `joint.ended`, `peerlink/chain.go` `joint.ended` |
 
