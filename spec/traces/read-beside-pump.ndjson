@@ -1,0 +1,14 @@
+{"ev":"Begin","n":0,"r":36}
+{"b":6,"ev":"Push","n":6,"s":1}
+{"ev":"Pop","k":1,"n":6,"r":36,"res":"data"}
+{"ev":"Copy","n":2,"r":36,"rel":0}
+{"ev":"End","r":36,"res":"data"}
+{"ev":"Pump","r":-1}
+{"ev":"Begin","n":4,"r":36}
+{"ev":"Copy","n":2,"r":36,"rel":0}
+{"ev":"End","r":36,"res":"data"}
+{"ev":"WTake","n":2,"r":-1}
+{"ev":"Close","n":0}
+{"ev":"WWrite","n":2,"r":-1}
+{"ev":"WRel","n":0,"r":-1}
+{"ev":"Pop","k":0,"n":0,"r":-1,"res":"eof"}

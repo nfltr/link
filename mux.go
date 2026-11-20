@@ -623,9 +623,10 @@ func (m *Mux) closeIdle() {
 // io.ErrClosedPipe wrapping the same error. A read deadline ends a
 // pending Read, and a write deadline a pending Write, with
 // os.ErrDeadlineExceeded. Several goroutines may Read at once (as
-// net.Conn): each byte goes to one of them. WriteTo and Pump take the
-// session's bytes for themselves; a Read beside them is safe too (each
-// byte to one of them, once), but their bytes interleave.
+// net.Conn): each byte goes to one of them. WriteTo takes the session's
+// bytes for itself; a Read beside it is safe too (each byte to one of
+// them, once), but their bytes interleave. Pump takes the session's reads:
+// a Read once Pump was called returns ErrPumped.
 type Session struct {
 	m      *Mux
 	dbg    debugState // linkdebug builds only (debug_on.go); zero size otherwise
@@ -683,6 +684,10 @@ type pump struct {
 
 // ErrReset is what a session reads once the peer reset it (Reset).
 var ErrReset = errors.New("link: session reset by the peer")
+
+// ErrPumped is what a Read returns once Pump was called: the pump's writer
+// takes the session's bytes, in order.
+var ErrPumped = errors.New("link: session read by its Pump")
 
 // ErrConnClosed is what a session reads once its connection closed:
 // the error wraps it and why (ErrDeadPeer, the network's error; the
@@ -767,8 +772,14 @@ func (s *Session) Read(b []byte) (n int, err error) {
 	}
 	s.rmu.Lock()
 	defer s.rmu.Unlock()
-	if traceOn { // spec/TraceSessionRead.tla: under rmu
-		s.traceRead("Begin", false, len(s.rest), false)
+	// Under rmu: a Read that began before Pump ends before the drain takes
+	// its tail (takeRest); one after would leave a tail the drain's next
+	// run wrote after newer bytes (spec/SessionRead.tla Refuse,
+	// read-beside-pump).
+	if s.pumpedRead() {
+		return 0, ErrPumped
+	}
+	if traceOn { // spec/TraceSessionRead.tla: under rmu (Begin: pumpedRead)
 		defer func() { s.traceReadEnd(err) }()
 	}
 	if len(s.rest) == 0 {
@@ -896,10 +907,11 @@ func (bw *batchWriter) write(w io.Writer, bufs [][]byte) (int64, error) {
 // queued, started as they arrive (the receive loop never waits for it).
 // done gets what WriteTo would return, once, from that goroutine: the
 // session ended, or w failed (the session's further bytes stay unread:
-// close it). Pump takes over the session's reads: no Read, WriteTo or
-// second Pump after it.
+// close it). Pump takes over the session's reads: a Read after it
+// returns ErrPumped (the tail of a Read before it goes to w first); no
+// WriteTo or second Pump after it.
 func (s *Session) Pump(w io.Writer, done func(n int64, err error)) {
-	s.pump.Store(&pump{w: w, done: done})
+	s.setPump(&pump{w: w, done: done})
 	s.kick()
 }
 
@@ -913,11 +925,19 @@ func (s *Session) kick() {
 // drain writes what is queued, then stops; a push meanwhile restarts it.
 // Only one runs at a time (pumping), so bytes go out in order.
 func (s *Session) drain() {
+	if traceOn {
+		s.traceDrain()
+	}
 	p := s.pump.Load()
 	ow, owned := p.w.(OwnedWriter)
 	var err error
 	if b, _ := s.takeRest(); len(b) > 0 { // the tail of a Read before Pump
-		if err = writeOwnedOrCopy(p.w, ow, owned, b); err != nil {
+		err = writeOwnedOrCopy(p.w, ow, owned, b)
+		if traceOn {
+			s.traceRead("WWrite", true, len(b), false)
+			s.traceRead("WRel", true, 0, false)
+		}
+		if err != nil {
 			p.done(p.total, err)
 			return
 		}
@@ -938,6 +958,12 @@ func (s *Session) drain() {
 			continue
 		}
 		var n int64
+		taken := 0 // the trace's WWrite: the bytes handed to w
+		if traceOn {
+			for _, b := range bufs {
+				taken += len(b)
+			}
+		}
 		if owned {
 			for _, b := range bufs {
 				if err = ow.WriteOwned(b); err != nil {
@@ -948,6 +974,10 @@ func (s *Session) drain() {
 			clear(bufs)
 		} else {
 			n, err = p.bw.write(p.w, bufs)
+		}
+		if traceOn {
+			s.traceRead("WWrite", true, taken, false)
+			s.traceRead("WRel", true, 0, false)
 		}
 		p.total += n
 		if err != nil {

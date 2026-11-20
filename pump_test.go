@@ -175,3 +175,42 @@ func (b blockWriter) Write([]byte) (int, error) {
 type failWriter struct{ err error }
 
 func (f failWriter) Write([]byte) (int, error) { return 0, f.err }
+
+// A Read once Pump was called returns ErrPumped and takes nothing; the
+// tail a Read left before Pump goes first to the pump's writer, then the
+// rest, in order (spec/SessionRead.tla, SessionReadPump.cfg, mutant
+// read-beside-pump: the code before let that Read leave a tail the
+// drain's next run wrote after newer bytes; lane LINKTRACE2).
+func TestSessionReadAfterPumpRefused(t *testing.T) {
+	s, p := openPair(t, v2cfg, v2cfg)
+	if _, err := p.Write([]byte("abcdef")); err != nil {
+		t.Fatal(err)
+	}
+	b := make([]byte, 2)
+	if _, err := io.ReadFull(s, b); err != nil || string(b) != "ab" {
+		t.Fatalf("Read before Pump: %q, %v", b, err)
+	}
+	var got lockedBuffer
+	done := make(chan pumpResult, 1)
+	s.Pump(&got, func(n int64, err error) { done <- pumpResult{n, err} })
+	if n, err := s.Read(b); n != 0 || !errors.Is(err, ErrPumped) {
+		t.Fatalf("Read after Pump: (%d, %v); want (0, ErrPumped)", n, err)
+	}
+	if _, err := p.Write([]byte("gh")); err != nil {
+		t.Fatal(err)
+	}
+	_ = p.CloseWrite()
+	select {
+	case r := <-done:
+		if r.err != nil || r.n != 6 {
+			t.Fatalf("done(%d, %v); want (6, nil)", r.n, r.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("done not called")
+	}
+	got.mu.Lock()
+	defer got.mu.Unlock()
+	if s := got.b.String(); s != "cdefgh" {
+		t.Fatalf("pumped %q, want %q", s, "cdefgh")
+	}
+}

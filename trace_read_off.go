@@ -12,3 +12,10 @@ func traceReadUp(*Session)                         {}
 func (*Session) traceRead(string, bool, int, bool) {}
 func (*Session) traceReadEnd(error)                {}
 func (s *Session) setDLPast(v bool)                { s.dlPast.Store(v) }
+func (*Session) traceDrain()                       {}
+
+// pumpedRead is Read's look at s.pump, under rmu.
+func (s *Session) pumpedRead() bool { return s.pump.Load() != nil }
+
+// setPump is Pump's.
+func (s *Session) setPump(p *pump) { s.pump.Store(p) }

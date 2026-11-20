@@ -21,10 +21,12 @@ import (
 // to <dir>/read-<n>.ndjson (n counts the process's sessions);
 // spec/TraceSessionRead.tla checks it (make spec-traces). Each line is
 // written under the lock of its step: the queue's (Push, Append, Close,
-// Pop and the deadline's Fire and Clear, stored there) or rmu (Begin,
-// Copy, End, WTake); WWrite and WRel are WriteTo's own. r names the
-// reader: its goroutine for Read, minus it for WriteTo (one goroutine
-// may do both, one after the other: two readers of the model).
+// Pop and the deadline's Fire and Clear, stored there; Pump, and Begin
+// or Refuse, looked at there too) or rmu (Copy, End, WTake); WWrite and
+// WRel are WriteTo's and Pump's drain's own. r names the reader: its
+// goroutine for Read, minus it for WriteTo (one goroutine may do both,
+// one after the other: two readers of the model), -1 for Pump (its
+// drain's runs are goroutines of their own; goroutine 1 runs no test).
 //
 //	Push, Append  n: bytes (a new slice; onto the newest queued one), s: the
 //	              slices pushed so far, b: the bytes (TLC reads a byte's slice
@@ -32,13 +34,21 @@ import (
 //	Close         the queue's end
 //	Fire, Clear   the read deadline's flag set, cleared
 //	Begin         r, n: len(s.rest)
+//	Refuse        r: a Read once Pump was called (ErrPumped)
+//	Pump          r: -1, Pump called
 //	Pop           r, res (data, timeout, eof), k: slices, n: bytes
 //	Copy          r, n: bytes copied, rel: 1 when s.cur went back to the pool
 //	End           r, res: what Read returned (data, timeout, eof)
 //	WTake         r, n: len of the tail takeRest took
 //	WWrite        r, n: bytes written
 //	WRel          r: what it wrote released (or kept by an OwnedWriter)
-type readTrace struct{ path string }
+type readTrace struct {
+	path  string
+	drain atomic.Int64 // the goroutine of Pump's drain's current run
+}
+
+// pumpR is Pump's reader in the trace.
+const pumpR = -1
 
 var readSeq atomic.Int64
 
@@ -51,10 +61,7 @@ func traceReadUp(s *Session) {
 	s.rt.path = filepath.Join(dir, fmt.Sprintf("read-%d.ndjson", readSeq.Add(1)))
 	var slices, bytes int // under the queue's lock, as the hook
 	s.q.SetTrace(func(ev string, unless bool, k, n int) {
-		r := -goid()
-		if unless {
-			r = -r
-		}
+		r := s.traceR(!unless)
 		switch ev {
 		case "Pop":
 			s.readEv(map[string]any{"ev": "Pop", "r": r, "res": "data", "k": k, "n": n})
@@ -85,11 +92,7 @@ func (s *Session) traceRead(ev string, writeTo bool, n int, rel bool) {
 	if s.rt.path == "" {
 		return
 	}
-	r := goid()
-	if writeTo {
-		r = -r
-	}
-	line := map[string]any{"ev": ev, "r": r, "n": n}
+	line := map[string]any{"ev": ev, "r": s.traceR(writeTo), "n": n}
 	if ev == "Copy" {
 		line["rel"] = 0
 		if rel {
@@ -97,6 +100,52 @@ func (s *Session) traceRead(ev string, writeTo bool, n int, rel bool) {
 		}
 	}
 	s.readEv(line)
+}
+
+// traceR is the trace's reader: this goroutine for a Read, minus it for
+// WriteTo, pumpR for Pump's drain.
+func (s *Session) traceR(writeTo bool) int {
+	g := goid()
+	switch {
+	case !writeTo:
+		return g
+	case int64(g) == s.rt.drain.Load():
+		return pumpR
+	default:
+		return -g
+	}
+}
+
+// traceDrain notes the goroutine of a run of Pump's drain (runs one at a
+// time: pumping).
+func (s *Session) traceDrain() { s.rt.drain.Store(int64(goid())) }
+
+// pumpedRead is Read's look at s.pump, under rmu: Refuse, or Begin.
+func (s *Session) pumpedRead() (pumped bool) {
+	if s.rt.path == "" {
+		return s.pump.Load() != nil
+	}
+	s.q.Locked(func() {
+		if pumped = s.pump.Load() != nil; pumped {
+			s.readEv(map[string]any{"ev": "Refuse", "r": goid()})
+		} else {
+			s.traceRead("Begin", false, len(s.rest), false)
+		}
+	})
+	return pumped
+}
+
+// setPump is Pump's: s.pump set under the queue's lock, so the trace
+// orders it with the Reads that look at it.
+func (s *Session) setPump(p *pump) {
+	if s.rt.path == "" {
+		s.pump.Store(p)
+		return
+	}
+	s.q.Locked(func() {
+		s.pump.Store(p)
+		s.readEv(map[string]any{"ev": "Pump", "r": pumpR})
+	})
 }
 
 // traceReadEnd logs Read's return.

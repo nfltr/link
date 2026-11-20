@@ -827,7 +827,7 @@ traces)
 	for k in read wait; do
 		mkdir -p "$work/$k"
 		case $k in
-		read) env=LINKTRACE_READ check=rtrace tests=${TRACE_READ_TESTS:-'^(TestSessionConcurrentReads|TestSessionReadDeadlineClearedNeverEOF|TestSessionReadBesideWriteTo)$'} model=TraceSessionRead ;;
+		read) env=LINKTRACE_READ check=rtrace tests=${TRACE_READ_TESTS:-'^(TestSessionConcurrentReads|TestSessionReadDeadlineClearedNeverEOF|TestSessionReadBesideWriteTo|TestSessionReadAfterPumpRefused|TestSessionPumpErrors)$'} model=TraceSessionRead ;;
 		wait) env=LINKTRACE_WAIT check=wtrace tests=${TRACE_WAIT_TESTS:-'^(TestConcurrentAcquiresShareAGrant|TestSessionWriteWaitingForCreditSeesFirstDeadline|TestMuxSlowSessionIsolated)$'} model=TraceCreditWaiters ;;
 		esac
 		env "$env=$work/$k" go test -tags linktrace -count=1 -run "$tests" . >"$work/test.out" 2>&1 || {

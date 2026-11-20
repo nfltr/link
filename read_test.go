@@ -131,7 +131,8 @@ func (w ownedSumWriter) WriteOwned(b []byte) error { w.add(b); return nil }
 // A Read beside WriteTo (io.Copy(dst, sess): misuse, but nothing stopped
 // it) or Pump on one session: each byte goes to one of them, none twice,
 // none lost, and no buffer goes back to the pool while it is read
-// (SessionRead.tla, SessionReadWriteTo.cfg). Before, WriteTo and Pump
+// (SessionRead.tla, SessionReadWriteTo.cfg; a Read after Pump returns
+// ErrPumped, SessionReadPump.cfg). Before, WriteTo and Pump
 // wrote the unread tail of a Read (s.rest) without rmu, then cut it and
 // released its buffer: the bytes went twice, or a Read's new tail was cut
 // (go test -race reports it at once; without -race the sum is off).
@@ -149,9 +150,6 @@ func TestSessionReadBesideWriteTo(t *testing.T) {
 		rounds = 6
 	}
 	for i := range rounds {
-		if traceOn && i%3 == 2 { // Pump's drain runs on goroutines of its own: not traced (spec/README.md "Session reads")
-			continue
-		}
 		p, err := dm.Open([]byte("h"))
 		if err != nil {
 			t.Fatal(err)

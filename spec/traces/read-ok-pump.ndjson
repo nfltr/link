@@ -1,0 +1,12 @@
+{"ev":"Begin","n":0,"r":15}
+{"b":1000,"ev":"Push","n":1000,"s":1}
+{"ev":"Close","n":0}
+{"ev":"Pop","k":1,"n":1000,"r":15,"res":"data"}
+{"ev":"Copy","n":1,"r":15,"rel":0}
+{"ev":"End","r":15,"res":"data"}
+{"ev":"Pump","r":-1}
+{"ev":"Refuse","r":43}
+{"ev":"WTake","n":999,"r":-1}
+{"ev":"WWrite","n":999,"r":-1}
+{"ev":"WRel","n":0,"r":-1}
+{"ev":"Pop","k":0,"n":0,"r":-1,"res":"eof"}
