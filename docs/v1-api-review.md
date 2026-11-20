@@ -6,6 +6,14 @@ lane**. Each change below is a decision to take before the v1.0.0 tag;
 the inventory at the end lists every exported identifier of the modules
 with who uses it and the verdict.
 
+**Outcome (lane LINKV013, link v0.13.0):** every item below is done as
+proposed (CHANGELOG.md "v0.13.0"), except item 6's `CloseWriteSync`,
+which stays exported: the relay SDK (`client/nfnet`, `client/tlsend`,
+`client/agent`) and relay-core's metrics call it through an interface,
+so "only peerlink calls it" was wrong, and hiding it would have ended
+their clean closes early without a compile error. The inventory below is
+as of v0.12.18.
+
 ## What "v1 compatible" means for link
 
 | surface | v1 promise | guard |
