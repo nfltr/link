@@ -337,7 +337,7 @@ func TestCloseWriteReportsAFailedFIN(t *testing.T) {
 func TestGrantCountsCreditInAWrite(t *testing.T) {
 	cr := NewCredit(testWindow, testWindow, func(string, int) {})
 	cr.open("1", byUs)
-	if ok, _ := cr.acquire("1", MaxChunk, nil, nil, true); !ok {
+	if ok, _ := cr.acquire("1", MaxChunk, nil, nil, true, writeStep{}); !ok {
 		t.Fatal("no credit")
 	}
 	if err := cr.Grant("1", MaxChunk); !errors.Is(err, ErrCredit) {

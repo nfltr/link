@@ -9,11 +9,12 @@ import (
 	"testing"
 )
 
-// TestSpecReadWaitEventsMapped: every event the read and wait recorders
-// write (trace_read_on.go, trace_wait_on.go and their hook points, the
-// queue's in internal/bytequeue) is a step of spec/TraceSessionRead.tla or
-// spec/TraceCreditWaiters.tla, and each of theirs is written by some hook
-// point (lane LINKTRACE); a trace's first line (Open) counts as its
+// TestSpecReadWaitEventsMapped: every event the read, wait and write
+// recorders write (trace_read_on.go, trace_wait_on.go, trace_write_on.go
+// and their hook points, the queue's in internal/bytequeue) is a step of
+// spec/TraceSessionRead.tla, spec/TraceCreditWaiters.tla or
+// spec/TraceSessionWrite.tla, and each of theirs is written by some hook
+// point (lanes LINKTRACE, LINKTRACE2); a trace's first line (Open) counts as its
 // constants' (Log[1].ev): a new step the code logs, or one it stopped
 // logging, changes what spec-traces checks.
 func TestSpecReadWaitEventsMapped(t *testing.T) {
@@ -24,6 +25,7 @@ func TestSpecReadWaitEventsMapped(t *testing.T) {
 		// the queue's Stopped and Ended are logged as Pop (trace_read_on.go)
 		{"spec/TraceSessionRead.tla", []string{"mux.go", "trace_read_on.go", "internal/bytequeue/bytequeue.go"}},
 		{"spec/TraceCreditWaiters.tla", []string{"credit.go", "trace_wait_on.go"}},
+		{"spec/TraceSessionWrite.tla", []string{"trace_write_on.go"}},
 	} {
 		code := map[string]bool{}
 		lit := regexp.MustCompile(`trace(?:Read|Wait)\("([A-Za-z]+)"|"ev": "([A-Za-z]+)"|q\.trace\("([A-Za-z]+)"|\bev :?= "([A-Za-z]+)"`)

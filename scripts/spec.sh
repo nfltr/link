@@ -21,7 +21,7 @@
 #            linktrace, each connection's trace checked against the model
 #            (spec/Trace.tla).
 #   trace F  one recorded trace (rtrace F: a session's reads; wtrace F: a
-#            session credit's waiters).
+#            session credit's waiters; swtrace F: a session's writes).
 #   behaviours  TLC -simulate walks for the model-based tests (testdata/mbt).
 # TLC_WORKERS (default 4) caps TLC's threads. Java and tla2tools.jar come
 # from scripts/fetch-tla.sh.
@@ -227,6 +227,29 @@ INVARIANTS
     NoStrandedWaiter
 CFG
 	META=$work/states-$(basename "$1") tlc "$cfg" TraceCreditWaiters.tla -deadlock
+}
+
+# swtrace FILE: TLC on one session's recorded writes waiting for credit
+# (spec/TraceSessionWrite.tla, lane LINKTRACE2); it fails unless TLC takes
+# every line.
+swtrace() {
+	cfg=$work/$(basename "$1").cfg
+	cat >"$cfg" <<CFG
+CONSTANTS
+    TraceFile = "$1"
+    Writers <- TraceWriters
+    Sets <- TraceSets
+    Window <- TraceWindow
+    Need <- TraceNeed
+    Mutant = "none"
+POSTCONDITION TraceAccepted
+INIT TraceInit
+NEXT TraceNext
+INVARIANTS
+    TypeOK
+    NoStrandedWriter
+CFG
+	META=$work/states-$(basename "$1") tlc "$cfg" TraceSessionWrite.tla -deadlock
 }
 
 # tlcrun CFG: TLC on MCLink.tla with CFG, which must pass.
@@ -643,6 +666,7 @@ mutants)
 	for f in spec/traces/path-*.ndjson; do job pathfixture "$f"; done
 	for f in spec/traces/read-*.ndjson; do job okfixture rtrace "$f"; done
 	for f in spec/traces/wait-*.ndjson; do job okfixture wtrace "$f"; done
+	for f in spec/traces/write-*.ndjson; do job okfixture swtrace "$f"; done
 	wait
 	fail=0
 	i=0
@@ -821,14 +845,16 @@ traces)
 	done
 	echo
 	echo "events no trace took:${gap:- none}"
-	# Session reads (TraceSessionRead.tla) and credit's waiters
-	# (TraceCreditWaiters.tla), lane LINKTRACE: each session's file, its
+	# Session reads (TraceSessionRead.tla), credit's waiters
+	# (TraceCreditWaiters.tla), lane LINKTRACE, and session writes
+	# (TraceSessionWrite.tla), lane LINKTRACE2: each session's file, its
 	# events counted; an event no trace took is a test gap.
-	for k in read wait; do
+	for k in read wait write; do
 		mkdir -p "$work/$k"
 		case $k in
 		read) env=LINKTRACE_READ check=rtrace tests=${TRACE_READ_TESTS:-'^(TestSessionConcurrentReads|TestSessionReadDeadlineClearedNeverEOF|TestSessionReadBesideWriteTo|TestSessionReadAfterPumpRefused|TestSessionPumpErrors)$'} model=TraceSessionRead ;;
 		wait) env=LINKTRACE_WAIT check=wtrace tests=${TRACE_WAIT_TESTS:-'^(TestConcurrentAcquiresShareAGrant|TestSessionWriteWaitingForCreditSeesFirstDeadline|TestMuxSlowSessionIsolated)$'} model=TraceCreditWaiters ;;
+		write) env=LINKTRACE_WRITE check=swtrace tests=${TRACE_WRITE_TESTS:-'^(TestSessionWriteWaitingForCreditSeesFirstDeadline|TestWriteDeadline|TestWriteDeadlineStuckNetwork)$'} model=TraceSessionWrite ;;
 		esac
 		env "$env=$work/$k" go test -tags linktrace -count=1 -run "$tests" . >"$work/test.out" 2>&1 || {
 			cat "$work/test.out"
@@ -920,6 +946,9 @@ rtrace)
 	;;
 wtrace)
 	wtrace "$2"
+	;;
+swtrace)
+	swtrace "$2"
 	;;
 *)
 	echo "usage: spec.sh check|invariants|nightly|mutants|traces|trace FILE" >&2

@@ -75,6 +75,7 @@ type sessionCredit struct {
 	onGrant  func(int)     // Session.OnGrant's; nil: none
 	fins     uint8         // the half CLOSEs: finSent (this side's buffered), finRecv (the peer's read)
 	wt       waitTrace     // linktrace builds only (trace_wait_on.go); zero size otherwise
+	wtr      creditTrace   // linktrace builds only (trace_write_on.go); zero size otherwise
 }
 
 const (
@@ -263,14 +264,15 @@ func (c *Credit) count(by int) int {
 // received, so a sender waiting with its own frames still buffered (a
 // Session.Write of several chunks) would wait for good.
 func (c *Credit) Acquire(sid string, n int) bool {
-	ok, _ := c.acquire(sid, n, c.flush, nil, false)
+	ok, _ := c.acquire(sid, n, c.flush, nil, false, writeStep{})
 	return ok
 }
 
 // acquire is Acquire flushing with flush, and giving up (stopped) once
 // stop is closed. With track the bytes count as pending until sent or
-// refund (a Session's Write).
-func (c *Credit) acquire(sid string, n int, flush func() error, stop <-chan struct{}, track bool) (ok, stopped bool) {
+// refund (a Session's Write); ws is its writer in the session's write
+// trace (spec/TraceSessionWrite.tla).
+func (c *Credit) acquire(sid string, n int, flush func() error, stop <-chan struct{}, track bool, ws writeStep) (ok, stopped bool) {
 	var waited time.Time
 	var tw int // the trace's waiter (spec/TraceCreditWaiters.tla)
 	if traceOn {
@@ -291,6 +293,7 @@ func (c *Credit) acquire(sid string, n int, flush func() error, stop <-chan stru
 			if traceOn {
 				traceEv(c.tr, traceEvent{ev: "Acquire", sid: sid, n: n, credit: s.n})
 				s.traceWait("Check", tw, n, true)
+				s.traceCheck(ws, n, true)
 			}
 			c.mu.Unlock()
 			if !waited.IsZero() {
@@ -309,6 +312,7 @@ func (c *Credit) acquire(sid string, n int, flush func() error, stop <-chan stru
 		wake := s.wake
 		if traceOn {
 			s.traceWait("Check", tw, n, false)
+			s.traceCheck(ws, n, false)
 		}
 		c.mu.Unlock()
 		if waited.IsZero() {
@@ -322,6 +326,9 @@ func (c *Credit) acquire(sid string, n int, flush func() error, stop <-chan stru
 		case <-c.closed:
 			return false, false
 		case <-stop:
+			if traceOn {
+				ws.traceWake()
+			}
 			return false, true
 		}
 	}
@@ -354,6 +361,7 @@ func (c *Credit) refund(sid string, n int) {
 		s.pend -= n
 		if traceOn {
 			s.traceWait("Grant", 0, n, false)
+			s.traceGrant(n)
 		}
 		s.wakeAll()
 	}
@@ -510,6 +518,7 @@ func (c *Credit) Grant(sid string, n int) error {
 	if traceOn {
 		traceEv(c.tr, traceEvent{ev: "Recv", t: "win", sid: sid, n: n, credit: s.n})
 		s.traceWait("Grant", 0, n, false)
+		s.traceGrant(n)
 	}
 	s.wakeAll()
 	f := s.onGrant

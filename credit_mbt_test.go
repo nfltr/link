@@ -141,7 +141,7 @@ func TestCreditFollowsTheModel(t *testing.T) {
 								t.Errorf("%s: %s's acquire(%d, %d) would wait: credit %d", at, p, s, dp, cur.n)
 								continue
 							}
-							c.acquire(sid, dp, nil, nil, true)
+							c.acquire(sid, dp, nil, nil, true, writeStep{})
 						case dp < 0 && b.N == a.N-dp: // Refund
 							c.refund(sid, -dp)
 						case dp < 0 && b.N == a.N: // the frame buffered

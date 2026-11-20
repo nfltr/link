@@ -160,6 +160,7 @@ func (m *Mux) add(sid string, header []byte, c Chain, accepter bool) (*Session, 
 	s.q.OnPop(func(n int) { m.c.credit.Consumed(sid, n) })
 	if traceOn {
 		traceReadUp(s)
+		traceWriteUp(s)
 	}
 	m.sess[sid] = s
 	m.used.Store(true)
@@ -631,6 +632,7 @@ type Session struct {
 	m      *Mux
 	dbg    debugState // linkdebug builds only (debug_on.go); zero size otherwise
 	rt     readTrace  // linktrace builds only (trace_read_on.go); zero size otherwise
+	wtr    writeTrace // linktrace builds only (trace_write_on.go); zero size otherwise
 	id     string
 	header []byte
 	q      *bytequeue.Queue
@@ -1108,15 +1110,19 @@ func (s *Session) send(b []byte, flush bool) (int, error) {
 
 // acquire waits for n bytes of credit, until the write deadline.
 func (s *Session) acquire(n int) error {
+	var ws writeStep // spec/TraceSessionWrite.tla's writer
+	if traceOn {
+		ws = s.writeStepUp()
+	}
 	for {
-		stop := s.writeWait() // before the check: a deadline passing after it closes stop
+		stop := s.writeWait(ws) // before the check: a deadline passing after it closes stop
 		if s.closed.Load() || s.halfClosed.Load() {
 			return s.closedPipe()
 		}
-		if s.wd.past.Load() {
+		if s.writePast(ws) {
 			return os.ErrDeadlineExceeded
 		}
-		ok, stopped := s.m.c.credit.acquire(s.id, n, s.flush, stop, true)
+		ok, stopped := s.m.c.credit.acquire(s.id, n, s.flush, stop, true, ws)
 		if ok {
 			return nil
 		}
@@ -1139,11 +1145,17 @@ func (s *Session) flush() error {
 // made here when none was set yet, so that the first SetWriteDeadline
 // wakes a Write already waiting for credit (spec/SessionWrite.tla,
 // TestSessionWriteWaitingForCreditSeesFirstDeadline).
-func (s *Session) writeWait() <-chan struct{} {
+func (s *Session) writeWait(ws writeStep) <-chan struct{} {
 	s.wdMu.Lock()
 	defer s.wdMu.Unlock()
 	if s.wdCh == nil {
 		s.wdCh = make(chan struct{})
+		if traceOn {
+			s.writeNewCh()
+		}
+	}
+	if traceOn {
+		s.traceTake(ws)
 	}
 	return s.wdCh
 }
@@ -1358,22 +1370,36 @@ func (s *Session) SetWriteDeadline(t time.Time) error {
 		s.wdTimer.Stop()
 		s.wdTimer = nil
 	}
+	d := time.Until(t)
+	past := !t.IsZero() && d <= 0
+	armed := !t.IsZero() && d > 0 && !s.closed.Load() // none for an ended session
+	// The trace's Set before the close: a woken Write's Wake comes after it.
+	if traceOn {
+		s.writeSet(past, armed)
+	}
 	if s.wdCh != nil {
 		close(s.wdCh) // a pending wait looks at the new deadline
 	}
 	s.wdCh = make(chan struct{})
-	d := time.Until(t)
-	past := !t.IsZero() && d <= 0
+	if traceOn {
+		s.writeNewCh()
+	}
 	s.wd.set.Store(!t.IsZero())
 	s.wd.past.Store(past)
-	if !t.IsZero() && d > 0 && !s.closed.Load() { // none for an ended session
+	if armed {
 		gen := s.wdGen
 		s.wdTimer = time.AfterFunc(d, func() {
 			s.wdMu.Lock()
 			if s.wdGen == gen {
+				if traceOn { // before the close, as Set's
+					s.writeFire()
+				}
 				s.wd.past.Store(true)
 				close(s.wdCh)
 				s.wdCh = make(chan struct{})
+				if traceOn {
+					s.writeNewCh()
+				}
 			}
 			s.wdMu.Unlock()
 			s.m.c.wakeWriters()

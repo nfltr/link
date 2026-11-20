@@ -1,0 +1,8 @@
+{"cr":262144,"ev":"Open"}
+{"ch":0,"ev":"Take","w":1}
+{"ev":"Past","res":"go","w":1}
+{"cr":261120,"ev":"Check","n":1024,"took":1,"w":1}
+{"ch":0,"ev":"Take","w":2}
+{"ev":"Past","res":"go","w":2}
+{"cr":260096,"ev":"Check","n":1024,"took":1,"w":2}
+{"ch":0,"ev":"Take","w":3}
