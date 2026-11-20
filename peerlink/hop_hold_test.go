@@ -28,7 +28,11 @@ func (s slowConn) Write(p []byte) (int, error) {
 // reads the other's bytes and a clean io.EOF, and both joins return nil.
 // Crossing FINs held each joint's end until the other's ENDACK, which
 // that one held in turn (mutant hold-until-ack): both apps were reset at
-// the 30 s idle bound (ErrEndAckIdle).
+// the 30 s idle bound (ErrEndAckIdle). The crossing case also guards
+// mutant held-end-no-ack: a held end whose session ended meanwhile,
+// passed onto a TCP conn without ackEnd (joint.ended's Done branch), left
+// the agent's join waiting for the idle bound (lane ENDACKCODE: with that
+// ackEnd removed, crossing fails at 30.4 s, the agent's join reset).
 func TestJoinCrossingHalfClosesEnd(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
