@@ -76,6 +76,7 @@ type sessionCredit struct {
 	fins     uint8         // the half CLOSEs: finSent (this side's buffered), finRecv (the peer's read)
 	wt       waitTrace     // linktrace builds only (trace_wait_on.go); zero size otherwise
 	wtr      creditTrace   // linktrace builds only (trace_write_on.go); zero size otherwise
+	granted  uint64        // bytes the peer acknowledged, in all (Grant): an ENDACK wait's progress
 }
 
 const (
@@ -515,6 +516,7 @@ func (c *Credit) Grant(sid string, n int) error {
 		return ErrCredit
 	}
 	s.n += n
+	s.granted += uint64(n) // #nosec G115 -- n >= 0
 	if traceOn {
 		traceEv(c.tr, traceEvent{ev: "Recv", t: "win", sid: sid, n: n, credit: s.n})
 		s.traceWait("Grant", 0, n, false)
@@ -527,6 +529,17 @@ func (c *Credit) Grant(sid string, n int) error {
 		f(n)
 	}
 	return nil
+}
+
+// progress is the bytes of sid the peer acknowledged so far (0 once the
+// session is forgotten).
+func (c *Credit) progress(sid string) uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if s := c.sessions[sid]; s != nil {
+		return s.granted
+	}
+	return 0
 }
 
 // setOnGrant sets sid's grant callback (Session.OnGrant).

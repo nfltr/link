@@ -3,6 +3,11 @@
 
 package link
 
+import (
+	"errors"
+	"time"
+)
+
 // FeatureEndAck is feature bit 2 (WIRE.md sections 6 and 13): the side
 // reads ENDACK frames and sends one when its reader takes the peer's half
 // close, so the peer's CloseWriteSync returns once the far end has the
@@ -45,22 +50,52 @@ func (m *Mux) ackDone(sid string, err error) {
 	}
 }
 
+var endAckIdle = 30 * time.Second // the idle bound (a var: tests shorten it)
+
 // waitAck waits for w: nil at the ENDACK, even when the connection ended
-// since; else the session's or the connection's end.
+// since; else the session's or the connection's end, or ErrEndAckIdle
+// once nothing of the session was acknowledged for endAckIdle (checked
+// every endAckIdle: it gives up within twice that after the last
+// progress; a mute
+// far end, or a hop's onward one: pings keep the connection up, they are
+// no progress; spec/RelayedClose.tla AIdle, mutant
+// liveness-counts-as-progress). It resets the session then.
 func (s *Session) waitAck(w *ackWait) error {
 	c := s.m.c
-	select {
-	case <-w.done:
-		return w.err
-	case <-c.Done():
+	t := time.NewTicker(endAckIdle)
+	defer t.Stop()
+	last := c.credit.progress(s.id)
+	for {
 		select {
 		case <-w.done:
 			return w.err
-		default:
+		case <-c.Done():
+			select {
+			case <-w.done:
+				return w.err
+			default:
+			}
+			return syncEnded(c)
+		case <-t.C:
+			if p := c.credit.progress(s.id); p != last {
+				last = p
+				continue
+			}
+			select {
+			case <-w.done:
+				return w.err
+			default:
+			}
+			s.m.ackDone(s.id, ErrEndAckIdle) // a leaving connection awaits it no more
+			_ = s.Reset()
+			return ErrEndAckIdle
 		}
-		return syncEnded(c)
 	}
 }
+
+// ErrEndAckIdle is CloseWriteSync's error when the far end acknowledged
+// nothing of the session, its end included, for the idle bound (30 s).
+var ErrEndAckIdle = errors.New("link: the far end acknowledged nothing of the session within the idle bound")
 
 // HoldEndAck makes the caller send the session's ENDACK (AckEnd) once it
 // passed the peer's end on: a join (peerlink.Join) on a hop (Config.Hop)
@@ -72,6 +107,9 @@ func (s *Session) HoldEndAck() { s.heldAck.Store(true) }
 // this side's reader. Without FeatureEndAck, or before the peer's half
 // close, it sends nothing.
 func (s *Session) AckEnd() {
+	if s.m.c.muteEndAck {
+		return
+	}
 	if !s.peerHalf.Load() || s.err.Load() != nil || !s.m.c.endAcks() {
 		return
 	}

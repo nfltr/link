@@ -248,8 +248,13 @@ func (c *Conn) Written() uint64 {
 }
 
 // WaitAcked waits until the peer acknowledged every byte below n (ACK,
-// RESUME: it holds them), at most d; false when d passed or the session
-// failed first. A client whose peer takes a Move only once it holds some
+// RESUME: it holds them), at most d, at most Config.Linger with nothing
+// heard, and at most Config.Detach with no acknowledgement advancing: a
+// peer that keeps answering but acknowledges nothing holds it no longer
+// than that, whatever d (the progress rule of link
+// spec/RelayedClose.tla, mutant liveness-counts-as-progress; relay
+// TestNF1DirectModelBindings held a Close 600 s, lane V1READY); false
+// when a bound passed or the session failed first. A client whose peer takes a Move only once it holds some
 // of the session's first bytes (a TLS handshake, whose key makes the
 // token) moves after WaitAcked of them, never before: a Move leaves the
 // bytes not yet sent to the new stream (spec DirectPath.tla Proof, mutant
@@ -257,7 +262,7 @@ func (c *Conn) Written() uint64 {
 func (c *Conn) WaitAcked(n uint64, d time.Duration) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.waitHeard(d, func() bool { return c.acked >= n || c.err != nil })
+	c.waitHeard(d, func() bool { return c.acked >= n || c.err != nil }, c.cfg.Detach)
 	return c.acked >= n
 }
 
@@ -341,7 +346,7 @@ func (c *Conn) Close() error {
 	if c.err == nil {
 		c.closed = true
 		c.cond.Broadcast()
-		c.waitHeard(c.cfg.Detach, func() bool { return c.err != nil || c.acked == c.hi+1 && c.rEnd })
+		c.waitHeard(c.cfg.Detach, func() bool { return c.err != nil || c.acked == c.hi+1 && c.rEnd }, 0)
 	}
 	switch {
 	case c.ab == abLocal:
@@ -370,19 +375,27 @@ func (c *Conn) endClean() {
 	c.shutdown(true)
 }
 
-// waitHeard waits under c.mu until ok, at most d, and at most
-// Config.Linger with no frame heard from the peer; it reports ok().
-func (c *Conn) waitHeard(d time.Duration, ok func() bool) bool {
+// waitHeard waits under c.mu until ok, at most d, at most Config.Linger
+// with no frame heard from the peer, and (stall > 0) at most stall with
+// no acknowledgement advancing; it reports ok().
+func (c *Conn) waitHeard(d time.Duration, ok func() bool, stall time.Duration) bool {
 	end := time.Now().Add(d)
+	a, since := c.acked, time.Now()
 	for !ok() {
 		left := time.Until(end)
+		if c.acked != a {
+			a, since = c.acked, time.Now()
+		}
+		if stall > 0 {
+			left = min(left, stall-time.Since(since))
+		}
 		if left <= 0 {
-			return false
+			return false // d passed, or nothing acknowledged for stall
 		}
 		h := c.heard
-		c.waitFor(min(c.cfg.Linger, left), func() bool { return ok() || c.heard != h })
-		if c.heard == h && !ok() {
-			return false // silent for Linger, or d passed
+		c.waitFor(min(c.cfg.Linger, left), func() bool { return ok() || c.heard != h || c.acked != a })
+		if c.heard == h && c.acked == a && !ok() {
+			return false // silent for Linger, or a bound passed
 		}
 	}
 	return true

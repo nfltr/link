@@ -359,7 +359,7 @@ before) and `abort-at-write-fail` (the joint's code before)
 
 | actions | code |
 |---|---|
-| `AClose`, `ARecv`, `ADown`, `AIdle`, `JIdle` | `mux.go` `CloseWriteSync`, `endack.go` (`waitAck`, `ackDone`, `nack`); relay `client/agent/queue_close.go` (an accepted session), `client/nfnet/conn.go` `Conn.Close` and `client/tlsend` `CloseWriteSync` (a dialled one; under TLS) |
+| `AClose`, `ARecv`, `ADown`, `AIdle`, `JIdle` | `mux.go` `CloseWriteSync`, `endack.go` (`waitAck`, `ackDone`, `nack`), `credit.go` `progress`; `pathswitch/conn.go` `WaitAcked` (a direct path's: the same idle rule on its acknowledgements); relay `client/agent/queue_close.go` (an accepted session), `client/nfnet/conn.go` `Conn.Close` and `client/tlsend` `CloseWriteSync` (a dialled one; under TLS) |
 | `JRecv`, `JDown`, `CRecv`, `CEnd` (`ReadsEof`) | `mux.go` `Mux.handle` (CLOSE, ENDACK), `Mux.close`, `Session.fail`, `Session.end`; `conn.go` (frame 11) |
 | `D1Copy`, `D1End`, `JAck`, `JSyncFail`, `D0CFail`, `D0Fail` | `join.go` `joint.ended` (`onwardTook`), `peerlink/chain.go` `joint.ended`, `sync`, `holdEnds`, `ackEnd` |
 

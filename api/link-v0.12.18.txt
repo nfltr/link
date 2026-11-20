@@ -3,6 +3,7 @@ Compatible changes:
 - (*Session).AckEnd: added
 - (*Session).HoldEndAck: added
 - Config.Hop: added
+- ErrEndAckIdle: added
 - FeatureEndAck: added
 - Frame.EndAck: added
 - ./peerlink.EndAcker: added

@@ -307,8 +307,10 @@ for the acknowledgement knows the far end has every byte, across joins
 - **The waiting side.** A sender's wait for the endack ends with it, or
   with a close code 0 from the peer (a clean end: it takes no more, as a
   TCP peer's close), or with an error at close code 2, an abort, or the
-  connection's end. A leaving connection (section 9) closes only once no
-  endack is awaited, within its drain deadline.
+  connection's end. It gives up (and resets the session) once nothing of
+  the session was acknowledged (no window update) for its idle bound,
+  30 s: pings are no progress. A leaving connection (section 9) closes
+  only once no endack is awaited, within its drain deadline.
 
 Prior art: SSH's channel close is answered by the peer's close (RFC 4254
 section 5.3); here the answer travels hop by hop as Chaining's accept does.

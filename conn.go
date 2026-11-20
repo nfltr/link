@@ -198,6 +198,7 @@ type Conn struct {
 	peerMaxSessions int
 	peerFeatures    uint32
 	hop             bool   // Config.Hop: half closes are acknowledged once passed on
+	muteEndAck      bool   // Config.muteEndAck (tests)
 	features        uint32 // what this side announced
 	maxSessions     int    // the peer may have this many open toward this side
 	live            Liveness
@@ -240,6 +241,7 @@ func newConnV2(nc net.Conn, cfg Config, peerWindow, peerMaxSessions int, dialer 
 	c.dialer, c.peerMaxSessions, c.live = dialer, peerMaxSessions, cfg.Liveness
 	c.maxSessions = cfg.MaxSessions
 	c.hop = cfg.Hop
+	c.muteEndAck = cfg.muteEndAck
 	c.t0 = time.Now()
 	c.pong = make(chan [pingLen]byte, 1)
 	c.peerGoAway = make(chan struct{})

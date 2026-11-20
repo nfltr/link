@@ -44,6 +44,20 @@ version 2 unless an entry says otherwise.
   `TestRelayedEndDropAfterLastByte`). Lane RELAYCLOSE;
   spec/RelayedClose.tla, mutants `relay-read-ack`, `sync-hang`; guards
   `TestEndAckWaitsForTheFarEnd`, `TestEndAckFailsWhenTheFarEndIsCut`.
+  A peer's clean whole close (code 0) ends the wait with nil (it takes
+  no more, as a TCP peer's close); relay-core `TestConnIsANetConn`.
+- A wait for the far end gives up once nothing of the session was
+  acknowledged for its idle bound, whatever the connection's pings say:
+  `CloseWriteSync`'s ENDACK wait after 30 s with no credit returned
+  (`ErrEndAckIdle`, the session reset), and `pathswitch.Conn.WaitAcked`
+  after `Config.Detach` with no acknowledgement advancing (before, a
+  peer that kept answering held it to the caller's bound: the relay
+  SDK's direct Close, 10 min; lane V1READY's
+  `TestNF1DirectModelBindings` hang). Lane RELAYCLOSE;
+  spec/RelayedClose.tla `AIdle`, `JIdle`, mutant
+  `liveness-counts-as-progress`; guards
+  `TestEndAckGivesUpWithoutProgress`,
+  `TestWaitAckedLivePeerWithoutProgress`.
 - A session whose peer's FIN was read before it failed (the peer's
   reset or abort, its connection's end, this side's own reset) reads its
   bytes, then io.EOF, as spec/LinkSession.tla GEnds and Link.tla always

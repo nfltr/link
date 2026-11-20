@@ -222,3 +222,37 @@ func TestWaitAckedBoundHoldsOnAnIdleConn(t *testing.T) {
 		t.Fatal("2000 WaitAcked of at most 50 µs each still wait after 10 s")
 	}
 }
+
+// WaitAcked gives up once nothing was acknowledged for Config.Detach,
+// even while the peer keeps answering (its own bytes): frames heard are
+// no progress (link spec/RelayedClose.tla, mutant
+// liveness-counts-as-progress). Before, a peer that wrote but took
+// nothing held it to its own bound (relay TestNF1DirectModelBindings:
+// 600 s in a Close, lane V1READY).
+func TestWaitAckedLivePeerWithoutProgress(t *testing.T) {
+	h := newHarness(t, 64<<10, false)
+	h.c.cfg.Detach = 300 * time.Millisecond
+	go func() { _, _ = h.c.Write(payload(256<<10, 6)) }() // past the peer's window: it takes no more
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() { // the peer keeps answering, a frame every 100 ms
+		for {
+			select {
+			case <-stop:
+				return
+			case <-time.After(100 * time.Millisecond):
+				if _, err := h.s.Write([]byte{1}); err != nil {
+					return
+				}
+			}
+		}
+	}()
+	time.Sleep(200 * time.Millisecond) // the window fills
+	start := time.Now()
+	if h.c.WaitAcked(256<<10, 30*time.Second) {
+		t.Fatal("acknowledged past the peer's window: it read nothing")
+	}
+	if d := time.Since(start); d > 3*time.Second {
+		t.Fatalf("WaitAcked took %v while nothing was acknowledged; Detach is 300 ms", d)
+	}
+}

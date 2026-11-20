@@ -37,11 +37,15 @@ type hopRig struct {
 	cMux, hToC *Mux
 }
 
-func newHopRig(t *testing.T) *hopRig {
+func newHopRig(t *testing.T) *hopRig { return newHopRigMute(t, false) }
+
+// newHopRigMute is newHopRig whose C, when mute, announces FeatureEndAck
+// but never acknowledges (a broken or hostile far end that answers pings).
+func newHopRigMute(t *testing.T, mute bool) *hopRig {
 	t.Helper()
 	r := &hopRig{armed: new(atomic.Bool), open: make(chan struct{})}
 	hc, cc := tcpPair(t)
-	cCfg := Config{Window: testWindow, Auth: testToken}
+	cCfg := Config{Window: testWindow, Auth: testToken, muteEndAck: mute}
 	type res struct {
 		c   *Conn
 		err error
@@ -137,5 +141,33 @@ func TestEndAckFailsWhenTheFarEndIsCut(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("CloseWriteSync never returned after C's connection ended")
+	}
+}
+
+// TestEndAckGivesUpWithoutProgress (spec/RelayedClose.tla CloseEnds,
+// SyncEnds, mutant liveness-counts-as-progress): a far end that answers
+// pings but never acknowledges the end holds neither the hop's onward
+// wait nor A's Close past the idle bound: they give up once nothing of
+// the session was acknowledged for that long, whatever the pings say.
+func TestEndAckGivesUpWithoutProgress(t *testing.T) {
+	old := endAckIdle
+	endAckIdle = 300 * time.Millisecond
+	t.Cleanup(func() { endAckIdle = old })
+	r := newHopRigMute(t, true)
+	if _, err := r.a.Write([]byte("tail")); err != nil {
+		t.Fatal(err)
+	}
+	ret := make(chan error, 1)
+	go func() { ret <- r.a.CloseWriteSync() }()
+	select {
+	case err := <-ret:
+		if err == nil {
+			t.Fatal("CloseWriteSync returned nil: the far end acknowledged nothing")
+		}
+	case <-time.After(10 * time.Second): // the connections' pings keep them up
+		t.Fatal("CloseWriteSync waited past the idle bound for a mute far end")
+	}
+	if b, err := io.ReadAll(r.c); !bytes.Equal(b, []byte("tail")) {
+		t.Fatalf("C read %q, %v: the bytes still went", b, err)
 	}
 }
