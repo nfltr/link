@@ -1115,6 +1115,26 @@ idle bound may be needed; failures are `RelayedClose.tla`'s and
 `no-hold` (`HoldTruth`), `ack-on-receipt` (relay-core's gRPC stream
 today: `AckTruth`). Witnesses: `WitnessHeldThenDone`, `WitnessCrossing`.
 
+A joint's close (lane PIPERESET, 2026-11-20): a joint closes its app's
+conn whole (and the session) only once both its directions ended, its
+app's end acknowledged and the other end passed to the app (`JointDone`,
+peerlink `joint.finish`). An app conn may be a link session (a relay SDK
+end; at the relay, the session toward a joint whose other side syncs
+too), whose peer reads a whole close before its end was acknowledged as
+a reset (`Session.Close`'s nack since lane ENDACKTRUTH). The held end of
+a session that ended (both halves: `joint.ended`'s `Done` branch) closed
+its destination at once (`dst.Close`), before the other direction, still
+in its sync, passed the ENDACK of that conn's own end: on nfltr-pipe's
+relayed path the relay's joint reset the listener's agent session and
+the listener exited 6 after a clean two-sided end (pipe
+`TestSecondDialIsReset/relayed`, 22 of 50 with link main). Invariant
+`CloseAfterAck` (a joint closes its app's conn only once the app's end
+was acknowledged), liveness `Closed`; mutant `close-at-end` (the code
+before: `CloseAfterAck`); witness `WitnessClosed`. Guard
+`TestJoinClosesASessionOnlyOnceItsEndIsAcknowledged`. The recorder logs
+no close yet: `TraceHopHold.tla` leaves `JointDone` unlogged, so a trace
+does not check where the code closes (follow-up: a `Close` event).
+
 Trace recorder (lane LINKTRACE2; `-tags linktrace`,
 `LINKTRACE_HOPHOLD=<dir>`, `peerlink/trace_on.go`): a test marks the
 two joints of one path by their app conns (`TraceHopHold`: G's target,

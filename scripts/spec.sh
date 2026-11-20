@@ -751,11 +751,12 @@ mutants)
 	# Two joints' holds (HopHold.tla, lane ENDACK2D): a hold that ends at
 	# the ENDACK (the code since RELAYCLOSE: crossing half closes wait for
 	# each other until the idle bound resets both), no hold, an end
-	# acknowledged at receipt, a held end that never acknowledges.
-	for m in hold-until-ack no-hold ack-on-receipt held-end-no-ack; do
+	# acknowledged at receipt, a held end that never acknowledges, a joint
+	# that closes its app before the app's end was acknowledged (lane PIPERESET).
+	for m in hold-until-ack no-hold ack-on-receipt held-end-no-ack close-at-end; do
 		job mutant HopHold.cfg 'Mutant = "none"' "Mutant = \"$m\"" HopHold.tla
 	done
-	for w in WitnessHeldThenDone WitnessCrossing; do job witness HopHold.cfg $w HopHold.tla; done
+	for w in WitnessHeldThenDone WitnessCrossing WitnessClosed; do job witness HopHold.cfg $w HopHold.tla; done
 	# One leg's end acknowledgement per transport (EndAckLeg.tla, lane
 	# ENDACK2D): acknowledged once written (quiclink, a TCP visitor, a gRPC
 	# Close today), an idle bound pings restart or a fixed one (pathswitch

@@ -26,6 +26,17 @@
 (* returns: a cycle only the idle bound (ErrEndAckIdle, a reset) breaks.   *)
 (* Failures (resets, cuts) are RelayedClose.tla's and Join.tla's; here     *)
 (* nothing fails, so every end must come cleanly.                           *)
+(*                                                                          *)
+(* A joint closes its app's conn whole (and the session) only once both of *)
+(* its directions ended: its app's end acknowledged (the ENDACK passed on, *)
+(* ackEnd) and the other end passed to the app (lane PIPERESET). An app    *)
+(* conn may be a link session (a relay SDK end; at the relay, the session  *)
+(* toward a joint whose other side syncs too: nfltr-pipe's relayed path),   *)
+(* whose peer reads a whole close before its end was acknowledged as a     *)
+(* reset (link Session.Close's nack since lane ENDACKTRUTH): the held end  *)
+(* of a Done session closed its app at once, before the ENDACK of the     *)
+(* app's own end the other direction still had to pass (mutant            *)
+(* close-at-end).                                                          *)
 EXTENDS Naturals, Sequences
 
 CONSTANTS
@@ -39,7 +50,11 @@ CONSTANTS
              \* whose session ended meanwhile (both halves closed) closes the
              \* TCP app without the ENDACK (peerlink joint.ended's Done branch
              \* onto a conn that is no syncer: no ackEnd), so the peer's
-             \* CloseWriteSync waits for the idle bound
+             \* CloseWriteSync waits for the idle bound; "close-at-end": a
+             \* joint whose own app's FIN went on closes the app's conn
+             \* whole as it passes the other end (peerlink joint.ended's
+             \* Done branch, dst.Close, before lane PIPERESET), not once
+             \* the app's end was acknowledged too
 
 Dirs == {"up", "down"}
 Joints == {"G", "R"}
@@ -59,14 +74,21 @@ VARIABLES
     r2g,      \* R -> G
     early,    \* history: an app's reads ended while its own FIN was on the
               \* wire, not yet at the next hop's Mux
-    heldEver  \* history: an end was held
+    heldEver, \* history: an end was held
+    appClosed, \* [Joints -> BOOLEAN]: the joint closed its app's conn whole
+    closedEarly \* history: a joint closed its app's conn before the app's
+                \* own end was acknowledged (a link app's wait: a reset)
 
-vars == <<st, rcvd, acked, syncing, g2r, r2g, early, heldEver>>
+vars == <<st, rcvd, acked, syncing, g2r, r2g, early, heldEver, appClosed, closedEarly>>
 
 Init ==
     /\ st = [d \in Dirs |-> "open"] /\ rcvd = [d \in Dirs |-> FALSE]
     /\ acked = [d \in Dirs |-> FALSE] /\ syncing = [j \in Joints |-> FALSE]
     /\ g2r = <<>> /\ r2g = <<>> /\ early = FALSE /\ heldEver = FALSE
+    /\ appClosed = [j \in Joints |-> FALSE] /\ closedEarly = FALSE
+
+\* The direction joint j's app ends (it enters the session at j).
+AppDir(j) == IF j = "G" THEN "up" ELSE "down"
 
 \* Joint j's frame m onto the session (its own FIFO).
 SendFrom(j, m) == IF j = "G" THEN g2r' = Append(g2r, m) /\ UNCHANGED r2g
@@ -78,7 +100,7 @@ AppFin(d) ==
     /\ st' = [st EXCEPT ![d] = "sent"]
     /\ syncing' = [syncing EXCEPT ![Entry(d)] = TRUE]
     /\ SendFrom(Entry(d), <<"fin", d>>)
-    /\ UNCHANGED <<rcvd, acked, early, heldEver>>
+    /\ UNCHANGED <<rcvd, acked, early, heldEver, appClosed, closedEarly>>
 
 \* The end passes to the exit app (its kernel takes the FIN) and the exit
 \* joint sends the ENDACK (unless the mutant sent it at receipt).
@@ -97,17 +119,26 @@ Recv(j) ==
                /\ st' = [st EXCEPT ![d] = "at"]
                /\ LET out == IF Mutant = "ack-on-receipt" THEN <<<<"rcv", d>>, <<"eack", d>>>> ELSE <<<<"rcv", d>>>>
                   IN IF j = "G" THEN g2r' = g2r \o out ELSE r2g' = r2g \o out
-               /\ UNCHANGED <<rcvd, acked, syncing, early, heldEver>>
+               /\ UNCHANGED <<rcvd, acked, syncing, early, heldEver, appClosed, closedEarly>>
             [] m[1] = "rcv" ->
                /\ rcvd' = [rcvd EXCEPT ![d] = TRUE]
                /\ syncing' = IF Mutant = "hold-until-ack" THEN syncing ELSE [syncing EXCEPT ![j] = FALSE]
                /\ (IF j = "G" THEN UNCHANGED g2r ELSE UNCHANGED r2g)
-               /\ UNCHANGED <<st, acked, early, heldEver>>
+               /\ UNCHANGED <<st, acked, early, heldEver, appClosed, closedEarly>>
             [] m[1] = "eack" ->
                /\ acked' = [acked EXCEPT ![d] = TRUE]
                /\ syncing' = [syncing EXCEPT ![j] = FALSE]
                /\ (IF j = "G" THEN UNCHANGED g2r ELSE UNCHANGED r2g)
-               /\ UNCHANGED <<st, rcvd, early, heldEver>>
+               /\ UNCHANGED <<st, rcvd, early, heldEver, appClosed, closedEarly>>
+
+\* Mutant close-at-end: passing d to its app, the exit joint, whose own
+\* app's FIN went on (its session ended: both halves), closes the app's
+\* conn whole at once.
+CloseAtEnd(d) ==
+    IF Mutant = "close-at-end" /\ st[Other(d)] # "open"
+    THEN /\ appClosed' = [appClosed EXCEPT ![Exit(d)] = TRUE]
+         /\ closedEarly' = (closedEarly \/ ~acked[Other(d)])
+    ELSE UNCHANGED <<appClosed, closedEarly>>
 
 \* The exit joint's direction ends: held while its own sync runs, else
 \* passed on (and acknowledged).
@@ -115,8 +146,8 @@ ExitEnd(d) ==
     /\ st[d] = "at"
     /\ IF syncing[Exit(d)] /\ Mutant # "no-hold"
        THEN /\ st' = [st EXCEPT ![d] = "held"] /\ heldEver' = TRUE
-            /\ UNCHANGED <<early, g2r, r2g>>
-       ELSE /\ Pass(d) /\ UNCHANGED heldEver
+            /\ UNCHANGED <<early, g2r, r2g, appClosed, closedEarly>>
+       ELSE /\ Pass(d) /\ UNCHANGED heldEver /\ CloseAtEnd(d)
             /\ IF Mutant = "ack-on-receipt" THEN UNCHANGED <<g2r, r2g>> ELSE SendFrom(Exit(d), <<"eack", d>>)
     /\ UNCHANGED <<rcvd, acked, syncing>>
 
@@ -125,16 +156,25 @@ Release(d) ==
     /\ st[d] = "held" /\ ~syncing[Exit(d)]
     /\ Pass(d)
     /\ IF Mutant \in {"ack-on-receipt", "held-end-no-ack"} THEN UNCHANGED <<g2r, r2g>> ELSE SendFrom(Exit(d), <<"eack", d>>)
+    /\ CloseAtEnd(d)
     /\ UNCHANGED <<rcvd, acked, syncing, heldEver>>
+
+\* Both of joint j's directions ended (its app's end acknowledged, the
+\* other end passed to the app): it closes the app's conn and the session
+\* (peerlink joint.finish).
+JointDone(j) ==
+    /\ ~appClosed[j] /\ acked[AppDir(j)] /\ st[Other(AppDir(j))] = "passed"
+    /\ appClosed' = [appClosed EXCEPT ![j] = TRUE]
+    /\ UNCHANGED <<st, rcvd, acked, syncing, g2r, r2g, early, heldEver, closedEarly>>
 
 Next ==
     \/ \E d \in Dirs : AppFin(d) \/ ExitEnd(d) \/ Release(d)
-    \/ \E j \in Joints : Recv(j)
+    \/ \E j \in Joints : Recv(j) \/ JointDone(j)
 
 \* The joints and the Muxes take their steps; the apps' FINs are theirs.
 Fairness ==
     /\ \A d \in Dirs : WF_vars(ExitEnd(d)) /\ WF_vars(Release(d))
-    /\ \A j \in Joints : WF_vars(Recv(j))
+    /\ \A j \in Joints : WF_vars(Recv(j)) /\ WF_vars(JointDone(j))
 
 Spec == Init /\ [][Next]_vars /\ Fairness
 
@@ -142,6 +182,7 @@ TypeOK ==
     /\ st \in [Dirs -> {"open", "sent", "at", "held", "passed"}]
     /\ rcvd \in [Dirs -> BOOLEAN] /\ acked \in [Dirs -> BOOLEAN]
     /\ syncing \in [Joints -> BOOLEAN]
+    /\ appClosed \in [Joints -> BOOLEAN] /\ closedEarly \in BOOLEAN
 
 \* An app's reads end (the peer's FIN) only once its own FIN, sent
 \* before, is at the next hop's Mux (Join.tla's hold, relay-core finding 2).
@@ -154,8 +195,17 @@ AckTruth == \A d \in Dirs : acked[d] => st[d] = "passed"
 \* (with nothing failing, no idle bound may be needed).
 BothEnd == \A d \in Dirs : (st[d] # "open") ~> acked[d]
 
+\* A joint closes its app's conn whole only once the app's own end was
+\* acknowledged: a link app's peer reads an earlier whole close as a reset
+\* (lane PIPERESET: nfltr-pipe's relayed listener exited 6).
+CloseAfterAck == ~closedEarly
+
+\* A joint whose app's FIN and the other end both went closes its conns.
+Closed == \A j \in Joints : (st[AppDir(j)] # "open" /\ st[Other(AppDir(j))] # "open") ~> appClosed[j]
+
 \* Witnesses (make spec-mutants: TLC must violate each): an end held,
-\* then both acknowledged; both FINs on the wire at once.
+\* then both acknowledged; both FINs on the wire at once; both joints closed.
 WitnessHeldThenDone == ~(heldEver /\ acked["up"] /\ acked["down"])
 WitnessCrossing == ~(st["up"] = "sent" /\ st["down"] = "sent")
+WitnessClosed == ~(appClosed["G"] /\ appClosed["R"])
 =============================================================================
