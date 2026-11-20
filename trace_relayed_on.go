@@ -99,8 +99,9 @@ func traceRCWrite(path, ev string, kv []string) {
 
 // traceRCFrame logs a non-data frame a marked session received: an ENDACK
 // (A's ARecv, J's JAck) or a CLOSE (fin: a half close; abort: a reset or
-// an ABORT; close: a clean whole close, which no step of the model is).
-// ENDACKs for the other direction's ends (J's in, C) are no step of it.
+// an ABORT; close: a clean whole close, J's JAck of C's CClose, else no
+// step of the model). ENDACKs for the other direction's ends (J's in, C)
+// are no step of it.
 func traceRCFrame(m *Mux, f rxFrame) {
 	t := "fin"
 	switch {
@@ -115,6 +116,7 @@ func traceRCFrame(m *Mux, f rxFrame) {
 		t = "abort"
 	default:
 		t = "close"
+		traceRC(m, f.SID, "Jout", "JAck") // C closed whole before it took A's end
 	}
 	traceRC(m, f.SID, "A", "ARecv", "t", t)
 	traceRC(m, f.SID, "Jin", "JRecv", "t", t)

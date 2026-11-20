@@ -386,7 +386,7 @@ func (j *joint) ended(i int, n int64, err, werr error) {
 		if err := dst.onwardTook(); err == nil { // src's end is the far end's now (FeatureEndAck, spec/RelayedClose.tla JAck)
 			src.AckEnd()
 		} else {
-			if traceOn && !errors.Is(err, ErrEndAckIdle) { // JIdle is waitAck's
+			if traceOn && !errors.Is(err, ErrEndAckIdle) && !errors.Is(err, ErrReset) { // JIdle is waitAck's, C's close JAck's (traceRCFrame)
 				traceRC(src.m, src.id, "Jin", "JSyncFail")
 				traceRC(src.m, src.id, "Jin", "D0CFail")
 			}

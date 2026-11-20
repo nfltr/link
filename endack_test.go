@@ -277,6 +277,7 @@ func TestEndAckFarEndCloseBeforeFinFails(t *testing.T) {
 	ret := make(chan error, 1)
 	go func() { ret <- r.a.CloseWriteSync() }()
 	time.Sleep(100 * time.Millisecond) // the hop holds the end: its onward wait runs
+	traceRCEnv("CClose")
 	_ = r.c.Close()
 	select {
 	case err := <-ret:

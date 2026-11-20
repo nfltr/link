@@ -17,7 +17,7 @@ traceVars == <<vars, l>>
 E == Log[l]
 
 Env == AWrite \/ (JRecv /\ Head(toJ) = "d") \/ D1Copy \/ (CRecv /\ Head(toC) = "d")
-       \/ CRead \/ CEnd \/ CWrite
+       \/ (CDrop /\ Head(toC) = "d") \/ CRead \/ CEnd \/ CWrite
 
 \* A frame J received: the code's abort (a RESET, an ABORT) is the model's rst.
 JFrame(t) == IF t = "abort" THEN "rst" ELSE t
@@ -35,7 +35,8 @@ Step ==
       [] E.ev = "JIdle" -> JIdle
       [] E.ev = "JSyncFail" -> JSyncFail
       [] E.ev = "D0CFail" -> D0CFail
-      [] E.ev = "CRecv" -> CRecv /\ Head(toC) = E.t
+      [] E.ev = "CRecv" -> (CRecv \/ CDrop) /\ Head(toC) = E.t
+      [] E.ev = "CClose" -> CClose
       [] E.ev = "Cut" -> Cut
       [] E.ev = "CCut" -> CCut
       [] E.ev = "CMute" -> CMute

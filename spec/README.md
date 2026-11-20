@@ -385,18 +385,23 @@ frame's send logged before its write, its receipt after its read, so
 the order is causal; no vector clocks). Logged: `AClose`, `ARecv`,
 `ADown`, `AIdle`, `AReset` (one of the three resets, by `ret`),
 `JRecv`, `D1End`, `JAck`, `JIdle`, `JSyncFail`, `D0CFail`, `CRecv`,
-and the test's `Cut`, `CCut`, `CMute`; `ARet` is an observation (what A's
+`JAck` also for C's clean whole close (lane ENDACKTRUTH), and the
+test's `Cut`, `CCut`, `CMute`, `CClose`; `ARet` is an observation (what A's
 ENDACK wait returned must be the model's `ret`: `CloseTruth` on the
 code's own result). The bytes are not logged: `TraceRelayedClose.tla`
 lets TLC take them (K = 1). `make spec-traces` checks the traces of
 `TestEndAckWaitsForTheFarEnd`, `...FailsWhenTheFarEndIsCut`,
 `...FailsWhenItsConnectionIsCut` (`ADown`, the gap the first box run
-named), `...GivesUpWithoutProgress`, `...ResetEndsTheWait`;
+named), `...GivesUpWithoutProgress`, `...ResetEndsTheWait`,
+`...FarEndCloseBeforeFinFails` (`CClose`; `CDrop` is taken by TLC,
+C's dropped frames being logged as `CRecv`);
 `TestRelayedCloseTraceEventsMapped` keeps the hook points and the
 module's steps the same both ways. Fixtures (`make spec-mutants`):
-`relayedclose-ok`, `relayedclose-ok-idle-abort-in-flight` accepted;
+`relayedclose-ok`, `relayedclose-ok-idle-abort-in-flight`,
+`relayedclose-ok-close-first` accepted;
 `relayedclose-relay-read-ack`, `relayedclose-close-before-ack`,
-`relayedclose-reset-keeps-wait` (the mutants of those names) and
+`relayedclose-reset-keeps-wait`, `relayedclose-close-acks` (the mutants
+of those names) and
 `relayedclose-unknown-step` rejected. Finding (the recorder's first
 run): `Stalled` required nothing at all in flight toward A, so the
 code's A giving up at the idle bound while J's abort (after `JIdle`)
