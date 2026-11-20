@@ -256,3 +256,71 @@ func TestWaitAckedLivePeerWithoutProgress(t *testing.T) {
 		t.Fatalf("WaitAcked took %v while nothing was acknowledged; Detach is 300 ms", d)
 	}
 }
+
+// A Close waits for a slow, live tail past Config.Detach: its bound is
+// Detach with nothing acknowledged, never Detach from the Close
+// (spec/DirectPath.tla CloseKeepsLive, mutant total-bound; link
+// spec/EndAckLeg.tla IdleTruth). Before, the Close reset a tail still
+// being acknowledged once Detach passed (lane ENDACKCODE).
+func TestCloseSlowTailNotReset(t *testing.T) {
+	h := newHarness(t, 256<<10, false)
+	h.c.cfg.Detach = 300 * time.Millisecond
+	h.str[0].sv.r.set(func(p *pipe) { p.slow = 5 * time.Millisecond }) // 256 KiB take about 1.3 s, an ACK every 16 KiB frame (80 ms)
+	if err := h.s.CloseWrite(); err != nil {                           // the peer sends nothing
+		t.Fatal(err)
+	}
+	tail := payload(256<<10, 7)
+	if _, err := h.c.Write(tail); err != nil {
+		t.Fatal(err)
+	}
+	rs := make(chan []byte, 1)
+	go func() { b, _ := io.ReadAll(h.s); rs <- b }()
+	start := time.Now()
+	h.c.Close()
+	h.c.mu.Lock()
+	err := h.c.err
+	h.c.mu.Unlock()
+	if !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("Close after %v ended with %v, want the clean end (Detach is 300 ms, the tail was acknowledged throughout)", time.Since(start), err)
+	}
+	if b := <-rs; !bytes.Equal(b, tail) {
+		t.Fatalf("the peer read %d of %d bytes", len(b), len(tail))
+	}
+}
+
+// A Close gives up once nothing was acknowledged for Config.Detach, while
+// the peer keeps answering: frames heard are no progress (spec
+// DirectPath.tla, link spec/EndAckLeg.tla WaitEnds, mutant
+// liveness-counts-as-progress).
+func TestCloseLivePeerWithoutProgress(t *testing.T) {
+	h := newHarness(t, 64<<10, false)
+	h.c.cfg.Detach = 300 * time.Millisecond
+	if _, err := h.c.Write(payload(64<<10, 8)); err != nil { // the window: the peer reads none, acknowledges none
+		t.Fatal(err)
+	}
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() { // the peer keeps answering, a frame every 100 ms
+		for {
+			select {
+			case <-stop:
+				return
+			case <-time.After(100 * time.Millisecond):
+				if _, err := h.s.Write([]byte{1}); err != nil {
+					return
+				}
+			}
+		}
+	}()
+	start := time.Now()
+	h.c.Close()
+	if d := time.Since(start); d > 3*time.Second {
+		t.Fatalf("Close took %v while nothing was acknowledged; Detach is 300 ms", d)
+	}
+	h.c.mu.Lock()
+	err := h.c.err
+	h.c.mu.Unlock()
+	if errors.Is(err, io.ErrClosedPipe) {
+		t.Fatal("Close ended clean: the peer acknowledged nothing")
+	}
+}

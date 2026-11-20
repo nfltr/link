@@ -24,6 +24,7 @@ type pipe struct {
 	fin     bool
 	broken  bool
 	stalled bool
+	slow    time.Duration // each read takes at most 1 KiB, then waits this long: a slow path
 }
 
 func newPipe() *pipe { p := &pipe{}; p.cond = sync.NewCond(&p.mu); return p }
@@ -39,6 +40,10 @@ func (p *pipe) read(b []byte) (int, error) {
 	}
 	if len(p.buf) == 0 {
 		return 0, io.EOF
+	}
+	if p.slow > 0 {
+		b = b[:min(len(b), 1<<10)]
+		time.Sleep(p.slow)
 	}
 	n := copy(b, p.buf)
 	p.buf = p.buf[n:]
