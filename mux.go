@@ -1247,6 +1247,8 @@ func (s *Session) closeWrite(sync bool) (<-chan struct{}, error) {
 		s.ack.Store(s.m.expectAck(s.id))
 		if s.peerClosed.Load() { // the peer closed whole already: no ENDACK comes
 			s.m.ackDone(s.id, nil)
+		} else if e := s.err.Load(); e != nil { // failed (a Reset racing this one: its ackDone ran before this wait existed): none comes
+			s.m.ackDone(s.id, *e)
 		}
 	}
 	var synced <-chan struct{}

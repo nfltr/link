@@ -197,3 +197,29 @@ func TestEndAckResetEndsTheWait(t *testing.T) {
 	}
 	close(r.open)
 }
+
+// TestEndAckCloseWriteRacingResetEndsTheWait: a CloseWrite racing a Reset
+// (nfltr connect's Pump: one direction's EOF, the other's local failure)
+// that registers its ENDACK wait after the Reset ended the session here,
+// but before the Reset dropped it, waits for no ENDACK: the
+// CloseWriteSync after them returns at once (box: TestConnectMappings
+// drain_at_shutdown waited the 30 s idle bound).
+func TestEndAckCloseWriteRacingResetEndsTheWait(t *testing.T) {
+	r := newHopRig(t)
+	r.armed.Store(true) // C takes nothing: no ENDACK can come
+	r.a.endHere(nil)    // Reset's first step; its drop has not run yet
+	if err := r.a.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	ret := make(chan error, 1)
+	go func() { ret <- r.a.CloseWriteSync() }()
+	select {
+	case err := <-ret:
+		if !errors.Is(err, ErrReset) {
+			t.Fatalf("CloseWriteSync: %v, want ErrReset", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("CloseWriteSync waited for an ENDACK of a session reset here")
+	}
+	close(r.open)
+}

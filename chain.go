@@ -92,11 +92,10 @@ func (s *Session) endHere(a *Abort) {
 		h = *a
 	}
 	h.here = true
-	s.m.ackDone(s.id, &h) // also once both halves ended it: its CLOSE's wait (spec/RelayedClose.tla AResetWaiting)
-	if closed(s.done) {
-		return
+	if !closed(s.done) {
+		s.fail(&h) // before ackDone: a closeWrite racing it sees the failure or its wait ends here
 	}
-	s.fail(&h)
+	s.m.ackDone(s.id, &h) // also once both halves ended it: its CLOSE's wait (spec/RelayedClose.tla AResetWaiting)
 }
 
 // Error says what ended the session, where on the path and why.
