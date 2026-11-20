@@ -26,7 +26,9 @@ import (
 // reader: its goroutine for Read, minus it for WriteTo (one goroutine
 // may do both, one after the other: two readers of the model).
 //
-//	Push, Append  n: bytes (a new slice; onto the newest queued one)
+//	Push, Append  n: bytes (a new slice; onto the newest queued one), s: the
+//	              slices pushed so far, b: the bytes (TLC reads a byte's slice
+//	              off them, no recursion over the trace)
 //	Close         the queue's end
 //	Fire, Clear   the read deadline's flag set, cleared
 //	Begin         r, n: len(s.rest)
@@ -47,6 +49,7 @@ func traceReadUp(s *Session) {
 		return
 	}
 	s.rt.path = filepath.Join(dir, fmt.Sprintf("read-%d.ndjson", readSeq.Add(1)))
+	var slices, bytes int // under the queue's lock, as the hook
 	s.q.SetTrace(func(ev string, unless bool, k, n int) {
 		r := -goid()
 		if unless {
@@ -59,6 +62,12 @@ func traceReadUp(s *Session) {
 			s.readEv(map[string]any{"ev": "Pop", "r": r, "res": "timeout", "k": 0, "n": 0})
 		case "Ended":
 			s.readEv(map[string]any{"ev": "Pop", "r": r, "res": "eof", "k": 0, "n": 0})
+		case "Push", "Append":
+			if ev == "Push" {
+				slices++
+			}
+			bytes += n
+			s.readEv(map[string]any{"ev": ev, "n": n, "s": slices, "b": bytes})
 		default:
 			s.readEv(map[string]any{"ev": ev, "n": n})
 		}

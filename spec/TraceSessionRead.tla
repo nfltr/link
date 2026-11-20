@@ -16,16 +16,13 @@ Grows == SelectSeq(Log, LAMBDA e : e.ev \in {"Push", "Append"})
 TraceReaders == {Log[i].r : i \in Lines({"Begin", "WTake"})}
 TraceCopier == IF Lines({"WTake"}) = {} THEN 0 ELSE Log[CHOOSE i \in Lines({"WTake"}) : TRUE].r
 TraceSlices == Cardinality(Lines({"Push"}))
-\* byte b's slice, in send order: a Push starts the next one
-SliceSeq ==
-    LET f[i \in 0..Len(Grows)] ==
-          IF i = 0 THEN <<0, <<>>>>
-          ELSE LET p == f[i - 1] \* once: TLC does not memoize f
-                   k == p[1] + (IF Grows[i].ev = "Push" THEN 1 ELSE 0)
-               IN <<k, p[2] \o [j \in 1..Grows[i].n |-> k]>>
-    IN f[Len(Grows)][2]
-TraceBytes == 1..Len(SliceSeq)
-TraceSliceOf(b) == SliceSeq[b]
+\* byte b's slice: a Push or Append line carries the slices (s) and bytes
+\* (b) pushed so far, so no recursion over the trace (TLC's stack)
+TraceBytes == 1..(IF Grows = <<>> THEN 0 ELSE Grows[Len(Grows)].b)
+SliceOfF == [b \in TraceBytes |->
+               LET i == CHOOSE i \in DOMAIN Grows : Grows[i].b - Grows[i].n < b /\ b <= Grows[i].b
+               IN Grows[i].s]
+TraceSliceOf(b) == SliceOfF[b]
 
 VARIABLE l
 traceVars == <<vars, l>>
@@ -33,8 +30,8 @@ traceVars == <<vars, l>>
 E == Log[l]
 
 Step ==
-    CASE E.ev = "Push" -> PushOf(E.n)
-      [] E.ev = "Append" -> Grow(E.n)
+    CASE E.ev = "Push" -> PushOf(E.n) /\ next' = E.b + 1
+      [] E.ev = "Append" -> Grow(E.n) /\ next' = E.b + 1
       [] E.ev = "Close" -> Close
       [] E.ev = "Fire" -> Fire
       [] E.ev = "Clear" -> Clear
