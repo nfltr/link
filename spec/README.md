@@ -1616,7 +1616,7 @@ Recorders per spec (lane LINKTRACE2, 2026-11-20):
 | `DirectPath.tla` | `TraceDirectPath.tla`, `pathswitch/trace_on.go` | yes |
 | `QuicWatch.tla` | none: `MBTWatch.tla` drives quiclink's watch from TLC's behaviours (`watch_mbt_test.go`) | MBT |
 | `LinkSession.tla` | none: an interface; `Link.tla` refines it (`Refines`) | refinement |
-| `EndAckLeg.tla` | none: its link leg is `RelayedClose.tla`'s A-J and J-C legs (recorded); its QUIC leg ('E', 'A') is not in quiclink yet; gRPC and TCP legs are relay-core's and the relay SDK's | open |
+| `EndAckLeg.tla` | `TraceEndAckLeg.tla`, `peerlink/quiclink/trace_on.go` (`LINKTRACE_ENDACK`, Kind quic, lane ENDACKQUIC); its link leg is `RelayedClose.tla`'s A-J and J-C legs (recorded); gRPC and TCP legs are relay-core's and the relay SDK's | yes (quic) |
 
 ## Design of the fixes (2026-11-02)
 
