@@ -6,7 +6,7 @@ require (
 	github.com/hashicorp/yamux v0.1.2
 	github.com/nfltr/link v0.13.0
 	github.com/nfltr/link/peerlink/quiclink v0.4.0
-	github.com/nfltr/quic-go v0.63.1-nfltr.2.0.20261112202211-40e0a2570e52
+	github.com/nfltr/quic-go v0.63.1-nfltr.3
 	golang.ngrok.com/muxado/v2 v2.0.2
 )
 
