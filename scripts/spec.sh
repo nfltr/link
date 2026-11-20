@@ -771,11 +771,13 @@ mutants)
 	# idle bound that pings restart, so a mute far end holds a Close for
 	# ever (relay psConn.Close before: V1READY's 600 s hang); a reset
 	# here that keeps the session's ENDACK wait (v0.12.19's Reset), and a
-	# Close after it that waits (a CloseWrite racing the Reset).
-	for m in close-before-ack relay-read-ack ack-lost-hang sync-hang fail-drops-fin abort-at-write-fail liveness-counts-as-progress reset-keeps-endack-wait close-after-reset-waits; do
+	# Close after it that waits (a CloseWrite racing the Reset); the far
+	# end's whole close before the FIN reached it taken for its ENDACK
+	# (closeAckErr before lane ENDACKTRUTH).
+	for m in close-before-ack relay-read-ack ack-lost-hang sync-hang fail-drops-fin abort-at-write-fail liveness-counts-as-progress reset-keeps-endack-wait close-after-reset-waits close-acks; do
 		job mutant RelayedClose.cfg 'Mutant = "none"' "Mutant = \"$m\"" RelayedClose.tla
 	done
-	for w in WitnessExitThenEof WitnessFinThenAbort WitnessHeld WitnessCloseErr WitnessIdle WitnessResetWaiting WitnessResetFirst; do job witness RelayedClose.cfg $w RelayedClose.tla; done
+	for w in WitnessExitThenEof WitnessFinThenAbort WitnessHeld WitnessCloseErr WitnessIdle WitnessResetWaiting WitnessResetFirst WitnessCClose; do job witness RelayedClose.cfg $w RelayedClose.tla; done
 	# Two joints' holds (HopHold.tla, lane ENDACK2D): a hold that ends at
 	# the ENDACK (the code since RELAYCLOSE: crossing half closes wait for
 	# each other until the idle bound resets both), no hold, an end
@@ -789,8 +791,9 @@ mutants)
 	# Close today), an idle bound pings restart or a fixed one (pathswitch
 	# Close today); on QUIC an acknowledgement at the FIN's frame and a wait
 	# that a stream reset overtaking the acknowledgement ends, and a whole
-	# close before the end was read that acknowledges it (lane ENDACKQUIC).
-	for m in ack-at-write liveness-counts-as-progress total-bound; do
+	# close before the end was read that acknowledges it (lane ENDACKQUIC;
+	# on link too: closeAckErr before lane ENDACKTRUTH).
+	for m in ack-at-write liveness-counts-as-progress total-bound close-acks; do
 		job mutant EndAckLeg.cfg 'Mutant = "none"' "Mutant = \"$m\"" EndAckLeg.tla
 	done
 	for m in ack-at-final-size wait-on-stream-reset close-acks; do

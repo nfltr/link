@@ -333,12 +333,14 @@ holds no Close (lane V1READY's finding: relay psConn.Close held 600 s);
 prior art TCP's user timeout (RFC 5482), which counts unacknowledged
 data, not keepalives.
 `RelayedClose.tla` (`RelayedClose.cfg`, `make spec` and `make
-spec-invariants`, 42,326 states, every action taken): A writes K bytes
+spec-invariants`, 87,566 states, every action taken): A writes K bytes
 and closes; A may then exit, be reset, or its connection cut, or reset
 the session before or while its Close (`AResetFirst`, `AResetWaiting`:
 its other direction failed); C's
-connection may be cut; the relay may crash; C may write a byte or turn
-mute (`CMute`); A's and J's idle timers (`AIdle`, `JIdle`) fire only
+connection may be cut; the relay may crash; C may write a byte, turn
+mute (`CMute`) or close the session whole before A's FIN reached it
+(`CClose`: J's onward wait, or its copy onto C, ends with an error and J
+fails A's session, so A's Close says not delivered; lane ENDACKTRUTH); A's and J's idle timers (`AIdle`, `JIdle`) fire only
 while no acknowledgement is under way (`Stalled`: time is abstract).
 Invariants `NoSilentLoss`, `CloseTruth` (clean only once C holds every
 byte and the FIN: pipe `spec/Pipe.tla` CleanExit); liveness
@@ -354,8 +356,11 @@ kept the ENDACK wait, so a `CloseWriteSync` after it waited the 30 s idle
 bound; nfltr connect's `Pump`, a local EOF then a local failure) and
 `close-after-reset-waits` (link v0.12.19: a `CloseWrite` racing the
 `Reset` registered its wait after the Reset ended the waits; box
-`TestConnectMappings` drain_at_shutdown) (`CloseEnds`). Witnesses: `WitnessExitThenEof`, `WitnessFinThenAbort`,
-`WitnessHeld`, `WitnessCloseErr`, `WitnessIdle`, `WitnessResetWaiting`, `WitnessResetFirst`.
+`TestConnectMappings` drain_at_shutdown) (`CloseEnds`), `close-acks`
+(link before lane ENDACKTRUTH: `closeAckErr` read a clean whole close as
+the ENDACK, and a hop's `Session.Close` acknowledged an end its join never
+passed on: `TestEndAckFarEndCloseBeforeFinFails`) (`CloseTruth`). Witnesses: `WitnessExitThenEof`, `WitnessFinThenAbort`,
+`WitnessHeld`, `WitnessCloseErr`, `WitnessIdle`, `WitnessResetWaiting`, `WitnessResetFirst`, `WitnessCClose`.
 
 | assumption | source |
 |---|---|
@@ -1106,7 +1111,10 @@ the Close whatever the progress: `IdleTruth`; DirectPath.tla's
 (acknowledging at the FIN's frame, quic-go's final-size callback:
 `AckTruth`) and `wait-on-stream-reset` (`ErrTruth`). Witnesses
 `WitnessClean`, `WitnessIdle`, `WitnessFinFirst` (QUIC only). `SReset`
-and `RClose` are taken on the QUIC configuration only.
+is taken on the QUIC configuration only. `RClose` on link is the far
+end's whole CLOSE before its ENDACK: `closeAckErr` ends the wait with
+`ErrReset` (mutant `close-acks` on `EndAckLeg.cfg` too, `AckTruth`; link
+before lane ENDACKTRUTH ended it nil).
 
 quiclink (lane ENDACKQUIC) is the `quic` leg on a connection that
 negotiated `ALPNEndAck` ("peerlink-chain-endack"): its control stream

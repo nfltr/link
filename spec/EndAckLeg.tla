@@ -34,9 +34,10 @@ CONSTANTS
              \* idle bound restarts at every frame heard; "total-bound": the
              \* wait gives up after a fixed time whatever the progress
              \* (pathswitch Conn.Close today: waitHeard(Detach) with no stall
-             \* bound); "close-acks" (quic): R's whole close acknowledges the
-             \* end whatever it holds (link's closeAckErr: a peer's close ends
-             \* the wait clean)
+             \* bound); "close-acks": R's whole close acknowledges the end
+             \* whatever it holds (quiclink's 'E' at Close; link's
+             \* closeAckErr before lane ENDACKTRUTH: a peer's clean whole
+             \* close ended the wait nil)
 
 VARIABLES
     sw,      \* bytes S wrote
@@ -103,12 +104,15 @@ RFail ==
     /\ sreset' = (Kind = "quic")
     /\ UNCHANGED <<sw, ret, ch, got, finSeen, eackSent, mute, cut, sfail, idled>>
 
-\* QUIC: R's app closes the session whole (quiclink Session.Close: STOP_SENDING)
-\* before acknowledging: it says 'A' on the control stream, the end not known
-\* delivered (as a TCP close with data unread is an RST); with the mutant 'E'.
-\* A mute R closes too: its Close still sends 'A' (the wait need not idle).
+\* R's app closes the session whole before acknowledging (its FIN had not
+\* reached R): the end is not known delivered (as a TCP close with data
+\* unread is an RST). QUIC: quiclink Session.Close says 'A' on the control
+\* stream (STOP_SENDING); link: the CLOSE frame, which S's wait reads as an
+\* error (closeAckErr: ErrReset, lane ENDACKTRUTH). With the mutant the
+\* close acknowledges ('E'; link's closeAckErr before: a clean whole close
+\* ended the wait nil). A mute R closes too: its Close still ends the wait.
 RClose ==
-    /\ Kind = "quic" /\ ~eackSent /\ ~rfail /\ ~cut
+    /\ ~eackSent /\ ~rfail /\ ~cut
     /\ rfail' = TRUE
     /\ IF Mutant = "close-acks"
        THEN back' = Append(back, "eack") /\ eackSent' = TRUE
