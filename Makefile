@@ -134,6 +134,19 @@ check-compare:
 compare-defaults:
 	compare/defaults/run.sh $(COMPARE_OUT)
 
+# bench: the benchmarks nfltr's perf series measures (its
+# deploy/linux-node/perf-series.sh link; keep the two sets the same),
+# -benchmem -count BENCH_COUNT (6, for benchstat), into BENCH_OUT (TMPDIR's:
+# a CI runner's `ci-request TARGET=bench` keeps it in the result's out).
+BENCH_COUNT ?= 6
+BENCH_OUT ?= $(or $(TMPDIR:%/=%),/tmp)/link-bench.txt
+BENCH_SET := '^BenchmarkThroughput$$/^tr=(tcp|tls)$$/^size=(64|65536)$$/^sessions=8$$/^dir=oneway$$' '^BenchmarkLatency$$/^tr=tcp$$/^held$$'
+.PHONY: bench
+bench:
+	@: >"$(BENCH_OUT)"; for p in $(BENCH_SET); do \
+		GOWORK=off go test -run '^$$' -bench "$$p" -benchmem -count $(BENCH_COUNT) -timeout 30m . >>"$(BENCH_OUT)" || { cat "$(BENCH_OUT)"; exit 1; }; \
+	done; cat "$(BENCH_OUT)"; echo "bench: $(BENCH_OUT)"
+
 # The soak (soak/, a module of its own; SOAK.md): link over TCP and
 # quiclink over UDP, both directions, under faults, for SOAKTIME (default
 # 1h); the JSON summary goes to SOAKOUT.
