@@ -542,60 +542,6 @@ mutants)
 			;;
 		esac
 	}
-	# jcfixture FILE: a joint's trace of a side closed whole with a bug put
-	# in (spec/traces/joinclose-*): TraceJoinClose.tla must accept
-	# joinclose-ok and reject each other one.
-	jcfixture() {
-		st=0
-		TLC_WORKERS=1 jctrace "$PWD/$1" >"$jw/m.out" 2>&1 || st=$?
-		case $(basename "$1"):$st in
-		joinclose-ok.*:0) echo "$(basename "$1"): accepted, as expected" ;;
-		joinclose-ok.*:*) echo "$(basename "$1"): rejected"; tail -10 "$jw/m.out"; return 1 ;;
-		*:0) echo "$(basename "$1"): accepted (a bug the trace check misses)"; return 1 ;;
-		*)
-			if grep -q 'Error: TLC threw\|Error: Parsing' "$jw/m.out"; then
-				echo "$(basename "$1"): TLC failed:"; tail -10 "$jw/m.out"; return 1
-			fi
-			echo "$(basename "$1"): rejected, as expected"
-			;;
-		esac
-	}
-	# eafixture FILE: a quiclink session's end handshake with a bug put in
-	# (spec/traces/endackleg-*): TraceEndAckLeg.tla must accept
-	# endackleg-ok* and reject each other one.
-	eafixture() {
-		st=0
-		TLC_WORKERS=1 eatrace "$PWD/$1" >"$jw/m.out" 2>&1 || st=$?
-		case $(basename "$1"):$st in
-		endackleg-ok*:0) echo "$(basename "$1"): accepted, as expected" ;;
-		endackleg-ok*:*) echo "$(basename "$1"): rejected"; tail -10 "$jw/m.out"; return 1 ;;
-		*:0) echo "$(basename "$1"): accepted (a bug the trace check misses)"; return 1 ;;
-		*)
-			if grep -q 'Error: TLC threw\|Error: Parsing' "$jw/m.out"; then
-				echo "$(basename "$1"): TLC failed:"; tail -10 "$jw/m.out"; return 1
-			fi
-			echo "$(basename "$1"): rejected, as expected"
-			;;
-		esac
-	}
-	# rcfixture FILE: a relayed path's trace of a Close with a bug put in
-	# (spec/traces/relayedclose-*): TraceRelayedClose.tla must accept
-	# relayedclose-ok* and reject each other one.
-	rcfixture() {
-		st=0
-		TLC_WORKERS=1 rctrace "$PWD/$1" >"$jw/m.out" 2>&1 || st=$?
-		case $(basename "$1"):$st in
-		relayedclose-ok*:0) echo "$(basename "$1"): accepted, as expected" ;;
-		relayedclose-ok*:*) echo "$(basename "$1"): rejected"; tail -10 "$jw/m.out"; return 1 ;;
-		*:0) echo "$(basename "$1"): accepted (a bug the trace check misses)"; return 1 ;;
-		*)
-			if grep -q 'Error: TLC threw\|Error: Parsing' "$jw/m.out"; then
-				echo "$(basename "$1"): TLC failed:"; tail -10 "$jw/m.out"; return 1
-			fi
-			echo "$(basename "$1"): rejected, as expected"
-			;;
-		esac
-	}
 	# poolfixture FILE: a Pool's trace with a bug put in (spec/traces/pool-*):
 	# TracePool.tla must accept pool-ok and reject each other one.
 	# pathfixture FILE: a pathswitch session's trace with a bug put in
@@ -879,9 +825,9 @@ mutants)
 	for f in spec/traces/read-*.ndjson; do job okfixture rtrace "$f"; done
 	for f in spec/traces/wait-*.ndjson; do job okfixture wtrace "$f"; done
 	for f in spec/traces/write-*.ndjson; do job okfixture swtrace "$f"; done
-	for f in spec/traces/joinclose-*.ndjson; do job jcfixture "$f"; done
-	for f in spec/traces/relayedclose-*.ndjson; do job rcfixture "$f"; done
-	for f in spec/traces/endackleg-*.ndjson; do job eafixture "$f"; done
+	for f in spec/traces/joinclose-*.ndjson; do job endfixture jctrace "$f"; done
+	for f in spec/traces/relayedclose-*.ndjson; do job endfixture rctrace "$f"; done
+	for f in spec/traces/endackleg-*.ndjson; do job endfixture eatrace "$f"; done
 	for f in spec/traces/hophold-*.ndjson; do job endfixture hhtrace "$f"; done
 	wait
 	fail=0
