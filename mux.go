@@ -304,6 +304,7 @@ func (m *Mux) data(f rframe) {
 // serve applies a frame other than data. Messages have no meaning to a
 // Mux.
 func (m *Mux) serve(f rxFrame, accept func([]byte, *Session)) {
+	traceRCFrame(m, f) // spec/TraceRelayedClose.tla: ARecv, JRecv, JAck, CRecv
 	switch {
 	case f.Open:
 		var s *Session
@@ -1253,6 +1254,7 @@ func (s *Session) closeWrite(sync bool) (<-chan struct{}, error) {
 	if s.closed.Load() || s.halfClosed.Swap(true) {
 		return nil, nil
 	}
+	traceRCClose(s)
 	if s.m.c.endAcks() { // before the CLOSE: its ENDACK is never missed
 		s.ack.Store(s.m.expectAck(s.id))
 		if s.peerClosed.Load() { // the peer closed whole already: no ENDACK comes
@@ -1375,6 +1377,7 @@ func (s *Session) Reset() error {
 	if debugOn {
 		debugReleased(s)
 	}
+	traceRC(s.m, s.id, "A", "AReset")
 	if s.nack() { // ended here, its end not acknowledged: the peer's wait ends
 		s.m.ackDone(s.id, ErrReset) // and this side's own (spec/RelayedClose.tla AResetWaiting)
 		return nil

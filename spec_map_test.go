@@ -254,3 +254,42 @@ func TestSpecWritesMapped(t *testing.T) {
 		}
 	}
 }
+
+// TestRelayedCloseTraceEventsMapped: every event the relayed close
+// recorder writes (trace_relayed_on.go, its hook points, the tests'
+// traceRCEnv) is a step of spec/TraceRelayedClose.tla, and each of its
+// steps has a hook point.
+func TestRelayedCloseTraceEventsMapped(t *testing.T) {
+	code := map[string]bool{}
+	lit := regexp.MustCompile(`traceRC\([^;\n]*?"(?:A|Jin|Jout|C)", "([A-Za-z0-9]+)"|traceRCEnv\("([A-Za-z0-9]+)"\)`)
+	for _, f := range append(packageFiles(t), "trace_relayed_on.go", "endack_test.go") {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range lit.FindAllStringSubmatch(string(b), -1) {
+			code[m[1]+m[2]] = true
+		}
+	}
+	b, err := os.ReadFile("spec/TraceRelayedClose.tla")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := map[string]bool{}
+	for _, m := range regexp.MustCompile(`E\.ev = "([A-Za-z0-9]+)"`).FindAllStringSubmatch(string(b), -1) {
+		spec[m[1]] = true
+	}
+	if len(code) < 10 {
+		t.Fatalf("found only %d relayed close events in the code: the pattern no longer matches the hooks", len(code))
+	}
+	for e := range code {
+		if !spec[e] {
+			t.Errorf("the recorder writes %q, which no step of spec/TraceRelayedClose.tla maps", e)
+		}
+	}
+	for e := range spec {
+		if !code[e] {
+			t.Errorf("spec/TraceRelayedClose.tla maps %q, but no hook point of the code writes it", e)
+		}
+	}
+}

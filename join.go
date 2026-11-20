@@ -373,13 +373,23 @@ func (j *joint) ended(i int, n int64, err, werr error) {
 			_ = src.Close()
 		}
 	case err != nil:
+		if traceOn { // spec/TraceRelayedClose.tla
+			traceRC(src.m, src.id, "Jin", "D1End", "eof", "0")
+		}
 		j.abort(dst, abortFor(err))
 	case j.failed(): // ended by the other direction's abort
 	case src.peerHalf.Load() && !j.closeWhole():
+		if traceOn {
+			traceRC(src.m, src.id, "Jin", "D1End", "eof", "1")
+		}
 		_ = dst.CloseWrite()
 		if err := dst.onwardTook(); err == nil { // src's end is the far end's now (FeatureEndAck, spec/RelayedClose.tla JAck)
 			src.AckEnd()
 		} else {
+			if traceOn && !errors.Is(err, ErrEndAckIdle) { // JIdle is waitAck's
+				traceRC(src.m, src.id, "Jin", "JSyncFail")
+				traceRC(src.m, src.id, "Jin", "D0CFail")
+			}
 			j.abort(src, abortFor(err)) // the onward peer never took it (JSyncFail)
 		}
 		// src cut after its FIN (its reads ended cleanly): the failure goes

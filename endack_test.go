@@ -70,6 +70,7 @@ func newHopRigMute(t *testing.T, mute bool) *hopRig {
 		t.Fatal(cs.err)
 	}
 	accepted := make(chan *Session, 1)
+	joined := make(chan [2]*Session, 1)
 	r.hToC, r.cMux = NewMux(h2c), NewMux(cs.c)
 	go func() { _ = r.hToC.Serve(nil) }()
 	go func() { _ = r.cMux.Serve(func(_ []byte, s *Session) { accepted <- s }) }()
@@ -80,6 +81,7 @@ func newHopRigMute(t *testing.T, mute bool) *hopRig {
 			_ = in.Reset()
 			return
 		}
+		joined <- [2]*Session{in, out}
 		_ = join(in, out)
 	}, Config{Window: testWindow, Auth: testToken, endAckIdle: idle}, Config{Window: testWindow, Auth: testToken, Hop: true, endAckIdle: idle})
 	if r.a, err = am.Open(context.Background(), []byte("h")); err != nil {
@@ -92,6 +94,12 @@ func newHopRigMute(t *testing.T, mute bool) *hopRig {
 	if b, err := io.ReadAll(r.a); err != nil || len(b) != 0 {
 		t.Fatalf("A read %q, %v", b, err)
 	}
+	j := <-joined
+	traceRelayed(t.Name(), r.a, j[0], j[1], r.c) // -tags linktrace: spec/TraceRelayedClose.tla
+	if mute {
+		traceRCEnv("CMute")
+	}
+	t.Cleanup(traceRelayedOff) // before the rig's cleanups end its connections
 	return r
 }
 
@@ -139,7 +147,8 @@ func TestEndAckFailsWhenTheFarEndIsCut(t *testing.T) {
 	ret := make(chan error, 1)
 	go func() { ret <- r.a.CloseWriteSync() }()
 	time.Sleep(100 * time.Millisecond) // the hop holds the end
-	_ = r.hToC.Close()                 // C's connection ends at the hop
+	traceRCEnv("CCut")
+	_ = r.hToC.Close() // C's connection ends at the hop
 	select {
 	case err := <-ret:
 		if err == nil {

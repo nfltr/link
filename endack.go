@@ -60,7 +60,10 @@ const endAckIdle = 30 * time.Second // the idle bound (Config.endAckIdle in test
 // far end, or a hop's onward one: pings keep the connection up, they are
 // no progress; spec/RelayedClose.tla AIdle, mutant
 // liveness-counts-as-progress). It resets the session then.
-func (s *Session) waitAck(w *ackWait) error {
+func (s *Session) waitAck(w *ackWait) (err error) {
+	if traceOn { // spec/TraceRelayedClose.tla ARet: CloseWriteSync's result
+		defer func() { traceRCRet(s, err) }()
+	}
 	c := s.m.c
 	t := time.NewTicker(c.endAckIdle)
 	defer t.Stop()
@@ -75,6 +78,7 @@ func (s *Session) waitAck(w *ackWait) error {
 				return w.err
 			default:
 			}
+			traceRC(s.m, s.id, "A", "ADown")
 			return syncEnded(c)
 		case <-t.C:
 			if p := c.credit.progress(s.id); p != last {
@@ -86,6 +90,8 @@ func (s *Session) waitAck(w *ackWait) error {
 				return w.err
 			default:
 			}
+			traceRC(s.m, s.id, "A", "AIdle")
+			traceRC(s.m, s.id, "Jout", "JIdle")
 			s.m.ackDone(s.id, ErrEndAckIdle) // a leaving connection awaits it no more
 			_ = s.Reset()
 			return ErrEndAckIdle
