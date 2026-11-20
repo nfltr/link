@@ -1010,6 +1010,82 @@ step for (`Closing` needs the session open); `LateAbortForget` and
 `LateAbortSend` (Trace.tla only) take them, the ABORT dropped by the peer.
 `TestChainDrainMiddleHop` and the guard are in `make spec-traces`.
 
+## Two joints' holds (HopHold.tla, 2026-11-20, lane ENDACK2D)
+
+A path with a joint at each end of the agent link: the agent's
+(`joinTarget`: its TCP target and the agent-link session) and the
+relay's (a TCP visitor and the agent session). A joint that passed its
+app's FIN on syncs (`joint.sync`), and while it syncs holds the other
+direction's clean end from its app (`Join.tla`'s hold); that held end
+carries the ENDACK of it (`ackEnd`). Since RELAYCLOSE the hold ends when
+`CloseWriteSync` returns, at the far end's ENDACK. With both apps
+half-closing within one trip of each other, the agent's joint waits for
+the relay's ENDACK of the visitor-bound end, which the relay holds until
+its own sync returns with the agent's ENDACK, which the agent holds until
+its sync returns: a cycle only the idle bound breaks, 30 s later, with a
+reset of both apps although every byte arrived (finding 1, confirmed in
+code: `~/nfltr-evidence/ENDACK2D/crossing_halfclose_test.go.txt`, both
+apps read every byte, then `connection reset by peer` at 30.15 s, both
+joins `ErrEndAckIdle`). Fixing the hold alone left the second defect
+(finding 2): the held end whose session ended meanwhile (the `Done`
+branch of `joint` direction end) closes a TCP app without `ackEnd`, so
+the peer's `CloseWriteSync` still waited 30 s; with both fixed the run
+ends cleanly in 263 ms (`chain-fix-experiment.diff` there, not landed:
+lane LINKV013 owns the code).
+
+Design: the hold ends at the receipt (the Sync pong after the CLOSE:
+the next hop's Mux holds the tail and the FIN, `Join.tla`'s original
+sync), the ENDACK at the onward end. The ENDACK waits only for Muxes and
+kernels, the hold only for a Mux: no wait-for cycle (prior art: deadlock
+freedom by a wait-for graph without cycles, Coffman et al. 1971; the
+receipt is TCP's own ACK, RFC 9293). `HopHold.tla` (`HopHold.cfg`, 78
+states, every action taken): G, R, a FIFO each way between them, both
+apps' FINs at any time. Invariants `HoldTruth` (an app's reads end only
+once its own FIN sent before is at the next hop's Mux), `AckTruth` (an
+end is acknowledged only once the exit app's kernel has it); liveness
+`BothEnd` (every end sent is acknowledged: nothing fails here, so no
+idle bound may be needed; failures are `RelayedClose.tla`'s and
+`Join.tla`'s). Mutants: `hold-until-ack` (the code today, finding 1:
+`BothEnd`), `held-end-no-ack` (the code today, finding 2: `BothEnd`),
+`no-hold` (`HoldTruth`), `ack-on-receipt` (relay-core's gRPC stream
+today: `AckTruth`). Witnesses: `WitnessHeldThenDone`, `WitnessCrossing`.
+
+## One leg's end acknowledgement (EndAckLeg.tla, 2026-11-20, lane ENDACK2D)
+
+`RelayedClose.tla` and `HopHold.tla` model a leg as one FIFO whose far
+end acknowledges on in-order receipt. `EndAckLeg.tla` checks that each
+transport gives that (`Kind`): `link` (FeatureEndAck), `grpc` (a
+ConnectTCP stream's `EndAckFrame`), `tcp` (the peer kernel's ACK of the
+FIN: Linux `TCP_INFO` `tcpi_unacked` and `tcpi_notsent_bytes` 0, RFC
+9293 3.10.4) are one FIFO each way (`EndAckLeg.cfg`, 192 states);
+`quic` (`EndAckLegQuic.cfg`, 306 states) hands frames up in any order
+(lost and resent packets, RFC 9000 2.2) and carries the acknowledgement
+on the connection's control stream (quiclink's 'E', as HTTP/3's control
+stream, RFC 9114 6.2.1), unordered with the session's RESET_STREAM, so
+the receiver's later failure goes on the control stream too ('A') and
+the wait reads only that one. Invariants `AckTruth` (clean only once the
+receiver holds every byte and the FIN in order), `ErrTruth` (no error on
+a live connection once the acknowledgement was sent), `IdleTruth` (the
+idle bound fires only on a far end that acknowledges nothing); liveness
+`WaitEnds`. Mutants: `ack-at-write` (quiclink's `CloseWrite`, the
+relay's TCP visitor leg "once passed on", the SDK's Close on a gRPC
+stream: the code today: `AckTruth`), `liveness-counts-as-progress`
+(`WaitEnds`), `total-bound` (pathswitch `Conn.Close` today:
+`waitHeard(Detach)` with no stall bound gives up 30 s after the Close
+whatever the progress: `IdleTruth`); on QUIC `ack-at-final-size`
+(acknowledging at the FIN's frame, quic-go's final-size callback:
+`AckTruth`) and `wait-on-stream-reset` (`ErrTruth`). Witnesses
+`WitnessClean`, `WitnessIdle`, `WitnessFinFirst` (QUIC only). `SReset`
+is taken on the QUIC configuration only.
+
+| assumption | source |
+|---|---|
+| A TCP peer's kernel ACKs a FIN only once it holds every byte before it | RFC 9293 3.10.4, 3.10.7 |
+| `TCP_INFO` reports the bytes not yet sent and not yet ACKed (Linux) | tcp(7), `linux/tcp.h` `struct tcp_info` |
+| A QUIC stream delivers its bytes and FIN in order after reassembly; frames arrive in any order | RFC 9000 2.2, 3.1 |
+| Two QUIC streams are not ordered with each other | RFC 9000 2.2 |
+| A ConnectTCP gRPC stream is one FIFO | gRPC over HTTP/2: one stream's DATA frames in order (RFC 9113 5.1) |
+
 ## Code map (lane W5-LINK)
 
 The files each model stands for (`scripts/check-spec-drift.sh`: a commit
@@ -1026,6 +1102,8 @@ holds in a `Spec-Reviewed:` trailer).
 | `Join.tla`, `TraceJoin.tla` | `peerlink.Join`'s clean end (`Session.Sync`, hold, the watch) | `peerlink/chain.go`, `join.go`, `peerlink/trace_on.go` |
 | `JoinClose.tla`, `TraceJoinClose.tla` | a joint's side closed whole by its peer while the other side writes: who closes the other side, and when | `join.go`, `peerlink/chain.go`, `trace_join_on.go` |
 | `RelayedClose.tla` | a relayed session's Close, then the program's exit or reset: a FIN then a failure reads io.EOF, the joint passes the tail before the failure | `mux.go`, `join.go`, `peerlink/chain.go` |
+| `HopHold.tla` | two joints on one path (the agent's, the relay's), both ends TCP apps, crossing half closes: the hold ends at the next hop's receipt, the ENDACK at the onward end | `peerlink/chain.go`, `endack.go` |
+| `EndAckLeg.tla` | one leg's end acknowledgement per transport: link, gRPC frames, TCP's kernel ACK, QUIC (reassembly, control stream); the idle bound's progress rule | `endack.go`, `peerlink/quiclink/quiclink.go`, `pathswitch/conn.go` |
 | `CreditWaiters.tla`, `TraceCreditWaiters.tla` | senders waiting in `Credit.Acquire` on one session: the wait and `wakeAll` | `credit.go`, `trace_wait_on.go` |
 | `SessionRead.tla`, `TraceSessionRead.tla` | `Session.Read` from several goroutines (or one running `WriteTo` or `Pump`), the read deadline set and cleared meanwhile | `mux.go`, `internal/bytequeue/`, `trace_read_on.go` |
 | `SessionWrite.tla`, `TraceSessionWrite.tla` | `Session.Write` waiting for credit while `SetWriteDeadline` and its timer run | `mux.go`, `credit.go`, `trace_write_on.go` |

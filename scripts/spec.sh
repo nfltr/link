@@ -5,14 +5,14 @@
 # spec.sh check|mutants|traces: the TLA+ model of spec/ (spec/README.md).
 #   check    TLC on spec/Link.cfg, LinkDrain.cfg and LinkSess.cfg (no crash),
 #            LinkCrash.cfg, then spec/Pool.cfg, Liveness.cfg, Join.cfg,
-#            JoinClose.cfg and CreditWaiters.cfg, SessionRead.cfg, SessionReadWriteTo.cfg, SessionReadPump.cfg, SessionWrite.cfg, DirectPath.cfg, RelayedClose.cfg:
+#            JoinClose.cfg and CreditWaiters.cfg, SessionRead.cfg, SessionReadWriteTo.cfg, SessionReadPump.cfg, SessionWrite.cfg, DirectPath.cfg, RelayedClose.cfg, HopHold.cfg, EndAckLeg.cfg, EndAckLegQuic.cfg:
 #            every invariant and liveness property, and Refines.
 #   invariants  the same, Link's invariants only, Refines only on
 #            LinkCrash.cfg (CI's; Pool's liveness is checked too, seconds).
 #   nightly  Link.cfg with its crash: invariants and Refines.
 #   nightly-wide  the configurations wider than make spec's: PoolWide.cfg,
 #            PoolClient.cfg with a third slot, LinkBoth.cfg, LinkCutHalf.cfg.
-#   mutants  each Mutant of Link.tla, Pool.tla, Liveness.tla, Join.tla, JoinClose.tla and RelayedClose.tla must be
+#   mutants  each Mutant of Link.tla, Pool.tla, Liveness.tla, Join.tla, JoinClose.tla, RelayedClose.tla, HopHold.tla and EndAckLeg.tla must be
 #            caught (a TLC violation); each Mutant of Link.tla must also
 #            fail the session interface alone (Refines, LinkSession.tla),
 #            each witness must be violated, and each trace fixture of
@@ -341,7 +341,7 @@ check | invariants)
 	# PoolDrain (Min 2: a Drain failing halfway) and QuicWatchStops (two
 	# short stops, ~10 s) only in full: their mutants are CI's.
 	# PoolGrow: background growth (Max above Min).
-	pools="Pool PoolGrow PoolClient Liveness LivenessStarve QuicWatch QuicWatchPTO QuicWatchStarve Join JoinClose CreditWaiters SessionRead SessionReadWriteTo SessionReadPump SessionWrite DirectPath DirectPathReset DirectPathRebind DirectPathProof DirectPathClose RelayedClose"
+	pools="Pool PoolGrow PoolClient Liveness LivenessStarve QuicWatch QuicWatchPTO QuicWatchStarve Join JoinClose CreditWaiters SessionRead SessionReadWriteTo SessionReadPump SessionWrite DirectPath DirectPathReset DirectPathRebind DirectPathProof DirectPathClose RelayedClose HopHold EndAckLeg EndAckLegQuic"
 	[ "$1" = invariants ] || pools="$pools PoolDrain QuicWatchStops DirectPathWide"
 	for m in $pools; do
 		echo "== $m.cfg"
@@ -349,7 +349,7 @@ check | invariants)
 		# Liveness explores a horizon of ticks, Join one session,
 		# CreditWaiters a fixed number of Acquires, SessionRead a fixed number of bytes, SessionWrite a fixed number of SetWriteDeadlines: their last states end there; PoolDrain has no Open to keep it going.
 		dl=; [ $m = Pool ] || [ $m = PoolGrow ] || [ $m = PoolClient ] || dl=-deadlock
-		mod=$m.tla; case $m in Pool*) mod=Pool.tla ;; Liveness*) mod=Liveness.tla ;; QuicWatch*) mod=QuicWatch.tla ;; CreditWaiters*) mod=CreditWaiters.tla ;; SessionRead*) mod=SessionRead.tla ;; DirectPath*) mod=DirectPath.tla ;; esac
+		mod=$m.tla; case $m in Pool*) mod=Pool.tla ;; Liveness*) mod=Liveness.tla ;; QuicWatch*) mod=QuicWatch.tla ;; CreditWaiters*) mod=CreditWaiters.tla ;; SessionRead*) mod=SessionRead.tla ;; DirectPath*) mod=DirectPath.tla ;; EndAckLeg*) mod=EndAckLeg.tla ;; esac
 		cfg=$m.cfg
 		# DirectPath's liveness (AllDelivered, ResetReaches: minutes) only in
 		# full; spec-mutants catches keep-dead-path and abort-not-resent by it.
@@ -376,7 +376,7 @@ mutants)
 		else
 			sed -e "s/$2/$3/" "spec/$1" >"$jw/Mutant.cfg"
 		fi
-		dl=; [ "$mod" != Liveness.tla ] && [ "$mod" != QuicWatch.tla ] && [ "$mod" != Join.tla ] && [ "$mod" != JoinClose.tla ] && [ "$mod" != CreditWaiters.tla ] && [ "$mod" != SessionRead.tla ] && [ "$mod" != SessionWrite.tla ] && [ "$mod" != DirectPath.tla ] && [ "$mod" != RelayedClose.tla ] && [ "$1" != PoolDrain.cfg ] || dl=-deadlock
+		dl=; [ "$mod" != Liveness.tla ] && [ "$mod" != QuicWatch.tla ] && [ "$mod" != Join.tla ] && [ "$mod" != JoinClose.tla ] && [ "$mod" != CreditWaiters.tla ] && [ "$mod" != SessionRead.tla ] && [ "$mod" != SessionWrite.tla ] && [ "$mod" != DirectPath.tla ] && [ "$mod" != RelayedClose.tla ] && [ "$mod" != HopHold.tla ] && [ "$mod" != EndAckLeg.tla ] && [ "$1" != PoolDrain.cfg ] || dl=-deadlock
 		if tlc "$jw/Mutant.cfg" "$mod" $dl >"$jw/m.out" 2>&1; then
 			echo "$3: not caught"
 			return 1
@@ -409,7 +409,7 @@ mutants)
 		# WitnessAct*: an action property (checked as a PROPERTY).
 		case $2 in WitnessAct*) kind=PROPERTY what="Action property" ;; *) kind=INVARIANT what=Invariant ;; esac
 		printf '%s %s\n' "$kind" "$2" >>"$jw/Witness.cfg"
-		dl=; [ "${3:-}" != Join.tla ] && [ "${3:-}" != JoinClose.tla ] && [ "${3:-}" != Liveness.tla ] && [ "${3:-}" != QuicWatch.tla ] && [ "${3:-}" != CreditWaiters.tla ] && [ "${3:-}" != SessionRead.tla ] && [ "${3:-}" != SessionWrite.tla ] && [ "${3:-}" != DirectPath.tla ] && [ "${3:-}" != RelayedClose.tla ] || dl=-deadlock
+		dl=; [ "${3:-}" != Join.tla ] && [ "${3:-}" != JoinClose.tla ] && [ "${3:-}" != Liveness.tla ] && [ "${3:-}" != QuicWatch.tla ] && [ "${3:-}" != CreditWaiters.tla ] && [ "${3:-}" != SessionRead.tla ] && [ "${3:-}" != SessionWrite.tla ] && [ "${3:-}" != DirectPath.tla ] && [ "${3:-}" != RelayedClose.tla ] && [ "${3:-}" != HopHold.tla ] && [ "${3:-}" != EndAckLeg.tla ] || dl=-deadlock
 		if tlc "$jw/Witness.cfg" "${3:-MCLink.tla}" $dl >"$jw/m.out" 2>&1; then
 			echo "$2: never violated (vacuous)"
 			return 1
@@ -689,6 +689,27 @@ mutants)
 		job mutant RelayedClose.cfg 'Mutant = "none"' "Mutant = \"$m\"" RelayedClose.tla
 	done
 	for w in WitnessExitThenEof WitnessFinThenAbort WitnessHeld WitnessCloseErr WitnessIdle WitnessResetWaiting WitnessResetFirst; do job witness RelayedClose.cfg $w RelayedClose.tla; done
+	# Two joints' holds (HopHold.tla, lane ENDACK2D): a hold that ends at
+	# the ENDACK (the code since RELAYCLOSE: crossing half closes wait for
+	# each other until the idle bound resets both), no hold, an end
+	# acknowledged at receipt, a held end that never acknowledges.
+	for m in hold-until-ack no-hold ack-on-receipt held-end-no-ack; do
+		job mutant HopHold.cfg 'Mutant = "none"' "Mutant = \"$m\"" HopHold.tla
+	done
+	for w in WitnessHeldThenDone WitnessCrossing; do job witness HopHold.cfg $w HopHold.tla; done
+	# One leg's end acknowledgement per transport (EndAckLeg.tla, lane
+	# ENDACK2D): acknowledged once written (quiclink, a TCP visitor, a gRPC
+	# Close today), an idle bound pings restart or a fixed one (pathswitch
+	# Close today); on QUIC an acknowledgement at the FIN's frame and a wait
+	# that a stream reset overtaking the acknowledgement ends.
+	for m in ack-at-write liveness-counts-as-progress total-bound; do
+		job mutant EndAckLeg.cfg 'Mutant = "none"' "Mutant = \"$m\"" EndAckLeg.tla
+	done
+	for m in ack-at-final-size wait-on-stream-reset; do
+		job mutant EndAckLegQuic.cfg 'Mutant = "none"' "Mutant = \"$m\"" EndAckLeg.tla
+	done
+	for w in WitnessClean WitnessIdle; do job witness EndAckLeg.cfg $w EndAckLeg.tla; done
+	job witness EndAckLegQuic.cfg WitnessFinFirst EndAckLeg.tla
 	# Credit's waiters (CreditWaiters.tla, lane LINKWAKE): the one-slot
 	# wake (the code before) strands a waiter and leaves its Acquire for
 	# good; passing the token on strands one that needs less (a stall
