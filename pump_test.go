@@ -176,7 +176,7 @@ type failWriter struct{ err error }
 
 func (f failWriter) Write([]byte) (int, error) { return 0, f.err }
 
-// A Read once Pump was called returns ErrPumped and takes nothing; the
+// A Read once Pump was called returns errPumped and takes nothing; the
 // tail a Read left before Pump goes first to the pump's writer, then the
 // rest, in order (spec/SessionRead.tla, SessionReadPump.cfg, mutant
 // read-beside-pump: the code before let that Read leave a tail the
@@ -193,8 +193,8 @@ func TestSessionReadAfterPumpRefused(t *testing.T) {
 	var got lockedBuffer
 	done := make(chan pumpResult, 1)
 	s.Pump(&got, func(n int64, err error) { done <- pumpResult{n, err} })
-	if n, err := s.Read(b); n != 0 || !errors.Is(err, ErrPumped) {
-		t.Fatalf("Read after Pump: (%d, %v); want (0, ErrPumped)", n, err)
+	if n, err := s.Read(b); n != 0 || !errors.Is(err, errPumped) {
+		t.Fatalf("Read after Pump: (%d, %v); want (0, errPumped)", n, err)
 	}
 	if _, err := p.Write([]byte("gh")); err != nil {
 		t.Fatal(err)

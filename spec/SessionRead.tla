@@ -37,7 +37,7 @@
    flag or the queue's end), decided under the queue's lock in one look.
    WriteTo and Pump take s.rest and s.cur under rmu (takeRest) and own
    them from there: written, then released, by them alone. A Read once
-   Pump was called returns ErrPumped (it looks under rmu, so a Read that
+   Pump was called returns errPumped (it looks under rmu, so a Read that
    began first ends before the drain's takeRest takes its tail): only
    Reads before Pump leave a tail, and the drain's first takeRest takes
    it before its first pop.
@@ -137,7 +137,7 @@ Begin(r) ==
     /\ ref' = [ref EXCEPT ![r] = IF rest # <<>> THEN Ids(cur) ELSE {}]
     /\ UNCHANGED <<q, closed, dl, next, rest, cur, res, cnt, got, tail, rel, pumped>>
 
-\* Read returns ErrPumped, rmu taken and let go; the reader stops.
+\* Read returns errPumped, rmu taken and let go; the reader stops.
 Refuse(r) ==
     /\ r \in Plain /\ pc[r] = "idle" /\ pumped /\ Mutant # "read-beside-pump"
     /\ Locked => lock = None

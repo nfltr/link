@@ -34,7 +34,7 @@ import (
 //	Close         the queue's end
 //	Fire, Clear   the read deadline's flag set, cleared
 //	Begin         r, n: len(s.rest)
-//	Refuse        r: a Read once Pump was called (ErrPumped)
+//	Refuse        r: a Read once Pump was called (errPumped)
 //	Pump          r: -1, Pump called
 //	Pop           r, res (data, timeout, eof), k: slices, n: bytes
 //	Copy          r, n: bytes copied, rel: 1 when s.cur went back to the pool

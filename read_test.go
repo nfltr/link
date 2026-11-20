@@ -132,7 +132,7 @@ func (w ownedSumWriter) WriteOwned(b []byte) error { w.add(b); return nil }
 // it) or Pump on one session: each byte goes to one of them, none twice,
 // none lost, and no buffer goes back to the pool while it is read
 // (SessionRead.tla, SessionReadWriteTo.cfg; a Read after Pump returns
-// ErrPumped, SessionReadPump.cfg). Before, WriteTo and Pump
+// errPumped, SessionReadPump.cfg). Before, WriteTo and Pump
 // wrote the unread tail of a Read (s.rest) without rmu, then cut it and
 // released its buffer: the bytes went twice, or a Read's new tail was cut
 // (go test -race reports it at once; without -race the sum is off).

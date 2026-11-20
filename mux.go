@@ -627,7 +627,7 @@ func (m *Mux) closeIdle() {
 // net.Conn): each byte goes to one of them. WriteTo takes the session's
 // bytes for itself; a Read beside it is safe too (each byte to one of
 // them, once), but their bytes interleave. Pump takes the session's reads:
-// a Read once Pump was called returns ErrPumped.
+// a Read once Pump was called returns an error and takes nothing.
 type Session struct {
 	m      *Mux
 	dbg    debugState // linkdebug builds only (debug_on.go); zero size otherwise
@@ -687,9 +687,10 @@ type pump struct {
 // ErrReset is what a session reads once the peer reset it (Reset).
 var ErrReset = errors.New("link: session reset by the peer")
 
-// ErrPumped is what a Read returns once Pump was called: the pump's writer
-// takes the session's bytes, in order.
-var ErrPumped = errors.New("link: session read by its Pump")
+// errPumped is what a Read returns once Pump was called: the pump's writer
+// takes the session's bytes, in order. Unexported: Pump's one caller is
+// peerlink (docs/v1-api-review.md #6).
+var errPumped = errors.New("link: session read by its Pump")
 
 // ErrConnClosed is what a session reads once its connection closed:
 // the error wraps it and why (ErrDeadPeer, the network's error; the
@@ -779,7 +780,7 @@ func (s *Session) Read(b []byte) (n int, err error) {
 	// run wrote after newer bytes (spec/SessionRead.tla Refuse,
 	// read-beside-pump).
 	if s.pumpedRead() {
-		return 0, ErrPumped
+		return 0, errPumped
 	}
 	if traceOn { // spec/TraceSessionRead.tla: under rmu (Begin: pumpedRead)
 		defer func() { s.traceReadEnd(err) }()
@@ -910,7 +911,7 @@ func (bw *batchWriter) write(w io.Writer, bufs [][]byte) (int64, error) {
 // done gets what WriteTo would return, once, from that goroutine: the
 // session ended, or w failed (the session's further bytes stay unread:
 // close it). Pump takes over the session's reads: a Read after it
-// returns ErrPumped (the tail of a Read before it goes to w first); no
+// returns an error (the tail of a Read before it goes to w first); no
 // WriteTo or second Pump after it.
 func (s *Session) Pump(w io.Writer, done func(n int64, err error)) {
 	s.setPump(&pump{w: w, done: done})

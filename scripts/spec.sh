@@ -652,7 +652,7 @@ mutants)
 	job mutant SessionReadWriteTo.cfg 'Mutant = "none"' 'Mutant = "writeto-no-lock"' SessionRead.tla
 	for w in WitnessWriteToTail WitnessBothKinds; do job witness SessionReadWriteTo.cfg $w SessionRead.tla; done
 	# A Read after Pump (lane LINKTRACE2): it left a tail the drain's next
-	# run wrote after newer bytes (the code before: no ErrPumped).
+	# run wrote after newer bytes (the code before: no errPumped).
 	job mutant SessionReadPump.cfg 'Mutant = "none"' 'Mutant = "read-beside-pump"' SessionRead.tla
 	for w in WitnessWriteToTail WitnessRefused; do job witness SessionReadPump.cfg $w SessionRead.tla; done
 	# Session writes (SessionWrite.tla, lane P2PLEFT): a Write waiting for
