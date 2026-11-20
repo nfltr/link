@@ -22,7 +22,18 @@ TARGETS=(
 	". FuzzForward"
 	"peerlink/quiclink FuzzPreamble"
 	"peerlink/quiclink FuzzAnswer"
+	"pathswitch FuzzReadFrame"
 )
+# Every fuzz target of the repository, by directory, is in TARGETS and
+# nothing else is: go test -fuzz passes on a name that matches nothing.
+want=$(grep -rHoE '^func Fuzz[A-Za-z0-9_]+' --include='*_test.go' . |
+	sed -E 's|^\./||; s|/[^/]*:func | |; s|^[^/ ]*:func |. |' | LC_ALL=C sort)
+have=$(printf '%s\n' "${TARGETS[@]}" | LC_ALL=C sort)
+if [ "$want" != "$have" ]; then
+	echo "fuzz-short: TARGETS differs from the repository's fuzz targets:" >&2
+	diff <(echo "$have") <(echo "$want") >&2
+	exit 1
+fi
 failed=0
 for t in "${TARGETS[@]}"; do
 	read -r dir name <<<"$t"

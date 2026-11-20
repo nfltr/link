@@ -6,7 +6,9 @@ Every decoder has a Go fuzz target, seeded from the wire vectors
 every plain `go test` runs. `make fuzz-short` runs each target for
 `FUZZTIME` (default 10 s, part of `make check`); `make fuzz-long` for 30
 minutes each; GitHub Actions for 5 minutes each, weekly. A crasher is
-committed with its fix as a regression input.
+committed with its fix as a regression input. `fuzz-short` fails when its
+list and the repository's `func Fuzz*` differ (`go test -fuzz` passes on a
+name that matches nothing).
 
 | target | decoder |
 |---|---|
@@ -21,6 +23,7 @@ committed with its fix as a regression input.
 | `FuzzPreamble` (quiclink) | a QUIC session stream's header preamble |
 | `FuzzForward` | a `Forward` hop (`FeatureChain`) on arbitrary frames, its Route opening to an echo: no leak of onward sessions |
 | `FuzzAnswer` (quiclink) | an ALPNChain accepter's answer (accept or refusal) |
+| `FuzzReadFrame` (pathswitch) | a direct path's frames (`readFrame`): DATA and token bounds, and what the sender writes reads back the same |
 
 ## Runs
 
