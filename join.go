@@ -228,6 +228,8 @@ type joint struct {
 func (j *joint) movedBytes() (in, out int64) { return j.moved[0].Load(), j.moved[1].Load() }
 
 func newJoint(in, out *Session, obs Observer, done func(error)) *joint {
+	in.HoldEndAck() // an end is acknowledged once the onward peer took it (ended)
+	out.HoldEndAck()
 	if debugOn { // the joint owns both now: it ends them
 		debugReleased(in)
 		debugReleased(out)
@@ -375,6 +377,11 @@ func (j *joint) ended(i int, n int64, err, werr error) {
 	case j.failed(): // ended by the other direction's abort
 	case src.peerHalf.Load() && !j.closeWhole():
 		_ = dst.CloseWrite()
+		if err := dst.onwardTook(); err == nil { // src's end is the far end's now (FeatureEndAck, spec/RelayedClose.tla JAck)
+			src.AckEnd()
+		} else {
+			j.abort(src, abortFor(err)) // the onward peer never took it (JSyncFail)
+		}
 		// src cut after its FIN (its reads ended cleanly): the failure goes
 		// on after the tail and the FIN, so dst's writes fail too
 		if a := j.takeCut(); a != nil {

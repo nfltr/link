@@ -34,16 +34,27 @@ type Config struct {
 	Auth Authenticator
 	// Observer receives the connection's events; nil is none.
 	Observer Observer
+	// Hop: this side joins the connection's sessions onward (a relay).
+	// It acknowledges a peer's half close (FeatureEndAck, WIRE.md section
+	// 13) only once its join passed it on and the onward peer
+	// acknowledged it (peerlink.Join), or once its reader took it; a far
+	// end (Hop false) acknowledges it on receipt.
+	Hop bool
 
-	noChain bool // tests: announce what v0.9.4 did (no FeatureChain)
+	noChain  bool // tests: announce what v0.9.4 did (no FeatureChain)
+	noEndAck bool // tests: announce what v0.12 did (no FeatureEndAck: the recorded goldens)
 }
 
 // announce is the feature bits this side announces.
 func (cfg Config) announce() uint32 {
+	f := features
 	if cfg.noChain {
-		return features &^ FeatureChain
+		f &^= FeatureChain
 	}
-	return features
+	if cfg.noEndAck {
+		f &^= FeatureEndAck
+	}
+	return f
 }
 
 // MaxVersion is the highest wire version this package speaks.

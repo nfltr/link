@@ -304,51 +304,60 @@ byte. Severity: low (model only).
 An agent's accepted relayed session (the relay SDK's `QueueConn`, joined
 to its agent-link session by `peerlink.Join`) returned from `Close` at
 once, before its tail left the process; a program that exits then lost
-it. Once the relay held the tail and the FIN, the agent's exit (its link
-connection's end) or its stop's reset still cut it: the relay's session
-toward the agent then read the failure, not io.EOF, after the agent's
-FIN (the code broke `LinkSession.tla` GEnds, "a FIN then a reset reads
-io.EOF", which `Link.tla` keeps: `got` is the first end received), so
-its joint aborted the client, which read every byte and then a reset
-(relay-core `TestRelayedCloseThenExitDeliversTheTail`); and a failed
-write toward the agent aborted the client at once, before the tail.
+it. Once the relay held the tail and the FIN, the agent's exit or its
+stop's reset still cut it: the relay's session toward the agent read the
+failure, not io.EOF, after the FIN (against `LinkSession.tla` GEnds), so
+its joint aborted the client (relay-core
+`TestRelayedCloseThenExitDeliversTheTail`); a failed write toward the
+agent aborted the client at once, before the tail. And acknowledging
+the end once the relay read it (the first fix: `CloseWriteSync`'s pong)
+still let the agent exit 0 while the client's own link stopped carrying
+(pipe `TestRelayedEndDropAfterLastByte`).
 
-Design: A's Close returns clean once the relay's Mux read every byte and
-the FIN (`CloseWriteSync`'s ping answered), an error once A's connection
-ended first. A session whose peer's FIN was read before it failed (the
-peer's reset or abort, the connection's end, this side's own reset)
-reads its bytes, then io.EOF; `Err` still names the failure. The
-joint's direction whose source read such an end passes the tail, the
-half close, then the failure (an ABORT: the other side's writes fail);
-the other direction's failed write leaves its abort to that one while it
-runs (`joint.held`). `RelayedClose.tla` (`RelayedClose.cfg`, `make spec`
-and `make spec-invariants`, 3,533 states, every action taken): A writes
-K bytes and closes; A may then exit, be reset by its stop, or its
-connection cut; the relay may crash; the client may write a byte.
-Invariants `NoSilentLoss`, `CloseTruth` (clean only once the relay read
-every byte and the FIN); liveness `TailDelivered` (after a clean Close
-the client reads every byte and io.EOF, unless the relay crashed),
-`CloseEnds`. Mutants: `close-before-ack` (the SDK's code before,
-`CloseTruth`), `ack-lost-hang` (`CloseEnds`), `fail-drops-fin` (link's
-code before, `TailDelivered`), `abort-at-write-fail` (the joint's code
-before, `TailDelivered`). Witnesses: `WitnessExitThenEof`,
+Design (`FeatureEndAck`, WIRE.md section 13): A's Close
+(`CloseWriteSync`) returns clean once the far end C took the end (C's
+Mux received the FIN: an ENDACK); the relay's joint J, a hop
+(`Config.Hop`), holds the ENDACK of the session it reads and sends it
+only once its onward `CloseWriteSync` onto C returned at C's ENDACK.
+C's connection's end fails that onward wait (the joint aborts A's
+session); A's connection's end fails A's wait. A session whose peer's
+FIN was read before it failed reads its bytes, then io.EOF; the joint
+passes the tail, the FIN, then the failure (an ABORT), and the other
+direction's failed write leaves its abort to that one while it runs
+(`joint.held`). Prior art: SSH's channel close is answered by the
+peer's (RFC 4254 5.3), passed hop by hop as Chaining's accept is.
+`RelayedClose.tla` (`RelayedClose.cfg`, `make spec` and `make
+spec-invariants`, 10,757 states, every action taken): A writes K bytes
+and closes; A may then exit, be reset, or its connection cut; C's
+connection may be cut; the relay may crash; C may write a byte.
+Invariants `NoSilentLoss`, `CloseTruth` (clean only once C read every
+byte and io.EOF: pipe `spec/Pipe.tla` CleanExit); liveness
+`TailDelivered` (once J read the FIN, C reads every byte and io.EOF
+unless C's connection or the relay ended), `CloseEnds`, `SyncEnds`.
+Mutants: `close-before-ack` (the SDK's code before) and
+`relay-read-ack` (the first fix) (`CloseTruth`), `ack-lost-hang`
+(`CloseEnds`), `sync-hang` (`SyncEnds`), `fail-drops-fin` (link's code
+before) and `abort-at-write-fail` (the joint's code before)
+(`TailDelivered`). Witnesses: `WitnessExitThenEof`,
 `WitnessFinThenAbort`, `WitnessHeld`, `WitnessCloseErr`.
 
 | assumption | source |
 |---|---|
 | Each link connection is one FIFO; a connection's end loses the frames not yet read | WIRE.md 1, 4; TCP (RFC 9293) |
-| A pong answers every frame buffered before its ping | WIRE.md 8 (`Session.Sync`; Join.tla) |
+| A far end's Mux acknowledges a half close it received; a hop only once passed on | WIRE.md 13 (`Config.Hop`) |
 | A connection whose peer is gone ends (the dead-peer bound) | `Liveness.tla` `DetectBound` |
 | A program's exit ends its connections; a relay's crash ends both of its | the OS closes a process's sockets |
 
 | actions | code |
 |---|---|
-| `AClose`, `APong`, `ADown` | `mux.go` `CloseWriteSync`, `waitSync`; relay `client/agent/queue_close.go` (an accepted session), `client/nfnet/conn.go` `Conn.Close` and `client/tlsend` `CloseWriteSync` (a dialled one; under TLS) |
-| `JRecv`, `JDown`, `CRecv`, `CEnd` (`ReadsEof`) | `mux.go` `Mux.handle` (CLOSE), `Mux.close`, `Session.fail`, `Session.end` |
-| `D1Copy`, `D1End`, `D0Fail` | `join.go` `joint.ended`, `peerlink/chain.go` `joint.ended` |
+| `AClose`, `ARecv`, `ADown` | `mux.go` `CloseWriteSync`, `endack.go` (`waitAck`, `ackDone`, `nack`); relay `client/agent/queue_close.go` (an accepted session), `client/nfnet/conn.go` `Conn.Close` and `client/tlsend` `CloseWriteSync` (a dialled one; under TLS) |
+| `JRecv`, `JDown`, `CRecv`, `CEnd` (`ReadsEof`) | `mux.go` `Mux.handle` (CLOSE, ENDACK), `Mux.close`, `Session.fail`, `Session.end`; `conn.go` (frame 11) |
+| `D1Copy`, `D1End`, `JAck`, `JSyncFail`, `D0CFail`, `D0Fail` | `join.go` `joint.ended` (`onwardTook`), `peerlink/chain.go` `joint.ended`, `sync`, `holdEnds`, `ackEnd` |
 
 Open: no trace recorder logs these steps yet (the joint's recorder logs
-no failed write; `Trace.tla` checks the Mux's frames, not a reader's end).
+no failed write or ENDACK; `Trace.tla` checks the Mux's frames, not
+ENDACK). A link `Join` hop whose onward peer lacks the bit acknowledges
+at the onward pong (the next hop read it).
 
 ## A joint's side closed whole (JoinClose.tla, 2026-11-12, lane REFUSALFLAKE)
 

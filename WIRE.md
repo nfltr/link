@@ -96,7 +96,8 @@ ends the connection (`ErrFrame`, `ErrCredit` or `ErrFull`).
 | 8 | accept | sid, hops(1) | `FeatureChain` only (section 12) |
 | 9 | abort | sid, kind(1), code(4), hops(1), msg_len(2), msg | `FeatureChain` only (section 12) |
 | 10 | chain-open | sid, hops(1), trace(16), header | `FeatureChain` only (section 12) |
-| 11-255 | | | unknown: a protocol error (8-10 too, on a connection without `FeatureChain`) |
+| 11 | endack | sid | body exactly 1 + sid_len; `FeatureEndAck` only (section 13) |
+| 12-255 | | | unknown: a protocol error (8-10 too, on a connection without `FeatureChain`; 11 without `FeatureEndAck`) |
 
 Data, message and open frames surface to the receiver's caller (`Recv`);
 window, ping, pong and goaway frames are applied by the receiver itself.
@@ -148,8 +149,9 @@ announced it.
 |---:|---|---|---|
 | 0 | `FeatureReset` | v0.3.0 | the side reads close code 2 |
 | 1 | `FeatureChain` | v0.10.0 | the side reads accept, abort and chain-open frames, answers every open, and opens with chain-open (section 12) |
+| 2 | `FeatureEndAck` | v0.13.0 | the side reads endack frames and acknowledges the peer's half close once its reader took it (section 13) |
 
-Bits 2-31 are reserved. A connection where either side lacks a bit is
+Bits 3-31 are reserved. A connection where either side lacks a bit is
 byte for byte a connection without it.
 
 ## 7. Credit (per-session flow control)
@@ -280,3 +282,31 @@ Data before the answer is allowed from the opener (no round trip per
 hop) and uses its credit; toward a refused session it is discarded.
 A side refuses an open it does not take with an abort refuse (code 1, or
 2 after a GOAWAY), where without the bit it sends close code 2.
+
+## 13. End acknowledgement (`FeatureEndAck`)
+
+Where both sides announced bit 2, a half close (close code 1) is
+acknowledged once the stream it ends was taken, so a sender that waits
+for the acknowledgement knows the far end has every byte, across joins
+(`spec/RelayedClose.tla`).
+
+- **Endack (11)**: body exactly 1 + sid_len (sid_len, sid). A side sends
+  it once for a session whose peer half-closed it, when its reader took
+  that end (a read returned end of stream), or when it closes the
+  session after reading every byte but the end. It sends none for a
+  session it reset or that failed before. For an unknown sid it is
+  ignored.
+- **Joins.** A side that joins the session to another (section 12's hop)
+  sends the endack only once the end it passed on was acknowledged there
+  (the onward endack, or on a connection without the bit the onward pong
+  of a ping sent after the close), or, onto a conn that acknowledges
+  nothing (TCP), once it was passed on.
+- **The waiting side.** A sender's wait for the endack ends with it, or
+  with an error at the peer's close code 0 or 2, an abort, or the
+  connection's end. A close code 0 from the peer after it acknowledged
+  is a clean end. A leaving connection (section 9) closes only once no
+  endack is awaited, within its drain deadline.
+
+Prior art: SSH's channel close is answered by the peer's close (RFC 4254
+section 5.3); here the answer travels hop by hop as Chaining's accept does.
+

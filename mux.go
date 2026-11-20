@@ -48,7 +48,8 @@ type Mux struct {
 	used atomic.Bool // a session went on it, either side's
 	mu   sync.Mutex
 	sess map[string]*Session
-	done bool // Serve returned: no more sessions
+	acks map[string]*ackWait // half closes awaiting their ENDACK (FeatureEndAck)
+	done bool                // Serve returned: no more sessions
 	// leaving: this side sent GOAWAY; the connection closes once its last
 	// session ended and the peer read the GOAWAY (Conn.Drained).
 	leaving  bool
@@ -190,7 +191,7 @@ func (m *Mux) drop(s *Session) {
 // peer read the GOAWAY, after the frames buffered for it went out.
 func (m *Mux) leave() {
 	m.mu.Lock()
-	last := m.leaving && !m.left && len(m.sess) == 0 && closed(m.c.drained)
+	last := m.leaving && !m.left && len(m.sess) == 0 && len(m.acks) == 0 && closed(m.c.drained)
 	if last {
 		// a Sync's pong still to come (CloseWriteSync's: the session ended
 		// with its CLOSE): the peer's close would lose it (spec/Join.tla
@@ -324,7 +325,12 @@ func (m *Mux) serve(f Frame, accept func([]byte, *Session)) {
 			s.pathLen = f.Chain.Hops
 			close(s.answered)
 		}
+	case f.EndAck:
+		m.ackDone(f.SID, nil)
 	case f.Close:
+		if !f.Half { // the peer took no more: an end it had not acknowledged never will be
+			m.ackDone(f.SID, closeAckErr(f))
+		}
 		s := m.get(f.SID)
 		if s == nil {
 			return
@@ -343,6 +349,9 @@ func (m *Mux) serve(f Frame, accept func([]byte, *Session)) {
 		s.peerHalf.Store(true) // before the queue's end: a Pump's done (Join) reads it
 		s.q.Close()            // reads end once the queue drains
 		s.kick()
+		if !m.c.hop && m.c.endAcks() { // a far end: received is taken (a goroutine: the receive loop never writes)
+			go s.AckEnd()
+		}
 		if s.finSent.Load() { // not halfClosed: its CLOSE may not be buffered yet (review r2 LinkSession finding 1)
 			s.peerClosed.Store(true)
 			m.drop(s) // both sides stopped sending
@@ -640,11 +649,15 @@ type Session struct {
 	rest   []byte     // unread tail of the last slice taken from q
 	cur    []byte     // that slice, released once read
 
-	closed     atomic.Bool // Close called, or the session ended
-	peerClosed atomic.Bool // the peer closed it (or the connection ended): Close sends nothing
-	halfClosed atomic.Bool // CloseWrite called
-	peerHalf   atomic.Bool // the peer closed its write side
-	finSent    atomic.Bool // CloseWrite buffered its CLOSE
+	closed     atomic.Bool             // Close called, or the session ended
+	peerClosed atomic.Bool             // the peer closed it (or the connection ended): Close sends nothing
+	halfClosed atomic.Bool             // CloseWrite called
+	heldAck    atomic.Bool             // HoldEndAck: a join sends the ENDACK (AckEnd)
+	ackMu      sync.Mutex              // the ENDACK goes once, before any close after it
+	acked      bool                    // the ENDACK went (ackMu)
+	ack        atomic.Pointer[ackWait] // this side's half close's wait for the peer's ENDACK
+	peerHalf   atomic.Bool             // the peer closed its write side
+	finSent    atomic.Bool             // CloseWrite buffered its CLOSE
 	once       sync.Once
 
 	err     atomic.Pointer[error] // why the session was cut; nil: it ends with io.EOF
@@ -725,6 +738,9 @@ func (s *Session) fail(err error) {
 func (s *Session) end() error {
 	if e := s.err.Load(); e != nil && !s.finRead.Load() {
 		return *e
+	}
+	if s.peerHalf.Load() {
+		s.readEnd()
 	}
 	return io.EOF
 }
@@ -1193,6 +1209,15 @@ func (s *Session) CloseWrite() error {
 // CLOSE the peer read (spec/Join.tla DrainNeverResets, lane LINKDRAIN).
 // Once CloseWrite was called (or the session ended) it is Sync.
 func (s *Session) CloseWriteSync() error {
+	if s.m.c.endAcks() { // the far end's ENDACK, not the next hop's pong
+		if _, err := s.closeWrite(false); err != nil {
+			return err
+		}
+		if w := s.ack.Load(); w != nil {
+			return s.waitAck(w)
+		}
+		return s.Sync()
+	}
 	synced, err := s.closeWrite(true)
 	switch {
 	case err != nil:
@@ -1213,6 +1238,9 @@ func (s *Session) closeWrite(sync bool) (<-chan struct{}, error) {
 	s.autoAccept()
 	if s.closed.Load() || s.halfClosed.Swap(true) {
 		return nil, nil
+	}
+	if s.m.c.endAcks() { // before the CLOSE: its ENDACK is never missed
+		s.ack.Store(s.m.expectAck(s.id))
 	}
 	var synced <-chan struct{}
 	var err error
@@ -1300,9 +1328,13 @@ func (s *Session) Close() error {
 	}
 	s.autoAccept()
 	s.once.Do(func() {
+		if s.peerHalf.Load() { // before the close: the peer reads the ENDACK first
+			s.ackAtClose()
+		}
 		if !s.peerClosed.Load() {
 			_ = s.m.sendClose(s.id, false) // before drop: a leaving connection closes after it
 		}
+		s.m.ackDone(s.id, io.ErrClosedPipe)
 		s.m.drop(s)
 	})
 	return nil
@@ -1316,6 +1348,9 @@ func (s *Session) Close() error {
 func (s *Session) Reset() error {
 	if debugOn {
 		debugReleased(s)
+	}
+	if s.nack() { // ended here, its end not acknowledged: the peer's wait ends
+		return nil
 	}
 	s.once.Do(func() {
 		s.endHere(nil)

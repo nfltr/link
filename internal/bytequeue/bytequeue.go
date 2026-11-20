@@ -255,6 +255,13 @@ func (q *Queue) TryPopBatch(dst [][]byte, max int) (out [][]byte, ok, ended bool
 	return q.popBatchLocked(dst, max), true, false
 }
 
+// Empty reports whether no bytes are queued (closed or not).
+func (q *Queue) Empty() bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.queued() == 0
+}
+
 // Ready reports whether a pop would not wait: slices are queued, or the
 // queue is closed.
 func (q *Queue) Ready() bool {

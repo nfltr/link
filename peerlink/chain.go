@@ -74,6 +74,7 @@ func Join(a, b net.Conn) error {
 			_ = cs.Accept()
 		}
 	}
+	holdEnds(a, b)
 	ch := make(chan error, 1)
 	j := &joint{c: [2]net.Conn{a, b}, left: 2, done: func(err error) { ch <- err }}
 	if traceOn {
@@ -95,7 +96,52 @@ type EndNotifier interface {
 // SyncsEnd reports whether Join passes a clean end onto c by
 // Session.CloseWriteSync (c is a *link.Session, a Node's among them): the
 // other conn, an EndNotifier, is then told once c's peer read it.
-func SyncsEnd(c net.Conn) bool { return native(c) != nil }
+func SyncsEnd(c net.Conn) bool { return syncerOf(c) != nil }
+
+// EndAcker is a session whose peer waits for its end's acknowledgement
+// (link FeatureEndAck: *link.Session, a Node's, or a conn passing their
+// methods on): Join holds it (HoldEndAck) and acknowledges the end it
+// read (AckEnd) once the other conn's peer acknowledged it in turn
+// (CloseWriteSync returned nil), or, onto a conn that acknowledges
+// nothing, once it was passed on (spec/RelayedClose.tla JAck).
+type EndAcker interface {
+	HoldEndAck()
+	AckEnd()
+}
+
+// endSyncer is a conn whose half close returns once its peer took it
+// (Session.CloseWriteSync; tlsend's, under TLS).
+type endSyncer interface{ CloseWriteSync() error }
+
+// syncerOf is c's endSyncer: a link session, a Node's, or a conn that
+// passes CloseWriteSync on; nil for any other.
+func syncerOf(c net.Conn) endSyncer {
+	if s := native(c); s != nil {
+		return s
+	}
+	if s, ok := c.(endSyncer); ok {
+		return s
+	}
+	return nil
+}
+
+// holdEnds holds the ENDACKs of a joint's conns: the joint acknowledges
+// an end once it passed it on (before any read: a hop acknowledges
+// nothing on receipt, link Config.Hop).
+func holdEnds(cs ...net.Conn) {
+	for _, c := range cs {
+		if h, ok := c.(EndAcker); ok {
+			h.HoldEndAck()
+		}
+	}
+}
+
+// ackEnd acknowledges the end c's peer sent, when c is an EndAcker.
+func ackEnd(c net.Conn) {
+	if a, ok := c.(EndAcker); ok {
+		a.AckEnd()
+	}
+}
 
 // native is c's *link.Session, unwrapped from a Node's, or nil.
 func native(c net.Conn) *link.Session {
@@ -194,6 +240,7 @@ func Forward(route Route, cfg link.ForwardConfig) func(peer string, header []byt
 			}
 			return
 		}
+		holdEnds(in, out)
 		j := &joint{c: [2]net.Conn{in, out}, left: 2, obs: cfg.Observer, chain: c, pending: true}
 		if traceOn {
 			traceStart(j)
@@ -507,13 +554,14 @@ func (j *joint) ended(i int, n int64, err, werr error) {
 				return
 			}
 			_ = dst.Close()
-		} else if ds := native(dst); ds != nil {
+		} else if ds := syncerOf(dst); ds != nil {
 			j.sync(src, ds)
 			return
-		} else if j.hold(func() { j.closeWrite(dst) }) {
+		} else if j.hold(func() { j.closeWrite(dst); ackEnd(src) }) {
 			return
 		} else {
 			j.closeWrite(dst)
+			ackEnd(src)
 		}
 	}
 	j.finish()
@@ -557,7 +605,7 @@ func (j *joint) closeWrite(dst net.Conn) {
 // then; a connection that ends first aborts src (spec/Join.tla, relay-core finding 23). The other
 // direction's clean end waits meanwhile (hold), so src reads no EOF while
 // its own tail may still be lost.
-func (j *joint) sync(src net.Conn, ds *link.Session) {
+func (j *joint) sync(src net.Conn, ds endSyncer) {
 	j.mu.Lock()
 	j.syncing = true // before the CloseWrite: the peer's FIN after it is held
 	if traceOn {
@@ -571,8 +619,11 @@ func (j *joint) sync(src net.Conn, ds *link.Session) {
 		err := ds.CloseWriteSync()
 		if err != nil {
 			j.abort(src, abortOf(err))
-		} else if n, ok := src.(EndNotifier); ok {
-			n.EndDelivered()
+		} else {
+			ackEnd(src) // the far end took it: so did this hop (FeatureEndAck)
+			if n, ok := src.(EndNotifier); ok {
+				n.EndDelivered()
+			}
 		}
 		j.mu.Lock()
 		j.syncing = false

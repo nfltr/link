@@ -30,6 +30,20 @@ version 2 unless an entry says otherwise.
   nothing changes (the hooks compile away). `make bench`: the benchmark set
   nfltr's perf series measures, `-count 6`, for a CI runner's
   `TARGET=bench`.
+- `FeatureEndAck` (feature bit 2, frame 11 ENDACK, WIRE.md section 13):
+  `CloseWriteSync` to a peer that announced it returns once the far end
+  took the session's end, through every join, not once the next hop read
+  it (the pong): a far end acknowledges a half close on receipt; a hop
+  (`Config.Hop`, a relay) only once its join passed it on and the onward
+  peer acknowledged it (`Join`, `peerlink.Join` and both `Forward`s hold
+  their sessions' ENDACKs, `HoldEndAck`, and send them, `AckEnd`), and a
+  join whose onward peer never took the end aborts the source. Old peers
+  and old hops keep the pong. Before, a relayed agent's Close returned
+  once the relay had the tail, and a client whose own link stopped
+  carrying lost it while the agent exited 0 (pipe
+  `TestRelayedEndDropAfterLastByte`). Lane RELAYCLOSE;
+  spec/RelayedClose.tla, mutants `relay-read-ack`, `sync-hang`; guards
+  `TestEndAckWaitsForTheFarEnd`, `TestEndAckFailsWhenTheFarEndIsCut`.
 - A session whose peer's FIN was read before it failed (the peer's
   reset or abort, its connection's end, this side's own reset) reads its
   bytes, then io.EOF, as spec/LinkSession.tla GEnds and Link.tla always

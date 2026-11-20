@@ -36,6 +36,8 @@ const (
 	typeAccept    = 8
 	typeAbort     = 9
 	typeChainOpen = 10
+	// FeatureEndAck only.
+	typeEndAck = 11
 
 	// maxData is the largest payload of one data frame; SendData splits
 	// larger.
@@ -67,7 +69,7 @@ const (
 	// code 2 only to a peer that announced it, else code 0.
 	featureReset uint32 = 1 << 0
 
-	features = featureReset | FeatureChain // what this package announces
+	features = featureReset | FeatureChain | FeatureEndAck // what this package announces
 )
 
 // traceLen is a CHAIN-OPEN's trace.
@@ -147,6 +149,9 @@ type Frame struct {
 	Chain  Chain
 	Accept bool
 	Abort  *Abort
+	// EndAck (FeatureEndAck connections): the peer's reader took this
+	// side's half close of the session (ENDACK).
+	EndAck bool
 }
 
 // Conn sends and receives frames on a bound connection. One goroutine
@@ -192,6 +197,7 @@ type Conn struct {
 	dialer          bool // this side dialed: Mux picks odd session ids
 	peerMaxSessions int
 	peerFeatures    uint32
+	hop             bool   // Config.Hop: half closes are acknowledged once passed on
 	features        uint32 // what this side announced
 	maxSessions     int    // the peer may have this many open toward this side
 	live            Liveness
@@ -233,6 +239,7 @@ func newConnV2(nc net.Conn, cfg Config, peerWindow, peerMaxSessions int, dialer 
 	c.credit.flush = c.Flush
 	c.dialer, c.peerMaxSessions, c.live = dialer, peerMaxSessions, cfg.Liveness
 	c.maxSessions = cfg.MaxSessions
+	c.hop = cfg.Hop
 	c.t0 = time.Now()
 	c.pong = make(chan [pingLen]byte, 1)
 	c.peerGoAway = make(chan struct{})
@@ -255,6 +262,9 @@ func (c *Conn) up(obs Observer, id Identity) {
 
 // chain reports whether both sides announced FeatureChain.
 func (c *Conn) chain() bool { return c.features&c.peerFeatures&FeatureChain != 0 }
+
+// endAcks reports whether both sides announced FeatureEndAck.
+func (c *Conn) endAcks() bool { return c.features&c.peerFeatures&FeatureEndAck != 0 }
 
 // Credit is the connection's per-session flow control: a caller with its
 // own receive loop acquires credit before SendData (Credit.Acquire) and
@@ -1388,9 +1398,36 @@ func (c *Conn) recv() (rframe, bool, error) {
 			}
 		})
 		return rframe{}, false, nil
+	case typeEndAck:
+		if !c.endAcks() {
+			return rframe{}, false, ErrFrame
+		}
+		b, err := c.small(n, 1, 1+MaxSID)
+		if err != nil {
+			return rframe{}, false, err
+		}
+		if l := int(b[0]); l != n-1 {
+			return rframe{}, false, ErrFrame
+		}
+		return rframe{Frame: Frame{SID: string(b[1:n]), EndAck: true}}, true, nil
 	default:
 		return rframe{}, false, ErrFrame
 	}
+}
+
+// SendEndAck buffers an ENDACK for sid (FeatureEndAck): this side's
+// reader took the peer's half close (WIRE.md section 13). On a
+// connection without the bit it sends nothing.
+func (c *Conn) SendEndAck(sid string) error {
+	if len(sid) > MaxSID {
+		return errSID
+	}
+	if !c.endAcks() {
+		return nil
+	}
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
+	return c.frameLocked(typeEndAck, sid, nil, nil)
 }
 
 // small reads the rest of a frame body of n bytes, which must be within

@@ -96,6 +96,7 @@ func (s *Session) endHere(a *Abort) {
 	}
 	h.here = true
 	s.fail(&h)
+	s.m.ackDone(s.id, &h)
 }
 
 // Error says what ended the session, where on the path and why.
@@ -336,6 +337,9 @@ func (s *Session) Abort(code uint32, msg string) error {
 func (s *Session) AbortWith(a *Abort) error {
 	if debugOn {
 		debugReleased(s)
+	}
+	if !a.Refused && s.nack() { // ended here, its end not acknowledged: the peer's wait ends
+		return nil
 	}
 	if a.Refused {
 		if !s.accepter {

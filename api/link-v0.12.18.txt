@@ -1,3 +1,11 @@
 Compatible changes:
+- (*Conn).SendEndAck: added
+- (*Session).AckEnd: added
+- (*Session).HoldEndAck: added
+- Config.Hop: added
+- ErrNotAcked: added
+- FeatureEndAck: added
+- Frame.EndAck: added
+- ./peerlink.EndAcker: added
 - ./peerlink.EndNotifier: added
 - ./peerlink.SyncsEnd: added
