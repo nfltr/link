@@ -78,7 +78,7 @@ arbitrary bytes. Resource use per connection is bounded:
 | answers to pings | one pong buffered at a time: a ping flood from a peer that does not read is answered once per write, never buffered without bound (`TestPingFloodBoundsBuffer`) | the library |
 | refused opens | answered with a reset that waits for room in the write buffer, so a peer that opens without reading stalls its own connection, which liveness then ends | the library |
 
-Choose `MaxSessions` and `Window` so that their product, times the
+Choose `Config.MaxSessions` and `Config.Window` so that their product, times the
 connections you accept, fits your memory: the defaults allow 1 GiB of
 buffered data per connection from a peer that sends without reading.
 
@@ -104,7 +104,7 @@ shutting down does not cause a reconnect storm
 
 ## Chaining (`FeatureChain`, v0.10.0)
 
-Sessions joined end to end (`Join`, `Forward`; WIRE.md section 12) pass
+Sessions joined end to end (`peerlink.Join`, `Forward`; WIRE.md section 12) pass
 through hops, each of which is a transport, not a party the ends can
 trust:
 
@@ -125,7 +125,7 @@ trust:
   counter, not a list); an abort's message at most 1024 bytes of UTF-8
   (`FuzzRecvV2`, `FuzzAnswer` check the decoders); a forwarded session
   holds at most its two windows and two 256 KiB write batches at a hop,
-  and each side counts against its own connection's `MaxSessions`
+  and each side counts against its own connection's `Config.MaxSessions`
   (`TestChainStalledFarReader`). A routing loop costs at most
   `ForwardConfig.MaxHops` joins (default 8, `TestChainMaxHops`); an open
   that is never answered holds its hop until `AnswerTimeout` (set one

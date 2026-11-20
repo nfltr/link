@@ -51,7 +51,7 @@ type Config struct {
 	Observer func(peer string) link.Observer
 	// ServedPeer, when set, names the peer of a connection Serve accepted,
 	// for accept and Observer, from the connection Listener returned and
-	// the Identity Link.Auth verified (its remote address, say, where
+	// the Identity Config.Link.Auth verified (its remote address, say, where
 	// peers share one credential). nil: the Identity's Subject.
 	ServedPeer func(nc net.Conn, id link.Identity) string
 }
@@ -64,7 +64,8 @@ type Config struct {
 // connections this Node dialled (Serve takes them), and a Node without
 // Config.Dial opens sessions on the connections its peers dialled in.
 // Sessions are *link.Session (some wrapped, with every method): read
-// deadlines, no write deadlines.
+// deadlines, no write deadlines. Its methods are safe from any goroutine;
+// a second Drain returns nil.
 type Node struct {
 	cfg Config
 
@@ -89,7 +90,7 @@ var (
 
 // New returns a Node; it dials nothing until Open or Serve. It refuses a
 // Config that cannot work, naming the field: neither Dial nor Listener;
-// a Listener without Link.Auth; Connect without Dial; an invalid Link
+// a Listener without Config.Link.Auth; Connect without Dial; an invalid Link
 // (link.Config.Validate) or Pool.
 func New(cfg Config) (*Node, error) {
 	switch {
@@ -130,7 +131,7 @@ func (n *Node) DeadAfter() time.Duration {
 // with the fewest sessions, not going away); while peer has none, Open
 // waits for one until ctx ends, then fails with ErrPeerUnreachable (and
 // ctx's error). The link.Chain ctx carries (link.ContextWithChain) goes in
-// the open (link.Mux.OpenChain).
+// the open (link.Mux.Open).
 func (n *Node) Open(ctx context.Context, peer string, header []byte) (Session, error) {
 	if n.cfg.Dial == nil {
 		return n.openServed(ctx, peer, header)

@@ -14,6 +14,101 @@ so "only peerlink calls it" was wrong, and hiding it would have ended
 their clean closes early without a compile error. The inventory below is
 as of v0.12.18.
 
+## Round 2 (lane LINKAPI, 2026-11-20, on v0.13.0 + v0.13.1 and quiclink v0.7.0 unreleased)
+
+A second pass over every exported identifier of `link`, `peerlink`,
+`peerlinktest`, `pathswitch` and `peerlink/quiclink` (383 names) at link
+`cb6053e` (land/QUICGO3: ENDACKTRUTH, ENDACKQUIC, LINKFAULTS), with the
+uses resolved by type, as above, in relay `cb01697`, relay-core
+`32a2c77`, relay-server `6cf06e3f`, nfltr `57786a6`, send `7b6c86a`
+and pipe `e39832e` at their mains (send and pipe import link only
+through the relay SDK), plus quiclink's own uses of link (a module of
+its own, so they count). Questions per name: does a consumer need it,
+is it named well, are its failures and ownership documented, is it safe
+to misuse (zero value, second Close, concurrent use)?
+
+Findings: 1 breaking API change (applied), 27 doc references to names
+that no longer exist (fixed, and guarded), 6 wrong or missing failure
+docs (fixed), 6 safety statements missing (added, one guard), 0 wire
+changes. No consumer changes: relay (`go vet ./...` of its modules,
+client/agent's direct and datagram suite) and relay-core (`go vet
+./...`, `go test ./core/session/ ./frontend/... ./platform/metrics/`)
+pass against the branch unchanged; relay-server, nfltr, send and pipe
+reach quiclink only through the relay SDK (no `*quiclink.Session` in
+their own code).
+
+| identifier | problem | decision | consumers affected |
+|---|---|---|---|
+| `quiclink.Session` (embeds `*quic.Stream`) | the embedding makes the quic-go fork's whole stream API quiclink's: the `Stream` field and `CancelRead`, `CancelWrite`, `Context`, `Peek`, `SetPriority`, `SetReceiveFinalSizeCallback`, `SetReliableBoundary`, `SetSendWindowCallback`, `StreamID`, `TryWriteAll`, `WriteWithLimit`. A quic-go upgrade changes quiclink's API, and `CancelWrite`/`Stream.Close` bypass the answer and end acknowledgement the session keeps | unexported (field `stream`); `SetDeadline`, `SetReadDeadline`, `SetWriteDeadline` are the session's own methods; api/quiclink-v0.6.0.txt; CHANGELOG quiclink v0.7.0 | none: relay `client/agent` uses `*quiclink.Session` for `SendDatagram`/`OnDatagram` and as a net.Conn; its direct suite passes against the branch |
+| package docs of all five | 23 doc comments named what v0.13.0 removed or unexported: `Pump`, `Sync`, `WriteBuffers`/`writeBuffers`, `Flush`, `Conn.SendMsg`, `Mux.OpenChain`, `Mux.leave`, `link.Join`, `FeatureChain`, `FeatureEndAck`, `Config.DefaultMaxSessions`, `closeAckErr`, `noAuth{}`, `livenessDefault`, `Session.Abort`/`ChainSession.Abort`, peerlinktest's `Within`, quiclink's `errNoDatagrams` and `tagLen`; `peerlink.Session.CloseWriteSync` (a `link.Session` method), `Link.Auth` (the `Config.Link` field) | rewritten to name what a caller can use (chaining and end acknowledgements by WIRE.md section, `peerlink.Join`, `AbortWith`); `TestDocsNameNoGhosts` fails on a doc comment naming an unexported identifier, a member its type lacks, or a name api/*.txt records as removed | none |
+| README.md, SECURITY.md | `Abort`, `Join`, bare `MaxSessions` (4 lines) | `AbortWith`, `peerlink.Join`, `Config.MaxSessions` | none |
+| `DefaultMaxSessions` | "Config.DefaultMaxSessions's default" (the v0.13.0 rename's leftover) | "Config.MaxSessions's default" | none |
+| `quiclink.Session.SendDatagram` | said a caller's largest p is `MaxDatagramPayloadSize` minus the tag, but the error it returns already took the tag off; named an unexported error | says what it returns: the largest p that fits; "an error" when datagrams are off (the caller carries p on the stream, as relay does) | none |
+| `peerlink.SyncsEnd`, `EndAcker` | said only a `*link.Session` syncs its end; quiclink sessions do since v0.7.0 | name quiclink sessions | none |
+| `Session.CloseWriteSync` | its doc was the implementation's notes (Sync's ping, `Mux.leave`, `closeAckErr`) and did not list `ErrEndAckIdle` or `ErrConnClosed` | the guarantee and every error: nil once the far end took every byte and the end (end acknowledgements) or the next hop read the CLOSE (older peer); `ErrReset`, `ErrEndAckIdle` (the session reset), `ErrConnClosed`, CloseWrite's | none |
+| package doc "Errors", README errors table | missing `Session.Answered` (`ErrNoAnswers`, `ErrOpenRefused`), `Session.CloseWriteSync` (`ErrEndAckIdle`) and `ErrDrainDeadline` | listed | none |
+| `Conn` | "One goroutine Receives; the sends, Flush ..." describes the frame API v0.13.0 unexported | "a connection the handshake bound, for NewMux; its methods are safe from any goroutine" | none |
+| `Mux`, `Pool`, `peerlink.Node`, `quiclink.Node` | no statement of concurrent use | "safe from any goroutine" (Pool: Drain one at a time) | none |
+| `Mux.Close`, `Conn.Close`, `Pool.Close`, `peerlink.Node.Drain`, `Session` ends | what a second call returns was undocumented | documented and guarded (`TestCloseTwice`): a Session's ends after it ended return nil; a second `Pool.Close` and `Node.Drain` nil; a second `Mux.Close`/`Conn.Close` the connection's close error (net.ErrClosed on TCP and TLS), as net.Conn's | none |
+| `Session.HoldEndAck` | a caller that holds and never calls `AckEnd` leaves the peer's `CloseWriteSync` hanging to its idle bound: undocumented | said, with the error the peer then gets (`ErrEndAckIdle`) | none |
+| `quiclink.Node.QUICConfig` | could be read as the Node's own settings to mutate | "a copy" (it was `Clone`d already) | none |
+| `ForwardConfig.MaxHops` | "0: 8" where every other default names its constant | "0: DefaultMaxHops" | none |
+
+Kept although no consumer at the mains uses them, each for a stated
+reason (an export stays when a consumer uses it, or a used API's
+documented use needs it: an error to test, a bound of an input, a
+method an interface names):
+
+- Sentinels the docs tell callers to test (`ErrHandshake`, `ErrAuth`,
+  `ErrVersion`, `VersionError`, `ErrCredit`, `ErrDrainDeadline`,
+  `ErrEndAckIdle`, `ErrOpenRefused`, `pathswitch.ErrProtocol`,
+  `ErrStaleEpoch`, `ErrNotClient`); quiclink uses `ErrDrainDeadline`,
+  `ErrEndAckIdle`, `ErrNoAnswers`.
+- The authenticators and their methods (`NameAuth`, `CertAuth`,
+  `MethodNone`, `MethodName`): the README's quick start and recipes.
+- Bounds of inputs: `MaxHeader` (Open's header), `MaxSID` (a Credit's
+  sid), `MaxAbortMsg` (Refuse's msg), `MaxSessionsWire`
+  (Config.MaxSessions), `MaxVersion` (`VersionError.Max`'s scale);
+  `MaxFrame`, `MaxData`, `MaxReason` bound no input since the frame API
+  went, but each names a row of WIRE.md section 10's table (added in
+  v0.13.0 for that): kept, a constant is never a misuse.
+- `DefaultWindow`, `DefaultMaxHops`: the defaults the field docs name.
+- `ContextWithChain`, `ChainFromContext`, `Route`: the one way to put a
+  Chain on an Open, and Forward's argument; quiclink reads
+  `ChainFromContext`.
+- `Credit.PeerWindow`: `Acquire`'s precondition (n at most the peer's
+  window) is stated in its terms.
+- `Mux.Conn`, `Mux.Sessions`, `Conn.Done`, `Conn.Stats`,
+  `Conn.Version`, `Pool.ConnStats`, `Pool.Drain`, `PoolConfig.Accept`,
+  `PoolConfig.Validate`, `Liveness.Validate`: a Mux or Pool user's
+  metrics, shutdown and validation (none at the org's mains, which reach
+  link through peerlink and the relay SDK; a third-party Mux or Pool
+  user needs them).
+- `peerlink.Listener`, `NewListener`: serving an http.Server or a
+  grpc.Server on a Link (docs/recipes.md); its last in-org user,
+  grpclink, was deleted in v0.13.0.
+- `peerlink.EndAcker`, `EndNotifier`: the contracts relay's conns
+  (`nfnet`, `tlsend`) and relay-core's `CountConn` implement by method.
+- Methods that only satisfy an interface (`NopObserver`'s,
+  `ChainSession`'s on `*link.Session` and `*quiclink.Session`,
+  net.Conn's): the interface needs them.
+- quiclink's `Code*`: wire values a peer reads.
+
+Style: every configuration is one plain struct whose zero value is the
+default and whose constructor refuses what cannot work naming the field
+(`link.Config`/`PoolConfig` also have `Validate`, which quiclink calls);
+`ForwardConfig` and `pathswitch.Config` have nothing to refuse. Types
+with a constructor (`NewMux`, `NewPool`, `NewCredit`, `Client`/`Server`,
+`peerlink.New`, `quiclink.New`, `NewListener`) have no usable zero
+value, as is Go's convention.
+
+Not changed, for the lead: pathswitch's and a few link doc comments
+cite private paths (nfltr `docs/decisions/...`, relay lane names): true
+history, but a public reader cannot follow them; a docs pass before the
+v1.0.0 tag. relay main's `browser/e2e/harness` module does not build
+(it pins relay-core v0.14.7 with `dataplane.Conn` and an agent
+`Config.APIKeyFile` that are gone), independent of link.
+
 ## What "v1 compatible" means for link
 
 | surface | v1 promise | guard |

@@ -52,7 +52,9 @@ type PoolStats struct{ Conns, Sessions int }
 // one with the fewest sessions, dialling more as Grow says. A connection
 // the peer sends GOAWAY on takes no more sessions; its open ones run on.
 // Drain replaces every connection make-before-break. Sessions the peer
-// opens on the Pool's connections go to Accept (nil: refused).
+// opens on the Pool's connections go to Accept (nil: refused). Its
+// methods are safe from any goroutine (Drain one at a time); a second
+// Close returns nil.
 type Pool struct {
 	cfg    PoolConfig
 	ctx    context.Context

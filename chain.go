@@ -67,7 +67,8 @@ var codeNames = [...]string{"unspecified", "refused", "draining", "hop limit", "
 // one at a UTF-8 boundary, decoders refuse it.
 const MaxAbortMsg = 1024
 
-// Abort is a session's typed end on a FeatureChain connection: a refusal
+// Abort is a session's typed end on a connection with chaining (Answers;
+// WIRE.md section 12): a refusal
 // (the accepter's answer instead of its accept) or a reset (either side,
 // any time). Reads of the session, and Answered, return it.
 // errors.Is(a, ErrOpenRefused) for refusals; errors.Is(a, ErrReset) for
@@ -132,13 +133,14 @@ func (a *Abort) Is(target error) bool {
 // (errors.Is): the *Abort says who and why.
 var ErrOpenRefused = errors.New("link: session refused")
 
-// ErrNoAnswers is Answered on a session whose connection did not
-// negotiate FeatureChain: its peer does not answer opens.
+// ErrNoAnswers is Answered on a session whose connection has no
+// chaining (Answers is false: a peer of link v0.9 or older): its peer
+// does not answer opens.
 var ErrNoAnswers = errors.New("link: the peer does not answer opens (no FeatureChain)")
 
 // ErrDrainDeadline is matched (errors.Is) by the error of a session that
 // a draining Mux's deadline cut, on the side that drained: a splice
-// (Join, peerlink.Forward) sends it on as CodeDrainDeadline.
+// (peerlink.Join, Forward) sends it on as CodeDrainDeadline.
 var ErrDrainDeadline = errors.New("link: the drain's deadline cut the session")
 
 // clipMsg makes msg valid UTF-8 of at most MaxAbortMsg bytes.
@@ -250,14 +252,14 @@ type HopEvent struct {
 	Moved func() (in, out int64)
 }
 
-// Answers reports whether the session's connection negotiated
-// FeatureChain: the accepter answers the open (Accept, Refuse), aborts
+// Answers reports whether the session's connection has chaining
+// (WIRE.md section 12; both link sides since v0.10.0): the accepter answers the open (Accept, Refuse), aborts
 // carry a reason, and the open carried a Chain.
 func (s *Session) Answers() bool { return s.answers }
 
 // Chain is where the session is on its path: the CHAIN-OPEN's for a
 // session the peer opened, Open's (its Trace picked) for one this
-// side opened. Zero on a connection without FeatureChain, but for
+// side opened. Zero on a connection without chaining (Answers), but for
 // Open's own.
 func (s *Session) Chain() Chain { return s.chain }
 
@@ -275,7 +277,7 @@ func (s *Session) PathLen() uint8 {
 // end accepted), the *Abort of its refusal (errors.Is ErrOpenRefused), or
 // the error that ended the session before an answer (a reset's *Abort,
 // the connection's end), or ctx's error. ErrNoAnswers on a connection
-// without FeatureChain; nil on a session the peer opened. Bytes written
+// without chaining (Answers); nil on a session the peer opened. Bytes written
 // before the answer are sent (no round trip per hop); toward a refused
 // session they are discarded.
 func (s *Session) Answered(ctx context.Context) error {
@@ -302,10 +304,10 @@ func (s *Session) Answered(ctx context.Context) error {
 }
 
 // Accept answers a session the peer opened: accepted. The first Write,
-// WriteBuffers, CloseWrite or Close answers so too; a side that may wait
+// CloseWrite or Close answers so too; a side that may wait
 // before writing (a far end that dialled its target) calls it, since the
 // opener's Answered waits for it. It does nothing on a session this side
-// opened, on a connection without FeatureChain, or once answered.
+// opened, on a connection without chaining (Answers), or once answered.
 func (s *Session) Accept() error { return s.answer(0, true) }
 
 // AcceptPath is Accept for a hop that joined the session to a path
@@ -316,8 +318,8 @@ func (s *Session) AcceptPath(pathLen uint8) error { return s.answer(pathLen, tru
 // Refuse answers a session the peer opened: no, with code (CodeApp and
 // up are the application's) and msg (cut to MaxAbortMsg bytes of UTF-8).
 // The opener's Answered and reads return the *Abort. The session ends.
-// It fails once the session was answered (Abort it instead). On a
-// connection without FeatureChain it is Reset.
+// It fails once the session was answered (AbortWith it instead). On a
+// connection without chaining (Answers) it is Reset.
 func (s *Session) Refuse(code uint32, msg string) error {
 	return s.AbortWith(&Abort{Refused: true, Code: code, Msg: msg})
 }
@@ -327,7 +329,7 @@ func (s *Session) Refuse(code uint32, msg string) error {
 // (errors.Is ErrReset). Reads and writes here end with the abort too (an
 // *Abort, errors.Is ErrReset), never a clean end. A hop passing on an
 // abort from the other side of a join sets Hops (the abort's own Hops
-// plus one). On a connection without FeatureChain it is Reset.
+// plus one). On a connection without chaining (Answers) it is Reset.
 func (s *Session) AbortWith(a *Abort) error {
 	if debugOn {
 		debugReleased(s)

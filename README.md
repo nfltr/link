@@ -440,6 +440,8 @@ the messages name what to change.
 | `*link.Abort` (`errors.As`), `link.ErrOpenRefused`, `link.ErrReset` | `Session.Answered`, session reads (`FeatureChain`) | the far end (or the hop `Hops` says) refused the open or reset the session, with a `Code` and a `Msg` | what the code says: `CodeDraining` open elsewhere, `CodeHopLimit` a routing loop, `CodeConnLost` a hop's connection died, `CodeApp`+ the application's own |
 | `link.ErrNoAnswers` | `Session.Answered` | the connection's peer does not answer opens (link before v0.10.0, or no `FeatureChain`) | nothing: use the session without an answer, or refuse such a leg in your Route |
 | `link.ErrConnClosed` (wraps why: `ErrDeadPeer`, the network's error) | session reads; writes return `io.ErrClosedPipe` wrapping it | the connection closed under the session | open a new session (`Pool` and `Node` redial) |
+| `link.ErrEndAckIdle` | `Session.CloseWriteSync` | the far end acknowledged nothing of the session for 30 s: it is mute or stuck (the session is reset) | the far end's reader; a peer that holds an end (`HoldEndAck`) must call `AckEnd` |
+| `link.ErrDrainDeadline` | session reads, on the side that drained | `Mux.Drain`'s context ended with the session still open | a longer drain context, or end the session first |
 | `link.ErrFrame`, `link.ErrCredit` | `Mux.Serve` | the peer broke the wire protocol | a peer that is not link, or a bug: please report it |
 | a message naming a field | `peerlink.New`, `link.NewPool`, `Validate`, `Client`, `Server` | a configuration that cannot work | the field it names, as it says |
 | `io.EOF` | session reads | the peer ended its writes on purpose (`CloseWrite`, `Close`) | nothing: the normal end |
@@ -471,7 +473,7 @@ or `go build -tags linkdebug`), link reports on stderr:
 
 | report | means |
 |---|---|
-| `session 3 (header "x") opened and garbage-collected, never closed`, with the stack that opened it | this side never called `Close`, `CloseWrite`, `Reset` or `Abort` (a session `Join` or `Forward` took counts as closed) |
+| `session 3 (header "x") opened and garbage-collected, never closed`, with the stack that opened it | this side never called `Close`, `CloseWrite`, `Reset` or `AbortWith` (a session `peerlink.Join` or `Forward` took counts as closed) |
 | `concurrent Reads on session ...` (or `Writes`), with both stacks | two goroutines in `Read`/`WriteTo` (or `Write`) of one session at once. Two `Read`s (or writes) are safe: each byte goes to one reader, or out once, but their bytes interleave. A `WriteTo` (or a join) beside a `Read` is not: it takes the session's bytes for itself (the `Session` doc), and the two can hand the same bytes out twice |
 | `session ... and open 30s with no Read or Write`, with the stack that opened it | with `LINKDEBUG_IDLE=30s` (any duration): a session open that long with no IO, once each; the leak a collector cannot see, since the Mux holds every session until it ends |
 

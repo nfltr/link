@@ -35,8 +35,8 @@ type Config struct {
 	// Observer receives the connection's events; nil is none.
 	Observer Observer
 	// Hop: this side joins the connection's sessions onward (a relay).
-	// It acknowledges a peer's half close (FeatureEndAck, WIRE.md section
-	// 13) only once its join passed it on and the onward peer
+	// It acknowledges a peer's half close (end acknowledgements, WIRE.md
+	// section 13) only once its join passed it on and the onward peer
 	// acknowledged it (peerlink.Join), or once its reader took it; a far
 	// end (Hop false) acknowledges it on receipt.
 	Hop bool
@@ -101,7 +101,8 @@ type Identity struct{ Method, Subject string }
 // connections whose security is elsewhere (an mTLS peer port, a pipe).
 // Every peer it accepts has the zero Identity: a peerlink.Node names them
 // all "" (see NameAuth and CertAuth for peers with names). Do not assign
-// it: a dialer's nil Config.Auth is noAuth{} whatever NoAuth holds.
+// it: a dialer's nil Config.Auth sends no credential whatever NoAuth
+// holds.
 var NoAuth Authenticator = noAuth{}
 
 // NameAuth is an Authenticator for a trusted network (plaintext inside a
@@ -185,7 +186,7 @@ type Observer interface {
 	CreditWait(time.Duration) // a sender waited this long for credit
 	PingRTT(time.Duration)    // a ping's round trip
 	GoAway(Identity)          // the peer sent GOAWAY
-	Hop(HopEvent)             // a hop of a path of joined sessions: Forward, Join (since v0.10.0)
+	Hop(HopEvent)             // a hop of a path of joined sessions: Forward, peerlink.Join (since v0.10.0)
 	SessionAbort(Abort, bool) // an ABORT (a refusal too) sent, or received when the bool is set; then SessionClose (since v0.11.0)
 	nopObserver()             // NopObserver's: implementations embed it
 }

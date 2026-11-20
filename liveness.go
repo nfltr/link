@@ -27,8 +27,8 @@ type Liveness struct {
 // The presets. Idle traffic is one small frame each way per Interval per
 // connection; the bound is Interval + Timeout from the peer's last frame.
 // They are variables only because Go has no struct constants: do not
-// assign them (a zero Config.Liveness is livenessDefault, link's own copy
-// of LivenessDefault taken at init, so an assignment would not change it
+// assign them (a zero Config.Liveness is link's own copy of
+// LivenessDefault, taken at init, so an assignment would not change it
 // anyway).
 var (
 	// LivenessDefault: dead within 15 s, a frame each way every 5 s.

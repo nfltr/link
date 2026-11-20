@@ -18,13 +18,14 @@ import (
 	"github.com/nfltr/link/internal/linkhook"
 )
 
-// ChainSession is a Session on a Link that answers opens: a Node's over a
-// connection that negotiated link.FeatureChain, a quiclink session over a
+// ChainSession is a Session on a Link that answers opens: a Node's (a
+// *link.Session: chaining is every link side's since v0.10.0), a quiclink
+// session over a
 // connection that negotiated chaining (quiclink v0.4.0). Assert it; a
 // Session without it is spliced like a net.Conn. Answers says whether
 // this session's connection carries answers; the methods are
 // *link.Session's (see there): Accept answers an open yes, Refuse no with
-// a code and a message, Abort resets with them, Answered waits for the
+// a code and a message, AbortWith resets with them, Answered waits for the
 // peer's answer, and the *Path / *With forms carry the path's hop counts
 // (Forward).
 type ChainSession interface {
@@ -59,7 +60,7 @@ var (
 // an RST on a *net.TCPConn (SetLinger(0)), else Close.
 //
 // A clean end passed onto a *link.Session (SyncsEnd) ends its direction
-// once the session's peer read it (Session.CloseWriteSync); a source conn
+// once the session's peer read it (link.Session.CloseWriteSync); a source conn
 // with an EndDelivered method is then told (EndNotifier), else aborted
 // when that failed: a relay SDK's accepted conn returns from Close only
 // once its tail is safe (spec/RelayedClose.tla CloseTruth).
@@ -87,20 +88,22 @@ func Join(a, b net.Conn) error {
 }
 
 // EndNotifier is a conn Join tells that its clean end reached the peer
-// of the session it was joined to (SyncsEnd): Session.CloseWriteSync
+// of the session it was joined to (SyncsEnd): its CloseWriteSync
 // returned nil. Join calls EndDelivered at most once, from its own
 // goroutine; it must not block.
 type EndNotifier interface {
 	EndDelivered()
 }
 
-// SyncsEnd reports whether Join passes a clean end onto c by
-// Session.CloseWriteSync (c is a *link.Session, a Node's among them): the
-// other conn, an EndNotifier, is then told once c's peer read it.
+// SyncsEnd reports whether Join passes a clean end onto c by its
+// CloseWriteSync() error (link.Session.CloseWriteSync: a *link.Session, a
+// Node's or a quiclink session among them): the other conn, an
+// EndNotifier, is then told once c's peer read it.
 func SyncsEnd(c net.Conn) bool { return syncerOf(c) != nil }
 
 // EndAcker is a session whose peer waits for its end's acknowledgement
-// (link FeatureEndAck: *link.Session, a Node's, or a conn passing their
+// (link's end acknowledgements, WIRE.md section 13: *link.Session, a
+// Node's, a quiclink session, or a conn passing their
 // methods on): Join holds it (HoldEndAck) and acknowledges the end it
 // read (AckEnd) once the other conn's peer acknowledged it in turn
 // (CloseWriteSync returned nil), or, onto a conn that acknowledges

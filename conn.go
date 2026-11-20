@@ -155,13 +155,12 @@ type rxFrame struct {
 	EndAck bool
 }
 
-// Conn sends and receives frames on a bound connection. One goroutine
-// Receives; the sends, Flush and the credit calls (its Credit's) are safe
-// from any.
+// Conn is a connection the handshake bound (Client, Server), for NewMux,
+// which carries its sessions. Its methods are safe from any goroutine.
 //
 // Reads go through a read-ahead buffer (read.go; docs/performance.md,
 // P3): a burst of small frames is one read of the connection, and an idle
-// connection holds no pooled buffer (only rsmall, its own).
+// connection holds no pooled buffer.
 type Conn struct {
 	credit *Credit
 	nc     net.Conn
@@ -1573,7 +1572,9 @@ func (c *Conn) lost(err error) {
 // Close closes the connection; senders waiting for credit give up.
 // ConnDown gets why it ended: ErrDeadPeer, what the peer or the network
 // did (lost), or nil when this side closed it; SessionClose, the same
-// error, for each session still open, before it.
+// error, for each session still open, before it. A later Close returns
+// the connection's close error (net.ErrClosed on a TCP or TLS
+// connection).
 func (c *Conn) Close() error {
 	c.credit.Close()
 	err := c.nc.Close()

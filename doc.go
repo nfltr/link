@@ -69,10 +69,16 @@
 //   - Mux.Open, Pool.Open: [ErrFull] (the peer's max
 //     sessions), [ErrGoAway] (the connection is going away); Mux.Open after
 //     Serve returned: net.ErrClosed.
+//   - [Session.Answered]: nil (accepted), an [*Abort] ([ErrOpenRefused]: a
+//     refusal), [ErrNoAnswers] (the peer predates chaining), ctx's error.
+//   - [Session.CloseWriteSync]: [ErrReset] (the peer closed the session
+//     before the end reached it), [ErrEndAckIdle] (the far end acknowledged
+//     nothing for 30 s), [ErrConnClosed], CloseWrite's.
 //   - Session reads: io.EOF (the peer ended its writes on purpose),
-//     [ErrReset] (the peer's Reset), [ErrConnClosed] (the connection ended
-//     under the session; it wraps why, [ErrDeadPeer] among them),
-//     os.ErrDeadlineExceeded. Writes past such an end: io.ErrClosedPipe,
+//     [ErrReset] (the peer's Reset), an [*Abort] (the peer's, with chaining),
+//     [ErrConnClosed] (the connection ended under the session; it wraps why,
+//     [ErrDeadPeer] among them), [ErrDrainDeadline] (this side's
+//     [Mux.Drain] deadline cut it), os.ErrDeadlineExceeded. Writes past such an end: io.ErrClosedPipe,
 //     wrapping the same error.
 //   - Config.Validate, PoolConfig.Validate, NewPool, Client, Server: a
 //     message naming the field and what to set.

@@ -21,6 +21,18 @@ version 2 unless an entry says otherwise.
   `RClose` on link, mutant `close-acks` (`CloseTruth`, `AckTruth`);
   guards `TestEndAckFarEndCloseBeforeFinFails`,
   `TestEndAckFarEndClosedFirstFails`, `TestEndAckPeerClosedWholeFirstFails`.
+- Docs name only what exists (lane LINKAPI round 2,
+  docs/v1-api-review.md "Round 2"): 23 doc comment references and 4
+  README and SECURITY.md lines still named what v0.13.0 removed or unexported
+  (`Pump`, `Sync`, `WriteBuffers`, `Flush`, `FeatureChain`,
+  `Mux.OpenChain`, `Conn.SendMsg`, `link.Join`, `Session.Abort`, ...);
+  `TestDocsNameNoGhosts` now fails on a doc comment that names an
+  unexported identifier, a member its type lacks, or a name api/*.txt
+  records as removed. The package doc's and the README's errors list
+  `Session.Answered`, `Session.CloseWriteSync` (`ErrEndAckIdle`) and
+  `ErrDrainDeadline`; `Mux`, `Pool` and `peerlink.Node` say they are
+  safe from any goroutine and what a second `Close`/`Drain` returns
+  (`TestCloseTwice`). No API change.
 
 ## peerlink/quiclink v0.7.0 (unreleased): end acknowledgements
 
@@ -36,6 +48,20 @@ version 2 unless an entry says otherwise.
   older peer `CloseWriteSync` is `CloseWrite`. Migration: a dialler adds
   `quiclink.ALPNEndAck` first to its `NextProtos`. spec/EndAckLeg.tla
   (Kind quic, mutant `close-acks`); `TestEndAck*`.
+- `Session` no longer embeds `*quic.Stream` (lane LINKAPI round 2): the
+  embedding put the whole stream API of the quic-go fork into quiclink's
+  (`CancelRead`, `CancelWrite`, `Context`, `Peek`, `SetPriority`,
+  `SetReceiveFinalSizeCallback`, `SetReliableBoundary`,
+  `SetSendWindowCallback`, `StreamID`, `TryWriteAll`, `WriteWithLimit`
+  and the `Stream` field), so a quic-go upgrade could break quiclink's
+  API, and a caller's `CancelWrite` or `Stream.Close` bypassed the
+  answer and the end acknowledgement the session keeps. `SetDeadline`,
+  `SetReadDeadline` and `SetWriteDeadline` are the session's own now.
+  Migration: none for a caller of the net.Conn, peerlink and datagram
+  methods (relay, relay-core: no change); a caller of the stream's own
+  methods uses the session's (`Reset` for `CancelWrite`/`CancelRead`).
+  `SendDatagram`'s doc says what `MaxDatagramPayloadSize` already meant:
+  the largest p that fits, the tag taken off. api/quiclink-v0.6.0.txt.
 - peerlink: a join ends its hold at the receipt of any conn with
   `CloseWriteSyncReceived` (a quiclink session among them), not only a
   `*link.Session`'s (spec/HopHold.tla `hold-until-ack` over QUIC).

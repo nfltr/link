@@ -19,7 +19,7 @@ import (
 	"github.com/nfltr/link/internal/bytequeue"
 )
 
-// DefaultMaxSessions is Config.DefaultMaxSessions's default: the most sessions the
+// DefaultMaxSessions is Config.MaxSessions's default: the most sessions the
 // peer may have open toward this side at once. Open refuses more toward
 // the peer than its hello allows (ErrFull); a peer that opens more than
 // this side's ends the connection (ErrFull).
@@ -32,16 +32,17 @@ var ErrFull = errors.New("link: connection carries its most sessions")
 // sessions (Open), the other takes them (Serve's accept).
 // A session's data goes on credit, so a session whose reader is slow
 // stalls only itself; a Write goes to the network inline, or with the
-// frames of other sessions when a write is in flight (Conn).
+// frames of other sessions when a write is in flight.
 //
 // Opens and closes are OPEN and CLOSE frames, the open carrying the
 // opener's header, and the Mux picks ids as uvarints, odd on the dialer and even on the listener, so the two
 // sides never pick the same.
 //
-// Message frames (Conn.SendMsg) are a Conn-level feature for callers that
-// run their own receive loop; a Mux owns the Conn's receive loop and drops
-// them. Per-peer control traffic on a Mux goes in a session whose header
-// names its purpose.
+// Its methods are safe from any goroutine.
+//
+// Message frames (WIRE.md section 4, type 1) are reserved: a Mux sends
+// none and drops one it reads. Per-peer control traffic on a Mux goes in
+// a session whose header names its purpose.
 type Mux struct {
 	c    *Conn
 	ids  atomic.Uint64
@@ -99,7 +100,7 @@ func (m *Mux) nextSID() string {
 // ctx carries the session's path (ContextWithChain: Forward's Route opens
 // the next leg with the ctx it was given); without one the session starts
 // a new path. A zero Trace is a new path, for which link picks a random
-// one. On a connection that negotiated FeatureChain the open is a
+// one. On a connection with chaining (WIRE.md section 12) the open is a
 // CHAIN-OPEN and the peer answers it (Answered); on one without, the
 // Chain is kept locally only and the session does not answer (Answers is
 // false). Open does not wait, so ctx's deadline does not bound it; a ctx
@@ -616,7 +617,9 @@ func (m *Mux) goAway(deadline time.Time) error {
 	return nil
 }
 
-// Close closes the connection: Serve returns and every session ends.
+// Close closes the connection: Serve returns and every session ends. A
+// later Close returns the connection's close error (net.ErrClosed on a
+// TCP or TLS connection).
 func (m *Mux) Close() error { return m.c.Close() }
 
 // closeIdle closes m: once its buffered frames are written when it carries
@@ -647,8 +650,8 @@ func (m *Mux) closeIdle() {
 // os.ErrDeadlineExceeded. Several goroutines may Read at once (as
 // net.Conn): each byte goes to one of them. WriteTo takes the session's
 // bytes for itself; a Read beside it is safe too (each byte to one of
-// them, once), but their bytes interleave. Pump takes the session's reads:
-// a Read once Pump was called returns an error and takes nothing.
+// them, once), but their bytes interleave. Once peerlink.Join took the
+// session, a Read returns an error and takes nothing.
 type Session struct {
 	m      *Mux
 	dbg    debugState // linkdebug builds only (debug_on.go); zero size otherwise
@@ -764,7 +767,8 @@ func (s *Session) Done() <-chan struct{} { return s.done }
 
 // Err is why the session ended, once Done is closed: nil for a clean end
 // (both sides closed it), else ErrReset (the peer's Reset), the peer's
-// *Abort (FeatureChain), this side's own Reset or Abort (an *Abort), or
+// *Abort (chaining: Answers), this side's own Reset or AbortWith (an
+// *Abort), or
 // ErrConnClosed wrapping why the connection ended. A layer that joins the session to another conn watches it with
 // Done and Err (peerlink.Join: an idle client whose connection died).
 func (s *Session) Err() error {
@@ -1064,7 +1068,7 @@ func (s *Session) writeOwned(w OwnedWriter) (int64, error) {
 }
 
 // Write sends b to the peer in chunks it has credit for, waiting for
-// credit, then writes them to the network (Flush). With a write deadline
+// credit, then writes them to the network. With a write deadline
 // set, the frames go to the network from a goroutine, and Write returns
 // os.ErrDeadlineExceeded, with the bytes it sent, once the deadline passed
 // while it waited for credit or for room in the connection's write
@@ -1209,23 +1213,25 @@ func (s *Session) writeWait(ws writeStep) <-chan struct{} {
 // io.ErrClosedPipe wrapping the connection's end when its CLOSE could not
 // be written (the connection's writes failed or it closed), as Write does
 // for its bytes: the peer then never reads this side's io.EOF. nil says
-// the CLOSE was buffered, not that it arrived (Sync); a session that
+// the CLOSE was buffered, not that it arrived (CloseWriteSync waits for
+// that); a session that
 // already ended, or a second CloseWrite, returns nil.
 func (s *Session) CloseWrite() error {
 	_, err := s.closeWrite(false)
 	return err
 }
 
-// CloseWriteSync is CloseWrite, then Sync, with Sync's ping buffered with
-// the CLOSE under one write lock, so the Sync is pending before the peer
-// can read the CLOSE: a draining connection closes once its sessions
-// ended (Mux.leave), but not before that pong was read, whereas a ping
-// buffered after the close would never be sent, failing a Sync whose
-// CLOSE the peer read (spec/Join.tla DrainNeverResets, lane LINKDRAIN).
-// Once CloseWrite was called (or the session ended) it is Sync. With
-// FeatureEndAck it waits for the far end's ENDACK instead: nil only then;
-// ErrReset when the peer closed the session before the end reached it
-// (closeAckErr: not known delivered), or its failure.
+// CloseWriteSync is CloseWrite that waits until the end was delivered.
+// With end acknowledgements (WIRE.md section 13: both link sides since
+// v0.13.0) it returns nil only once the far end, through every hop of the
+// path, took every byte and the end; with an older peer, once the next
+// hop read the CLOSE. Its errors: CloseWrite's; ErrReset when the peer
+// closed the session whole before the end reached it (the tail is not
+// known delivered); ErrEndAckIdle, the session reset, when the far end
+// acknowledged nothing of the session for 30 s; ErrConnClosed wrapping
+// why, when the connection ended first. Once CloseWrite was called (or
+// the session ended) it only waits. A draining connection closes only
+// after the wait's answer (spec/Join.tla DrainNeverResets).
 func (s *Session) CloseWriteSync() error {
 	if s.m.c.endAcks() { // the far end's ENDACK, not the next hop's pong
 		if _, err := s.closeWrite(false); err != nil {
@@ -1446,7 +1452,7 @@ func (s *Session) SetReadDeadline(t time.Time) error {
 	return nil
 }
 
-// SetWriteDeadline makes a pending or later Write (writeBuffers) return
+// SetWriteDeadline makes a pending or later Write return
 // os.ErrDeadlineExceeded once t passed; zero t clears it. While one is
 // set, writes leave the network write to a goroutine (see Write).
 func (s *Session) SetWriteDeadline(t time.Time) error {

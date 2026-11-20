@@ -100,18 +100,21 @@ func (s *Session) waitAck(w *ackWait) (err error) {
 }
 
 // ErrEndAckIdle is CloseWriteSync's error when the far end acknowledged
-// nothing of the session, its end included, for the idle bound (30 s).
+// nothing of the session, its end included, for the idle bound (30 s):
+// the session is reset.
 var ErrEndAckIdle = errors.New("link: the far end acknowledged nothing of the session within the idle bound")
 
 // HoldEndAck makes the caller send the session's ENDACK (AckEnd) once it
 // passed the peer's end on: a join (peerlink.Join) on a hop (Config.Hop)
-// acknowledges only what its onward peer acknowledged.
+// acknowledges only what its onward peer acknowledged. A caller that
+// holds and never calls AckEnd leaves the peer's CloseWriteSync to fail
+// with ErrEndAckIdle.
 func (s *Session) HoldEndAck() { s.heldAck.Store(true) }
 
 // AckEnd sends the session's ENDACK once: the peer's half close was
 // received (a far end), passed on (a join's, HoldEndAck), or taken by
-// this side's reader. Without FeatureEndAck, or before the peer's half
-// close, it sends nothing.
+// this side's reader. Without end acknowledgements (WIRE.md section 13),
+// or before the peer's half close, it sends nothing.
 func (s *Session) AckEnd() {
 	if s.m.c.muteEndAck {
 		return
@@ -184,7 +187,7 @@ func (s *Session) closedFirst() error {
 // CloseWriteSyncReceived is CloseWriteSync that also reports the next
 // hop's receipt: received runs once that hop's Mux read the CLOSE (the
 // pong of a ping buffered with it), before the far end's ENDACK, which it
-// then waits for with FeatureEndAck. A join ends its hold at received,
+// then waits for (end acknowledgements). A join ends its hold at received,
 // never at the ENDACK: two joins whose FINs cross each hold the end the
 // other's ENDACK waits for (spec/HopHold.tla, mutant hold-until-ack).
 // received does not run when the connection ended first, or once

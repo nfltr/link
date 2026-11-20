@@ -17,7 +17,7 @@
 //	}
 //
 // Every time bound the suite checks comes from the Pair (DeadAfter) or is a
-// generous bound for work that must finish at all (Within); none is
+// generous bound for work that must finish at all; none is
 // specific to a transport.
 package peerlinktest
 

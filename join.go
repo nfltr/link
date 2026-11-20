@@ -60,7 +60,7 @@ type Route func(ctx context.Context, in *Session) (*Session, error)
 
 // ForwardConfig is a forwarding hop's settings.
 type ForwardConfig struct {
-	MaxHops       uint8         // refuse an open that crossed this many joins (CodeHopLimit); 0: 8
+	MaxHops       uint8         // refuse an open that crossed this many joins (CodeHopLimit); 0: DefaultMaxHops
 	AnswerTimeout time.Duration // refuse when no onward answer came by then (CodeTimeout); 0: wait while in is open
 	// Observer gets the Hop events; nil: link.Forward uses in's
 	// connection's Observer, peerlink.Forward emits none.
@@ -75,7 +75,8 @@ const DefaultMaxHops = 8
 // already crossed MaxHops joins (a routing loop), calls route, forwards
 // the bytes the origin sent meanwhile, waits for the onward answer and
 // answers in with it (an ACCEPT with the path's length, or the refusal
-// one hop further), then joins the two sessions (Join) and returns: a
+// one hop further), then joins the two sessions (peerlink.Join's rules)
+// and returns: a
 // forwarded session holds no goroutine while idle. Toward an onward
 // session without answers (Answers false) it accepts in once route
 // returned; a Route that wants answers end to end refuses such a session
