@@ -277,6 +277,9 @@ func (m *Mux) data(f rframe) {
 	m.mu.Lock()
 	s := m.sess[string(f.sid)]
 	m.mu.Unlock()
+	if s != nil && f.known && len(f.Data) > 0 && !s.got.Load() {
+		s.got.Store(true)
+	}
 	switch {
 	case s == nil || !f.known: // no credit: past this side's CLOSE or ABORT (WIRE.md section 5)
 		s = nil
@@ -340,7 +343,7 @@ func (m *Mux) serve(f rxFrame, accept func([]byte, *Session)) {
 		s := m.get(f.SID)
 		if s == nil {
 			if !f.Half {
-				m.ackDone(f.SID, closeAckErr(f))
+				m.closeAck(f)
 			}
 			return
 		}
@@ -355,7 +358,7 @@ func (m *Mux) serve(f rxFrame, accept func([]byte, *Session)) {
 			// The peer takes no more: an end it had not acknowledged never
 			// will be. After peerClosed: a closeWrite registering its wait
 			// now sees it (closeWrite).
-			m.ackDone(f.SID, closeAckErr(f))
+			m.closeAck(f)
 			m.drop(s)
 			return
 		}
@@ -675,6 +678,8 @@ type Session struct {
 	acked      bool                    // the ENDACK went (ackMu)
 	ack        atomic.Pointer[ackWait] // this side's half close's wait for the peer's ENDACK
 	peerHalf   atomic.Bool             // the peer closed its write side
+	wrote      atomic.Bool             // a byte of this side was sent (emptyEnd)
+	got        atomic.Bool             // a byte of the peer's was received (a hop's Close)
 	finSent    atomic.Bool             // CloseWrite buffered its CLOSE
 	once       sync.Once
 
@@ -1145,6 +1150,9 @@ func (s *Session) send(b []byte, flush bool) (int, error) {
 			return len(b) - len(p), err
 		}
 		flushErr, err := s.m.c.sendData(s.id, p[:n], &s.wd, &s.halfClosed, flush && n == len(p))
+		if err == nil && !s.wrote.Load() {
+			s.wrote.Store(true)
+		}
 		if err != nil {
 			if errors.Is(err, os.ErrDeadlineExceeded) || err == io.ErrClosedPipe {
 				s.m.c.credit.refund(s.id, n) // nothing of it was sent
@@ -1271,7 +1279,7 @@ func (s *Session) closeWrite(sync bool) (<-chan struct{}, error) {
 	}
 	traceRCClose(s)
 	if s.m.c.endAcks() { // before the CLOSE: its ENDACK is never missed
-		s.ack.Store(s.m.expectAck(s.id))
+		s.ack.Store(s.m.expectAck(s.id, !s.wrote.Load()))
 		if s.peerClosed.Load() || s.err.Load() != nil {
 			// the peer closed whole already (not known delivered: closedFirst),
 			// or failed (a Reset racing this one: its ackDone ran before this
@@ -1377,8 +1385,14 @@ func (s *Session) Close() error {
 			// a whole close would: not known delivered, a reset (closeAckErr;
 			// relay-core TestConnIsANetConn hung on the agent's Close
 			// without; an ENDACK here was the lie of spec/RelayedClose.tla
-			// mutant close-acks, TestEndAckFarEndClosedFirstFails)
-			s.sendNack()
+			// mutant close-acks, TestEndAckFarEndClosedFirstFails). A
+			// peer's end that carried no byte loses nothing: acknowledged
+			// (spec/RelayedClose.tla EmptyClosed, lane PIPERESET2)
+			if s.got.Load() {
+				s.sendNack()
+			} else {
+				s.AckEnd()
+			}
 		}
 		s.m.ackDone(s.id, io.ErrClosedPipe)
 		s.m.drop(s)

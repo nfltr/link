@@ -16,14 +16,16 @@ const featureEndAck uint32 = 1 << 2
 
 // ackWait is a half close's wait for the peer's ENDACK.
 type ackWait struct {
-	done chan struct{}
-	err  error
+	done  chan struct{}
+	err   error
+	empty bool // the stream carried no byte (emptyEnd)
 }
 
 // expectAck registers sid's wait for its ENDACK (m.mu not held), before
-// the CLOSE is buffered, so the answer is never missed.
-func (m *Mux) expectAck(sid string) *ackWait {
-	w := &ackWait{done: make(chan struct{})}
+// the CLOSE is buffered, so the answer is never missed; empty: the session
+// sent no byte (its writes ended with the half close).
+func (m *Mux) expectAck(sid string, empty bool) *ackWait {
+	w := &ackWait{done: make(chan struct{}), empty: empty}
 	m.mu.Lock()
 	if m.acks == nil {
 		m.acks = map[string]*ackWait{}
@@ -34,7 +36,14 @@ func (m *Mux) expectAck(sid string) *ackWait {
 }
 
 // ackDone ends sid's wait: nil at its ENDACK, else why it never comes.
-func (m *Mux) ackDone(sid string, err error) {
+func (m *Mux) ackDone(sid string, err error) { m.ackEnd(sid, err, false) }
+
+// closeAck ends sid's wait at the peer's whole close f: closeAckErr, or
+// nil when f was clean and the stream carried no byte (emptyEnd), also
+// once the session was dropped here (both halves passed).
+func (m *Mux) closeAck(f rxFrame) { m.ackEnd(f.SID, closeAckErr(f), f.Abort == nil && !f.Reset) }
+
+func (m *Mux) ackEnd(sid string, err error, clean bool) {
 	m.mu.Lock()
 	w := m.acks[sid]
 	delete(m.acks, sid)
@@ -42,6 +51,9 @@ func (m *Mux) ackDone(sid string, err error) {
 	m.mu.Unlock()
 	if w == nil {
 		return
+	}
+	if clean && w.empty {
+		err = nil
 	}
 	w.err = err
 	close(w.done)
@@ -176,13 +188,24 @@ func closeAckErr(f rxFrame) error {
 }
 
 // closedFirst is CloseWriteSync's error once the peer closed the session
-// whole before this side's FIN: the end is not known delivered.
+// whole before this side's FIN: the end is not known delivered, unless
+// the stream carried no byte (emptyEnd).
 func (s *Session) closedFirst() error {
 	if e := s.err.Load(); e != nil {
 		return *e
 	}
+	if !s.wrote.Load() { // emptyEnd
+		return nil
+	}
 	return ErrReset
 }
+
+// emptyEnd: the peer's clean whole close loses nothing of a stream that
+// carried no byte, so the wait for its end ends nil (as a TCP close(2) in
+// FIN_WAIT_2 still ACKs a bare FIN; spec/EndAckLeg.tla EmptyClosed,
+// NoFalseReset, spec/RelayedClose.tla RelayedCloseEmpty.cfg, mutant
+// close-resets: relay-core TestConnIsANetConn/BasicIO's second Close read
+// a reset; lane PIPERESET2); with a byte sent, ErrReset (closeAckErr).
 
 // CloseWriteSyncReceived is CloseWriteSync that also reports the next
 // hop's receipt: received runs once that hop's Mux read the CLOSE (the
