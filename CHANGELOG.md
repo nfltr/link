@@ -62,6 +62,9 @@ migration:
   require it beside link.
 - `peerlink/grpclink` is deleted (no consumer); its last release,
   v0.3.3, stays for anyone who pinned it.
+- linkvet (v0.1.2): `Mux.Open(ctx, ...)` is not reported for a context
+  that never ends (it sends the open and returns; the check is for
+  `Pool.Open` and `Node.Open`, which wait).
 - quiclink (v0.6.0): `MaxHeader`, `ErrNoDatagrams`, `Probe`,
   `Node.DatagramsDropped` and `Session.TagLen` are unexported, and
   `Session.Abort` deleted (above); its wire is a section of its README.

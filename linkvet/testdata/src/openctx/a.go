@@ -16,7 +16,9 @@ func bad(p *link.Pool, n *peerlink.Node) {
 	defer s2.Close()
 }
 
-func good(ctx context.Context, p *link.Pool, n *peerlink.Node) {
+func good(ctx context.Context, p *link.Pool, n *peerlink.Node, m *link.Mux) {
+	s0, _ := m.Open(context.Background(), nil) // a Mux's Open does not wait
+	defer s0.Close()
 	s, _ := p.Open(ctx, nil)
 	defer s.Close()
 	tctx, cancel := context.WithTimeout(context.Background(), time.Second)

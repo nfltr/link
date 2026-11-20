@@ -1,6 +1,7 @@
 package closewrite
 
 import (
+	"context"
 	"fmt"
 	"io"
 
@@ -10,7 +11,7 @@ import (
 
 func bad(s *link.Session) {
 	s.CloseWrite()
-	s.Write([]byte("late")) // want `write to session s after its CloseWrite \(line 12\)`
+	s.Write([]byte("late")) // want `write to session s after its CloseWrite \(line 13\)`
 }
 
 func badBranch(s peerlink.Session, half bool) {
@@ -43,9 +44,9 @@ func good(s *link.Session, msgs [][]byte) ([]byte, error) {
 }
 
 func reopened(m *link.Mux) {
-	s, _ := m.Open(nil)
+	s, _ := m.Open(context.Background(), nil)
 	_ = s.CloseWrite()
-	s, _ = m.Open(nil)
+	s, _ = m.Open(context.Background(), nil)
 	_, _ = s.Write(nil)
 }
 

@@ -12,7 +12,7 @@ import (
 )
 
 func good(m *link.Mux) error {
-	s, err := m.Open([]byte("x"))
+	s, err := m.Open(context.Background(), []byte("x"))
 	if err != nil {
 		return err
 	}
@@ -22,7 +22,7 @@ func good(m *link.Mux) error {
 }
 
 func leakOnError(m *link.Mux) error {
-	s, err := m.Open([]byte("x")) // want `session s is not closed on every path`
+	s, err := m.Open(context.Background(), []byte("x")) // want `session s is not closed on every path`
 	if err != nil {
 		return err
 	}
@@ -33,18 +33,18 @@ func leakOnError(m *link.Mux) error {
 }
 
 func neverClosed(m *link.Mux) {
-	s, _ := m.OpenChain(nil, link.Chain{}) // want `session s is not closed on every path`
+	s, _ := m.Open(context.Background(), nil) // want `session s is not closed on every path`
 	_, _ = s.Write(nil)
 }
 
 func varDecl(m *link.Mux) {
-	var s, _ = m.Open(nil) // want `session s is not closed on every path`
+	var s, _ = m.Open(context.Background(), nil) // want `session s is not closed on every path`
 	_, _ = io.WriteString(s, "x")
 }
 
 func dropped(m *link.Mux) {
-	m.Open(nil)        // want `the session this Open returns is dropped`
-	_, _ = m.Open(nil) // want `the session this Open returns is dropped`
+	m.Open(context.Background(), nil)        // want `the session this Open returns is dropped`
+	_, _ = m.Open(context.Background(), nil) // want `the session this Open returns is dropped`
 }
 
 func peer(ctx context.Context, n *peerlink.Node) error {
@@ -59,7 +59,7 @@ func peer(ctx context.Context, n *peerlink.Node) error {
 // Released, handed on or ended on every path: no report.
 
 func returned(m *link.Mux) (*link.Session, error) {
-	s, err := m.Open(nil)
+	s, err := m.Open(context.Background(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +71,7 @@ func returned(m *link.Mux) (*link.Session, error) {
 }
 
 func joined(m *link.Mux, in *link.Session) error {
-	out, err := m.Open(nil)
+	out, err := m.Open(context.Background(), nil)
 	if err != nil {
 		return err
 	}
@@ -79,7 +79,7 @@ func joined(m *link.Mux, in *link.Session) error {
 }
 
 func goroutine(m *link.Mux) {
-	s, err := m.Open(nil)
+	s, err := m.Open(context.Background(), nil)
 	if err != nil {
 		return
 	}
@@ -90,7 +90,7 @@ func goroutine(m *link.Mux) {
 }
 
 func fatal(m *link.Mux) {
-	s, err := m.Open(nil)
+	s, err := m.Open(context.Background(), nil)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func fatal(m *link.Mux) {
 }
 
 func panics(m *link.Mux) {
-	s, err := m.Open(nil)
+	s, err := m.Open(context.Background(), nil)
 	if err != nil {
 		panic(err)
 	}
@@ -109,7 +109,7 @@ func panics(m *link.Mux) {
 }
 
 func errEqNil(m *link.Mux) {
-	if s, err := m.Open(nil); err == nil {
+	if s, err := m.Open(context.Background(), nil); err == nil {
 		s.Close()
 	}
 }
@@ -123,7 +123,7 @@ func nilCheck(ctx context.Context, p *link.Pool) {
 }
 
 func halfClose(m *link.Mux) ([]byte, error) {
-	s, err := m.Open(nil)
+	s, err := m.Open(context.Background(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -133,7 +133,7 @@ func halfClose(m *link.Mux) ([]byte, error) {
 }
 
 func unknownErrUse(m *link.Mux) error {
-	s, err := m.Open(nil)
+	s, err := m.Open(context.Background(), nil)
 	if errors.Is(err, io.EOF) { // a test it does not follow: no report
 		return err
 	}
@@ -142,7 +142,7 @@ func unknownErrUse(m *link.Mux) error {
 
 func loopReopen(m *link.Mux) {
 	for range 3 {
-		s, err := m.Open(nil)
+		s, err := m.Open(context.Background(), nil)
 		if err != nil {
 			continue
 		}
@@ -151,12 +151,12 @@ func loopReopen(m *link.Mux) {
 }
 
 func stored(m *link.Mux, all map[string]*link.Session) {
-	s, _ := m.Open(nil)
+	s, _ := m.Open(context.Background(), nil)
 	all["x"] = s
 }
 
 func forever(m *link.Mux) {
-	s, _ := m.Open(nil)
+	s, _ := m.Open(context.Background(), nil)
 	for {
 		_, _ = s.Write(nil)
 	}
@@ -198,7 +198,7 @@ func handleOK(h []byte, s *link.Session) { defer s.Close() }
 func notHandler(h []byte, s *link.Session) {}
 
 func viaInterface(t testing.TB, m *link.Mux) *link.Session {
-	s, err := m.Open(nil)
+	s, err := m.Open(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +209,7 @@ func viaInterface(t testing.TB, m *link.Mux) *link.Session {
 }
 
 func selectNoDefault(t *testing.T, m *link.Mux, got chan *link.Session) (*link.Session, *link.Session) {
-	s, err := m.Open(nil)
+	s, err := m.Open(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

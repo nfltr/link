@@ -51,15 +51,30 @@ func isSession(t types.Type) bool {
 	return inLink(o.Pkg()) && (o.Name() == "Session" || o.Name() == "ChainSession")
 }
 
-// isOpen: call is an Open or OpenChain whose first result is a session
+// isOpen: call is an Open whose first result is a session
 // (Mux.Open, Pool.Open, peerlink's Node.Open and Link.Open).
 func isOpen(info *types.Info, call *ast.CallExpr) bool {
 	sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
-	if !ok || (sel.Sel.Name != "Open" && sel.Sel.Name != "OpenChain") {
+	if !ok || sel.Sel.Name != "Open" {
 		return false
 	}
 	sig, ok := info.TypeOf(call.Fun).(*types.Signature)
 	return ok && sig.Results().Len() > 0 && isSession(sig.Results().At(0).Type())
+}
+
+// isMuxOpen: call is link's Mux.Open, which sends the open and returns:
+// it never waits for the peer, so its ctx carries the path only.
+func isMuxOpen(info *types.Info, call *ast.CallExpr) bool {
+	fn, ok := typeutil.Callee(info, call).(*types.Func)
+	if !ok || fn.Signature().Recv() == nil {
+		return false
+	}
+	t := fn.Signature().Recv().Type()
+	if p, ok := t.(*types.Pointer); ok {
+		t = p.Elem()
+	}
+	n, ok := types.Unalias(t).(*types.Named)
+	return ok && n.Obj().Name() == "Mux" && n.Obj().Pkg() != nil && n.Obj().Pkg().Path() == "github.com/nfltr/link"
 }
 
 // funcName is fn's "pkgpath.Name", or "" when call has no static callee.

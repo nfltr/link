@@ -33,7 +33,7 @@ func badFull(n *peerlink.Node) {
 }
 
 func badMux(ctx context.Context, m *link.Mux) {
-	s, _ := m.Open(nil)
+	s, _ := m.Open(context.Background(), nil)
 	defer s.Close()
 	for {
 		if _, err := s.Read(nil); err != nil { // want `read of session s in a loop`
@@ -64,8 +64,11 @@ func afterFunc(ctx context.Context, p *link.Pool) {
 	}
 }
 
+// open is a Mux's Open from a function with no context of its own.
+func open(m *link.Mux) (*link.Session, error) { return m.Open(context.Background(), nil) }
+
 func noContext(m *link.Mux) {
-	s, _ := m.Open(nil)
+	s, _ := open(m)
 	defer s.Close()
 	for {
 		if _, err := s.Read(nil); err != nil {

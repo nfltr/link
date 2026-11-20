@@ -426,7 +426,7 @@ func runOpenCtx(pass *analysis.Pass) (any, error) {
 		}
 		inspectOwn(body, func(n ast.Node) bool {
 			call, ok := n.(*ast.CallExpr)
-			if !ok || !isOpen(info, call) {
+			if !ok || !isOpen(info, call) || isMuxOpen(info, call) {
 				return true
 			}
 			for _, a := range call.Args {
