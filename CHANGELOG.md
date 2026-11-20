@@ -8,6 +8,14 @@ version 2 unless an entry says otherwise.
 
 ## Unreleased
 
+- Trace recorders for `SessionRead.tla` and `CreditWaiters.tla` (lane
+  LINKTRACE): with `-tags linktrace`, `LINKTRACE_READ` and
+  `LINKTRACE_WAIT` write each session's read steps and its send credit's
+  waits, which `make spec-traces` checks against the models
+  (`TraceSessionRead.tla`, `TraceCreditWaiters.tla`). Without the tag
+  nothing changes (the hooks compile away). `make bench`: the benchmark set
+  nfltr's perf series measures, `-count 6`, for a CI runner's
+  `TARGET=bench`.
 - A Read beside WriteTo (io.Copy(dst, sess) while another goroutine
   reads) or Pump on one session no longer hands the unread tail of a Read
   out twice, cuts a tail a Read left after it, or reads a buffer already

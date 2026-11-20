@@ -479,6 +479,38 @@ the other one's pop); on `SessionReadWriteTo.cfg`, the mutant
 run before, and -race's report) and
 `TestSessionReadDeadlineClearedNeverEOF` (20,000 rounds: red 6 runs in 10 before, green after, with -race).
 
+**Traces** (lane LINKTRACE, 2026-11-20): with `-tags linktrace` and
+`LINKTRACE_READ=<dir>` each session writes its readers' steps to
+`<dir>/read-<n>.ndjson` (`trace_read_on.go`; the queue's steps through a
+hook `internal/bytequeue` calls under its lock, `trace_on.go` there), and
+`TraceSessionRead.tla` checks each against this model with the trace's
+sizes: the operators the model takes with two-byte slices and one-byte
+reads take any size (`PushOf`, `CopyOf`, `WPopOf`; `ref` a set of slices
+for a batch), and `Grow` is `Mux.data`'s `Append` onto the newest queued
+slice (trace only: the model's slices are whole frames). The refactor
+keeps the model's state space: 3,162 and 1,534 distinct states, every
+mutant and witness as before. Each line is written under its step's lock
+(the queue's, or `rmu`); the read deadline's flag is stored under the
+queue's lock in a traced build (`setDLPast`), so a `Fire` or `Clear` is
+ordered with the pop that looks at it. Readers are goroutines (minus the
+goroutine for its `WriteTo`); every step is logged, so a line the model
+cannot take rejects the trace. In `make spec-traces`: the three guards
+above, sized down under the tag (2,000 bytes; 400 rounds; 4 rounds),
+every event taken. Not traced: `Pump`, whose drain runs on a goroutine per
+burst and takes the tail (`takeRest`) at each run, where the model's
+copier takes it once (with a `Read` beside it, which `Pump`'s doc forbids,
+a later run can write a tail older than bytes it already wrote:
+`InOrder`; open, low). Code mutant (planted by hand, lane LINKTRACE):
+`Read` without `rmu` (the code before LINKREAD): `TestSessionConcurrentReads`
+passed without `-race`, its trace was rejected at line 3 (a second
+`Begin` while the first reader held `rmu`); kept as fixture
+`traces/read-no-read-lock.ndjson`. Fixtures (`make spec-mutants`):
+`read-ok` accepted; `read-no-read-lock`, `read-release-early` (a slice
+released with bytes left, `NoUseAfterRelease`), `read-forged-eof` (the
+end read before the peer's, `NoForgedEOF`), `read-timeout-unfired`,
+`read-twice` (WriteTo takes bytes a Read had, `Once`) and `read-lost`
+(fewer bytes written than taken, `NoLoss`) rejected.
+
 ## Session writes (SessionWrite.tla, 2026-11-15, lane P2PLEFT)
 
 `Link.tla` takes a `Write` as one step and `CreditWaiters.tla` the wait
@@ -561,6 +593,34 @@ grant) and keeps `AllDone`. Witnesses (violated): `WitnessTwoWait`,
 `WitnessWakeAll` (one grant waking two). The guard:
 `TestConcurrentAcquiresShareAGrant` (credit_wake_test.go: waiters of 5, 2
 and 1 bytes, a grant of 3; red 20 of 20 before the fix).
+
+**Traces** (lane LINKTRACE, 2026-11-20): with `-tags linktrace` and
+`LINKTRACE_WAIT=<dir>` each session's send credit writes, under
+`Credit.mu`, its start (`Open`: the window), each `acquire` check (took
+or waits) and each grant or refund to `<dir>/wait-<n>.ndjson`
+(`trace_wait_on.go`), and `TraceCreditWaiters.tla` checks it: each
+`acquire` call is a waiter of its own (`K` 1, its own `Need`); the
+receiver is not the model's (a grant is the peer's window update, a
+test's or a refund), so a traced grant gives back bytes the waiters took
+(`Conservation` still adds up the window). `CreditWaiters.tla`'s
+`Need <= W - T + 1` moved from an `ASSUME` into `AllDone`'s hypothesis
+(`Satisfiable`): a traced `Acquire` may take the whole window; the
+model's state space and checks are unchanged (1,638 distinct states). In
+`make spec-traces`: `TestConcurrentAcquiresShareAGrant`,
+`TestSessionWriteWaitingForCreditSeesFirstDeadline` and
+`TestMuxSlowSessionIsolated`. A waiter that gives up (its write
+deadline, the credit closed or forgotten) logs nothing: the model keeps
+it waiting, which no invariant minds. Code mutant (planted by hand): the
+check `s.n >= n-1` (a waiter takes a byte past its credit): the test
+failed and its trace was rejected at line 3 (a take with too little
+credit); kept as fixture `traces/wait-off-by-one.ndjson`. The lost
+wakeup (`one-slot`) is not a trace check's: the woken waiter's steps
+are all the model's, the others' missing ones leave a prefix it accepts;
+the guard test and `CreditWaitersLive.cfg` catch it. Fixtures
+(`make spec-mutants`): `wait-ok` accepted; `wait-off-by-one`,
+`wait-unwoken` (a waiter checks again with no grant) and
+`wait-over-window` (a grant past what was taken, `Conservation`)
+rejected.
 
 ## The drain's cut (Link.tla "Mux.cut", 2026-11-09, lane LINKATOMIC)
 
@@ -823,8 +883,8 @@ holds in a `Spec-Reviewed:` trailer).
 | `QuicWatch.tla`, `MBTWatch.tla` | quiclink's liveness: `conn.watch`, `watchState.tick`, `keepAliveAfter`, QUIC's idle timeout as its backstop | `peerlink/quiclink/quiclink.go` |
 | `Join.tla`, `TraceJoin.tla` | `peerlink.Join`'s clean end (`Session.Sync`, hold, the watch) | `peerlink/chain.go`, `join.go`, `peerlink/trace_on.go` |
 | `JoinClose.tla` | a joint's side closed whole by its peer while the other side writes: who closes the other side, and when | `join.go`, `peerlink/chain.go` |
-| `CreditWaiters.tla` | senders waiting in `Credit.Acquire` on one session: the wait and `wakeAll` | `credit.go` |
-| `SessionRead.tla` | `Session.Read` from several goroutines (or one running `WriteTo`), the read deadline set and cleared meanwhile | `mux.go`, `internal/bytequeue/` |
+| `CreditWaiters.tla`, `TraceCreditWaiters.tla` | senders waiting in `Credit.Acquire` on one session: the wait and `wakeAll` | `credit.go`, `trace_wait_on.go` |
+| `SessionRead.tla`, `TraceSessionRead.tla` | `Session.Read` from several goroutines (or one running `WriteTo`), the read deadline set and cleared meanwhile | `mux.go`, `internal/bytequeue/`, `trace_read_on.go` |
 | `SessionWrite.tla` | `Session.Write` waiting for credit while `SetWriteDeadline` and its timer run | `mux.go`, `credit.go` |
 | `DirectPath.tla`, `TraceDirectPath.tla` | the path layer: OPEN, RESUME, ACK, END, ABORT, the window, `Move` and `Attach` | `pathswitch/conn.go`, `pathswitch/frame.go`, `pathswitch/trace_on.go` |
 
@@ -1183,6 +1243,11 @@ fast preset) and checks every connection's trace with `Trace.tla`, one TLC
 per trace. `TraceLog.tla` holds the parsed file: TLC evaluates an
 extended module's constants first, so the file is read once (defined in
 `Trace.tla` itself, it was read again for each reference, quadratic).
+The session reads (`LINKTRACE_READ`, `TraceSessionRead.tla`) and credit's
+waiters (`LINKTRACE_WAIT`, `TraceCreditWaiters.tla`) have recorders of
+their own, one file per session, checked in the same target ("Session
+reads", "Credit's waiters"); `TestSpecReadWaitEventsMapped` keeps their
+events and the two modules' steps the same both ways.
 
 ## Design of the fixes (2026-11-02)
 
