@@ -45,12 +45,14 @@ test-under-load:
 	@test -n "$(PKGS)" || { echo "test-under-load: PKGS='<packages>' is required" >&2; exit 2; }
 	@./scripts/test-under-load.sh $(LOAD_COUNT) $(PKGS)
 # stress-race: PKGS (go test arguments: packages, -run) with -race -count
-# COUNT (20) (`ci-request TARGET=stress-race PKGS='-run TestX ./peerlink/'`).
+# COUNT (20) (`ci-request TARGET=stress-race PKGS='-run TestX ./peerlink/'`);
+# a nested module's: PKGS='-C peerlink/quiclink -run TestX .'.
 COUNT ?= 20
+stressC = $(if $(filter -C,$(firstword $(PKGS))),$(wordlist 1,2,$(PKGS)))
 .PHONY: stress-race
 stress-race:
 	@test -n "$(PKGS)" || { echo "stress-race: PKGS='<packages>' is required" >&2; exit 2; }
-	go test -race -count=$(COUNT) $(PKGS)
+	go test $(stressC) -race -count=$(COUNT) $(filter-out $(stressC),$(PKGS))
 # stress-flaky: every known-flaky test of scripts/flaky-tests.txt -race -count
 # STRESS_COUNT (10) under test-under-load (scripts/stress-flaky.sh); the CI
 # runners hammer them with `ci-request TARGET=stress-flaky`.
