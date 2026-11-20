@@ -23,7 +23,7 @@ func Run(m *testing.M) int {
 	if p := os.Getenv("LINK_PERF_EXIT_PROFILE"); p != "" {
 		settle()
 		if err := Write(p); err != nil {
-			os.Stderr.WriteString("benchprof: " + err.Error() + "\n")
+			_, _ = os.Stderr.WriteString("benchprof: " + err.Error() + "\n")
 			code = 1
 		}
 	}
@@ -62,7 +62,7 @@ func write(path, name string, debug int) error {
 	if prof == nil {
 		return nil // a toolchain without the leak profile
 	}
-	f, err := os.Create(path) // #nosec G304 -- the operator's directory
+	f, err := os.Create(path) // #nosec G304 G703 -- the operator's directory
 	if err != nil {
 		return err
 	}
