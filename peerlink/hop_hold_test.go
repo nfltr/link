@@ -7,6 +7,10 @@ import (
 	"context"
 	"io"
 	"net"
+	"os"
+	"regexp"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -43,6 +47,7 @@ func TestJoinCrossingHalfClosesEnd(t *testing.T) {
 			ln, rn := tcpPair(t)
 			visitor, vRelay := tcpPair(t)
 			target, tAgent := tcpPair(t)
+			t.Cleanup(peerlink.TraceHopHold(t.Name(), tAgent, vRelay)) // -tags linktrace: spec/TraceHopHold.tla
 			rJoin := make(chan error, 1)
 			go func() {
 				c, _, err := link.Server(ctx, slowConn{ln}, link.Config{Auth: link.NoAuth, Hop: true})
@@ -134,5 +139,43 @@ func wait(t *testing.T, ch chan error, what string) error {
 	case <-time.After(90 * time.Second):
 		t.Fatalf("%s: hang", what)
 		return nil
+	}
+}
+
+// TestHopHoldTraceEventsMapped: the events the hop recorder writes
+// (trace_on.go's list, each written by a traceJoin call of chain.go) are
+// spec/TraceHopHold.tla's steps, and Lost, which is none (nothing fails in
+// HopHold.tla: a trace with it is rejected).
+func TestHopHoldTraceEventsMapped(t *testing.T) {
+	read := func(f string) string {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	list := regexp.MustCompile(`case ("[A-Za-z]+"(?:, "[A-Za-z]+")*):\n\t\tif t\.hop`).FindStringSubmatch(read("trace_on.go"))
+	if list == nil {
+		t.Fatal("trace_on.go: the hop recorder's list of events not found")
+	}
+	var code []string
+	chain := read("chain.go")
+	for _, e := range strings.Split(list[1], ", ") {
+		e = strings.Trim(e, `"`)
+		if !strings.Contains(chain, `traceJoin(j, "`+e+`"`) {
+			t.Errorf("the hop recorder lists %q, which no traceJoin call of chain.go writes", e)
+		}
+		if e != "Lost" {
+			code = append(code, e)
+		}
+	}
+	var spec []string
+	for _, m := range regexp.MustCompile(`E\.ev = "([A-Za-z]+)"`).FindAllStringSubmatch(read("../spec/TraceHopHold.tla"), -1) {
+		spec = append(spec, m[1])
+	}
+	slices.Sort(code)
+	slices.Sort(spec)
+	if !slices.Equal(code, spec) {
+		t.Errorf("the hop recorder writes %v; spec/TraceHopHold.tla maps %v", code, spec)
 	}
 }

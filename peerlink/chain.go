@@ -656,6 +656,9 @@ func (j *joint) sync(src net.Conn, ds endSyncer) {
 		if err != nil {
 			j.abort(src, abortOf(err))
 		} else {
+			if traceOn {
+				traceJoin(j, "Acked", 0) // spec/TraceHopHold.tla: the far end's ENDACK
+			}
 			ackEnd(src) // the far end took it: so did this hop (FeatureEndAck)
 			if n, ok := src.(EndNotifier); ok {
 				n.EndDelivered()

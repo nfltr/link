@@ -9,3 +9,8 @@ func Peers(n *Node) int {
 	defer n.mu.Unlock()
 	return len(n.pools)
 }
+
+// TraceHopHold marks a relayed path's two joints for spec/TraceHopHold.tla
+// (-tags linktrace, LINKTRACE_HOPHOLD): g is the app conn of the agent's
+// joint, r the relay's.
+var TraceHopHold = traceHopHold

@@ -1089,6 +1089,29 @@ idle bound may be needed; failures are `RelayedClose.tla`'s and
 `no-hold` (`HoldTruth`), `ack-on-receipt` (relay-core's gRPC stream
 today: `AckTruth`). Witnesses: `WitnessHeldThenDone`, `WitnessCrossing`.
 
+Trace recorder (lane LINKTRACE2; `-tags linktrace`,
+`LINKTRACE_HOPHOLD=<dir>`, `peerlink/trace_on.go`): a test marks the
+two joints of one path by their app conns (`TraceHopHold`: G's target,
+R's visitor), and each joint's `CloseWrite` (`AppFin` of the direction
+it enters), `Fin` (`ExitEnd` of the one it exits, `n` 1 held),
+`Synced` (`Recv` of the receipt), `Acked` (`Recv` of the ENDACK: its
+`CloseWriteSync` returned clean) and `Lost` go to
+`<dir>/hophold-<test>.ndjson` under peerlink's trace lock (both joints
+in one process: a step logged before its frame's write, a receipt after
+its read). A Mux's receipt of a FIN and a held end's `Release` are not
+logged: `TraceHopHold.tla` lets TLC take them; it accepts a trace once
+every line is taken and every end sent is acknowledged (`BothEnd` on
+the finished run); `Lost` is no step (nothing fails here).
+`make spec-traces` checks both runs of `TestJoinCrossingHalfClosesEnd`;
+`TestHopHoldTraceEventsMapped` keeps the recorder's events and the
+module's steps the same. Fixtures (`make spec-mutants`), each recorded
+from the code with the mutant put in: `hophold-ok-crossing`,
+`hophold-ok-sequential` accepted; `hophold-hold-until-ack` (sequential:
+`Acked` before `Synced`), `hophold-hold-until-ack-crossing` and
+`hophold-held-end-no-ack` (crossing, the lines before the idle bound's
+resets: an end never acknowledged) and `hophold-unknown-step` (the
+same run with its `Lost` lines) rejected.
+
 ## One leg's end acknowledgement (EndAckLeg.tla, 2026-11-20, lane ENDACK2D)
 
 `RelayedClose.tla` and `HopHold.tla` model a leg as one FIFO whose far
@@ -1177,7 +1200,7 @@ holds in a `Spec-Reviewed:` trailer).
 | `Join.tla`, `TraceJoin.tla` | `peerlink.join`'s clean end (`Session.sync`, hold, the watch) | `peerlink/chain.go`, `join.go`, `peerlink/trace_on.go` |
 | `JoinClose.tla`, `TraceJoinClose.tla` | a joint's side closed whole by its peer while the other side writes: who closes the other side, and when | `join.go`, `peerlink/chain.go`, `trace_join_on.go` |
 | `RelayedClose.tla`, `TraceRelayedClose.tla` | a relayed session's Close, then the program's exit or reset: a FIN then a failure reads io.EOF, the joint passes the tail before the failure | `mux.go`, `join.go`, `endack.go`, `peerlink/chain.go`, `trace_relayed_on.go` |
-| `HopHold.tla` | two joints on one path (the agent's, the relay's), both ends TCP apps, crossing half closes: the hold ends at the next hop's receipt, the ENDACK at the onward end | `peerlink/chain.go`, `endack.go` |
+| `HopHold.tla`, `TraceHopHold.tla` | two joints on one path (the agent's, the relay's), both ends TCP apps, crossing half closes: the hold ends at the next hop's receipt, the ENDACK at the onward end | `peerlink/chain.go`, `endack.go`, `peerlink/trace_on.go` |
 | `EndAckLeg.tla`, `TraceEndAckLeg.tla` | one leg's end acknowledgement per transport: link, gRPC frames, TCP's kernel ACK, QUIC (reassembly, control stream); the idle bound's progress rule | `endack.go`, `peerlink/quiclink/quiclink.go`, `peerlink/quiclink/endack.go`, `peerlink/quiclink/trace_on.go`, `pathswitch/conn.go` |
 | `CreditWaiters.tla`, `TraceCreditWaiters.tla` | senders waiting in `Credit.Acquire` on one session: the wait and `wakeAll` | `credit.go`, `trace_wait_on.go` |
 | `SessionRead.tla`, `TraceSessionRead.tla` | `Session.Read` from several goroutines (or one running `WriteTo` or `Pump`), the read deadline set and cleared meanwhile | `mux.go`, `internal/bytequeue/`, `trace_read_on.go` |
@@ -1548,7 +1571,9 @@ one file per session, checked in the same target ("Session reads",
 keeps their events and the three modules' steps the same both ways. A
 joint's (`LINKTRACE_JOIN`, `TraceJoinClose.tla`, one file per joint):
 "A joint's side closed whole"; a relayed path's Close (`LINKTRACE_RELAYED`,
-`TraceRelayedClose.tla`, one file per test): "A relayed session's Close".
+`TraceRelayedClose.tla`, one file per test): "A relayed session's Close";
+two peerlink joints' holds (`LINKTRACE_HOPHOLD`, `TraceHopHold.tla`, one
+file per test): "Two joints' holds".
 
 ## Design of the fixes (2026-11-02)
 

@@ -22,7 +22,8 @@
 #            (spec/Trace.tla).
 #   trace F  one recorded trace (rtrace F: a session's reads; wtrace F: a
 #            session credit's waiters; swtrace F: a session's writes; jctrace F:
-#            a joint's side closed whole; rctrace F: a relayed path's Close).
+#            a joint's side closed whole; rctrace F: a relayed path's Close;
+#            hhtrace F: two joints' holds).
 #   behaviours  TLC -simulate walks for the model-based tests (testdata/mbt).
 # TLC_WORKERS (default 4) caps TLC's threads. Java and tla2tools.jar come
 # from scripts/fetch-tla.sh.
@@ -189,6 +190,29 @@ CFG
 	META=$work/states-$(basename "$1") tlc "$cfg" TraceEndAckLeg.tla -deadlock >"$cfg.out" 2>&1 || east=$?
 	cat "$cfg.out"
 	[ $east != 0 ] && grep -q '^Error: Invariant TraceUnfinished is violated' "$cfg.out"
+}
+
+# hhtrace FILE: TLC on two joints' recorded holds (spec/TraceHopHold.tla,
+# lane LINKTRACE2); it passes when TLC reaches the trace's end with every
+# end acknowledged (TraceUnfinished violated).
+hhtrace() {
+	cfg=$work/$(basename "$1").cfg
+	cat >"$cfg" <<CFG
+CONSTANTS
+    TraceFile = "$1"
+    Mutant = "none"
+INIT TraceInit
+NEXT TraceNext
+INVARIANTS
+    TypeOK
+    HoldTruth
+    AckTruth
+    TraceUnfinished
+CFG
+	hhst=0 # not st: the callers'
+	META=$work/states-$(basename "$1") tlc "$cfg" TraceHopHold.tla -deadlock >"$cfg.out" 2>&1 || hhst=$?
+	cat "$cfg.out"
+	[ $hhst != 0 ] && grep -q '^Error: Invariant TraceUnfinished is violated' "$cfg.out"
 }
 
 # ptrace FILE: TLC on one Pool's recorded trace (spec/TracePool.tla); it
@@ -805,6 +829,24 @@ mutants)
 	# wake (the code before) strands a waiter and leaves its Acquire for
 	# good; passing the token on strands one that needs less (a stall
 	# until the next grant).
+	# endfixture CHECK FILE: a trace checked to its end (TraceUnfinished
+	# violated) with a bug put in: CHECK must accept *-ok* and reject each
+	# other one.
+	endfixture() {
+		st=0
+		TLC_WORKERS=1 $1 "$PWD/$2" >"$jw/m.out" 2>&1 || st=$?
+		case $(basename "$2"):$st in
+		*-ok*:0) echo "$(basename "$2"): accepted, as expected" ;;
+		*-ok*:*) echo "$(basename "$2"): rejected"; tail -10 "$jw/m.out"; return 1 ;;
+		*:0) echo "$(basename "$2"): accepted (a bug the trace check misses)"; return 1 ;;
+		*)
+			if grep -q 'Error: TLC threw\|Error: Parsing' "$jw/m.out"; then
+				echo "$(basename "$2"): TLC failed:"; tail -10 "$jw/m.out"; return 1
+			fi
+			echo "$(basename "$2"): rejected, as expected"
+			;;
+		esac
+	}
 	for m in one-slot pass-on; do
 		job mutant CreditWaiters.cfg 'Mutant = "none"' "Mutant = \"$m\"" CreditWaiters.tla
 	done
@@ -840,6 +882,7 @@ mutants)
 	for f in spec/traces/joinclose-*.ndjson; do job jcfixture "$f"; done
 	for f in spec/traces/relayedclose-*.ndjson; do job rcfixture "$f"; done
 	for f in spec/traces/endackleg-*.ndjson; do job eafixture "$f"; done
+	for f in spec/traces/hophold-*.ndjson; do job endfixture hhtrace "$f"; done
 	wait
 	fail=0
 	i=0
@@ -1051,16 +1094,18 @@ traces)
 	# (TraceSessionWrite.tla) and a joint's side closed whole
 	# (TraceJoinClose.tla), lane LINKTRACE2: each session's (joint's) file, its
 	# events counted; an event no trace took is a test gap.
-	for k in read wait write joinclose relayed; do
+	for k in read wait write joinclose relayed hophold; do
 		mkdir -p "$work/$k"
+		pkg=
 		case $k in
 		read) env=LINKTRACE_READ check=rtrace tests=${TRACE_READ_TESTS:-'^(TestSessionConcurrentReads|TestSessionReadDeadlineClearedNeverEOF|TestSessionReadBesideWriteTo|TestSessionReadAfterPumpRefused|TestSessionPumpErrors)$'} model=TraceSessionRead ;;
 		wait) env=LINKTRACE_WAIT check=wtrace tests=${TRACE_WAIT_TESTS:-'^(TestConcurrentAcquiresShareAGrant|TestSessionWriteWaitingForCreditSeesFirstDeadline|TestMuxSlowSessionIsolated)$'} model=TraceCreditWaiters ;;
 		joinclose) env=LINKTRACE_JOIN check=jctrace tests=${TRACE_JOINCLOSE_TESTS:-'^(TestJoinWholeCloseDeliversTheTail|TestChainHalfClose)$'} model=TraceJoinClose ;;
 		relayed) env=LINKTRACE_RELAYED check=rctrace tests=${TRACE_RELAYED_TESTS:-'^TestEndAck(WaitsForTheFarEnd|FailsWhenTheFarEndIsCut|FailsWhenItsConnectionIsCut|GivesUpWithoutProgress|ResetEndsTheWait|FarEndCloseBeforeFinFails)$'} model=TraceRelayedClose ;;
+		hophold) env=LINKTRACE_HOPHOLD check=hhtrace pkg=./peerlink/ tests=${TRACE_HOPHOLD_TESTS:-'^TestJoinCrossingHalfClosesEnd$'} model=TraceHopHold ;;
 		write) env=LINKTRACE_WRITE check=swtrace tests=${TRACE_WRITE_TESTS:-'^(TestSessionWriteWaitingForCreditSeesFirstDeadline|TestWriteDeadline|TestWriteDeadlineStuckNetwork)$'} model=TraceSessionWrite ;;
 		esac
-		env "$env=$work/$k" go test -tags linktrace -count=1 -run "$tests" . >"$work/test.out" 2>&1 || {
+		env "$env=$work/$k" go test -tags linktrace -count=1 -run "$tests" "${pkg:-.}" >"$work/test.out" 2>&1 || {
 			cat "$work/test.out"
 			exit 1
 		}
@@ -1159,6 +1204,9 @@ jctrace)
 	;;
 rctrace)
 	rctrace "$2"
+	;;
+hhtrace)
+	hhtrace "$2"
 	;;
 *)
 	echo "usage: spec.sh check|invariants|nightly|mutants|traces|trace FILE" >&2

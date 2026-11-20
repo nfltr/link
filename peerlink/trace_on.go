@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -28,35 +29,74 @@ import (
 //	Synced      the Sync answered
 //	Finish      both directions ended cleanly: the client closed
 //	Lost        the client aborted (the session's error: the connection's end)
+//
+// A test marks two joints of one relayed path (traceHopHold: the app conn
+// of the agent's joint G and of the relay's joint R) when
+// LINKTRACE_HOPHOLD names a directory; their CloseWrite, Fin, Synced and
+// Lost, and Acked (the CloseWriteSync after CloseWrite returned clean: the
+// far end's ENDACK), go to <dir>/hophold-<test>.ndjson as well, with "j"
+// the joint, under the same lock; spec/TraceHopHold.tla checks it.
 const traceOn = true
 
 type traceState = *joinTrace
 
 type joinTrace struct {
 	path   string
-	client int  // the index of the plain conn in joint.c
-	lost   bool // Lost written: the client is aborted once (traceMu)
+	client int    // the index of the plain conn in joint.c
+	lost   bool   // Lost written: the client is aborted once (traceMu)
+	hop    string // G or R: a marked joint of spec/HopHold.tla
+	hpath  string
 }
 
 var (
 	traceMu    sync.Mutex
 	traceFiles = map[string]*os.File{}
 	traceN     atomic.Int64
+	hopRoles   = map[net.Conn]string{} // traceMu
+	hopPath    string
 )
+
+// traceHopHold marks the joints whose app conn is g (G) and r (R) for
+// test, when LINKTRACE_HOPHOLD names a directory; the func it returns
+// ends it.
+func traceHopHold(test string, g, r net.Conn) func() {
+	dir := os.Getenv("LINKTRACE_HOPHOLD")
+	if dir == "" {
+		return func() {}
+	}
+	traceMu.Lock()
+	defer traceMu.Unlock()
+	hopRoles = map[net.Conn]string{g: "G", r: "R"}
+	hopPath = filepath.Join(dir, "hophold-"+strings.ReplaceAll(test, "/", "-")+".ndjson")
+	return func() {
+		traceMu.Lock()
+		hopRoles, hopPath = map[net.Conn]string{}, ""
+		traceMu.Unlock()
+	}
+}
 
 // traceStart starts j's trace when LINKTRACE names a directory and j joins
 // exactly one link session to a plain conn.
 func traceStart(j *joint) {
 	dir := os.Getenv("LINKTRACE")
 	a, b := native(j.c[0]) != nil, native(j.c[1]) != nil
-	if dir == "" || a == b {
+	if a == b {
 		return
 	}
 	client := 0
 	if a {
 		client = 1
 	}
-	j.tr = &joinTrace{client: client, path: filepath.Join(dir, fmt.Sprintf("join-%d.ndjson", traceN.Add(1)))}
+	t := &joinTrace{client: client}
+	if dir != "" {
+		t.path = filepath.Join(dir, fmt.Sprintf("join-%d.ndjson", traceN.Add(1)))
+	}
+	traceMu.Lock()
+	t.hop, t.hpath = hopRoles[j.c[client]], hopPath
+	traceMu.Unlock()
+	if t.path != "" || t.hop != "" {
+		j.tr = t
+	}
 }
 
 // traceJoin writes one step of j's.
@@ -64,10 +104,6 @@ func traceJoin(j *joint, ev string, n int) {
 	t := j.tr
 	if t == nil {
 		return
-	}
-	b, err := json.Marshal(map[string]any{"ev": ev, "n": n})
-	if err != nil {
-		panic(err)
 	}
 	traceMu.Lock()
 	defer traceMu.Unlock()
@@ -77,12 +113,29 @@ func traceJoin(j *joint, ev string, n int) {
 		}
 		t.lost = true
 	}
-	f := traceFiles[t.path]
+	if t.path != "" && ev != "Acked" { // Acked is HopHold's only
+		traceLine(t.path, map[string]any{"ev": ev, "n": n})
+	}
+	switch ev {
+	case "CloseWrite", "Fin", "Synced", "Acked", "Lost":
+		if t.hop != "" && t.hpath != "" {
+			traceLine(t.hpath, map[string]any{"ev": ev, "n": n, "j": t.hop})
+		}
+	}
+}
+
+// traceLine appends line to path's file (traceMu held).
+func traceLine(path string, line map[string]any) {
+	b, err := json.Marshal(line)
+	if err != nil {
+		panic(err)
+	}
+	f := traceFiles[path]
 	if f == nil {
-		if f, err = os.OpenFile(t.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err != nil { // #nosec G304 -- the tester's LINKTRACE
+		if f, err = os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err != nil { // #nosec G304 -- the tester's LINKTRACE
 			panic(err)
 		}
-		traceFiles[t.path] = f
+		traceFiles[path] = f
 	}
 	if _, err := f.Write(append(b, '\n')); err != nil {
 		panic(err)

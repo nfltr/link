@@ -13,6 +13,7 @@ const traceOn = false
 
 type traceState struct{}
 
-func traceStart(*joint)                 {}
-func traceJoin(*joint, string, int)     {}
-func traceClient(*joint, net.Conn) bool { return false }
+func traceStart(*joint)                              {}
+func traceJoin(*joint, string, int)                  {}
+func traceClient(*joint, net.Conn) bool              { return false }
+func traceHopHold(string, net.Conn, net.Conn) func() { return func() {} }
