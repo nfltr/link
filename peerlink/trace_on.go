@@ -33,8 +33,9 @@ import (
 // A test marks two joints of one relayed path (traceHopHold: the app conn
 // of the agent's joint G and of the relay's joint R) when
 // LINKTRACE_HOPHOLD names a directory; their CloseWrite, Fin, Synced and
-// Lost, and Acked (the CloseWriteSync after CloseWrite returned clean: the
-// far end's ENDACK), go to <dir>/hophold-<test>.ndjson as well, with "j"
+// Lost, Acked (the CloseWriteSync after CloseWrite returned clean: the
+// far end's ENDACK) and Closed (the joint closed its app conn whole:
+// finish, or the Done branch's close), go to <dir>/hophold-<test>.ndjson as well, with "j"
 // the joint, under the same lock; spec/TraceHopHold.tla checks it.
 const traceOn = true
 
@@ -141,11 +142,11 @@ func traceJoin(j *joint, ev string, n int) {
 		}
 		t.lost = true
 	}
-	if t.path != "" && ev != "Acked" { // Acked is HopHold's only
+	if t.path != "" && ev != "Acked" && ev != "Closed" { // Acked and Closed are HopHold's only
 		traceLine(t.path, map[string]any{"ev": ev, "n": n})
 	}
 	switch ev {
-	case "CloseWrite", "Fin", "Synced", "Acked", "Lost":
+	case "CloseWrite", "Fin", "Synced", "Acked", "Closed", "Lost":
 		if t.hop != "" && t.hpath != "" {
 			traceLine(t.hpath, map[string]any{"ev": ev, "n": n, "j": t.hop})
 		}

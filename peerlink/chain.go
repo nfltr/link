@@ -592,6 +592,9 @@ func (j *joint) ended(i int, n int64, err, werr error) {
 				}
 				switch {
 				case !j.otherOver(i):
+					if traceOn && traceClient(j, dst) {
+						traceJoin(j, "Closed", 0) // spec/TraceHopHold.tla JointDone: a close before the app's end was acknowledged is rejected
+					}
 					_ = dst.Close() // src closed whole while the direction from dst still reads it: its reads end here
 				case ds == nil:
 					// the other direction ended (its sync passes on the ENDACK
@@ -744,6 +747,7 @@ func (j *joint) finish() {
 	last, err, n, first := j.left == 0, j.err, j.n, j.first
 	if traceOn && last && err == nil {
 		traceJoin(j, "Finish", 0)
+		traceJoin(j, "Closed", 0) // spec/TraceHopHold.tla JointDone
 	}
 	j.mu.Unlock()
 	if !last {

@@ -1131,9 +1131,11 @@ the listener exited 6 after a clean two-sided end (pipe
 `CloseAfterAck` (a joint closes its app's conn only once the app's end
 was acknowledged), liveness `Closed`; mutant `close-at-end` (the code
 before: `CloseAfterAck`); witness `WitnessClosed`. Guard
-`TestJoinClosesASessionOnlyOnceItsEndIsAcknowledged`. The recorder logs
-no close yet: `TraceHopHold.tla` leaves `JointDone` unlogged, so a trace
-does not check where the code closes (follow-up: a `Close` event).
+`TestHopClosesASessionOnlyOnceItsEndIsAcknowledged`. The recorder logs
+each close of an app conn whole as `Closed` (`JointDone`; lane
+ENDTRACE): `joint.finish`, and the `Done` branch's close while the
+direction from that conn still runs, so a trace of the code with
+`close-at-end` put back is rejected (`hophold-close-at-end`).
 
 Trace recorder (lane LINKTRACE2; `-tags linktrace`,
 `LINKTRACE_HOPHOLD=<dir>`, `peerlink/trace_on.go`): a test marks the
@@ -1141,13 +1143,14 @@ two joints of one path by their app conns (`TraceHopHold`: G's target,
 R's visitor), and each joint's `CloseWrite` (`AppFin` of the direction
 it enters), `Fin` (`ExitEnd` of the one it exits, `n` 1 held),
 `Synced` (`Recv` of the receipt), `Acked` (`Recv` of the ENDACK: its
-`CloseWriteSync` returned clean) and `Lost` go to
+`CloseWriteSync` returned clean), `Closed` (`JointDone`) and `Lost` go to
 `<dir>/hophold-<test>.ndjson` under peerlink's trace lock (both joints
 in one process: a step logged before its frame's write, a receipt after
 its read). A Mux's receipt of a FIN and a held end's `Release` are not
 logged: `TraceHopHold.tla` lets TLC take them; it accepts a trace once
-every line is taken and every end sent is acknowledged (`BothEnd` on
-the finished run); `Lost` is no step (nothing fails here).
+every line is taken, every end sent is acknowledged and both joints
+closed (`BothEnd`, `Closed` on the finished run), `CloseAfterAck`
+checked on every state; `Lost` is no step (nothing fails here).
 `make spec-traces` checks both runs of `TestJoinCrossingHalfClosesEnd`;
 `TestHopHoldTraceEventsMapped` keeps the recorder's events and the
 module's steps the same. Fixtures (`make spec-mutants`), each recorded
@@ -1155,8 +1158,9 @@ from the code with the mutant put in: `hophold-ok-crossing`,
 `hophold-ok-sequential` accepted; `hophold-hold-until-ack` (sequential:
 `Acked` before `Synced`), `hophold-hold-until-ack-crossing` and
 `hophold-held-end-no-ack` (crossing, the lines before the idle bound's
-resets: an end never acknowledged) and `hophold-unknown-step` (the
-same run with its `Lost` lines) rejected.
+resets: an end never acknowledged), `hophold-close-at-end` (crossing:
+R's `Closed` after its `Synced`, before its `Acked`) and
+`hophold-unknown-step` (the same run with its `Lost` lines) rejected.
 
 ## One leg's end acknowledgement (EndAckLeg.tla, 2026-11-20, lane ENDACK2D)
 

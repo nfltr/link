@@ -207,6 +207,7 @@ INVARIANTS
     TypeOK
     HoldTruth
     AckTruth
+    CloseAfterAck
     TraceUnfinished
 CFG
 	hhst=0 # not st: the callers'
