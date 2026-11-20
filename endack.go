@@ -166,6 +166,32 @@ func closeAckErr(f Frame) error {
 	return nil
 }
 
+// CloseWriteSyncReceived is CloseWriteSync that also reports the next
+// hop's receipt: received runs once that hop's Mux read the CLOSE (the
+// pong of a ping buffered with it), before the far end's ENDACK, which it
+// then waits for with FeatureEndAck. A join ends its hold at received,
+// never at the ENDACK: two joins whose FINs cross each hold the end the
+// other's ENDACK waits for (spec/HopHold.tla, mutant hold-until-ack).
+// received does not run when the connection ended first, or once
+// CloseWrite was called before (it is CloseWriteSync then).
+func (s *Session) CloseWriteSyncReceived(received func()) error {
+	synced, err := s.closeWrite(true)
+	switch {
+	case err != nil:
+		return err
+	case synced == nil:
+		return s.CloseWriteSync()
+	}
+	err = waitSync(s.m.c, synced)
+	if err == nil {
+		received()
+	}
+	if w := s.ack.Load(); w != nil {
+		return s.waitAck(w)
+	}
+	return err
+}
+
 // onwardTook waits until the peer took this side's half close: its
 // ENDACK, or without FeatureEndAck the pong of a ping after the close.
 func (s *Session) onwardTook() error {

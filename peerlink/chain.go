@@ -554,7 +554,8 @@ func (j *joint) ended(i int, n int64, err, werr error) {
 			// it (FeatureEndAck; relay-core TestConnIsANetConn/BasicIO hung
 			// on the agent's Close when this closed dst without).
 			end := func() {
-				if ds := syncerOf(dst); ds != nil {
+				ds := syncerOf(dst)
+				if ds != nil {
 					if err := ds.CloseWriteSync(); err != nil {
 						j.abort(src, abortOf(err))
 					} else {
@@ -562,6 +563,9 @@ func (j *joint) ended(i int, n int64, err, werr error) {
 					}
 				}
 				_ = dst.Close()
+				if ds == nil { // onto a conn that acknowledges nothing: passed on is acknowledged (spec/HopHold.tla, mutant held-end-no-ack)
+					ackEnd(src)
+				}
 			}
 			if j.hold(end) {
 				return
@@ -616,7 +620,7 @@ func (j *joint) closeWrite(dst net.Conn) {
 // sync closes ds's writes and ends the direction src -> ds once that
 // CloseWrite reached the peer (Session.CloseWriteSync): a clean end at src only
 // then; a connection that ends first aborts src (spec/Join.tla, relay-core finding 23). The other
-// direction's clean end waits meanwhile (hold), so src reads no EOF while
+// direction's clean end waits (hold) until the next hop's receipt, so src reads no EOF while
 // its own tail may still be lost.
 func (j *joint) sync(src net.Conn, ds endSyncer) {
 	j.mu.Lock()
@@ -629,7 +633,15 @@ func (j *joint) sync(src net.Conn, ds endSyncer) {
 		// the ping with the CLOSE: a drained connection closes once the
 		// session ended, and a ping after that close never goes (spec/Join.tla
 		// DrainNeverResets, lane LINKDRAIN)
-		err := ds.CloseWriteSync()
+		// The hold ends at the next hop's receipt, never at the far end's
+		// ENDACK: with FINs crossing, two joins each held the end the
+		// other's ENDACK waits for (spec/HopHold.tla, mutant hold-until-ack).
+		var err error
+		if ls, ok := ds.(*link.Session); ok {
+			err = ls.CloseWriteSyncReceived(func() { j.unhold(true) })
+		} else {
+			err = ds.CloseWriteSync()
+		}
 		if err != nil {
 			j.abort(src, abortOf(err))
 		} else {
@@ -638,22 +650,32 @@ func (j *joint) sync(src net.Conn, ds endSyncer) {
 				n.EndDelivered()
 			}
 		}
-		j.mu.Lock()
-		j.syncing = false
-		if traceOn && err == nil {
-			traceJoin(j, "Synced", 0)
-		}
-		fin := j.fin
-		j.fin = nil
-		j.mu.Unlock()
-		if fin != nil {
-			if err == nil {
-				fin()
-			}
-			j.finish()
-		}
+		j.unhold(err == nil)
 		j.finish()
 	}()
+}
+
+// unhold ends sync's hold, once: the held end runs when ok, else it only
+// ends.
+func (j *joint) unhold(ok bool) {
+	j.mu.Lock()
+	if !j.syncing {
+		j.mu.Unlock()
+		return
+	}
+	j.syncing = false
+	if traceOn && ok {
+		traceJoin(j, "Synced", 0)
+	}
+	fin := j.fin
+	j.fin = nil
+	j.mu.Unlock()
+	if fin != nil {
+		if ok {
+			fin()
+		}
+		j.finish()
+	}
 }
 
 // hold keeps a clean end (end) while the other direction syncs: false

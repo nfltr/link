@@ -8,6 +8,21 @@ version 2 unless an entry says otherwise.
 
 ## Unreleased
 
+- Two joins whose FINs cross end cleanly (lane ENDACKJOIN): a peerlink
+  join held the other direction's clean end until its own
+  CloseWriteSync returned at the far end's ENDACK, so with both TCP
+  apps half-closing at once each join held the end the other's ENDACK
+  waited for, and both apps were reset at the 30 s idle bound
+  (`ErrEndAckIdle`) after reading every byte. The hold now ends at the
+  next hop's receipt, the ENDACK still waits for the far end; and a held
+  end whose session ended meanwhile, passed onto a TCP conn,
+  acknowledges it (before, it closed without the ENDACK). New
+  `Session.CloseWriteSyncReceived(received func())`: CloseWriteSync that
+  runs `received` at the next hop's receipt (a ping with the CLOSE).
+  spec/HopHold.tla, mutants `hold-until-ack` and `held-end-no-ack`;
+  guard `TestJoinCrossingHalfClosesEnd` (30.1 s reset before, 0.16 s
+  after).
+
 - A Read once Pump was called returns an error and takes nothing (lane
   LINKTRACE2). Before, Pump's doc alone forbade it: such a Read could
   leave a tail that Pump's next run wrote after newer bytes, out of
