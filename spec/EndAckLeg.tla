@@ -37,7 +37,11 @@ CONSTANTS
              \* bound); "close-acks": R's whole close acknowledges the end
              \* whatever it holds (quiclink's 'E' at Close; link's
              \* closeAckErr before lane ENDACKTRUTH: a peer's clean whole
-             \* close ended the wait nil)
+             \* close ended the wait nil); "close-resets": R's clean whole
+             \* close ends the wait with an error also when S wrote nothing
+             \* (link's closeAckErr and closedFirst after lane ENDACKTRUTH:
+             \* relay-core TestConnIsANetConn/BasicIO, whose second Close
+             \* read a reset; lane PIPERESET2)
 
 VARIABLES
     sw,      \* bytes S wrote
@@ -52,16 +56,22 @@ VARIABLES
     mute,    \* R never acknowledges; its connection stays up
     cut,     \* the connection ended (every frame in flight lost)
     sfail,   \* S's session failed (R's abort read)
-    idled    \* history: S's wait gave up at the idle bound
+    idled,   \* history: S's wait gave up at the idle bound
+    rclosed  \* R's app closed the session whole, cleanly (RClose, not RFail)
 
-vars == <<sw, ret, ch, got, finSeen, back, sreset, eackSent, rfail, mute, cut, sfail, idled>>
+vars == <<sw, ret, ch, got, finSeen, back, sreset, eackSent, rfail, mute, cut, sfail, idled, rclosed>>
 
 Init ==
     /\ sw = 0 /\ ret = "no" /\ ch = <<>> /\ got = 0 /\ finSeen = FALSE
     /\ back = <<>> /\ sreset = FALSE /\ eackSent = FALSE /\ rfail = FALSE
-    /\ mute = FALSE /\ cut = FALSE /\ sfail = FALSE /\ idled = FALSE
+    /\ mute = FALSE /\ cut = FALSE /\ sfail = FALSE /\ idled = FALSE /\ rclosed = FALSE
 
-InOrder == finSeen /\ got = K   \* R holds every byte and the FIN in order
+InOrder == finSeen /\ got = sw  \* R holds every byte and the FIN in order
+
+\* A clean whole close of R loses nothing of a stream that carried no byte
+\* (link; as a TCP close(2) in FIN_WAIT_2 still ACKs a bare FIN): S's wait
+\* reads it clean. With a byte written, R may not have taken it: an error.
+EmptyClosed == Kind = "link" /\ rclosed /\ sw = 0 /\ Mutant # "close-resets"
 
 \* The index R's transport hands up next: the head on a FIFO; on QUIC any
 \* frame in flight (reassembly is R's).
@@ -71,16 +81,16 @@ Drop(s, i) == SubSeq(s, 1, i - 1) \o SubSeq(s, i + 1, Len(s))
 SWrite ==
     /\ sw < K /\ ret = "no" /\ ~cut /\ ~sfail
     /\ sw' = sw + 1 /\ ch' = Append(ch, "d")
-    /\ UNCHANGED <<ret, got, finSeen, back, sreset, eackSent, rfail, mute, cut, sfail, idled>>
+    /\ UNCHANGED <<ret, got, finSeen, back, sreset, eackSent, rfail, mute, cut, sfail, idled, rclosed>>
 
 \* S's half close; on a failed session (or a cut one) an error at once.
 SClose ==
-    /\ (sw = K \/ sfail \/ cut) /\ ret = "no"
+    /\ ret = "no"
     /\ IF sfail \/ cut
-       THEN ret' = "err" /\ UNCHANGED ch
+       THEN ret' = (IF EmptyClosed /\ ~cut THEN "clean" ELSE "err") /\ UNCHANGED ch
        ELSE /\ ch' = Append(ch, "fin")
             /\ ret' = IF Mutant = "ack-at-write" THEN "clean" ELSE "wait"
-    /\ UNCHANGED <<sw, got, finSeen, back, sreset, eackSent, rfail, mute, cut, sfail, idled>>
+    /\ UNCHANGED <<sw, got, finSeen, back, sreset, eackSent, rfail, mute, cut, sfail, idled, rclosed>>
 
 \* R takes a frame; it acknowledges once it holds the end in order (with
 \* the mutant at the FIN's frame), unless mute or failed.
@@ -90,11 +100,11 @@ RRecv ==
        /\ ch' = Drop(ch, i)
        /\ got' = IF ch[i] = "d" THEN got + 1 ELSE got
        /\ finSeen' = (finSeen \/ ch[i] = "fin")
-       /\ LET ready == IF Mutant = "ack-at-final-size" THEN finSeen' ELSE finSeen' /\ got' = K
+       /\ LET ready == IF Mutant = "ack-at-final-size" THEN finSeen' ELSE finSeen' /\ got' = sw
           IN IF ready /\ ~eackSent /\ ~mute /\ ~rfail
              THEN back' = Append(back, "eack") /\ eackSent' = TRUE
              ELSE UNCHANGED <<back, eackSent>>
-       /\ UNCHANGED <<sw, ret, sreset, rfail, mute, cut, sfail, idled>>
+       /\ UNCHANGED <<sw, ret, sreset, rfail, mute, cut, sfail, idled, rclosed>>
 
 \* R's side fails (its app reset the session): an abort on the
 \* acknowledgement's channel; on QUIC also the stream's RESET_STREAM.
@@ -102,7 +112,7 @@ RFail ==
     /\ ~rfail /\ ~cut
     /\ rfail' = TRUE /\ back' = Append(back, "abort")
     /\ sreset' = (Kind = "quic")
-    /\ UNCHANGED <<sw, ret, ch, got, finSeen, eackSent, mute, cut, sfail, idled>>
+    /\ UNCHANGED <<sw, ret, ch, got, finSeen, eackSent, mute, cut, sfail, idled, rclosed>>
 
 \* R's app closes the session whole before acknowledging (its FIN had not
 \* reached R): the end is not known delivered (as a TCP close with data
@@ -113,19 +123,21 @@ RFail ==
 \* ended the wait nil). A mute R closes too: its Close still ends the wait.
 RClose ==
     /\ ~eackSent /\ ~rfail /\ ~cut
-    /\ rfail' = TRUE
+    /\ rfail' = TRUE /\ rclosed' = TRUE
     /\ IF Mutant = "close-acks"
        THEN back' = Append(back, "eack") /\ eackSent' = TRUE
-       ELSE back' = Append(back, "abort") /\ UNCHANGED eackSent
+       ELSE back' = Append(back, IF Kind = "link" THEN "close" ELSE "abort") /\ UNCHANGED eackSent
     /\ UNCHANGED <<sw, ret, ch, got, finSeen, sreset, mute, cut, sfail, idled>>
 
 \* S reads its acknowledgement channel (in order).
 SRecv ==
     /\ back # <<>> /\ ~cut
     /\ back' = Tail(back)
-    /\ ret' = IF ret = "wait" THEN (IF Head(back) = "eack" THEN "clean" ELSE "err") ELSE ret
-    /\ sfail' = (sfail \/ Head(back) = "abort")
-    /\ UNCHANGED <<sw, ch, got, finSeen, sreset, eackSent, rfail, mute, cut, idled>>
+    /\ ret' = IF ret = "wait"
+              THEN (IF Head(back) = "eack" \/ (Head(back) = "close" /\ EmptyClosed) THEN "clean" ELSE "err")
+              ELSE ret
+    /\ sfail' = (sfail \/ Head(back) \in {"abort", "close"})
+    /\ UNCHANGED <<sw, ch, got, finSeen, sreset, eackSent, rfail, mute, cut, idled, rclosed>>
 
 \* QUIC: the session stream's reset arrives (in any order with the control
 \* stream); the wait ignores it, with the mutant it ends it.
@@ -133,20 +145,20 @@ SReset ==
     /\ sreset /\ ~cut
     /\ sreset' = FALSE
     /\ ret' = IF ret = "wait" /\ Mutant = "wait-on-stream-reset" THEN "err" ELSE ret
-    /\ UNCHANGED <<sw, ch, got, finSeen, back, eackSent, rfail, mute, cut, sfail, idled>>
+    /\ UNCHANGED <<sw, ch, got, finSeen, back, eackSent, rfail, mute, cut, sfail, idled, rclosed>>
 
 \* The connection ends: the wait fails.
 Cut ==
     /\ ~cut
     /\ cut' = TRUE /\ ch' = <<>> /\ back' = <<>> /\ sreset' = FALSE
     /\ ret' = IF ret = "wait" THEN "err" ELSE ret
-    /\ UNCHANGED <<sw, got, finSeen, eackSent, rfail, mute, sfail, idled>>
+    /\ UNCHANGED <<sw, got, finSeen, eackSent, rfail, mute, sfail, idled, rclosed>>
 
 \* R turns mute (broken or hostile): its connection stays up.
 RMute ==
     /\ ~mute
     /\ mute' = TRUE
-    /\ UNCHANGED <<sw, ret, ch, got, finSeen, back, sreset, eackSent, rfail, cut, sfail, idled>>
+    /\ UNCHANGED <<sw, ret, ch, got, finSeen, back, sreset, eackSent, rfail, cut, sfail, idled, rclosed>>
 
 \* Nothing is acknowledged and nothing is under way: the far end is mute
 \* and no acknowledgement or abort is in flight. With the mutant pings
@@ -157,7 +169,7 @@ Stalled == mute /\ back = <<>> /\ (Mutant = "liveness-counts-as-progress" => cut
 SIdle ==
     /\ ret = "wait" /\ (Stalled \/ Mutant = "total-bound")
     /\ ret' = "err" /\ idled' = TRUE
-    /\ UNCHANGED <<sw, ch, got, finSeen, back, sreset, eackSent, rfail, mute, cut, sfail>>
+    /\ UNCHANGED <<sw, ch, got, finSeen, back, sreset, eackSent, rfail, mute, cut, sfail, rclosed>>
 
 Next == SWrite \/ SClose \/ RRecv \/ RFail \/ RClose \/ SRecv \/ SReset \/ Cut \/ RMute \/ SIdle
 
@@ -170,11 +182,16 @@ Fairness ==
 Spec == Init /\ [][Next]_vars /\ Fairness
 
 TypeOK ==
-    /\ sw \in 0..K /\ got \in 0..K /\ ret \in {"no", "wait", "clean", "err"}
+    /\ sw \in 0..K /\ got \in 0..K /\ ret \in {"no", "wait", "clean", "err"} /\ rclosed \in BOOLEAN
     /\ Kind \in {"link", "grpc", "tcp", "quic"}
 
-\* A clean end only once R holds every byte and the FIN in order.
-AckTruth == ret = "clean" => InOrder
+\* A clean end only once R holds every byte and the FIN in order, or R
+\* closed cleanly a stream that carried none.
+AckTruth == ret = "clean" => (InOrder \/ (rclosed /\ sw = 0))
+
+\* R's clean whole close fails no wait of an empty stream (link): an error
+\* there only from a cut, the idle bound or R's failure.
+NoFalseReset == (ret = "err" /\ Kind = "link" /\ rclosed /\ sw = 0) => (cut \/ idled)
 
 \* An error on a live connection only when R acknowledged nothing: never
 \* once the acknowledgement was sent (it is read first).
@@ -193,4 +210,5 @@ WaitEnds == (ret = "wait") ~> (ret \in {"clean", "err"})
 WitnessClean == ret # "clean"
 WitnessIdle == ~(idled /\ ~cut)
 WitnessFinFirst == ~(finSeen /\ got < K)
+WitnessEmptyClosed == ~(ret = "clean" /\ rclosed)
 =============================================================================

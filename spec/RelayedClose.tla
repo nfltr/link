@@ -55,7 +55,12 @@ CONSTANTS
              \* "close-acks": a whole close ends a wait for the end clean
              \* (link's closeAckErr before lane ENDACKTRUTH: C's close before
              \* A's FIN reached it ended J's onward wait nil, and J's Close
-             \* of A's session acknowledged an end it never passed on)
+             \* of A's session acknowledged an end it never passed on);
+             \* "close-resets": J's clean close of A's session (C closed
+             \* whole first) fails A's Close also when A wrote nothing
+             \* (closeAckErr, closedFirst after lane ENDACKTRUTH: relay-core
+             \* TestConnIsANetConn/BasicIO; lane PIPERESET2;
+             \* RelayedCloseEmpty.cfg)
 
 VARIABLES
     aw,      \* bytes A wrote
@@ -64,8 +69,10 @@ VARIABLES
              \* its other direction's failure while its Close waits)
     exited,  \* A's program exited
     toJ,     \* frames A -> J: "d", "fin", "rst"
-    fromJ,   \* frames J -> A: "eack" (endack), "abort"
-    afail,   \* A's session failed (J's abort)
+    fromJ,   \* frames J -> A: "eack" (endack), "abort", "close" (J's
+             \* clean whole close of A's session: C closed it whole)
+    afail,   \* A's session failed (J's abort, or its close)
+    aclosed, \* J closed A's session whole, cleanly
     lost1,   \* A's connection to the relay ended
     gone,    \* the relay crashed
     jq,      \* A's bytes J's Mux read, not yet written to C
@@ -87,13 +94,19 @@ VARIABLES
     mute     \* C answers pings but never acknowledges (broken or hostile)
 
 vars == <<aw, ret, rst, exited, toJ, fromJ, afail, lost1, gone, jq, jfin, jfail, d1, d0,
-          cw, cabort, toC, cq, cfin, cfail, crd, cend, fromC, ccut, mute>>
-aVars == <<aw, ret, rst, exited, afail>>
+          cw, cabort, toC, cq, cfin, cfail, crd, cend, fromC, ccut, mute, aclosed>>
+aVars == <<aw, ret, rst, exited, afail, aclosed>>
+
+\* J's clean whole close of A's session loses nothing of a stream that
+\* carried no byte (as a TCP close(2) in FIN_WAIT_2 still ACKs a bare
+\* FIN): A's Close reads it clean, and errs with a byte written (C may
+\* not have taken it).
+EmptyClosed == aclosed /\ aw = 0 /\ ~rst /\ Mutant # "close-resets"
 jVars == <<jq, jfin, jfail, d1, d0, cabort>>
 cVars == <<cw, cq, cfin, cfail, crd, cend, fromC, ccut, mute>>
 
 Init ==
-    /\ aw = 0 /\ ret = "no" /\ rst = FALSE /\ exited = FALSE /\ afail = FALSE
+    /\ aw = 0 /\ ret = "no" /\ rst = FALSE /\ exited = FALSE /\ afail = FALSE /\ aclosed = FALSE
     /\ toJ = <<>> /\ fromJ = <<>> /\ lost1 = FALSE /\ gone = FALSE
     /\ jq = 0 /\ jfin = FALSE /\ jfail = FALSE /\ d1 = "run" /\ d0 = "run"
     /\ cw = FALSE /\ cabort = FALSE /\ toC = <<>>
@@ -109,26 +122,30 @@ ReadsEof(fin, fail) == fin /\ (Mutant # "fail-drops-fin" \/ ~fail)
 AWrite ==
     /\ aw < K /\ ret = "no" /\ ~lost1 /\ ~afail /\ ~rst
     /\ aw' = aw + 1 /\ toJ' = Append(toJ, "d")
-    /\ UNCHANGED <<ret, rst, exited, afail, fromJ, lost1, gone>> /\ UNCHANGED jVars /\ UNCHANGED <<toC>> /\ UNCHANGED cVars
+    /\ UNCHANGED <<ret, rst, exited, afail, fromJ, lost1, gone>> /\ UNCHANGED jVars /\ UNCHANGED <<toC>> /\ UNCHANGED cVars /\ UNCHANGED aclosed
 
 \* Close: the FIN (CloseWriteSync), then wait for J's endack; on a failed
 \* session at once an error.
 AClose ==
     /\ (aw = K \/ afail \/ rst) /\ ret = "no" /\ ~lost1
     /\ IF afail \/ rst
-       THEN /\ ret' = IF rst /\ ~afail /\ Mutant = "close-after-reset-waits" THEN "wait" ELSE "err"
+       THEN /\ ret' = IF rst /\ ~afail /\ Mutant = "close-after-reset-waits" THEN "wait"
+                       ELSE IF EmptyClosed THEN "clean" ELSE "err"
             /\ UNCHANGED toJ
        ELSE /\ toJ' = Append(toJ, "fin")
             /\ ret' = IF Mutant = "close-before-ack" THEN "clean" ELSE "wait"
-    /\ UNCHANGED <<aw, rst, exited, afail, fromJ, lost1, gone>> /\ UNCHANGED jVars /\ UNCHANGED <<toC>> /\ UNCHANGED cVars
+    /\ UNCHANGED <<aw, rst, exited, afail, fromJ, lost1, gone>> /\ UNCHANGED jVars /\ UNCHANGED <<toC>> /\ UNCHANGED cVars /\ UNCHANGED aclosed
 
 \* J's endack ends the wait clean; its abort fails the session.
 ARecv ==
     /\ fromJ # <<>> /\ ~lost1
     /\ fromJ' = Tail(fromJ)
-    /\ IF Head(fromJ) = "eack"
-       THEN ret' = (IF ret = "wait" THEN "clean" ELSE ret) /\ UNCHANGED afail
-       ELSE afail' = TRUE /\ ret' = (IF ret = "wait" THEN "err" ELSE ret)
+    /\ CASE Head(fromJ) = "eack"
+           -> ret' = (IF ret = "wait" THEN "clean" ELSE ret) /\ UNCHANGED <<afail, aclosed>>
+         [] Head(fromJ) = "close"
+           -> /\ afail' = TRUE /\ aclosed' = TRUE
+              /\ ret' = (IF ret = "wait" THEN (IF aw = 0 /\ ~rst /\ Mutant # "close-resets" THEN "clean" ELSE "err") ELSE ret)
+         [] OTHER -> afail' = TRUE /\ ret' = (IF ret = "wait" THEN "err" ELSE ret) /\ UNCHANGED aclosed
     /\ UNCHANGED <<aw, rst, exited, toJ, lost1, gone>> /\ UNCHANGED jVars /\ UNCHANGED <<toC>> /\ UNCHANGED cVars
 
 \* The connection's end ends the wait (c.Done; a dead relay is found by
@@ -136,7 +153,7 @@ ARecv ==
 ADown ==
     /\ lost1 /\ ret = "wait" /\ Mutant # "ack-lost-hang"
     /\ ret' = "err"
-    /\ UNCHANGED <<aw, rst, exited, afail, toJ, fromJ, lost1, gone>> /\ UNCHANGED jVars /\ UNCHANGED <<toC>> /\ UNCHANGED cVars
+    /\ UNCHANGED <<aw, rst, exited, afail, toJ, fromJ, lost1, gone>> /\ UNCHANGED jVars /\ UNCHANGED <<toC>> /\ UNCHANGED cVars /\ UNCHANGED aclosed
 
 \* No acknowledgement is under way: the far end is mute and none is in
 \* flight. The idle timer fires only then (N s with no progress); with
@@ -150,12 +167,12 @@ Stalled(alive) == mute /\ fromC = <<>> /\ (\A i \in DOMAIN fromJ : fromJ[i] # "e
 AIdle ==
     /\ ret = "wait" /\ ~lost1 /\ Stalled(~gone)
     /\ ret' = "err" /\ toJ' = Append(toJ, "rst")
-    /\ UNCHANGED <<aw, rst, exited, afail, fromJ, lost1, gone>> /\ UNCHANGED jVars /\ UNCHANGED <<toC>> /\ UNCHANGED cVars
+    /\ UNCHANGED <<aw, rst, exited, afail, fromJ, lost1, gone>> /\ UNCHANGED jVars /\ UNCHANGED <<toC>> /\ UNCHANGED cVars /\ UNCHANGED aclosed
 \* The agent's stop resets the session after its Close returned.
 AReset ==
     /\ ret \in {"clean", "err"} /\ ~rst /\ ~lost1
     /\ rst' = TRUE /\ toJ' = Append(toJ, "rst")
-    /\ UNCHANGED <<aw, ret, exited, afail, fromJ, lost1, gone>> /\ UNCHANGED jVars /\ UNCHANGED <<toC>> /\ UNCHANGED cVars
+    /\ UNCHANGED <<aw, ret, exited, afail, fromJ, lost1, gone>> /\ UNCHANGED jVars /\ UNCHANGED <<toC>> /\ UNCHANGED cVars /\ UNCHANGED aclosed
 
 \* A's other direction fails while its Close waits (a local side that
 \* took the EOF, then failed): A resets the session, which ends its own
@@ -164,27 +181,27 @@ AResetWaiting ==
     /\ ret = "wait" /\ ~rst /\ ~lost1
     /\ rst' = TRUE /\ toJ' = Append(toJ, "rst")
     /\ ret' = IF Mutant = "reset-keeps-endack-wait" THEN ret ELSE "err"
-    /\ UNCHANGED <<aw, exited, afail, fromJ, lost1, gone>> /\ UNCHANGED jVars /\ UNCHANGED <<toC>> /\ UNCHANGED cVars
+    /\ UNCHANGED <<aw, exited, afail, fromJ, lost1, gone>> /\ UNCHANGED jVars /\ UNCHANGED <<toC>> /\ UNCHANGED cVars /\ UNCHANGED aclosed
 
 \* A's other direction fails before its Close: A resets the session; the
 \* Close after it (a CloseWrite racing the Reset) waits for nothing.
 AResetFirst ==
     /\ ret = "no" /\ ~rst /\ ~lost1
     /\ rst' = TRUE /\ toJ' = Append(toJ, "rst")
-    /\ UNCHANGED <<aw, ret, exited, afail, fromJ, lost1, gone>> /\ UNCHANGED jVars /\ UNCHANGED <<toC>> /\ UNCHANGED cVars
+    /\ UNCHANGED <<aw, ret, exited, afail, fromJ, lost1, gone>> /\ UNCHANGED jVars /\ UNCHANGED <<toC>> /\ UNCHANGED cVars /\ UNCHANGED aclosed
 
 \* The program exits once Close returned: its connection ends, the frames
 \* J had not read are lost.
 Exit ==
     /\ ret \in {"clean", "err"} /\ ~exited
     /\ exited' = TRUE /\ lost1' = TRUE /\ toJ' = <<>> /\ fromJ' = <<>>
-    /\ UNCHANGED <<aw, ret, rst, afail, gone>> /\ UNCHANGED jVars /\ UNCHANGED <<toC>> /\ UNCHANGED cVars
+    /\ UNCHANGED <<aw, ret, rst, afail, gone>> /\ UNCHANGED jVars /\ UNCHANGED <<toC>> /\ UNCHANGED cVars /\ UNCHANGED aclosed
 
 \* The network cuts A's connection.
 Cut ==
     /\ ~lost1
     /\ lost1' = TRUE /\ toJ' = <<>> /\ fromJ' = <<>>
-    /\ UNCHANGED <<aw, ret, rst, exited, afail, gone>> /\ UNCHANGED jVars /\ UNCHANGED <<toC>> /\ UNCHANGED cVars
+    /\ UNCHANGED <<aw, ret, rst, exited, afail, gone>> /\ UNCHANGED jVars /\ UNCHANGED <<toC>> /\ UNCHANGED cVars /\ UNCHANGED aclosed
 
 \* ---- J ----
 
@@ -240,7 +257,7 @@ JAck ==
     /\ fromC' = Tail(fromC)
     /\ IF Head(fromC) = "close" /\ d1 \in {"run", "sync"}
        THEN /\ d1' = "done"
-            /\ fromJ' = IF lost1 THEN fromJ ELSE Append(fromJ, IF Mutant = "close-acks" THEN "eack" ELSE "abort")
+            /\ fromJ' = IF lost1 THEN fromJ ELSE Append(fromJ, IF Mutant = "close-acks" THEN "eack" ELSE "close")
             /\ cabort' = TRUE /\ UNCHANGED toC
             /\ d0' = IF d0 = "held" THEN "done" ELSE d0
        ELSE IF Head(fromC) = "eack" /\ d1 = "sync"
@@ -367,7 +384,7 @@ Fairness ==
 Spec == Init /\ [][Next]_vars /\ Fairness
 
 TypeOK ==
-    /\ aw \in 0..K /\ ret \in {"no", "wait", "clean", "err"}
+    /\ aw \in 0..K /\ ret \in {"no", "wait", "clean", "err"} /\ aclosed \in BOOLEAN
     /\ d1 \in {"run", "sync", "done"} /\ d0 \in {"run", "held", "done"}
     /\ cend \in {"", "eof", "err", "closed"} /\ crd \in 0..K /\ jq \in 0..K /\ cq \in 0..K /\ mute \in BOOLEAN
 
@@ -377,7 +394,14 @@ NoSilentLoss == cend = "eof" => crd = K
 \* A's Close returns clean only once C holds every byte and the FIN (its
 \* Mux received them; C's reads need no network then): a program that
 \* exits then loses nothing it wrote (pipe spec/Pipe.tla CleanExit).
-CloseTruth == ret = "clean" => (cfin /\ crd + cq = K)
+CloseTruth == ret = "clean" => ((cfin /\ crd + cq = K) \/ (aclosed /\ aw = 0))
+
+\* J's clean close fails no Close of an empty stream: an error there only
+\* from A's reset, a cut, the idle bound or the relay's crash.
+NoFalseReset == (ret = "err" /\ aclosed /\ aw = 0) => (rst \/ lost1 \/ mute \/ ccut \/ gone)
+
+\* Witness (RelayedCloseEmpty.cfg): an empty stream's Close clean at J's close.
+WitnessEmptyClosed == ~(ret = "clean" /\ aclosed)
 
 \* Once J read A's FIN, C reads every byte and io.EOF whatever A does
 \* next (exit, a cut, a reset), unless C's connection or the relay ended

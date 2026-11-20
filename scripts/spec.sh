@@ -5,7 +5,7 @@
 # spec.sh check|mutants|traces: the TLA+ model of spec/ (spec/README.md).
 #   check    TLC on spec/Link.cfg, LinkDrain.cfg and LinkSess.cfg (no crash),
 #            LinkCrash.cfg, then spec/Pool.cfg, Liveness.cfg, Join.cfg,
-#            JoinClose.cfg and CreditWaiters.cfg, SessionRead.cfg, SessionReadWriteTo.cfg, SessionReadPump.cfg, SessionWrite.cfg, DirectPath.cfg, RelayedClose.cfg, HopHold.cfg, EndAckLeg.cfg, EndAckLegQuic.cfg:
+#            JoinClose.cfg and CreditWaiters.cfg, SessionRead.cfg, SessionReadWriteTo.cfg, SessionReadPump.cfg, SessionWrite.cfg, DirectPath.cfg, RelayedClose.cfg, RelayedCloseEmpty.cfg, HopHold.cfg, EndAckLeg.cfg, EndAckLegQuic.cfg:
 #            every invariant and liveness property, and Refines.
 #   invariants  the same, Link's invariants only, Refines only on
 #            LinkCrash.cfg (CI's; Pool's liveness is checked too, seconds).
@@ -416,7 +416,7 @@ check | invariants)
 	# PoolDrain (Min 2: a Drain failing halfway) and QuicWatchStops (two
 	# short stops, ~10 s) only in full: their mutants are CI's.
 	# PoolGrow: background growth (Max above Min).
-	pools="Pool PoolGrow PoolClient Liveness LivenessStarve QuicWatch QuicWatchPTO QuicWatchStarve Join JoinClose CreditWaiters SessionRead SessionReadWriteTo SessionReadPump SessionWrite DirectPath DirectPathReset DirectPathRebind DirectPathProof DirectPathClose RelayedClose HopHold EndAckLeg EndAckLegQuic"
+	pools="Pool PoolGrow PoolClient Liveness LivenessStarve QuicWatch QuicWatchPTO QuicWatchStarve Join JoinClose CreditWaiters SessionRead SessionReadWriteTo SessionReadPump SessionWrite DirectPath DirectPathReset DirectPathRebind DirectPathProof DirectPathClose RelayedClose RelayedCloseEmpty HopHold EndAckLeg EndAckLegQuic"
 	[ "$1" = invariants ] || pools="$pools PoolDrain QuicWatchStops DirectPathWide"
 	for m in $pools; do
 		echo "== $m.cfg"
@@ -424,7 +424,7 @@ check | invariants)
 		# Liveness explores a horizon of ticks, Join one session,
 		# CreditWaiters a fixed number of Acquires, SessionRead a fixed number of bytes, SessionWrite a fixed number of SetWriteDeadlines: their last states end there; PoolDrain has no Open to keep it going.
 		dl=; [ $m = Pool ] || [ $m = PoolGrow ] || [ $m = PoolClient ] || dl=-deadlock
-		mod=$m.tla; case $m in Pool*) mod=Pool.tla ;; Liveness*) mod=Liveness.tla ;; QuicWatch*) mod=QuicWatch.tla ;; CreditWaiters*) mod=CreditWaiters.tla ;; SessionRead*) mod=SessionRead.tla ;; DirectPath*) mod=DirectPath.tla ;; EndAckLeg*) mod=EndAckLeg.tla ;; esac
+		mod=$m.tla; case $m in Pool*) mod=Pool.tla ;; Liveness*) mod=Liveness.tla ;; QuicWatch*) mod=QuicWatch.tla ;; CreditWaiters*) mod=CreditWaiters.tla ;; SessionRead*) mod=SessionRead.tla ;; DirectPath*) mod=DirectPath.tla ;; RelayedClose*) mod=RelayedClose.tla ;; EndAckLeg*) mod=EndAckLeg.tla ;; esac
 		cfg=$m.cfg
 		# DirectPath's liveness (AllDelivered, ResetReaches: minutes) only in
 		# full; spec-mutants catches keep-dead-path and abort-not-resent by it.
@@ -749,6 +749,10 @@ mutants)
 		job mutant RelayedClose.cfg 'Mutant = "none"' "Mutant = \"$m\"" RelayedClose.tla
 	done
 	for w in WitnessExitThenEof WitnessFinThenAbort WitnessHeld WitnessCloseErr WitnessIdle WitnessResetWaiting WitnessResetFirst WitnessCClose; do job witness RelayedClose.cfg $w RelayedClose.tla; done
+	# J's clean close (C closed whole first) read as a reset of an empty
+	# stream (closeAckErr, closedFirst after ENDACKTRUTH; lane PIPERESET2).
+	job mutant RelayedCloseEmpty.cfg 'Mutant = "none"' 'Mutant = "close-resets"' RelayedClose.tla
+	job witness RelayedCloseEmpty.cfg WitnessEmptyClosed RelayedClose.tla
 	# Two joints' holds (HopHold.tla, lane ENDACK2D): a hold that ends at
 	# the ENDACK (the code since RELAYCLOSE: crossing half closes wait for
 	# each other until the idle bound resets both), no hold, an end
@@ -765,13 +769,15 @@ mutants)
 	# that a stream reset overtaking the acknowledgement ends, and a whole
 	# close before the end was read that acknowledges it (lane ENDACKQUIC;
 	# on link too: closeAckErr before lane ENDACKTRUTH).
-	for m in ack-at-write liveness-counts-as-progress total-bound close-acks; do
+	# A clean whole close read as a reset of a stream that carried no byte
+	# (closeAckErr and closedFirst after ENDACKTRUTH; lane PIPERESET2).
+	for m in ack-at-write liveness-counts-as-progress total-bound close-acks close-resets; do
 		job mutant EndAckLeg.cfg 'Mutant = "none"' "Mutant = \"$m\"" EndAckLeg.tla
 	done
 	for m in ack-at-final-size wait-on-stream-reset close-acks; do
 		job mutant EndAckLegQuic.cfg 'Mutant = "none"' "Mutant = \"$m\"" EndAckLeg.tla
 	done
-	for w in WitnessClean WitnessIdle; do job witness EndAckLeg.cfg $w EndAckLeg.tla; done
+	for w in WitnessClean WitnessIdle WitnessEmptyClosed; do job witness EndAckLeg.cfg $w EndAckLeg.tla; done
 	job witness EndAckLegQuic.cfg WitnessFinFirst EndAckLeg.tla
 	# Credit's waiters (CreditWaiters.tla, lane LINKWAKE): the one-slot
 	# wake (the code before) strands a waiter and leaves its Acquire for

@@ -434,6 +434,23 @@ its holds are `TraceHopHold.tla`'s). A link `Join` hop
 whose onward peer lacks the bit acknowledges at the onward pong (the
 next hop read it).
 
+An empty stream's end (lane PIPERESET2, 2026-11-21). After ENDACKTRUTH
+a far end's clean whole close before A's FIN reached it failed A's Close
+also when A wrote nothing (`closeAckErr`, `closedFirst`): relay-core
+`TestConnIsANetConn/BasicIO` (x/net/nettest: c1 writes and closes, c2
+reads to io.EOF and closes) read c2's Close as a reset, 14 of 40 runs on
+link f16729b. Nothing of an empty stream can be lost: as a TCP close(2)
+in FIN_WAIT_2 still ACKs a bare FIN (RFC 9293 3.10.4), J's clean close
+(`"close"`, `aclosed`) ends a Close of a stream with no byte clean
+(`EmptyClosed`, `NoFalseReset`; `CloseTruth` admits it), and with a byte
+written still with an error. `RelayedCloseEmpty.cfg` (K = 0) checks it;
+mutant `close-resets` (the code before) violates `NoFalseReset`, witness
+`WitnessEmptyClosed`. Code: `Session.wrote` (set by the first byte
+sent), `closeAckErr`'s caller and `closedFirst` in `endack.go`; a hop's
+Close whose peer's end its join never passed on (both halves passed: no
+CLOSE goes) acknowledges that end instead of resetting it when the peer
+sent no byte (`Session.got`, `mux.go` Close).
+
 ## A joint's side closed whole (JoinClose.tla, 2026-11-12, lane REFUSALFLAKE)
 
 nfltr's connect conformance `TestE2EE/exit_10` flaked on Linux: a client
@@ -1163,6 +1180,13 @@ R's `Closed` after its `Synced`, before its `Acked`) and
 `hophold-unknown-step` (the same run with its `Lost` lines) rejected.
 
 ## One leg's end acknowledgement (EndAckLeg.tla, 2026-11-20, lane ENDACK2D)
+
+Lane PIPERESET2 (2026-11-21): S may end its stream after any number of
+bytes, and on link R's clean whole close (`RClose`, `rclosed`) is a
+`"close"` frame S reads clean when it wrote nothing (`EmptyClosed`,
+`NoFalseReset`, `AckTruth` admits it; mutant `close-resets`, witness
+`WitnessEmptyClosed`). QUIC keeps R's close an abort ('A'): quiclink
+does not tell a clean close from a failure (follow-up).
 
 `RelayedClose.tla` and `HopHold.tla` model a leg as one FIFO whose far
 end acknowledges on in-order receipt. `EndAckLeg.tla` checks that each
