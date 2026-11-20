@@ -1,0 +1,4 @@
+{"by":"o","ev":"SClose"}
+{"ack":"1","by":"a","ev":"REnd"}
+{"by":"o","ev":"SRet","r":"err"}
+{"by":"o","ev":"SRecv","t":"eack"}

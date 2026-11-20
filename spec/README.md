@@ -1120,6 +1120,26 @@ connection without `ALPNEndAck` (an older peer) `CloseWriteSync` is
 peer without FeatureEndAck), and no control byte beyond 'G' and 'D' is
 sent, which an older peer would misread (`TestEndAckOldPeer*`).
 
+Its recorder (lane ENDACKQUIC): `-tags linktrace` with
+`LINKTRACE_ENDACK=<dir>` makes both ends of each session on an
+`ALPNEndAck` connection write its steps to one file per stream
+(`peerlink/quiclink/trace_on.go`: `SClose`, `SRecv`, `SRet`, `SIdle`,
+`Cut`, `REnd`, `RFail`, `RClose`, and the tests' `RMute`), each logged
+before the control message it sends and after the one it read;
+`TraceEndAckLeg.tla` checks the direction of the first `SClose` against
+`EndAckLeg.tla` (Kind quic, K = 1: the bytes and the sender's stream
+reset are not logged, TLC takes them between logged steps), with
+`AckTruth`, `ErrTruth` and `IdleTruth` (`make spec-traces`; every event
+is taken by the six `TestEndAck*` far-end tests). A joint's held end is
+HopHold's, not this model's: it logs nothing. Fixtures
+(`spec/traces/endackleg-*`, `make spec-mutants`): `ok`, `ok-close-first`,
+`ok-mute-idles` accepted; `ack-at-write` (an 'E' before the far end read
+the end), `close-acks` ('E' after the far end's close), `wait-on-stream-reset`
+(the wait failed with its 'E' on the way), `idle-not-mute` (the idle bound
+on a far end that was not mute) and `unknown-step` rejected.
+`TestEndAckTraceEventsMapped` keeps the recorder's events and the model's
+steps the same set.
+
 | assumption | source |
 |---|---|
 | A TCP peer's kernel ACKs a FIN only once it holds every byte before it | RFC 9293 3.10.4, 3.10.7 |
@@ -1145,7 +1165,7 @@ holds in a `Spec-Reviewed:` trailer).
 | `JoinClose.tla`, `TraceJoinClose.tla` | a joint's side closed whole by its peer while the other side writes: who closes the other side, and when | `join.go`, `peerlink/chain.go`, `trace_join_on.go` |
 | `RelayedClose.tla`, `TraceRelayedClose.tla` | a relayed session's Close, then the program's exit or reset: a FIN then a failure reads io.EOF, the joint passes the tail before the failure | `mux.go`, `join.go`, `endack.go`, `peerlink/chain.go`, `trace_relayed_on.go` |
 | `HopHold.tla` | two joints on one path (the agent's, the relay's), both ends TCP apps, crossing half closes: the hold ends at the next hop's receipt, the ENDACK at the onward end | `peerlink/chain.go`, `endack.go` |
-| `EndAckLeg.tla` | one leg's end acknowledgement per transport: link, gRPC frames, TCP's kernel ACK, QUIC (reassembly, control stream); the idle bound's progress rule | `endack.go`, `peerlink/quiclink/quiclink.go`, `peerlink/quiclink/endack.go`, `pathswitch/conn.go` |
+| `EndAckLeg.tla`, `TraceEndAckLeg.tla` | one leg's end acknowledgement per transport: link, gRPC frames, TCP's kernel ACK, QUIC (reassembly, control stream); the idle bound's progress rule | `endack.go`, `peerlink/quiclink/quiclink.go`, `peerlink/quiclink/endack.go`, `peerlink/quiclink/trace_on.go`, `pathswitch/conn.go` |
 | `CreditWaiters.tla`, `TraceCreditWaiters.tla` | senders waiting in `Credit.Acquire` on one session: the wait and `wakeAll` | `credit.go`, `trace_wait_on.go` |
 | `SessionRead.tla`, `TraceSessionRead.tla` | `Session.Read` from several goroutines (or one running `WriteTo` or `Pump`), the read deadline set and cleared meanwhile | `mux.go`, `internal/bytequeue/`, `trace_read_on.go` |
 | `SessionWrite.tla`, `TraceSessionWrite.tla` | `Session.Write` waiting for credit while `SetWriteDeadline` and its timer run | `mux.go`, `credit.go`, `trace_write_on.go` |

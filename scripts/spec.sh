@@ -165,6 +165,32 @@ CFG
 	[ $rcst != 0 ] && grep -q '^Error: Invariant TraceUnfinished is violated' "$cfg.out"
 }
 
+# eatrace FILE: TLC on one quiclink session's recorded end handshake
+# (spec/TraceEndAckLeg.tla, lane ENDACKQUIC); it fails unless TLC reaches
+# the trace's end (TraceUnfinished violated).
+eatrace() {
+	cfg=$work/$(basename "$1").cfg
+	cat >"$cfg" <<CFG
+CONSTANTS
+    TraceFile = "$1"
+    K = 1
+    Kind = "quic"
+    Mutant = "none"
+INIT TraceInit
+NEXT TraceNext
+INVARIANTS
+    TypeOK
+    AckTruth
+    ErrTruth
+    IdleTruth
+    TraceUnfinished
+CFG
+	east=0
+	META=$work/states-$(basename "$1") tlc "$cfg" TraceEndAckLeg.tla -deadlock >"$cfg.out" 2>&1 || east=$?
+	cat "$cfg.out"
+	[ $east != 0 ] && grep -q '^Error: Invariant TraceUnfinished is violated' "$cfg.out"
+}
+
 # ptrace FILE: TLC on one Pool's recorded trace (spec/TracePool.tla); it
 # fails unless TLC reaches the trace's end (TraceUnfinished violated).
 ptrace() {
@@ -510,6 +536,24 @@ mutants)
 			;;
 		esac
 	}
+	# eafixture FILE: a quiclink session's end handshake with a bug put in
+	# (spec/traces/endackleg-*): TraceEndAckLeg.tla must accept
+	# endackleg-ok* and reject each other one.
+	eafixture() {
+		st=0
+		TLC_WORKERS=1 eatrace "$PWD/$1" >"$jw/m.out" 2>&1 || st=$?
+		case $(basename "$1"):$st in
+		endackleg-ok*:0) echo "$(basename "$1"): accepted, as expected" ;;
+		endackleg-ok*:*) echo "$(basename "$1"): rejected"; tail -10 "$jw/m.out"; return 1 ;;
+		*:0) echo "$(basename "$1"): accepted (a bug the trace check misses)"; return 1 ;;
+		*)
+			if grep -q 'Error: TLC threw\|Error: Parsing' "$jw/m.out"; then
+				echo "$(basename "$1"): TLC failed:"; tail -10 "$jw/m.out"; return 1
+			fi
+			echo "$(basename "$1"): rejected, as expected"
+			;;
+		esac
+	}
 	# rcfixture FILE: a relayed path's trace of a Close with a bug put in
 	# (spec/traces/relayedclose-*): TraceRelayedClose.tla must accept
 	# relayedclose-ok* and reject each other one.
@@ -792,6 +836,7 @@ mutants)
 	for f in spec/traces/write-*.ndjson; do job okfixture swtrace "$f"; done
 	for f in spec/traces/joinclose-*.ndjson; do job jcfixture "$f"; done
 	for f in spec/traces/relayedclose-*.ndjson; do job rcfixture "$f"; done
+	for f in spec/traces/endackleg-*.ndjson; do job eafixture "$f"; done
 	wait
 	fail=0
 	i=0
@@ -952,6 +997,34 @@ traces)
 	done
 	echo
 	echo "path layer events no trace took:${gap:- none}"
+	# quiclink's end handshake (lane ENDACKQUIC): each session's trace, the
+	# direction of its first SClose, against EndAckLeg.tla Kind quic
+	# (TraceEndAckLeg.tla).
+	mkdir -p "$work/eatraces"
+	(cd peerlink/quiclink && LINKTRACE_ENDACK=$work/eatraces GOWORK=off go test -tags linktrace -count=1 -run "${TRACE_ENDACK_TESTS:-^TestEndAck(CloseWaitsForFarEnd|MuteFarEndIdles|ConnectionEndFailsTheWait|CloseBeforeReadFails|FarEndResetFails|ResetAfterAckIsClean)\$}" .) >"$work/test.out" 2>&1 || {
+		cat "$work/test.out"
+		exit 1
+	}
+	for t in "$work"/eatraces/*.ndjson; do
+		n=$((n + 1))
+		if TLC_WORKERS=1 eatrace "$t" >"$t.out" 2>&1; then
+			echo "endack $(basename "$t"): $(wc -l <"$t" | tr -d ' ') lines: accepted"
+		else
+			bad=$((bad + 1))
+			echo "endack $(basename "$t"): $(wc -l <"$t" | tr -d ' ') lines: REJECTED"
+			grep -E 'Error|unknown event' "$t.out" | head -5
+			[ -z "${TRACE_KEEP:-}" ] || cp "$t" "$TRACE_KEEP/"
+		fi
+	done
+	cat "$work"/eatraces/*.ndjson >"$work/eaall"
+	gap=
+	for e in $(grep -o 'E.ev = "[A-Za-z]*"' spec/TraceEndAckLeg.tla | sed 's/.*"\(.*\)"/\1/' | sort -u); do
+		k=$(grep -c "\"ev\":\"$e\"" "$work/eaall" || true)
+		[ "$k" != 0 ] || gap="$gap $e"
+		printf '%s %s; ' "$e" "$k"
+	done
+	echo
+	echo "end handshake events no trace took:${gap:- none}"
 	echo "$n traces, $bad rejected"
 	# Action coverage: each event Trace.tla maps (a step of Link), how many
 	# times the traces took it; one never taken is a test gap.

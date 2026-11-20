@@ -1,0 +1,6 @@
+{"by":"a","ev":"RMute"}
+{"by":"o","ev":"SClose"}
+{"by":"o","ev":"SIdle"}
+{"by":"o","ev":"RFail"}
+{"by":"o","ev":"SRet","r":"err"}
+{"by":"a","ev":"SRecv","t":"abort"}

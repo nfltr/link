@@ -1,0 +1,4 @@
+{"by":"a","ev":"RClose"}
+{"by":"o","ev":"SClose"}
+{"by":"o","ev":"SRecv","t":"abort"}
+{"by":"o","ev":"SRet","r":"err"}
