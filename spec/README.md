@@ -1124,8 +1124,8 @@ the next hop's Mux holds the tail and the FIN, `Join.tla`'s original
 sync), the ENDACK at the onward end. The ENDACK waits only for Muxes and
 kernels, the hold only for a Mux: no wait-for cycle (prior art: deadlock
 freedom by a wait-for graph without cycles, Coffman et al. 1971; the
-receipt is TCP's own ACK, RFC 9293). `HopHold.tla` (`HopHold.cfg`, 78
-states, every action taken): G, R, a FIFO each way between them, both
+receipt is TCP's own ACK, RFC 9293). `HopHold.tla` (`HopHold.cfg`, 118
+states, every action but `AppRead` taken; `HopHoldSeq.cfg`, 117, every one): G, R, a FIFO each way between them, both
 apps' FINs at any time. Invariants `HoldTruth` (an app's reads end only
 once its own FIN sent before is at the next hop's Mux), `AckTruth` (an
 end is acknowledged only once the exit app's kernel has it); liveness
@@ -1183,21 +1183,35 @@ resets: an end never acknowledged), `hophold-close-at-end` (crossing:
 R's `Closed` after its `Synced`, before its `Acked`) and
 `hophold-unknown-step` (the same run with its `Lost` lines) rejected.
 
-Open (lane QUICEND, 2026-11-21; not modelled, no fix yet): a joint whose
-held end is the other side's whole close runs that end's
-`CloseWriteSync` inside the receipt callback of its own sync
-(`joint.sync` -> `CloseWriteSyncReceived(received)` -> `unhold` ->
-`fin` -> `ended`'s `ds.CloseWriteSync()`), so the sync's own
-`CloseWriteSyncReceived` cannot return, and the ENDACK it would pass back
-(`ackEnd(src)`) waits for the far end to acknowledge the other direction.
-An agent over QUIC that half-closes with `CloseWriteSync` before it reads
-the client's tail (the client wrote and closed whole) waits out the idle
-bound (30 s, `ErrEndAckIdle`); TCP never holds such a FIN. Reproduced
-by `TestEndAckEmptyStreamRelayedCloseIsClean` with the agent reading
-only after its `CloseWriteSync` (goroutine dump: `peerlink.(*joint).ended.func2`
-under `link.(*Session).CloseWriteSyncReceived`). HopHold.tla runs a held
-end atomically with its `Synced`; the next step is a mutant of that and
-the end run off the callback.
+A held end run inside a receipt callback (lane QUICEND found it, lane
+HOLDCB, 2026-11-21): a joint whose held end is the other side's whole
+close ran that end's `CloseWriteSync` inside the receipt callback of its
+own sync (`joint.sync` -> `CloseWriteSyncReceived(received)` -> `unhold`
+-> `fin` -> `ended`'s `ds.CloseWriteSync()`), so the sync's own
+`CloseWriteSyncReceived` could not return, and the ENDACK it passes back
+(`ackEnd(src)`) waited for the far end to acknowledge the other
+direction. A QUIC far end acknowledges at its app's read (quiclink's
+'E'; a link far end at receipt), so an agent over QUIC that half-closes
+with `CloseWriteSync` before it reads the client's tail (the client wrote
+and closed whole) waited out the idle bound (30 s, `ErrEndAckIdle`):
+`TestEndAckRelayedCloseSequentialApp` (quiclink) failed at 30.0 s on its
+third run (before: goroutine dump `peerlink.(*joint).ended.func2` under
+`link.(*Session).CloseWriteSyncReceived`). `HopHold.tla` models it:
+`SeqApp` (`HopHoldSeq.cfg`: R's app a QUIC far end whose app reads only
+once its own `CloseWriteSync` returned; `Pass` then `AppRead`, the
+ENDACK at the read), `Tell` (the sync returned and passed its app's
+ENDACK on: the code's `Acked`, then `ackEnd`), `inRcv` (a held end in
+the receipt callback). Invariant `NoStuck` (every state finished or with
+a step: the safety proxy of `BothEnd`, so `make spec` catches a wait-for
+cycle in seconds; it also catches `hold-until-ack` and `held-end-no-ack`).
+Mutant `hold-in-receipt` (the code before: `NoStuck`, and `BothEnd`,
+`Closed` without it), witness `WitnessReadAfterTell`. Fix: the receipt
+ends the hold (`syncing`, `Synced`) in the callback and starts the held
+end on its own goroutine (`unhold(ok, async)`); after
+`CloseWriteSyncReceived` returned the held end still runs inline. 10 runs
+in 0.5 s. The trace recorder's runs are TCP apps (`SeqApp = {}`); no
+two-joint test has a QUIC far end app (quiclink's module requires link,
+so peerlink's tests cannot use it): `AppRead` is taken by no trace.
 
 ## One leg's end acknowledgement (EndAckLeg.tla, 2026-11-20, lane ENDACK2D)
 

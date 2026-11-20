@@ -5,7 +5,7 @@
 # spec.sh check|mutants|traces: the TLA+ model of spec/ (spec/README.md).
 #   check    TLC on spec/Link.cfg, LinkDrain.cfg and LinkSess.cfg (no crash),
 #            LinkCrash.cfg, then spec/Pool.cfg, Liveness.cfg, Join.cfg,
-#            JoinClose.cfg and CreditWaiters.cfg, SessionRead.cfg, SessionReadWriteTo.cfg, SessionReadPump.cfg, SessionWrite.cfg, DirectPath.cfg, RelayedClose.cfg, RelayedCloseEmpty.cfg, HopHold.cfg, EndAckLeg.cfg, EndAckLegQuic.cfg:
+#            JoinClose.cfg and CreditWaiters.cfg, SessionRead.cfg, SessionReadWriteTo.cfg, SessionReadPump.cfg, SessionWrite.cfg, DirectPath.cfg, RelayedClose.cfg, RelayedCloseEmpty.cfg, HopHold.cfg, HopHoldSeq.cfg, EndAckLeg.cfg, EndAckLegQuic.cfg:
 #            every invariant and liveness property, and Refines.
 #   invariants  the same, Link's invariants only, Refines only on
 #            LinkCrash.cfg (CI's; Pool's liveness is checked too, seconds).
@@ -202,6 +202,7 @@ hhtrace() {
 CONSTANTS
     TraceFile = "$1"
     Mutant = "none"
+    SeqApp = {}
 INIT TraceInit
 NEXT TraceNext
 INVARIANTS
@@ -417,7 +418,7 @@ check | invariants)
 	# PoolDrain (Min 2: a Drain failing halfway) and QuicWatchStops (two
 	# short stops, ~10 s) only in full: their mutants are CI's.
 	# PoolGrow: background growth (Max above Min).
-	pools="Pool PoolGrow PoolClient Liveness LivenessStarve QuicWatch QuicWatchPTO QuicWatchStarve Join JoinClose CreditWaiters SessionRead SessionReadWriteTo SessionReadPump SessionWrite DirectPath DirectPathReset DirectPathRebind DirectPathProof DirectPathClose RelayedClose RelayedCloseEmpty HopHold EndAckLeg EndAckLegQuic"
+	pools="Pool PoolGrow PoolClient Liveness LivenessStarve QuicWatch QuicWatchPTO QuicWatchStarve Join JoinClose CreditWaiters SessionRead SessionReadWriteTo SessionReadPump SessionWrite DirectPath DirectPathReset DirectPathRebind DirectPathProof DirectPathClose RelayedClose RelayedCloseEmpty HopHold HopHoldSeq EndAckLeg EndAckLegQuic"
 	[ "$1" = invariants ] || pools="$pools PoolDrain QuicWatchStops DirectPathWide"
 	for m in $pools; do
 		echo "== $m.cfg"
@@ -425,7 +426,7 @@ check | invariants)
 		# Liveness explores a horizon of ticks, Join one session,
 		# CreditWaiters a fixed number of Acquires, SessionRead a fixed number of bytes, SessionWrite a fixed number of SetWriteDeadlines: their last states end there; PoolDrain has no Open to keep it going.
 		dl=; [ $m = Pool ] || [ $m = PoolGrow ] || [ $m = PoolClient ] || dl=-deadlock
-		mod=$m.tla; case $m in Pool*) mod=Pool.tla ;; Liveness*) mod=Liveness.tla ;; QuicWatch*) mod=QuicWatch.tla ;; CreditWaiters*) mod=CreditWaiters.tla ;; SessionRead*) mod=SessionRead.tla ;; DirectPath*) mod=DirectPath.tla ;; RelayedClose*) mod=RelayedClose.tla ;; EndAckLeg*) mod=EndAckLeg.tla ;; esac
+		mod=$m.tla; case $m in Pool*) mod=Pool.tla ;; Liveness*) mod=Liveness.tla ;; QuicWatch*) mod=QuicWatch.tla ;; CreditWaiters*) mod=CreditWaiters.tla ;; SessionRead*) mod=SessionRead.tla ;; DirectPath*) mod=DirectPath.tla ;; RelayedClose*) mod=RelayedClose.tla ;; HopHold*) mod=HopHold.tla ;; EndAckLeg*) mod=EndAckLeg.tla ;; esac
 		cfg=$m.cfg
 		# DirectPath's liveness (AllDelivered, ResetReaches: minutes) only in
 		# full; spec-mutants catches keep-dead-path and abort-not-resent by it.
@@ -763,6 +764,10 @@ mutants)
 		job mutant HopHold.cfg 'Mutant = "none"' "Mutant = \"$m\"" HopHold.tla
 	done
 	for w in WitnessHeldThenDone WitnessCrossing WitnessClosed; do job witness HopHold.cfg $w HopHold.tla; done
+	# A held end run inside its sync's receipt callback, onto a QUIC far end
+	# whose app reads only after its own CloseWriteSync (lane HOLDCB).
+	job mutant HopHoldSeq.cfg 'Mutant = "none"' 'Mutant = "hold-in-receipt"' HopHold.tla
+	job witness HopHoldSeq.cfg WitnessReadAfterTell HopHold.tla
 	# One leg's end acknowledgement per transport (EndAckLeg.tla, lane
 	# ENDACK2D): acknowledged once written (quiclink, a TCP visitor, a gRPC
 	# Close today), an idle bound pings restart or a fixed one (pathswitch

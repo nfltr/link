@@ -37,6 +37,16 @@
 (* of a Done session closed its app at once, before the ENDACK of the     *)
 (* app's own end the other direction still had to pass (mutant            *)
 (* close-at-end).                                                          *)
+(*                                                                          *)
+(* An app conn may also be a QUIC far end (SeqApp, HopHoldSeq.cfg, lane     *)
+(* HOLDCB): it acknowledges an end only at its app's read (quiclink's 'E'),  *)
+(* and a sequential app reads only once its own CloseWriteSync returned    *)
+(* (the joint passed its end's ENDACK on: Tell). A held end onto such a    *)
+(* conn waits for that read; run inside its sync's receipt callback (the   *)
+(* code before lane HOLDCB: unhold -> fin -> CloseWriteSync), the sync      *)
+(* cannot return and pass the app's ENDACK on, so the app never reads      *)
+(* (mutant hold-in-receipt: a state with no step, NoStuck, and BothEnd).  *)
+(* The held end runs on its own goroutine: the receipt only starts it.      *)
 EXTENDS Naturals, Sequences
 
 CONSTANTS
@@ -54,7 +64,13 @@ CONSTANTS
              \* joint whose own app's FIN went on closes the app's conn
              \* whole as it passes the other end (peerlink joint.ended's
              \* Done branch, dst.Close, before lane PIPERESET), not once
-             \* the app's end was acknowledged too
+             \* the app's end was acknowledged too; "hold-in-receipt": the
+             \* held end runs inside its joint's receipt callback (peerlink
+             \* joint.sync before lane HOLDCB), so the sync passes no ENDACK
+             \* to its app until the held end returned
+    , SeqApp \* the joints whose app conn is a QUIC far end with a sequential
+             \* app: its end acknowledged at the app's read, which comes only
+             \* once the app's own CloseWriteSync returned
 
 Dirs == {"up", "down"}
 Joints == {"G", "R"}
@@ -63,12 +79,18 @@ Exit(d) == IF d = "up" THEN "R" ELSE "G"    \* the joint that passes d's FIN to 
 Other(d) == IF d = "up" THEN "down" ELSE "up"  \* the direction the app reading d writes
 
 VARIABLES
-    st,       \* [Dirs -> {"open", "sent", "at", "held", "passed"}]: sent: the
+    st,       \* [Dirs -> {"open", "sent", "at", "held", "passing", "passed"}]: sent: the
               \* entry joint wrote the FIN onto the session (it syncs); at: the
-              \* exit joint's Mux has it; held: the exit joint holds it; passed:
-              \* the exit app's kernel has it (its reads end with io.EOF)
+              \* exit joint's Mux has it; held: the exit joint holds it; passing:
+              \* written to a SeqApp conn, its app has not read it; passed:
+              \* the exit app's kernel (a SeqApp: the app) has it (its reads
+              \* end with io.EOF)
     rcvd,     \* [Dirs -> BOOLEAN]: the entry joint has the receipt (pong)
     acked,    \* [Dirs -> BOOLEAN]: the entry joint has the ENDACK
+    told,     \* [Dirs -> BOOLEAN]: the entry joint passed it on to its app
+              \* (ackEnd: the app's CloseWriteSync returned)
+    inRcv,    \* [Joints -> BOOLEAN]: a held end runs inside the joint's
+              \* receipt callback (hold-in-receipt only)
     syncing,  \* [Joints -> BOOLEAN]: the joint's hold is on (joint.syncing)
     g2r,      \* the session's frames G -> R: <<kind, d>>
     r2g,      \* R -> G
@@ -79,16 +101,20 @@ VARIABLES
     closedEarly \* history: a joint closed its app's conn before the app's
                 \* own end was acknowledged (a link app's wait: a reset)
 
-vars == <<st, rcvd, acked, syncing, g2r, r2g, early, heldEver, appClosed, closedEarly>>
+vars == <<st, rcvd, acked, told, inRcv, syncing, g2r, r2g, early, heldEver, appClosed, closedEarly>>
 
 Init ==
     /\ st = [d \in Dirs |-> "open"] /\ rcvd = [d \in Dirs |-> FALSE]
     /\ acked = [d \in Dirs |-> FALSE] /\ syncing = [j \in Joints |-> FALSE]
+    /\ told = [d \in Dirs |-> FALSE] /\ inRcv = [j \in Joints |-> FALSE]
     /\ g2r = <<>> /\ r2g = <<>> /\ early = FALSE /\ heldEver = FALSE
     /\ appClosed = [j \in Joints |-> FALSE] /\ closedEarly = FALSE
 
 \* The direction joint j's app ends (it enters the session at j).
 AppDir(j) == IF j = "G" THEN "up" ELSE "down"
+
+\* Joint j's app is a sequential app in its CloseWriteSync: it reads nothing.
+Blocked(j) == j \in SeqApp /\ st[AppDir(j)] # "open" /\ ~told[AppDir(j)]
 
 \* Joint j's frame m onto the session (its own FIFO).
 SendFrom(j, m) == IF j = "G" THEN g2r' = Append(g2r, m) /\ UNCHANGED r2g
@@ -100,13 +126,15 @@ AppFin(d) ==
     /\ st' = [st EXCEPT ![d] = "sent"]
     /\ syncing' = [syncing EXCEPT ![Entry(d)] = TRUE]
     /\ SendFrom(Entry(d), <<"fin", d>>)
-    /\ UNCHANGED <<rcvd, acked, early, heldEver, appClosed, closedEarly>>
+    /\ UNCHANGED <<rcvd, acked, told, inRcv, early, heldEver, appClosed, closedEarly>>
 
 \* The end passes to the exit app (its kernel takes the FIN) and the exit
 \* joint sends the ENDACK (unless the mutant sent it at receipt).
 Pass(d) ==
-    /\ st' = [st EXCEPT ![d] = "passed"]
-    /\ early' = (early \/ st[Other(d)] = "sent")
+    IF Exit(d) \in SeqApp
+    THEN st' = [st EXCEPT ![d] = "passing"] /\ UNCHANGED early
+    ELSE /\ st' = [st EXCEPT ![d] = "passed"]
+         /\ early' = (early \/ st[Other(d)] = "sent")
 
 \* Joint j's Mux reads the head of its incoming FIFO.
 Recv(j) ==
@@ -119,17 +147,19 @@ Recv(j) ==
                /\ st' = [st EXCEPT ![d] = "at"]
                /\ LET out == IF Mutant = "ack-on-receipt" THEN <<<<"rcv", d>>, <<"eack", d>>>> ELSE <<<<"rcv", d>>>>
                   IN IF j = "G" THEN g2r' = g2r \o out ELSE r2g' = r2g \o out
-               /\ UNCHANGED <<rcvd, acked, syncing, early, heldEver, appClosed, closedEarly>>
+               /\ UNCHANGED <<rcvd, acked, told, inRcv, syncing, early, heldEver, appClosed, closedEarly>>
             [] m[1] = "rcv" ->
                /\ rcvd' = [rcvd EXCEPT ![d] = TRUE]
                /\ syncing' = IF Mutant = "hold-until-ack" THEN syncing ELSE [syncing EXCEPT ![j] = FALSE]
+               \* hold-in-receipt: the held end the receipt releases runs in its callback
+               /\ inRcv' = IF Mutant = "hold-in-receipt" /\ st[Other(d)] = "held" THEN [inRcv EXCEPT ![j] = TRUE] ELSE inRcv
                /\ (IF j = "G" THEN UNCHANGED g2r ELSE UNCHANGED r2g)
-               /\ UNCHANGED <<st, acked, early, heldEver, appClosed, closedEarly>>
+               /\ UNCHANGED <<st, acked, told, early, heldEver, appClosed, closedEarly>>
             [] m[1] = "eack" ->
                /\ acked' = [acked EXCEPT ![d] = TRUE]
                /\ syncing' = [syncing EXCEPT ![j] = FALSE]
                /\ (IF j = "G" THEN UNCHANGED g2r ELSE UNCHANGED r2g)
-               /\ UNCHANGED <<st, rcvd, early, heldEver, appClosed, closedEarly>>
+               /\ UNCHANGED <<st, rcvd, told, inRcv, early, heldEver, appClosed, closedEarly>>
 
 \* Mutant close-at-end: passing d to its app, the exit joint, whose own
 \* app's FIN went on (its session ended: both halves), closes the app's
@@ -148,39 +178,60 @@ ExitEnd(d) ==
        THEN /\ st' = [st EXCEPT ![d] = "held"] /\ heldEver' = TRUE
             /\ UNCHANGED <<early, g2r, r2g, appClosed, closedEarly>>
        ELSE /\ Pass(d) /\ UNCHANGED heldEver /\ CloseAtEnd(d)
-            /\ IF Mutant = "ack-on-receipt" THEN UNCHANGED <<g2r, r2g>> ELSE SendFrom(Exit(d), <<"eack", d>>)
-    /\ UNCHANGED <<rcvd, acked, syncing>>
+            /\ IF Mutant = "ack-on-receipt" \/ Exit(d) \in SeqApp THEN UNCHANGED <<g2r, r2g>> ELSE SendFrom(Exit(d), <<"eack", d>>)
+    /\ UNCHANGED <<rcvd, acked, told, inRcv, syncing>>
 
 \* The held end runs once the joint's sync no longer holds.
 Release(d) ==
     /\ st[d] = "held" /\ ~syncing[Exit(d)]
     /\ Pass(d)
-    /\ IF Mutant \in {"ack-on-receipt", "held-end-no-ack"} THEN UNCHANGED <<g2r, r2g>> ELSE SendFrom(Exit(d), <<"eack", d>>)
+    /\ IF Mutant \in {"ack-on-receipt", "held-end-no-ack"} \/ Exit(d) \in SeqApp THEN UNCHANGED <<g2r, r2g>> ELSE SendFrom(Exit(d), <<"eack", d>>)
     /\ CloseAtEnd(d)
-    /\ UNCHANGED <<rcvd, acked, syncing, heldEver>>
+    \* onto a conn that acknowledges at once the held end returns here
+    /\ inRcv' = IF Exit(d) \in SeqApp THEN inRcv ELSE [inRcv EXCEPT ![Exit(d)] = FALSE]
+    /\ UNCHANGED <<rcvd, acked, told, syncing, heldEver>>
+
+\* A SeqApp's app reads the end (unless it waits in its CloseWriteSync):
+\* its conn sends the ENDACK, and the exit joint's CloseWriteSync onto it
+\* returns (a held end in a receipt callback returns with it).
+AppRead(d) ==
+    /\ st[d] = "passing" /\ ~Blocked(Exit(d))
+    /\ st' = [st EXCEPT ![d] = "passed"]
+    /\ early' = (early \/ st[Other(d)] = "sent")
+    /\ IF Mutant = "ack-on-receipt" THEN UNCHANGED <<g2r, r2g>> ELSE SendFrom(Exit(d), <<"eack", d>>)
+    /\ inRcv' = [inRcv EXCEPT ![Exit(d)] = FALSE]
+    /\ UNCHANGED <<rcvd, acked, told, syncing, heldEver, appClosed, closedEarly>>
+
+\* The entry joint's sync returned: it passes d's ENDACK to its app
+\* (ackEnd), unless its receipt callback still runs a held end.
+Tell(d) ==
+    /\ acked[d] /\ ~told[d] /\ ~inRcv[Entry(d)]
+    /\ told' = [told EXCEPT ![d] = TRUE]
+    /\ UNCHANGED <<st, rcvd, acked, inRcv, syncing, g2r, r2g, early, heldEver, appClosed, closedEarly>>
 
 \* Both of joint j's directions ended (its app's end acknowledged, the
 \* other end passed to the app): it closes the app's conn and the session
 \* (peerlink joint.finish).
 JointDone(j) ==
-    /\ ~appClosed[j] /\ acked[AppDir(j)] /\ st[Other(AppDir(j))] = "passed"
+    /\ ~appClosed[j] /\ told[AppDir(j)] /\ st[Other(AppDir(j))] = "passed"
     /\ appClosed' = [appClosed EXCEPT ![j] = TRUE]
-    /\ UNCHANGED <<st, rcvd, acked, syncing, g2r, r2g, early, heldEver, closedEarly>>
+    /\ UNCHANGED <<st, rcvd, acked, told, inRcv, syncing, g2r, r2g, early, heldEver, closedEarly>>
 
 Next ==
-    \/ \E d \in Dirs : AppFin(d) \/ ExitEnd(d) \/ Release(d)
+    \/ \E d \in Dirs : AppFin(d) \/ ExitEnd(d) \/ Release(d) \/ AppRead(d) \/ Tell(d)
     \/ \E j \in Joints : Recv(j) \/ JointDone(j)
 
 \* The joints and the Muxes take their steps; the apps' FINs are theirs.
 Fairness ==
-    /\ \A d \in Dirs : WF_vars(ExitEnd(d)) /\ WF_vars(Release(d))
+    /\ \A d \in Dirs : WF_vars(ExitEnd(d)) /\ WF_vars(Release(d)) /\ WF_vars(AppRead(d)) /\ WF_vars(Tell(d))
     /\ \A j \in Joints : WF_vars(Recv(j)) /\ WF_vars(JointDone(j))
 
 Spec == Init /\ [][Next]_vars /\ Fairness
 
 TypeOK ==
-    /\ st \in [Dirs -> {"open", "sent", "at", "held", "passed"}]
+    /\ st \in [Dirs -> {"open", "sent", "at", "held", "passing", "passed"}]
     /\ rcvd \in [Dirs -> BOOLEAN] /\ acked \in [Dirs -> BOOLEAN]
+    /\ told \in [Dirs -> BOOLEAN] /\ inRcv \in [Joints -> BOOLEAN]
     /\ syncing \in [Joints -> BOOLEAN]
     /\ appClosed \in [Joints -> BOOLEAN] /\ closedEarly \in BOOLEAN
 
@@ -203,9 +254,18 @@ CloseAfterAck == ~closedEarly
 \* A joint whose app's FIN and the other end both went closes its conns.
 Closed == \A j \in Joints : (st[AppDir(j)] # "open" /\ st[Other(AppDir(j))] # "open") ~> appClosed[j]
 
+\* Safety proxy of BothEnd (seconds, in make spec): every state either
+\* finished (each end sent passed on to its app, each joint closed) or
+\* has a step; a wait-for cycle is a state with none (hold-in-receipt).
+Finished == /\ \A d \in Dirs : st[d] # "open" => told[d]
+            /\ \A j \in Joints : st[AppDir(j)] # "open" /\ st[Other(AppDir(j))] # "open" => appClosed[j]
+NoStuck == Finished \/ ENABLED Next
+
 \* Witnesses (make spec-mutants: TLC must violate each): an end held,
 \* then both acknowledged; both FINs on the wire at once; both joints closed.
 WitnessHeldThenDone == ~(heldEver /\ acked["up"] /\ acked["down"])
 WitnessCrossing == ~(st["up"] = "sent" /\ st["down"] = "sent")
 WitnessClosed == ~(appClosed["G"] /\ appClosed["R"])
+\* a SeqApp's read waited for its CloseWriteSync (HopHoldSeq.cfg)
+WitnessReadAfterTell == ~(\E d \in Dirs : st[d] = "passed" /\ Exit(d) \in SeqApp /\ told[Other(d)] /\ heldEver)
 =============================================================================
