@@ -148,7 +148,9 @@ profile)
 	;;
 baseline)
 	out=$2 count=${BASELINE_COUNT:-6} bt=${BASELINE_BENCHTIME:-1s}
-	[ -z "$(git status --porcelain)" ] || {
+	mods=".:link pathswitch:pathswitch peerlink/quiclink:quiclink"
+	clean() { [ -z "$(git status --porcelain)" ] && [ "$(git rev-parse HEAD)" = "${sha:-$(git rev-parse HEAD)}" ]; }
+	clean || {
 		echo "perf.sh baseline: the tree has changes; a baseline measures a commit" >&2
 		exit 1
 	}
@@ -156,9 +158,17 @@ baseline)
 	LOAD_START=$(loadavg | xargs)
 	mkdir -p "$out"
 	: >"$out/summary.txt"
-	for mod in .:link pathswitch:pathswitch peerlink/quiclink:quiclink; do
-		dir=${mod%%:*} n=${mod##*:}
-		(cd "$dir" && GOWORK=off go test -c -o "$out/$n.test" .) # pprof reads the symbols from it
+	# Every binary first, so that an edit during the run measures nothing
+	# but the commit (pprof reads the symbols from them).
+	for mod in $mods; do
+		(cd "${mod%%:*}" && GOWORK=off go test -c -o "$out/${mod##*:}.test" .)
+	done
+	clean || {
+		echo "perf.sh baseline: the tree changed while building" >&2
+		exit 1
+	}
+	for mod in $mods; do
+		n=${mod##*:}
 		echo "$n: -benchmem -count $count" >&2
 		"$out/$n.test" -test.run '^$' -test.bench . -test.benchmem -test.count "$count" -test.benchtime "$bt" \
 			-test.timeout 0 >"$out/$n.bench.txt"
