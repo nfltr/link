@@ -290,21 +290,24 @@ acknowledged once the stream it ends was taken, so a sender that waits
 for the acknowledgement knows the far end has every byte, across joins
 (`spec/RelayedClose.tla`).
 
-- **Endack (11)**: body exactly 1 + sid_len (sid_len, sid). A side sends
-  it once for a session whose peer half-closed it, when its reader took
-  that end (a read returned end of stream), or when it closes the
-  session after reading every byte but the end. It sends none for a
-  session it reset or that failed before. For an unknown sid it is
-  ignored.
+- **Endack (11)**: body exactly 1 + sid_len (sid_len, sid). A far end
+  (a side that does not join the session onward) sends it once for a
+  session whose peer half-closed it (close code 1), when it receives
+  that close: in order, so the far end holds every byte before it. It
+  sends none for a session it reset or that failed before. For an
+  unknown sid it is ignored.
 - **Joins.** A side that joins the session to another (section 12's hop)
   sends the endack only once the end it passed on was acknowledged there
   (the onward endack, or on a connection without the bit the onward pong
   of a ping sent after the close), or, onto a conn that acknowledges
-  nothing (TCP), once it was passed on.
+  nothing (TCP), once it was passed on. A join whose onward peer closed
+  the session with code 0 sends it too (that peer takes no more); one
+  whose onward side failed resets the session instead (code 2, also
+  once both half closes passed).
 - **The waiting side.** A sender's wait for the endack ends with it, or
-  with an error at the peer's close code 0 or 2, an abort, or the
-  connection's end. A close code 0 from the peer after it acknowledged
-  is a clean end. A leaving connection (section 9) closes only once no
+  with a close code 0 from the peer (a clean end: it takes no more, as a
+  TCP peer's close), or with an error at close code 2, an abort, or the
+  connection's end. A leaving connection (section 9) closes only once no
   endack is awaited, within its drain deadline.
 
 Prior art: SSH's channel close is answered by the peer's close (RFC 4254

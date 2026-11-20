@@ -328,11 +328,11 @@ func (m *Mux) serve(f Frame, accept func([]byte, *Session)) {
 	case f.EndAck:
 		m.ackDone(f.SID, nil)
 	case f.Close:
-		if !f.Half { // the peer took no more: an end it had not acknowledged never will be
-			m.ackDone(f.SID, closeAckErr(f))
-		}
 		s := m.get(f.SID)
 		if s == nil {
+			if !f.Half {
+				m.ackDone(f.SID, closeAckErr(f))
+			}
 			return
 		}
 		if !f.Half {
@@ -343,6 +343,10 @@ func (m *Mux) serve(f Frame, accept func([]byte, *Session)) {
 				s.fail(ErrReset)
 			}
 			s.peerClosed.Store(true)
+			// The peer takes no more: an end it had not acknowledged never
+			// will be. After peerClosed: a closeWrite registering its wait
+			// now sees it (closeWrite).
+			m.ackDone(f.SID, closeAckErr(f))
 			m.drop(s)
 			return
 		}
@@ -1241,6 +1245,9 @@ func (s *Session) closeWrite(sync bool) (<-chan struct{}, error) {
 	}
 	if s.m.c.endAcks() { // before the CLOSE: its ENDACK is never missed
 		s.ack.Store(s.m.expectAck(s.id))
+		if s.peerClosed.Load() { // the peer closed whole already: no ENDACK comes
+			s.m.ackDone(s.id, nil)
+		}
 	}
 	var synced <-chan struct{}
 	var err error
@@ -1333,6 +1340,13 @@ func (s *Session) Close() error {
 		}
 		if !s.peerClosed.Load() {
 			_ = s.m.sendClose(s.id, false) // before drop: a leaving connection closes after it
+		} else if s.m.c.hop {
+			// both ends' halves passed, so no CLOSE goes: a hop's clean
+			// close of a session whose peer's end its join never passed on
+			// (the onward peer closed whole) still ends the peer's wait,
+			// as a whole close would (closeAckErr; relay-core
+			// TestConnIsANetConn hung on the agent's Close without)
+			s.AckEnd()
 		}
 		s.m.ackDone(s.id, io.ErrClosedPipe)
 		s.m.drop(s)

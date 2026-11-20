@@ -549,11 +549,24 @@ func (j *joint) ended(i int, n int64, err, werr error) {
 	default:
 		if s := native(src); s != nil && isClosed(s.Done()) {
 			// the peer closed it whole, or its FIN ended it after our
-			// CloseWrite: held while that one syncs (review r2 finding 1)
-			if j.hold(func() { _ = dst.Close() }) {
+			// CloseWrite: held while that one syncs (review r2 finding 1).
+			// Its end is still acknowledged only once dst's far end took
+			// it (FeatureEndAck; relay-core TestConnIsANetConn/BasicIO hung
+			// on the agent's Close when this closed dst without).
+			end := func() {
+				if ds := syncerOf(dst); ds != nil {
+					if err := ds.CloseWriteSync(); err != nil {
+						j.abort(src, abortOf(err))
+					} else {
+						ackEnd(src)
+					}
+				}
+				_ = dst.Close()
+			}
+			if j.hold(end) {
 				return
 			}
-			_ = dst.Close()
+			end()
 		} else if ds := syncerOf(dst); ds != nil {
 			j.sync(src, ds)
 			return

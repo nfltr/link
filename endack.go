@@ -3,17 +3,11 @@
 
 package link
 
-import "errors"
-
 // FeatureEndAck is feature bit 2 (WIRE.md sections 6 and 13): the side
 // reads ENDACK frames and sends one when its reader takes the peer's half
 // close, so the peer's CloseWriteSync returns once the far end has the
 // session's whole stream, through any joins (spec/RelayedClose.tla).
 const FeatureEndAck uint32 = 1 << 2
-
-// ErrNotAcked is CloseWriteSync's error when the peer ended the session
-// without taking its end (it closed or reset it with bytes unread).
-var ErrNotAcked = errors.New("link: the peer ended the session before it read this side's end")
 
 // ackWait is a half close's wait for the peer's ENDACK.
 type ackWait struct {
@@ -120,7 +114,10 @@ func (s *Session) ackAtClose() {
 	}
 }
 
-// closeAckErr is why a whole close of the peer's ends this side's wait.
+// closeAckErr is how the peer's whole close ends this side's wait: a
+// clean one (the peer, or the far end a hop passed it from, closed the
+// session: it takes no more, as a TCP peer's close) nil; a reset or an
+// abort its error.
 func closeAckErr(f Frame) error {
 	switch {
 	case f.Abort != nil:
@@ -128,7 +125,7 @@ func closeAckErr(f Frame) error {
 	case f.Reset:
 		return ErrReset
 	}
-	return ErrNotAcked
+	return nil
 }
 
 // onwardTook waits until the peer took this side's half close: its
