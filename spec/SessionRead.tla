@@ -8,7 +8,10 @@
    peer's slices and end arriving meanwhile. With Copier set, that reader
    runs WriteTo instead (lane LINKREADWRITE, 2026-11-20): io.Copy(dst,
    sess) beside a Read, which WriteTo's doc calls misuse but nothing
-   stopped; Pump's drain takes the tail the same way (takeRest).
+   stopped; Pump's drain takes the tail the same way (takeRest). With
+   Pumps set too, that reader runs Pump (lane LINKTRACE2, 2026-11-20):
+   Pump called at any time, then its drain, a run of which starts with
+   takeRest each time bytes arrive.
 
    The code before had three bugs, all silent:
    - Read took the unread tail of the last slice (s.rest) with no lock:
@@ -23,12 +26,21 @@
      bytes out again, read a buffer already back in the pool, and a tail
      a Read left after WriteTo's write was cut and never read
      ("writeto-no-lock").
+   - A Read after Pump was misuse by Pump's doc only: it could leave a
+     tail in s.rest after the drain wrote newer bytes, and the drain's
+     next run took that older tail and wrote it after them: Pump's writer
+     got its bytes out of order (LINKTRACE's trace review;
+     "read-beside-pump").
 
    The design: Read holds the session's read lock (rmu) from its look at
    s.rest to the end of its copy; PopUnless tells why it gave up (the
    flag or the queue's end), decided under the queue's lock in one look.
    WriteTo and Pump take s.rest and s.cur under rmu (takeRest) and own
-   them from there: written, then released, by them alone.
+   them from there: written, then released, by them alone. A Read once
+   Pump was called returns ErrPumped (it looks under rmu, so a Read that
+   began first ends before the drain's takeRest takes its tail): only
+   Reads before Pump leave a tail, and the drain's first takeRest takes
+   it before its first pop.
 
    One session; the peer pushes Slices slices of two bytes each (slice k
    is bytes 2k-1 and 2k), then may end; each Read takes one byte. *)
@@ -38,13 +50,15 @@ CONSTANTS
     Readers, \* goroutines reading the session
     Slices,  \* slices the peer pushes, two bytes each
     Copier,  \* the reader that runs WriteTo instead of Read, or None (0)
-    Mutant   \* "none", "no-read-lock", "flag-outside-lock", "writeto-no-lock"
+    Pumps,   \* TRUE: Copier runs Pump instead of WriteTo
+    Mutant   \* "none", "no-read-lock", "flag-outside-lock", "writeto-no-lock",
+             \* "read-beside-pump"
 
 None == 0
 Bytes == 1..(2 * Slices)
 SliceOf(b) == (b + 1) \div 2
 Range(s) == {s[i] : i \in DOMAIN s}
-ASSUME Copier \in Readers \cup {None}
+ASSUME Copier \in Readers \cup {None} /\ Pumps \in BOOLEAN /\ (Pumps => Copier # None)
 
 VARIABLES
     q,      \* the session's queue: slices (sequences of byte ids)
@@ -60,9 +74,10 @@ VARIABLES
     got,    \* [Readers -> Seq(Bytes)]: the bytes each reader was handed
     ref,    \* [Readers -> set of slice ids]: the slices a reader reads from
     tail,   \* [Readers -> Seq(Bytes)]: what WriteTo took, to write
-    rel     \* [1..Slices -> Nat]: times each slice went back to the pool
+    rel,    \* [1..Slices -> Nat]: times each slice went back to the pool
+    pumped  \* Pump called (s.pump set)
 
-vars == <<q, closed, dl, next, rest, cur, lock, pc, res, cnt, got, ref, tail, rel>>
+vars == <<q, closed, dl, next, rest, cur, lock, pc, res, cnt, got, ref, tail, rel, pumped>>
 
 Init ==
     /\ q = <<>> /\ closed = FALSE /\ dl = FALSE /\ next = 1 /\ rest = <<>>
@@ -74,6 +89,7 @@ Init ==
     /\ ref = [r \in Readers |-> {}]
     /\ tail = [r \in Readers |-> <<>>]
     /\ rel = [k \in 1..Slices |-> 0]
+    /\ pumped = FALSE
 
 Locked == Mutant # "no-read-lock"
 Plain == Readers \ {Copier}
@@ -96,28 +112,37 @@ Flat(s) == LET f[i \in 0..Len(s)] == IF i = 0 THEN <<>> ELSE f[i - 1] \o s[i] IN
 PushOf(k) ==
     /\ ~closed /\ next + k - 1 \in Bytes
     /\ q' = Append(q, Fresh(k)) /\ next' = next + k
-    /\ UNCHANGED <<closed, dl, rest, cur, lock, pc, res, cnt, got, ref, tail, rel>>
+    /\ UNCHANGED <<closed, dl, rest, cur, lock, pc, res, cnt, got, ref, tail, rel, pumped>>
 Push == PushOf(2)
 Grow(k) ==
     /\ ~closed /\ q # <<>> /\ next + k - 1 \in Bytes
     /\ q' = [q EXCEPT ![Len(q)] = @ \o Fresh(k)] /\ next' = next + k
-    /\ UNCHANGED <<closed, dl, rest, cur, lock, pc, res, cnt, got, ref, tail, rel>>
+    /\ UNCHANGED <<closed, dl, rest, cur, lock, pc, res, cnt, got, ref, tail, rel, pumped>>
 Close ==
     /\ ~closed /\ closed' = TRUE
-    /\ UNCHANGED <<q, dl, next, rest, cur, lock, pc, res, cnt, got, ref, tail, rel>>
+    /\ UNCHANGED <<q, dl, next, rest, cur, lock, pc, res, cnt, got, ref, tail, rel, pumped>>
 
 \* The deadline: its timer fires (or SetReadDeadline sets a past one) and
 \* Wake; SetReadDeadline clears it or moves it ahead.
-Fire == ~dl /\ dl' = TRUE /\ UNCHANGED <<q, closed, next, rest, cur, lock, pc, res, cnt, got, ref, tail, rel>>
-Clear == dl /\ dl' = FALSE /\ UNCHANGED <<q, closed, next, rest, cur, lock, pc, res, cnt, got, ref, tail, rel>>
+Fire == ~dl /\ dl' = TRUE /\ UNCHANGED <<q, closed, next, rest, cur, lock, pc, res, cnt, got, ref, tail, rel, pumped>>
+Clear == dl /\ dl' = FALSE /\ UNCHANGED <<q, closed, next, rest, cur, lock, pc, res, cnt, got, ref, tail, rel, pumped>>
 
-\* Read's start: rmu taken, then s.rest looked at.
+\* Read's start: rmu taken, then s.pump looked at (a Read once Pump was
+\* called: Refuse; the code before did not look), then s.rest.
 Begin(r) ==
     /\ r \in Plain /\ pc[r] = "idle"
+    /\ ~pumped \/ Mutant = "read-beside-pump"
     /\ IF Locked THEN lock = None /\ lock' = r ELSE UNCHANGED lock
     /\ pc' = [pc EXCEPT ![r] = IF rest # <<>> THEN "copy" ELSE "pop"]
     /\ ref' = [ref EXCEPT ![r] = IF rest # <<>> THEN Ids(cur) ELSE {}]
-    /\ UNCHANGED <<q, closed, dl, next, rest, cur, res, cnt, got, tail, rel>>
+    /\ UNCHANGED <<q, closed, dl, next, rest, cur, res, cnt, got, tail, rel, pumped>>
+
+\* Read returns ErrPumped, rmu taken and let go; the reader stops.
+Refuse(r) ==
+    /\ r \in Plain /\ pc[r] = "idle" /\ pumped /\ Mutant # "read-beside-pump"
+    /\ Locked => lock = None
+    /\ res' = [res EXCEPT ![r] = "refused"] /\ pc' = [pc EXCEPT ![r] = "done"]
+    /\ UNCHANGED <<q, closed, dl, next, rest, cur, lock, cnt, got, ref, tail, rel, pumped>>
 
 \* PopUnless: under the queue's lock, it waits (not enabled) until the
 \* flag, a slice or the end; the design decides there, in one look; the
@@ -136,14 +161,14 @@ Pop(r) ==
               [] q # <<>> -> Take(r) /\ UNCHANGED res
               [] OTHER -> /\ res' = [res EXCEPT ![r] = "eof"] /\ pc' = [pc EXCEPT ![r] = "end"]
                           /\ UNCHANGED <<q, rest, cur, ref>>
-    /\ UNCHANGED <<closed, dl, next, lock, cnt, got, tail, rel>>
+    /\ UNCHANGED <<closed, dl, next, lock, cnt, got, tail, rel, pumped>>
 
 \* The code before: Read looks at the flag again, the queue unlocked.
 Decide(r) ==
     /\ pc[r] = "decide"
     /\ res' = [res EXCEPT ![r] = IF dl THEN "timeout" ELSE "eof"]
     /\ pc' = [pc EXCEPT ![r] = "end"]
-    /\ UNCHANGED <<q, closed, dl, next, rest, cur, lock, cnt, got, ref, tail, rel>>
+    /\ UNCHANGED <<q, closed, dl, next, rest, cur, lock, cnt, got, ref, tail, rel, pumped>>
 
 \* copy(b, s.rest) of n bytes (the model's: one; a trace's: its own).
 \* Under rmu, with s.rest = s.rest[n:] and, when that empties it,
@@ -160,13 +185,13 @@ CopyOf(r, n) ==
        THEN /\ CutRest(n)
             /\ pc' = [pc EXCEPT ![r] = "end"] /\ ref' = [ref EXCEPT ![r] = {}]
        ELSE /\ pc' = [pc EXCEPT ![r] = "cut"] /\ UNCHANGED <<rest, cur, rel, ref>>
-    /\ UNCHANGED <<q, closed, dl, next, lock, tail>>
+    /\ UNCHANGED <<q, closed, dl, next, lock, tail, pumped>>
 Copy(r) == CopyOf(r, 1)
 Cut(r) ==
     /\ pc[r] = "cut"
     /\ CutRest(1)
     /\ pc' = [pc EXCEPT ![r] = "end"] /\ ref' = [ref EXCEPT ![r] = {}]
-    /\ UNCHANGED <<q, closed, dl, next, lock, res, cnt, got, tail>>
+    /\ UNCHANGED <<q, closed, dl, next, lock, res, cnt, got, tail, pumped>>
 
 \* Read returns, rmu let go. A reader that read the end stops; one that
 \* read a byte or the deadline reads again.
@@ -174,21 +199,30 @@ End(r) ==
     /\ pc[r] = "end"
     /\ lock' = IF lock = r THEN None ELSE lock
     /\ pc' = [pc EXCEPT ![r] = IF res[r] = "eof" THEN "done" ELSE "idle"]
-    /\ UNCHANGED <<q, closed, dl, next, rest, cur, res, cnt, got, ref, tail, rel>>
+    /\ UNCHANGED <<q, closed, dl, next, rest, cur, res, cnt, got, ref, tail, rel, pumped>>
+
+\* Pump(w, done): s.pump set; its drain runs from here.
+PumpOn(c) ==
+    /\ c = Copier /\ Pumps /\ ~pumped /\ pumped' = TRUE
+    /\ UNCHANGED <<q, closed, dl, next, rest, cur, lock, pc, res, cnt, got, ref, tail, rel>>
 
 \* WriteTo's start, takeRest: under rmu (free: a Read holding it returns
 \* first), s.rest and s.cur become WriteTo's, both nil on the session.
 \* The code before looked at s.rest with no lock and left it there while
-\* it wrote it (WRel cut it after).
+\* it wrote it (WRel cut it after). Pump's drain takes it at the start of
+\* each run: after Pump, then at any batch (a run ends when nothing is
+\* queued, and the next starts here as bytes arrive; TLC takes it between
+\* any two batches, more often than the code).
 WTake(c) ==
-    /\ c = Copier /\ pc[c] = "idle"
+    /\ c = Copier
+    /\ IF Pumps THEN pumped /\ pc[c] \in {"idle", "batch"} ELSE pc[c] = "idle"
     /\ IF Mutant = "writeto-no-lock"
        THEN /\ UNCHANGED <<rest, cur>>
        ELSE /\ lock = None /\ rest' = <<>> /\ cur' = None
     /\ tail' = [tail EXCEPT ![c] = rest]
     /\ ref' = [ref EXCEPT ![c] = IF rest # <<>> THEN Ids(cur) ELSE {}]
     /\ pc' = [pc EXCEPT ![c] = IF rest # <<>> THEN "write-rest" ELSE "batch"]
-    /\ UNCHANGED <<q, closed, dl, next, lock, res, cnt, got, rel>>
+    /\ UNCHANGED <<q, closed, dl, next, lock, res, cnt, got, rel, pumped>>
 
 \* w.Write of what WriteTo took: the tail ("rest"), or a slice of a
 \* batch from the queue.
@@ -196,7 +230,7 @@ WWrite(c) ==
     /\ pc[c] \in {"write", "write-rest"}
     /\ Hand(c, tail[c]) /\ tail' = [tail EXCEPT ![c] = <<>>]
     /\ pc' = [pc EXCEPT ![c] = IF pc[c] = "write" THEN "rel" ELSE "rel-rest"]
-    /\ UNCHANGED <<q, closed, dl, next, rest, cur, lock, res, ref, rel>>
+    /\ UNCHANGED <<q, closed, dl, next, rest, cur, lock, res, ref, rel, pumped>>
 
 \* releaseData of what it wrote. The code before, for the tail: s.rest
 \* cut and s.cur released only now, whatever a Read did with them meanwhile.
@@ -207,11 +241,12 @@ WRel(c) ==
        ELSE /\ Release(ref[c]) /\ UNCHANGED <<rest, cur>>
     /\ ref' = [ref EXCEPT ![c] = {}]
     /\ pc' = [pc EXCEPT ![c] = "batch"]
-    /\ UNCHANGED <<q, closed, dl, next, lock, res, cnt, got, tail>>
+    /\ UNCHANGED <<q, closed, dl, next, lock, res, cnt, got, tail, pumped>>
 
 \* PopBatch: under the queue's lock, it waits until a slice or the end
 \* (WriteTo ignores the read deadline); a batch of k slices (the model's:
-\* one; a trace's: its own).
+\* one; a trace's: its own). Pump's TryPopBatch: the same, its drain run
+\* ending (not a step) while nothing is queued.
 WPopOf(c, k) ==
     /\ pc[c] = "batch" /\ (q # <<>> \/ closed) /\ k <= Len(q)
     /\ IF q # <<>>
@@ -220,13 +255,13 @@ WPopOf(c, k) ==
             /\ pc' = [pc EXCEPT ![c] = "write"] /\ UNCHANGED res
        ELSE /\ res' = [res EXCEPT ![c] = "eof"] /\ pc' = [pc EXCEPT ![c] = "done"]
             /\ UNCHANGED <<q, tail, ref>>
-    /\ UNCHANGED <<closed, dl, next, rest, cur, lock, cnt, got, rel>>
+    /\ UNCHANGED <<closed, dl, next, rest, cur, lock, cnt, got, rel, pumped>>
 WPop(c) == WPopOf(c, IF q = <<>> THEN 0 ELSE 1)
 
 Next ==
     \/ Push \/ Close \/ Fire \/ Clear
-    \/ \E r \in Readers : Begin(r) \/ Pop(r) \/ Decide(r) \/ Copy(r) \/ Cut(r) \/ End(r)
-    \/ \E c \in Readers : WTake(c) \/ WWrite(c) \/ WRel(c) \/ WPop(c)
+    \/ \E r \in Readers : Begin(r) \/ Refuse(r) \/ Pop(r) \/ Decide(r) \/ Copy(r) \/ Cut(r) \/ End(r)
+    \/ \E c \in Readers : PumpOn(c) \/ WTake(c) \/ WWrite(c) \/ WRel(c) \/ WPop(c)
 
 Spec == Init /\ [][Next]_vars
 
@@ -235,7 +270,8 @@ TypeOK ==
     /\ cur \in 0..Slices /\ lock \in Readers \cup {None}
     /\ pc \in [Readers -> {"idle", "pop", "decide", "copy", "cut", "end", "done",
                            "write", "write-rest", "rel", "rel-rest", "batch"}]
-    /\ res \in [Readers -> {"", "data", "timeout", "eof"}]
+    /\ res \in [Readers -> {"", "data", "timeout", "eof", "refused"}]
+    /\ pumped \in BOOLEAN
     /\ cnt \in [Bytes -> Nat]
     /\ ref \in [Readers -> SUBSET (1..Slices)]
     /\ rel \in [1..Slices -> Nat]
@@ -276,4 +312,7 @@ WitnessSharedTail == ~\E r \in Readers : pc[r] = "copy" /\ Len(rest) = 1
 \* of reader are handed bytes.
 WitnessWriteToTail == ~\E c \in Readers : pc[c] = "write-rest" /\ Len(tail[c]) = 1
 WitnessBothKinds == ~(Copier # None /\ got[Copier] # <<>> /\ \E r \in Plain : got[r] # <<>>)
+\* A Read once Pump was called is refused (SessionReadPump.cfg, with
+\* WitnessWriteToTail: the drain takes a tail a Read left before Pump).
+WitnessRefused == ~\E r \in Readers : res[r] = "refused"
 =============================================================================

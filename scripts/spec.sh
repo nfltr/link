@@ -5,7 +5,7 @@
 # spec.sh check|mutants|traces: the TLA+ model of spec/ (spec/README.md).
 #   check    TLC on spec/Link.cfg, LinkDrain.cfg and LinkSess.cfg (no crash),
 #            LinkCrash.cfg, then spec/Pool.cfg, Liveness.cfg, Join.cfg,
-#            JoinClose.cfg and CreditWaiters.cfg, SessionRead.cfg, SessionReadWriteTo.cfg, SessionWrite.cfg, DirectPath.cfg:
+#            JoinClose.cfg and CreditWaiters.cfg, SessionRead.cfg, SessionReadWriteTo.cfg, SessionReadPump.cfg, SessionWrite.cfg, DirectPath.cfg:
 #            every invariant and liveness property, and Refines.
 #   invariants  the same, Link's invariants only, Refines only on
 #            LinkCrash.cfg (CI's; Pool's liveness is checked too, seconds).
@@ -187,6 +187,7 @@ CONSTANTS
     Readers <- TraceReaders
     Slices <- TraceSlices
     Copier <- TraceCopier
+    Pumps <- TracePumps
     Bytes <- TraceBytes
     SliceOf <- TraceSliceOf
     Mutant = "none"
@@ -293,7 +294,7 @@ check | invariants)
 	# PoolDrain (Min 2: a Drain failing halfway) and QuicWatchStops (two
 	# short stops, ~10 s) only in full: their mutants are CI's.
 	# PoolGrow: background growth (Max above Min).
-	pools="Pool PoolGrow PoolClient Liveness LivenessStarve QuicWatch QuicWatchPTO QuicWatchStarve Join JoinClose CreditWaiters SessionRead SessionReadWriteTo SessionWrite DirectPath DirectPathReset DirectPathRebind DirectPathProof DirectPathClose"
+	pools="Pool PoolGrow PoolClient Liveness LivenessStarve QuicWatch QuicWatchPTO QuicWatchStarve Join JoinClose CreditWaiters SessionRead SessionReadWriteTo SessionReadPump SessionWrite DirectPath DirectPathReset DirectPathRebind DirectPathProof DirectPathClose"
 	[ "$1" = invariants ] || pools="$pools PoolDrain QuicWatchStops DirectPathWide"
 	for m in $pools; do
 		echo "== $m.cfg"
@@ -627,6 +628,10 @@ mutants)
 	# then cut it and released s.cur, all without rmu (the code before).
 	job mutant SessionReadWriteTo.cfg 'Mutant = "none"' 'Mutant = "writeto-no-lock"' SessionRead.tla
 	for w in WitnessWriteToTail WitnessBothKinds; do job witness SessionReadWriteTo.cfg $w SessionRead.tla; done
+	# A Read after Pump (lane LINKTRACE2): it left a tail the drain's next
+	# run wrote after newer bytes (the code before: no ErrPumped).
+	job mutant SessionReadPump.cfg 'Mutant = "none"' 'Mutant = "read-beside-pump"' SessionRead.tla
+	for w in WitnessWriteToTail WitnessRefused; do job witness SessionReadPump.cfg $w SessionRead.tla; done
 	# Session writes (SessionWrite.tla, lane P2PLEFT): a Write waiting for
 	# credit on the nil channel when the first write deadline is set.
 	job mutant SessionWrite.cfg 'Mutant = "none"' 'Mutant = "nil-channel"' SessionWrite.tla
