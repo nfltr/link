@@ -45,7 +45,11 @@ func newHopRigMute(t *testing.T, mute bool) *hopRig {
 	t.Helper()
 	r := &hopRig{armed: new(atomic.Bool), open: make(chan struct{})}
 	hc, cc := tcpPair(t)
-	cCfg := Config{Window: testWindow, Auth: testToken, muteEndAck: mute}
+	var idle time.Duration // a mute C: every wait's idle bound short
+	if mute {
+		idle = 300 * time.Millisecond
+	}
+	cCfg := Config{Window: testWindow, Auth: testToken, muteEndAck: mute, endAckIdle: idle}
 	type res struct {
 		c   *Conn
 		err error
@@ -55,7 +59,7 @@ func newHopRigMute(t *testing.T, mute bool) *hopRig {
 		c, _, err := Server(t.Context(), holdConn{cc, r.armed, r.open}, cCfg)
 		sc <- res{c, err}
 	}()
-	h2c, err := Client(t.Context(), hc, Config{Window: testWindow, Auth: testToken, Hop: true})
+	h2c, err := Client(t.Context(), hc, Config{Window: testWindow, Auth: testToken, Hop: true, endAckIdle: idle})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +79,7 @@ func newHopRigMute(t *testing.T, mute bool) *hopRig {
 			return
 		}
 		_ = Join(in, out)
-	}, Config{Window: testWindow, Auth: testToken}, Config{Window: testWindow, Auth: testToken, Hop: true})
+	}, Config{Window: testWindow, Auth: testToken, endAckIdle: idle}, Config{Window: testWindow, Auth: testToken, Hop: true, endAckIdle: idle})
 	if r.a, err = am.Open([]byte("h")); err != nil {
 		t.Fatal(err)
 	}
@@ -150,9 +154,6 @@ func TestEndAckFailsWhenTheFarEndIsCut(t *testing.T) {
 // wait nor A's Close past the idle bound: they give up once nothing of
 // the session was acknowledged for that long, whatever the pings say.
 func TestEndAckGivesUpWithoutProgress(t *testing.T) {
-	old := endAckIdle
-	endAckIdle = 300 * time.Millisecond
-	t.Cleanup(func() { endAckIdle = old })
 	r := newHopRigMute(t, true)
 	if _, err := r.a.Write([]byte("tail")); err != nil {
 		t.Fatal(err)

@@ -4,6 +4,7 @@
 package link
 
 import (
+	"cmp"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -197,10 +198,11 @@ type Conn struct {
 	dialer          bool // this side dialed: Mux picks odd session ids
 	peerMaxSessions int
 	peerFeatures    uint32
-	hop             bool   // Config.Hop: half closes are acknowledged once passed on
-	muteEndAck      bool   // Config.muteEndAck (tests)
-	features        uint32 // what this side announced
-	maxSessions     int    // the peer may have this many open toward this side
+	hop             bool          // Config.Hop: half closes are acknowledged once passed on
+	muteEndAck      bool          // Config.muteEndAck (tests)
+	endAckIdle      time.Duration // CloseWriteSync's idle bound (Config.endAckIdle, else 30 s)
+	features        uint32        // what this side announced
+	maxSessions     int           // the peer may have this many open toward this side
 	live            Liveness
 	id              Identity
 	t0              time.Time
@@ -242,6 +244,7 @@ func newConnV2(nc net.Conn, cfg Config, peerWindow, peerMaxSessions int, dialer 
 	c.maxSessions = cfg.MaxSessions
 	c.hop = cfg.Hop
 	c.muteEndAck = cfg.muteEndAck
+	c.endAckIdle = cmp.Or(cfg.endAckIdle, endAckIdle)
 	c.t0 = time.Now()
 	c.pong = make(chan [pingLen]byte, 1)
 	c.peerGoAway = make(chan struct{})

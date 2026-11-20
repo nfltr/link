@@ -50,7 +50,7 @@ func (m *Mux) ackDone(sid string, err error) {
 	}
 }
 
-var endAckIdle = 30 * time.Second // the idle bound (a var: tests shorten it)
+const endAckIdle = 30 * time.Second // the idle bound (Config.endAckIdle in tests)
 
 // waitAck waits for w: nil at the ENDACK, even when the connection ended
 // since; else the session's or the connection's end, or ErrEndAckIdle
@@ -62,7 +62,7 @@ var endAckIdle = 30 * time.Second // the idle bound (a var: tests shorten it)
 // liveness-counts-as-progress). It resets the session then.
 func (s *Session) waitAck(w *ackWait) error {
 	c := s.m.c
-	t := time.NewTicker(endAckIdle)
+	t := time.NewTicker(c.endAckIdle)
 	defer t.Stop()
 	last := c.credit.progress(s.id)
 	for {

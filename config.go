@@ -41,9 +41,10 @@ type Config struct {
 	// end (Hop false) acknowledges it on receipt.
 	Hop bool
 
-	noChain    bool // tests: announce what v0.9.4 did (no FeatureChain)
-	noEndAck   bool // tests: announce what v0.12 did (no FeatureEndAck: the recorded goldens)
-	muteEndAck bool // tests: announce FeatureEndAck, never acknowledge (a mute far end)
+	noChain    bool          // tests: announce what v0.9.4 did (no FeatureChain)
+	noEndAck   bool          // tests: announce what v0.12 did (no FeatureEndAck: the recorded goldens)
+	muteEndAck bool          // tests: announce FeatureEndAck, never acknowledge (a mute far end)
+	endAckIdle time.Duration // tests: CloseWriteSync's idle bound; 0: 30 s
 }
 
 // announce is the feature bits this side announces.
