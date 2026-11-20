@@ -380,12 +380,13 @@ frame's send logged before its write, its receipt after its read, so
 the order is causal; no vector clocks). Logged: `AClose`, `ARecv`,
 `ADown`, `AIdle`, `AReset` (one of the three resets, by `ret`),
 `JRecv`, `D1End`, `JAck`, `JIdle`, `JSyncFail`, `D0CFail`, `CRecv`,
-and the test's `CCut`, `CMute`; `ARet` is an observation (what A's
+and the test's `Cut`, `CCut`, `CMute`; `ARet` is an observation (what A's
 ENDACK wait returned must be the model's `ret`: `CloseTruth` on the
 code's own result). The bytes are not logged: `TraceRelayedClose.tla`
 lets TLC take them (K = 1). `make spec-traces` checks the traces of
 `TestEndAckWaitsForTheFarEnd`, `...FailsWhenTheFarEndIsCut`,
-`...GivesUpWithoutProgress`, `...ResetEndsTheWait`;
+`...FailsWhenItsConnectionIsCut` (`ADown`, the gap the first box run
+named), `...GivesUpWithoutProgress`, `...ResetEndsTheWait`;
 `TestRelayedCloseTraceEventsMapped` keeps the hook points and the
 module's steps the same both ways. Fixtures (`make spec-mutants`):
 `relayedclose-ok`, `relayedclose-ok-idle-abort-in-flight` accepted;
@@ -397,7 +398,7 @@ code's A giving up at the idle bound while J's abort (after `JIdle`)
 travelled to it was no behaviour of the model; an abort is no
 acknowledgement (`waitAck` counts the session's acknowledged bytes), so
 `Stalled` now excludes only an ENDACK in flight (the mutants still
-fail as before). Not recorded: `Exit`, `Cut`, `JDown`, `D0Fail`,
+fail as before). Not recorded: `Exit`, `JDown`, `D0Fail`,
 `RelayGone` (no hop-rig test takes them), and peerlink's joint
 (`peerlink/join_close_test.go`, the next recorder). A link `Join` hop
 whose onward peer lacks the bit acknowledges at the onward pong (the

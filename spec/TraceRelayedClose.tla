@@ -36,6 +36,7 @@ Step ==
       [] E.ev = "JSyncFail" -> JSyncFail
       [] E.ev = "D0CFail" -> D0CFail
       [] E.ev = "CRecv" -> CRecv /\ Head(toC) = E.t
+      [] E.ev = "Cut" -> Cut
       [] E.ev = "CCut" -> CCut
       [] E.ev = "CMute" -> CMute
       [] OTHER -> Print(<<"unknown event", E>>, FALSE)

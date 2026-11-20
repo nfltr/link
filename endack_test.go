@@ -37,6 +37,7 @@ type hopRig struct {
 	armed      *atomic.Bool
 	open       chan struct{}
 	cMux, hToC *Mux
+	aMux       *Mux // A's, on its connection to the hop
 }
 
 func newHopRig(t *testing.T) *hopRig { return newHopRigMute(t, false) }
@@ -75,7 +76,8 @@ func newHopRigMute(t *testing.T, mute bool) *hopRig {
 	go func() { _ = r.hToC.Serve(nil) }()
 	go func() { _ = r.cMux.Serve(func(_ []byte, s *Session) { accepted <- s }) }()
 	t.Cleanup(func() { _ = r.hToC.Close(); _ = r.cMux.Close() })
-	am, _ := v2muxPair(t, func(_ []byte, in *Session) {
+	var am *Mux
+	am, _ = v2muxPair(t, func(_ []byte, in *Session) {
 		out, err := r.hToC.Open(context.Background(), []byte("c"))
 		if err != nil {
 			_ = in.Reset()
@@ -84,6 +86,7 @@ func newHopRigMute(t *testing.T, mute bool) *hopRig {
 		joined <- [2]*Session{in, out}
 		_ = join(in, out)
 	}, Config{Window: testWindow, Auth: testToken, endAckIdle: idle}, Config{Window: testWindow, Auth: testToken, Hop: true, endAckIdle: idle})
+	r.aMux = am
 	if r.a, err = am.Open(context.Background(), []byte("h")); err != nil {
 		t.Fatal(err)
 	}
@@ -157,6 +160,32 @@ func TestEndAckFailsWhenTheFarEndIsCut(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("CloseWriteSync never returned after C's connection ended")
 	}
+}
+
+// TestEndAckFailsWhenItsConnectionIsCut (spec/RelayedClose.tla ADown,
+// CloseEnds): A's own connection to the hop ends while its Close waits for
+// the far end's ENDACK (C takes nothing): the Close fails at once, never
+// waiting for an ENDACK that connection can no longer carry.
+func TestEndAckFailsWhenItsConnectionIsCut(t *testing.T) {
+	r := newHopRig(t)
+	r.armed.Store(true)
+	if _, err := r.a.Write([]byte("tail")); err != nil {
+		t.Fatal(err)
+	}
+	ret := make(chan error, 1)
+	go func() { ret <- r.a.CloseWriteSync() }()
+	time.Sleep(100 * time.Millisecond) // the hop holds the end
+	traceRCEnv("Cut")
+	_ = r.aMux.c.nc.Close() // the network cuts A's connection
+	select {
+	case err := <-ret:
+		if err == nil {
+			t.Fatal("CloseWriteSync returned nil: C never took the end")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("CloseWriteSync never returned after its connection ended")
+	}
+	close(r.open)
 }
 
 // TestEndAckGivesUpWithoutProgress (spec/RelayedClose.tla CloseEnds,
