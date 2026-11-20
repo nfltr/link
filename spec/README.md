@@ -1183,6 +1183,22 @@ resets: an end never acknowledged), `hophold-close-at-end` (crossing:
 R's `Closed` after its `Synced`, before its `Acked`) and
 `hophold-unknown-step` (the same run with its `Lost` lines) rejected.
 
+Open (lane QUICEND, 2026-11-21; not modelled, no fix yet): a joint whose
+held end is the other side's whole close runs that end's
+`CloseWriteSync` inside the receipt callback of its own sync
+(`joint.sync` -> `CloseWriteSyncReceived(received)` -> `unhold` ->
+`fin` -> `ended`'s `ds.CloseWriteSync()`), so the sync's own
+`CloseWriteSyncReceived` cannot return, and the ENDACK it would pass back
+(`ackEnd(src)`) waits for the far end to acknowledge the other direction.
+An agent over QUIC that half-closes with `CloseWriteSync` before it reads
+the client's tail (the client wrote and closed whole) waits out the idle
+bound (30 s, `ErrEndAckIdle`); TCP never holds such a FIN. Reproduced
+by `TestEndAckEmptyStreamRelayedCloseIsClean` with the agent reading
+only after its `CloseWriteSync` (goroutine dump: `peerlink.(*joint).ended.func2`
+under `link.(*Session).CloseWriteSyncReceived`). HopHold.tla runs a held
+end atomically with its `Synced`; the next step is a mutant of that and
+the end run off the callback.
+
 ## One leg's end acknowledgement (EndAckLeg.tla, 2026-11-20, lane ENDACK2D)
 
 Lane PIPERESET2 (2026-11-21): S may end its stream after any number of
