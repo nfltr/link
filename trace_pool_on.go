@@ -98,7 +98,7 @@ func tracePoolSeen(p *Pool) {
 			tracePoolEv(p, "Down", "", 0, m, 0)
 			p.tr.seen[m] |= 3
 		}
-		if p.tr.seen[m]&1 == 0 && m.c.GoingAway() { // the Pool's own GOAWAYs are logged already: stutters
+		if p.tr.seen[m]&1 == 0 && m.c.isGoingAway() { // the Pool's own GOAWAYs are logged already: stutters
 			tracePoolEv(p, "PeerGoAway", "", 0, m, 0)
 			p.tr.seen[m] |= 1
 		}

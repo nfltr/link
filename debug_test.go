@@ -6,6 +6,7 @@
 package link
 
 import (
+	"context"
 	"runtime"
 	"strings"
 	"sync"
@@ -67,7 +68,7 @@ func TestDebugReportsSessionCollectedUnclosed(t *testing.T) {
 		// opener's Close ends it.
 	})
 	open := func(h string, closeIt bool) {
-		s, err := client.Open([]byte(h))
+		s, err := client.Open(context.Background(), []byte(h))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -91,7 +92,7 @@ func TestDebugReportsSessionCollectedUnclosed(t *testing.T) {
 func TestDebugReportsConcurrentReads(t *testing.T) {
 	wait, _ := debugReports(t)
 	client := muxPair(t, func(open []byte, s *Session) { <-s.Done(); _ = s.Close() })
-	s, err := client.Open([]byte("debug-reads"))
+	s, err := client.Open(context.Background(), []byte("debug-reads"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +114,7 @@ func TestDebugReportsConcurrentWrites(t *testing.T) {
 	release := make(chan struct{})
 	client := muxPair(t, func(open []byte, s *Session) { <-release; _ = s.Close() })
 	defer close(release)
-	s, err := client.Open([]byte("debug-writes"))
+	s, err := client.Open(context.Background(), []byte("debug-writes"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +141,7 @@ func TestDebugReportsIdleSession(t *testing.T) {
 	t.Cleanup(func() { debugIdle = old })
 	go debugWatchIdle(20 * time.Millisecond)
 	client := muxPair(t, func(open []byte, s *Session) { <-s.Done(); _ = s.Close() })
-	s, err := client.Open([]byte("debug-idle"))
+	s, err := client.Open(context.Background(), []byte("debug-idle"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +157,7 @@ func TestDebugReportsIdleSession(t *testing.T) {
 func TestDebugFailedOpenNotReported(t *testing.T) {
 	_, none := debugReports(t)
 	client := muxPair(t, echoAccept)
-	if _, err := client.Open(make([]byte, maxHeader+1)); err == nil {
+	if _, err := client.Open(context.Background(), make([]byte, MaxHeader+1)); err == nil {
 		t.Fatal("an open with a header past the limit succeeded")
 	}
 	none("garbage-collected")
