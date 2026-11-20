@@ -18,6 +18,15 @@
 #     and the goroutine (debug=2) and goroutine leak profiles (Go 1.27 has
 #     it without GOEXPERIMENT=goroutineleakprofile); OUT/<bench>.* and
 #     manifest.json.
+#   scripts/perf.sh baseline OUT   (make profile-baseline OUT=<dir>)
+#     the profile baseline of the checked-out commit (a clean tree): every
+#     benchmark of link, pathswitch and quiclink with -benchmem -count
+#     BASELINE_COUNT (6; OUT/<module>.bench.txt and its benchstat), then
+#     each benchmark once more alone with cpu, heap, mutex and block
+#     profiles and, once it ended, the goroutine (debug=2) and goroutine
+#     leak profiles of what it left (OUT/<module>.<Benchmark>.*; their
+#     totals in OUT/summary.txt). The manifest's series is the commit's v1+
+#     tag, else pre-freeze.
 #
 # benchstat is pinned (BENCHSTAT_VERSION). Needs a clean ref: it uses git
 # worktrees under a temporary directory, removed at the end.
@@ -51,22 +60,53 @@ build() {
 
 loadavg() { sysctl -n vm.loadavg 2>/dev/null | tr -d '{}' || cut -d' ' -f1-3 /proc/loadavg; }
 
-# manifest OUT CMD BENCH SHAS...: OUT/manifest.json.
+# json STRING: STRING as a JSON string (backslash, quote, tab, newline and
+# carriage return escaped: commands and patterns hold no other control
+# characters).
+json() {
+	local s=${1//\\/\\\\}
+	s=${s//\"/\\\"}
+	s=${s//$'\t'/\\t}
+	s=${s//$'\n'/\\n}
+	s=${s//$'\r'/\\r}
+	printf '"%s"' "$s"
+}
+
+# series SHA: the profile series SHA belongs to (nfltr's AGENTS.md
+# "Profiling Evidence after API Freeze"): its v1+ tag (the freeze and
+# after), else "pre-freeze" (working data, not the comparable series).
+series() {
+	git describe --exact-match --tags --match 'v[1-9]*' "$1" 2>/dev/null || echo pre-freeze
+}
+
+# cpuname: the machine's CPU model.
+cpuname() {
+	sysctl -n machdep.cpu.brand_string 2>/dev/null && return
+	sed -n 's/^model name[[:space:]]*: //p' /proc/cpuinfo 2>/dev/null | head -1 | grep . || uname -r
+}
+
+# manifest OUT CMD BENCH SHAS...: OUT/manifest.json; the series is the last
+# sha's (ab: new=<sha>). LOAD_START, when set, is the load average when the
+# run began.
 manifest() {
 	local out=$1 cmd=$2 bench=$3
 	shift 3
+	local all="$*"
+	local last=${all##* }
 	cat >"$out/manifest.json" <<EOF
 {
   "repo": "github.com/nfltr/link",
-  "sha": "$*",
-  "go": "$(go env GOVERSION)",
-  "goos": "$(go env GOOS)",
-  "goarch": "$(go env GOARCH)",
-  "machine": "$(uname -mn) $(sysctl -n machdep.cpu.brand_string 2>/dev/null || uname -r), $(getconf _NPROCESSORS_ONLN) cpus",
-  "loadavg": "$(loadavg | xargs)",
-  "command": "$cmd",
-  "bench": "$bench",
-  "date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  "sha": $(json "$*"),
+  "series": $(json "$(series "${last#*=}")"),
+  "go": $(json "$(go env GOVERSION)"),
+  "goos": $(json "$(go env GOOS)"),
+  "goarch": $(json "$(go env GOARCH)"),
+  "machine": $(json "$(uname -mn) $(cpuname), $(getconf _NPROCESSORS_ONLN) cpus"),
+  "loadavg_start": $(json "${LOAD_START:-}"),
+  "loadavg": $(json "$(loadavg | xargs)"),
+  "command": $(json "$cmd"),
+  "bench": $(json "$bench"),
+  "date": $(json "$(date -u +%Y-%m-%dT%H:%M:%SZ)")
 }
 EOF
 }
@@ -106,8 +146,45 @@ profile)
 	cp "$tmp/prof.test" "$out/link.test" # pprof reads the symbols from it
 	manifest "$out" "scripts/perf.sh $*" "${PROFILED[*]}" "$sha"
 	;;
+baseline)
+	out=$2 count=${BASELINE_COUNT:-6} bt=${BASELINE_BENCHTIME:-1s}
+	[ -z "$(git status --porcelain)" ] || {
+		echo "perf.sh baseline: the tree has changes; a baseline measures a commit" >&2
+		exit 1
+	}
+	sha=$(git rev-parse HEAD)
+	LOAD_START=$(loadavg | xargs)
+	mkdir -p "$out"
+	: >"$out/summary.txt"
+	for mod in .:link pathswitch:pathswitch peerlink/quiclink:quiclink; do
+		dir=${mod%%:*} n=${mod##*:}
+		(cd "$dir" && GOWORK=off go test -c -o "$out/$n.test" .) # pprof reads the symbols from it
+		echo "$n: -benchmem -count $count" >&2
+		"$out/$n.test" -test.run '^$' -test.bench . -test.benchmem -test.count "$count" -test.benchtime "$bt" \
+			-test.timeout 0 >"$out/$n.bench.txt"
+		GOWORK=off go run "golang.org/x/perf/cmd/benchstat@$BENCHSTAT_VERSION" "$out/$n.bench.txt" >"$out/$n.benchstat.txt"
+		for b in $("$out/$n.test" -test.list '^Benchmark'); do
+			p="$out/$n.$b"
+			echo "$n.$b: profiles" >&2
+			LINK_PERF_EXIT_PROFILE="$p" "$out/$n.test" -test.run '^$' -test.bench "^$b\$" -test.benchmem -test.count 1 \
+				-test.benchtime "$bt" -test.timeout 0 \
+				-test.cpuprofile "$p.cpu.pprof" -test.memprofile "$p.heap.pprof" -test.memprofilerate 4096 \
+				-test.mutexprofile "$p.mutex.pprof" -test.mutexprofilefraction 1 \
+				-test.blockprofile "$p.block.pprof" -test.blockprofilerate 10000 -test.outputdir "$out" >"$p.bench.txt"
+			g=$(grep -c '^goroutine [0-9]* \[' "$p.goroutine.txt" || true)
+			l=$(sed -n 's/^goroutineleak profile: total //p' "$p.goroutineleak.txt")
+			echo "$n.$b goroutines-left=$g leaked=${l:-?}" >>"$out/summary.txt"
+		done
+	done
+	manifest "$out" "scripts/perf.sh $*" "-test.bench . -test.benchmem -test.count $count -test.benchtime $bt; profiles: one run per benchmark" "$sha"
+	cat "$out/summary.txt"
+	;;
+manifest) # the manifest writer alone (scripts/perf_test.sh)
+	shift
+	manifest "$@"
+	;;
 *)
-	sed -n '5,22p' "$0"
+	sed -n '5,29p' "$0"
 	exit 2
 	;;
 esac

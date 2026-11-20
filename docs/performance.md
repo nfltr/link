@@ -31,8 +31,18 @@ so that load from other work on a shared machine hits both alike, then
 benchstat; `PERF_CPU=1,10` runs each at those GOMAXPROCS.
 `scripts/perf.sh profile REF OUT` records cpu, heap (alloc and inuse),
 mutex, block, goroutine (debug=2) and goroutine-leak profiles of four
-representative benchmarks. Every run writes a `manifest.json` (repo, sha,
-Go, machine, load average, command, date). The evidence of this work is
+representative benchmarks. `make profile-baseline OUT=<dir>`
+(`scripts/perf.sh baseline`) is the baseline of the checked-out commit:
+every benchmark of link, pathswitch and quiclink with `-benchmem -count 6`
+(`<module>.bench.txt` and its benchstat), then each benchmark alone with
+cpu, heap, mutex and block profiles and the goroutine (debug=2) and
+goroutine-leak profiles of what it left once it ended
+(`<module>.<Benchmark>.*`, the totals in `summary.txt`); it runs at each
+v1+ tag on the Linux build box (`ci-request TARGET=profile-baseline`) and
+on the Mac, into `~/nfltr-evidence/profiles/<date>-<lane>/link@<sha>/`.
+Every run writes a `manifest.json` (repo, sha, series: the commit's v1+
+tag or `pre-freeze`, Go, machine, load average at start and end, command,
+date; its test is `make test-perf`). The evidence of this work is
 under `~/nfltr-evidence/profiles/2026-10-17-link-perf/` on the operator's
 machine:
 

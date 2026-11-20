@@ -5,7 +5,7 @@ GOVULNCHECK_VERSION := v1.8.0
 
 .PHONY: check test-identity build vet check-fmt test test-race test-linkdebug check-static fuzz-short fuzz-long check-gosec check-semgrep check-govulncheck
 check: check-static test-race test-linkdebug fuzz-short
-check-static: build vet check-fmt test-identity check-gosec check-semgrep check-govulncheck
+check-static: build vet check-fmt test-identity test-perf check-gosec check-semgrep check-govulncheck
 
 # check-fmt: gofmt (the toolchain's, not one on PATH) changes no tracked Go
 # file (vendor/ aside); go vet and the tests accept unformatted code.
@@ -16,6 +16,11 @@ check-fmt:
 # scripts/check-identity.sh (the pre-push hook's) refuses what it should.
 test-identity:
 	./scripts/check-identity_test.sh
+
+# scripts/perf.sh's manifest writer (the profile series' manifest.json).
+.PHONY: test-perf
+test-perf:
+	./scripts/perf_test.sh
 
 # Everything CI runs (make ci, from the workflow): check plus every module of
 # its own (the soak module's go.mod goes stale on each link or quiclink bump
@@ -154,6 +159,17 @@ bench:
 	@: >"$(BENCH_OUT)"; for p in $(BENCH_SET); do \
 		GOWORK=off go test -run '^$$' -bench "$$p" -benchmem -count $(BENCH_COUNT) -timeout 30m . >>"$(BENCH_OUT)" || { cat "$(BENCH_OUT)"; exit 1; }; \
 	done; cat "$(BENCH_OUT)"; echo "bench: $(BENCH_OUT)"
+
+# profile-baseline: the profile baseline of this commit (scripts/perf.sh
+# baseline: every benchmark of link, pathswitch and quiclink, -benchmem
+# -count 6, then cpu, heap, mutex, block, goroutine and goroutine leak
+# profiles of each, and manifest.json) into OUT (TMPDIR's by default: a CI
+# runner's `ci-request TARGET=profile-baseline` keeps it in the result's
+# out). Run at every v1+ tag on the box and on the Mac; docs/performance.md.
+.PHONY: profile-baseline
+profile-baseline: OUT = $(or $(TMPDIR:%/=%),/tmp)/link-profile-baseline
+profile-baseline:
+	./scripts/perf.sh baseline "$(OUT)"
 
 # The soak (soak/, a module of its own; SOAK.md): link over TCP and
 # quiclink over UDP, both directions, under faults, for SOAKTIME (default

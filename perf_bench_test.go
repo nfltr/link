@@ -14,13 +14,14 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/metrics"
-	"runtime/pprof"
 	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/nfltr/link/internal/benchprof"
 )
 
 // Benchmarks of one connection's raw speed: throughput by message size
@@ -164,28 +165,17 @@ func newPerfRig(tb testing.TB, transport string, accept func([]byte, *Session)) 
 	return r
 }
 
-// goroutineProfiles writes the goroutine profile (debug=2) and, in a
-// toolchain that has it (Go 1.27), the goroutine leak
-// profile to $LINK_PERF_PROFILE_DIR (scripts/perf.sh profile), one file
-// each per benchmark (its last run).
+// goroutineProfiles writes benchprof's goroutine and goroutine leak
+// profiles to $LINK_PERF_PROFILE_DIR (scripts/perf.sh profile), one pair
+// per benchmark (its last run).
 func goroutineProfiles(tb testing.TB) {
 	dir := os.Getenv("LINK_PERF_PROFILE_DIR")
 	if dir == "" {
 		return
 	}
 	name := strings.NewReplacer("/", "_", "=", "-").Replace(tb.Name())
-	for _, p := range []string{"goroutine", "goroutineleak"} {
-		prof := pprof.Lookup(p)
-		if prof == nil {
-			continue
-		}
-		f, err := os.Create(filepath.Join(dir, name+"."+p+".txt")) // #nosec G304 -- the operator's directory
-		if err != nil {
-			tb.Error(err)
-			return
-		}
-		_ = prof.WriteTo(f, 2)
-		_ = f.Close()
+	if err := benchprof.Write(filepath.Join(dir, name)); err != nil {
+		tb.Error(err)
 	}
 }
 
