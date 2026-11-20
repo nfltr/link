@@ -1004,7 +1004,7 @@ traces)
 	# direction of its first SClose, against EndAckLeg.tla Kind quic
 	# (TraceEndAckLeg.tla).
 	mkdir -p "$work/eatraces"
-	(cd peerlink/quiclink && LINKTRACE_ENDACK=$work/eatraces GOWORK=off go test -tags linktrace -count=1 -run "${TRACE_ENDACK_TESTS:-^TestEndAck(CloseWaitsForFarEnd|MuteFarEndIdles|ConnectionEndFailsTheWait|CloseBeforeReadFails|FarEndResetFails|ResetAfterAckIsClean)\$}" .) >"$work/test.out" 2>&1 || {
+	(cd peerlink/quiclink && LINKTRACE_ENDACK=$work/eatraces GOWORK=off go test -tags linktrace -count=1 -run "${TRACE_ENDACK_TESTS:-^TestEndAck(CloseWaitsForFarEnd|MuteFarEndIdles|ConnectionEndFailsTheWait|CloseBeforeReadFails|FarEndResetFails|ResetAfterAckIsClean|EmptyStreamAfterThePeersWholeClose|EmptyStreamPeerResetFails)\$}" .) >"$work/test.out" 2>&1 || {
 		cat "$work/test.out"
 		exit 1
 	}

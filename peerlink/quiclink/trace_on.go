@@ -23,14 +23,14 @@ import (
 // SClose (make spec-traces). by: "o" the opener's line, "a" the
 // accepter's.
 //
-//	SClose  CloseWriteSync: the FIN, then the wait
-//	SRecv   t: "eack" ('E') or "abort" ('A') read for the session
+//	SClose  CloseWriteSync: the FIN, then the wait; w: "0" when the session wrote no byte, else "1"
+//	SRecv   t: "eack" ('E'), "abort" ('A') or "close" ('C' 'A') read for the session
 //	SRet    r: the wait's result, "clean" or "err"
 //	SIdle   the wait gave up at the idle bound
 //	Cut     the wait saw the connection end
 //	REnd    Read returned io.EOF; ack: "1" when it sent 'E'
 //	RFail   'A' from a Reset (Abort, Refuse)
-//	RClose  'A' from a Close before the end was read
+//	RClose  'C' 'A' from a clean Close before the end was read
 //	RMute   the test's far end that reads nothing (TraceMuteForTest)
 const traceOn = true
 

@@ -6,6 +6,7 @@ package quiclink
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -31,17 +32,24 @@ import (
 // the stream whose id (an RFC 9000 varint) follows: 'R' the receipt (the
 // side read the peer's FIN after every byte), 'E' the end acknowledged
 // (the far end holds it; a joint once its onward peer acknowledged it in
-// turn), 'A' never acknowledged (the side failed or closed first). A
-// wait reads only these: the stream's own RESET_STREAM, unordered with
-// the control stream, may overtake an 'E' (spec/EndAckLeg.tla, Kind
-// quic, mutant wait-on-stream-reset).
+// turn), 'A' never acknowledged (the side failed or closed first); 'C'
+// before an 'A' says the side closed cleanly (Close, not Reset): a wait
+// of a stream that carried no byte reads it nil (lane QUICEND; an older
+// peer skips the 'C', no id follows it). A wait reads only these: the
+// stream's own RESET_STREAM, unordered with the control stream, may
+// overtake an 'E' (spec/EndAckLeg.tla, Kind quic, mutant
+// wait-on-stream-reset).
 const ALPNEndAck = "peerlink-chain-endack"
 
 const (
 	ctlReceipt = 'R'
 	ctlEndAck  = 'E'
 	ctlAbort   = 'A'
+	ctlClean   = 'C' // before an 'A': a clean Close's (emptyEnd)
 )
+
+// errClosedClean is a wait's end at the peer's 'C' 'A' (endErr maps it).
+var errClosedClean = errors.New("quiclink: the peer closed the session cleanly")
 
 const endAckIdle = 30 * time.Second // the idle bound (Node.endAckIdle in tests)
 
@@ -128,9 +136,9 @@ func (s *Session) readEOF() {
 	}
 }
 
-// ackWith sends the end's final word ('E' or 'A') once; ev names it in a
-// trace.
-func (s *Session) ackWith(b byte, ev string) {
+// ackWith sends the end's final word ('E', 'A', or 'C' 'A') once; ev
+// names it in a trace.
+func (s *Session) ackWith(ev string, b byte, more ...byte) {
 	s.ends.ackMu.Lock()
 	defer s.ends.ackMu.Unlock()
 	if s.ends.acked {
@@ -140,15 +148,52 @@ func (s *Session) ackWith(b byte, ev string) {
 	if traceOn && ev != "" && s.c.q.Context().Err() == nil { // on a closed connection it is no message
 		traceEA(s, ev)
 	}
-	s.c.sendCtl(b, s.stream.StreamID())
+	s.c.sendCtl(b, s.stream.StreamID(), more...)
 }
 
 // failEnd: the session failed (ev "RFail") or closed ("RClose") here
-// before its peer's end was acknowledged: 'A' (spec/EndAckLeg.tla).
+// before its peer's end was acknowledged: 'A', after 'C' when the close
+// was clean (spec/EndAckLeg.tla RClose's "close").
 func (s *Session) failEnd(ev string) {
-	if s.c.endack {
-		s.ackWith(ctlAbort, ev)
+	switch {
+	case !s.c.endack:
+	case ev == "RClose" && !s.reset.Load():
+		s.ackWith(ev, ctlClean, ctlAbort)
+	default:
+		s.ackWith(ev, ctlAbort)
 	}
+}
+
+// endErr is the wait's end: at the peer's clean close nil when this side
+// wrote no byte (emptyEnd), else link.ErrReset.
+func (s *Session) endErr() error {
+	if s.ends.endErr != errClosedClean {
+		return s.ends.endErr
+	}
+	if s.wrote.Load() {
+		return link.ErrReset
+	}
+	return nil
+}
+
+// emptyEnd is a half close's err, nil when the stream's close failed
+// only because the peer closed the session cleanly (peerClosed) and this
+// side wrote no byte: nothing of it is lost, as a TCP close(2) in
+// FIN_WAIT_2 still ACKs a bare FIN (spec/EndAckLeg.tla EmptyClosed,
+// NoFalseReset: SClose after sfail).
+func (s *Session) emptyEnd(err error) error {
+	if err != nil && !s.wrote.Load() && s.peerClosed() {
+		return nil
+	}
+	return err
+}
+
+// peerClosed reports whether the peer's clean Close stopped this side's
+// writes: its STOP_SENDING CodeClosed (Close sends it, Reset and aborts
+// another code).
+func (s *Session) peerClosed() bool {
+	var se *quic.StreamError
+	return errors.As(context.Cause(s.stream.Context()), &se) && se.Remote && se.ErrorCode == CodeClosed
 }
 
 // HoldEndAck makes the caller acknowledge the peer's end (AckEnd) once it
@@ -161,7 +206,7 @@ func (s *Session) HoldEndAck() { s.ends.held.Store(true) }
 // the peer's FIN was read, it sends nothing.
 func (s *Session) AckEnd() {
 	if s.c.endack && s.ends.eof.Load() {
-		s.ackWith(ctlEndAck, "") // a joint's: no step of EndAckLeg (a far end acknowledges at REnd)
+		s.ackWith("", ctlEndAck) // a joint's: no step of EndAckLeg (a far end acknowledges at REnd)
 	}
 }
 
@@ -185,7 +230,7 @@ func (s *Session) CloseWriteSync() error { return s.CloseWriteSyncReceived(nil) 
 // once the FIN was written.
 func (s *Session) CloseWriteSyncReceived(received func()) error {
 	if traceOn && s.c.endack && !s.reset.Load() {
-		traceEA(s, "SClose") // before the FIN: the peer may read it at once
+		traceEA(s, "SClose", "w", map[bool]string{true: "1", false: "0"}[s.wrote.Load()]) // before the FIN: the peer may read it at once
 	}
 	if err := s.CloseWrite(); err != nil || !s.c.endack {
 		if err == nil && received != nil {
@@ -216,11 +261,11 @@ func (s *Session) waitEnd(received func()) (err error) {
 				received()
 			}
 		case <-s.ends.end:
-			return s.ends.endErr
+			return s.endErr()
 		case <-s.c.q.Context().Done():
 			select {
 			case <-s.ends.end: // read before the connection's end (ErrTruth)
-				return s.ends.endErr
+				return s.endErr()
 			default:
 			}
 			if traceOn {
@@ -234,7 +279,7 @@ func (s *Session) waitEnd(received func()) (err error) {
 			}
 			select {
 			case <-s.ends.end:
-				return s.ends.endErr
+				return s.endErr()
 			default:
 			}
 			if traceOn {
@@ -316,11 +361,14 @@ func (c *conn) control() {
 		return
 	}
 	r := bufio.NewReader(us)
+	clean := false // the last byte was 'C'
 	for {
 		b, err := r.ReadByte()
 		if err != nil {
 			return
 		}
+		after := clean
+		clean = b == ctlClean
 		switch b {
 		case 'G':
 			c.gone.Store(true)
@@ -342,13 +390,15 @@ func (c *conn) control() {
 				continue
 			}
 			if traceOn && b != ctlReceipt {
-				traceEA(s, "SRecv", "t", map[byte]string{ctlEndAck: "eack", ctlAbort: "abort"}[b])
+				traceEA(s, "SRecv", "t", map[byte]string{ctlEndAck: "eack", ctlAbort: map[bool]string{true: "close", false: "abort"}[after]}[b])
 			}
-			switch b {
-			case ctlReceipt:
+			switch {
+			case b == ctlReceipt:
 				s.ends.rOnce.Do(func() { close(s.ends.rcv) })
-			case ctlEndAck:
+			case b == ctlEndAck:
 				s.endDone(nil)
+			case after:
+				s.endDone(errClosedClean)
 			default:
 				s.endDone(link.ErrReset)
 			}

@@ -982,6 +982,7 @@ type Session struct {
 	once   sync.Once
 	reset  atomic.Bool
 	over   atomic.Bool // ended: no datagram receiver from now on
+	wrote  atomic.Bool // a byte of this side's was written (emptyEnd)
 
 	// Answers (ALPNChain).
 	accepter bool
@@ -1014,7 +1015,7 @@ func (s *Session) CloseWrite() error {
 		return net.ErrClosed
 	}
 	s.autoAccept()
-	return s.stream.Close()
+	return s.emptyEnd(s.stream.Close())
 }
 
 // Close ends the session: the peer reads what was written, then io.EOF;
@@ -1023,7 +1024,12 @@ func (s *Session) Close() error {
 	s.autoAccept()
 	var err error
 	if !s.reset.Load() {
-		err = s.stream.Close()
+		// after the peer's clean Close nil, as link's Close: Close says
+		// nothing of delivery, CloseWriteSync does (x/net/nettest BasicIO
+		// and PingPong's Close failed before lane QUICEND)
+		if err = s.stream.Close(); err != nil && s.peerClosed() {
+			err = nil
+		}
 	}
 	s.failEnd("RClose") // the peer's end not read: never acknowledged
 	s.stream.CancelRead(CodeClosed)

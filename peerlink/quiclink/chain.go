@@ -167,6 +167,9 @@ func (s *Session) Read(b []byte) (int, error) {
 func (s *Session) Write(b []byte) (int, error) {
 	s.autoAccept()
 	n, err := s.stream.Write(b)
+	if n > 0 && !s.wrote.Load() {
+		s.wrote.Store(true)
+	}
 	return n, s.mapErr(err)
 }
 
