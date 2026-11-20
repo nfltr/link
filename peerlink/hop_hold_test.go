@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -179,3 +181,89 @@ func TestHopHoldTraceEventsMapped(t *testing.T) {
 		t.Errorf("the hop recorder writes %v; spec/TraceHopHold.tla maps %v", code, spec)
 	}
 }
+
+// readGate, once armed, holds the first bytes its conn reads until open
+// closes (got closes when they came): the far end's Mux reads nothing
+// the joint sent meanwhile.
+type readGate struct {
+	net.Conn
+	armed     atomic.Bool
+	got, open chan struct{}
+	once      sync.Once
+}
+
+func (g *readGate) Read(p []byte) (int, error) {
+	n, err := g.Conn.Read(p)
+	if n > 0 && g.armed.Load() {
+		g.once.Do(func() { close(g.got) })
+		<-g.open
+	}
+	return n, err
+}
+
+// A joint between two link sessions (a hop's: Config.Hop; one of them
+// wrapped, as relay-core's metered agent session is, so peerlink's own
+// joint runs) whose far ends half-close crossing: B first, its FIN passed
+// onto A's session, whose far end reads it only once A's FIN reached the
+// joint, held while the joint syncs. Both far ends' CloseWriteSync
+// return nil: the held end, run at A's receipt, closed B's session whole
+// before the joint passed on the ENDACK of B's own end, and B's peer
+// read that close as a reset (spec/HopHold.tla CloseAfterAck, mutant
+// close-at-end; lane PIPERESET: nfltr-pipe's relayed listener exited 6).
+func TestHopClosesASessionOnlyOnceItsEndIsAcknowledged(t *testing.T) {
+	ctx := context.Background()
+	joined := make(chan *link.Session, 2)
+	hop := func(c net.Conn) {
+		lc, _, err := link.Server(ctx, c, link.Config{Auth: link.NoAuth, Hop: true})
+		if err != nil {
+			_ = c.Close()
+			return
+		}
+		_ = link.NewMux(lc).Serve(func(_ []byte, s *link.Session) { joined <- s })
+	}
+	far := func(c net.Conn) *link.Session {
+		lc, err := link.Client(ctx, c, link.Config{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = lc.Close() })
+		m := link.NewMux(lc)
+		go func() { _ = m.Serve(nil) }()
+		s, err := m.Open(ctx, []byte("h"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	an, aj := tcpPair(t)
+	bn, bj := tcpPair(t)
+	go hop(aj)
+	go hop(bj)
+	gate := &readGate{Conn: an, got: make(chan struct{}), open: make(chan struct{})}
+	a := far(gate)
+	sa := <-joined
+	b := far(bn)
+	sb := <-joined
+	join := make(chan error, 1)
+	go func() { join <- peerlink.Join(sa, wrapped{sb}) }()
+	roundTrip(t, a, b, "up")
+	roundTrip(t, b, a, "down")
+
+	gate.armed.Store(true)
+	bEnd := make(chan error, 1)
+	go func() { bEnd <- b.CloseWriteSync() }()
+	<-gate.got // the joint passed B's FIN onto A's session and syncs
+	aEnd := make(chan error, 1)
+	go func() { aEnd <- a.CloseWriteSync() }()
+	time.Sleep(100 * time.Millisecond) // A's FIN reaches the joint, held (makes the race certain)
+	close(gate.open)
+	for name, ch := range map[string]chan error{"A's CloseWriteSync": aEnd, "B's CloseWriteSync": bEnd, "the join": join} {
+		if err := wait(t, ch, name); err != nil {
+			t.Fatalf("%s: %v, want nil (every byte and end was taken)", name, err)
+		}
+	}
+}
+
+// wrapped is a link session behind another type, as relay-core's
+// metered conn: peerlink's own joint, not link's.
+type wrapped struct{ *link.Session }

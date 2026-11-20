@@ -21,6 +21,17 @@ version 2 unless an entry says otherwise.
   `RClose` on link, mutant `close-acks` (`CloseTruth`, `AckTruth`);
   guards `TestEndAckFarEndCloseBeforeFinFails`,
   `TestEndAckFarEndClosedFirstFails`, `TestEndAckPeerClosedWholeFirstFails`.
+- `peerlink.Join` closes a session whole only once it passed on the
+  ENDACK of that session's own end: the held end of a session both
+  halves had closed (two far ends half-closing crossing, one of them
+  behind a wrapper as relay-core's metered agent session) closed the
+  other session at once, before the joint's other direction passed its
+  ENDACK, and since the entry above its peer read that close as a reset
+  (nfltr-pipe's relayed listener exited 6 after a clean end). Now it
+  half-closes a conn without end acknowledgements and leaves the close
+  to the joint's end. Lane PIPERESET; spec/HopHold.tla `CloseAfterAck`,
+  mutant `close-at-end`; guard
+  `TestHopClosesASessionOnlyOnceItsEndIsAcknowledged`.
 - Docs name only what exists (lane LINKAPI round 2,
   docs/v1-api-review.md "Round 2"): 23 doc comment references and 4
   README and SECURITY.md lines still named what v0.13.0 removed or unexported

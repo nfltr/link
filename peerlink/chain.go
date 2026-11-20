@@ -590,7 +590,17 @@ func (j *joint) ended(i int, n int64, err, werr error) {
 						ackEnd(src)
 					}
 				}
-				_ = dst.Close()
+				switch {
+				case !j.otherOver(i):
+					_ = dst.Close() // src closed whole while the direction from dst still reads it: its reads end here
+				case ds == nil:
+					// the other direction ended (its sync passes on the ENDACK
+					// of dst's own end, then finish closes dst): a close here,
+					// before that ENDACK, is a reset to dst's peer when dst is
+					// a session (link Session.Close's nack; spec/HopHold.tla
+					// CloseAfterAck, mutant close-at-end, lane PIPERESET)
+					j.closeWrite(dst)
+				}
 				if ds == nil { // onto a conn that acknowledges nothing: passed on is acknowledged (spec/HopHold.tla, mutant held-end-no-ack)
 					ackEnd(src)
 				}
