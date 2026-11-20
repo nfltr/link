@@ -2244,6 +2244,7 @@ Mutants (`make spec-mutants`), each caught:
 | `resume-drops-fin` | a RESUME leaves out the END R took: S sends it again and R takes it twice | `EndOnce` |
 | `leave-at-complete` | the decider (the client) leaves at its own FIN, not after the peer's: its last ACK lost with a path, the agent waits for a stream nobody opens (the code before lane PSCLOSE) | `LeaveLast`; `CloseEnds` without it |
 | `move-before-proof` | the client moves before the agent acknowledged its handshake's bytes: they wait on the new stream, which the agent takes only after them (relay `client/agent` before lane DIRECTSTALL) | `AllDelivered`, `CloseEnds` (`DirectPathProof.cfg`) |
+| `total-bound` | S's Close gives up a fixed time after it began, whatever the progress: a live, slowly acknowledged tail is reset (pathswitch `Conn.Close` before lane ENDACKCODE: `waitHeard(Detach)` with no stall bound, every frame heard extending the silence; now `Detach` with no acknowledgement advancing, as `WaitAcked`) | `CloseKeepsLive` |
 | `abort-not-resent` (`DirectPathReset.cfg`) | the ABORT goes once, on the aborter's stream: lost with a path or on a stream the peer left | `ResetReaches` |
 | `close-no-wake` (`DirectPathClose.cfg`) | a Close leaves a Read waiting in it (relay `client/agent` `psConn.Close` before lane DIRECTCLOSE: until the peer's end, or 30 s) | `CloseWakes` |
 | `close-waits-gone-peer` (`DirectPathClose.cfg`) | a closed end whose peer vanished waits for it (pathswitch `Close` and `WaitAcked` before lane DIRECTCLOSE: until the detach bound, 30 s) | `CloseBounded` |

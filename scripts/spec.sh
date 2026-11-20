@@ -647,8 +647,9 @@ mutants)
 	# stream to whoever the relay pointed at, a dead direct path kept; an
 	# END before the last byte, a RESUME without the END taken (lane
 	# DIRECTPATH2: the END taken twice), a reset sent once only.
-	# Lane PSCLOSE: the client leaving before the agent's FIN.
-	for m in free-on-send send-before-resume write-stale resume-from-acked read-stale no-bind keep-dead-path end-early resume-drops-fin leave-at-complete; do
+	# Lane PSCLOSE: the client leaving before the agent's FIN. Lane
+	# ENDACKCODE: a Close with a total bound resets a live, slow tail.
+	for m in free-on-send send-before-resume write-stale resume-from-acked read-stale no-bind keep-dead-path end-early resume-drops-fin leave-at-complete total-bound; do
 		job mutant DirectPath.cfg 'Mutant = "none"' "Mutant = \"$m\"" DirectPath.tla
 	done
 	job mutant DirectPathReset.cfg 'Mutant = "none"' 'Mutant = "abort-not-resent"' DirectPath.tla

@@ -531,6 +531,23 @@ LingerOut(x) ==
     /\ UNCHANGED <<decider, st, d, k, moves, sends, ab, endSends, abSends>> /\ UNCHANGED <<sVars, rVars, pathVars>>
     /\ UNCHANGED closeVars
 
+\* S's Close waits for its direction's acknowledgement with no total bound:
+\* it gives up only once nothing of it was acknowledged for Config.Detach
+\* (frames heard, pings, are no progress), which a live peer never lets
+\* pass (time abstract: the environment's assumption; LingerOut covers a
+\* vanished one). Mutant "total-bound": the Close gives up a fixed time
+\* after it began, whatever the progress (pathswitch Conn.Close before
+\* lane ENDACKCODE: waitHeard(Detach) with no stall bound): it resets a
+\* live, slowly acknowledged tail (CloseKeepsLive; EndAckLeg.tla's
+\* total-bound, one leg).
+CloseGiveUp ==
+    /\ Mutant = "total-bound" /\ SLive /\ hi = Total /\ ~SDone /\ vanished = "none"
+    /\ ab = "none" /\ ~rLeft /\ Proved
+    /\ ab' = "S" /\ abSends' = abSends + 1 /\ sGone' = TRUE
+    /\ d' = IF st[sEp].dead THEN d ELSE [d EXCEPT ![sEp] = Append(@, Abort)]
+    /\ UNCHANGED <<rGone, k, decider, st, endSends, moves, sends>> /\ UNCHANGED <<sVars, rVars, pathVars>>
+    /\ UNCHANGED closeVars
+
 Next ==
     \/ \E h \in {"peer", "rogue"} : Offer(h)
     \/ Verify \/ Refuse \/ Revive \/ Rebind \/ RePunch
@@ -541,6 +558,7 @@ Next ==
     \/ SFin \/ RFin \/ STakeFin \/ RTakeFin \/ RLeftAnswer \/ SLeftAnswer
     \/ AppRead \/ ReadBlock \/ ReadEnd \/ RClose
     \/ \E x \in {"S", "R"} : Vanish(x) \/ LingerOut(x)
+    \/ CloseGiveUp
 
 \* Every step of the ends is taken while enabled; the relay is redialled;
 \* a decider whose stream ended falls back. Moves, offers, deaths and
@@ -605,6 +623,9 @@ LeaveLast == (IF decider = "S" THEN sLeft ELSE rLeft) => Clean
 \* switch and death, unless the session was reset: no end waits out a
 \* bound while both live (lane PSCLOSE).
 CloseEnds == <>((sLeft /\ rLeft) \/ ab # "none" \/ vanished # "none")
+\* Without an application's reset, no session is reset: a Close's bound
+\* never resets a live peer's slow tail (lane ENDACKCODE).
+CloseKeepsLive == MaxAbort = 0 => ab = "none"
 \* A Close wakes a Read waiting in it at once (lane DIRECTCLOSE).
 CloseWakes == rShut # "no" => ~rBlocked
 \* R's application reads every byte R took, a reset or not, unless it
