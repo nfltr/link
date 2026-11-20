@@ -69,12 +69,12 @@ func serverTLS(name string) *tls.Config {
 		ClientAuth: tls.RequireAndVerifyClientCert, MinVersion: tls.VersionTLS13}
 }
 
-// clientTLS is name's TLS dialling peer, offering chaining (ALPNChain)
-// unless protos names the protocols.
+// clientTLS is name's TLS dialling peer, offering end acknowledgements
+// and chaining (ALPNEndAck, ALPNChain) unless protos names the protocols.
 func clientTLS(name, peer string, protos ...string) *tls.Config {
 	p := testPKI()
 	if protos == nil {
-		protos = []string{quiclink.ALPNChain, quiclink.ALPN}
+		protos = []string{quiclink.ALPNEndAck, quiclink.ALPNChain, quiclink.ALPN}
 	}
 	return &tls.Config{Certificates: []tls.Certificate{p.certs[name]}, RootCAs: p.pool, ServerName: peer,
 		NextProtos: protos, MinVersion: tls.VersionTLS13}
@@ -110,6 +110,24 @@ func TestConformanceWithoutChain(t *testing.T) {
 		px := peerlinktest.NewUDPProxy(t, pc.LocalAddr().String())
 		b := mustNew(t, quiclink.Config{PacketConn: pc, TLS: serverTLS("b"), Liveness: link.LivenessFast})
 		a := mustNew(t, quiclink.Config{Dial: dialer("a", "b", px.Addr(), quiclink.ALPN), Liveness: link.LivenessFast})
+		return peerlinktest.Pair{
+			A: a, B: b, AName: "a", BName: "b",
+			DeadAfter: a.DeadAfter(),
+			BlackHole: px.BlackHole, Cut: px.Cut, Throttle: px.Throttle,
+		}
+	})
+}
+
+// TestConformanceWithoutEndAck: a dialler offering ALPNChain and ALPN
+// (quiclink before lane ENDACKQUIC) gets chaining sessions without end
+// acknowledgements, which keep the contract.
+func TestConformanceWithoutEndAck(t *testing.T) {
+	t.Parallel() // waits on timers and peers, not the CPU: overlaps the others
+	peerlinktest.Run(t, func(t *testing.T) peerlinktest.Pair {
+		pc := listenUDP(t)
+		px := peerlinktest.NewUDPProxy(t, pc.LocalAddr().String())
+		b := mustNew(t, quiclink.Config{PacketConn: pc, TLS: serverTLS("b"), Liveness: link.LivenessFast})
+		a := mustNew(t, quiclink.Config{Dial: dialer("a", "b", px.Addr(), quiclink.ALPNChain, quiclink.ALPN), Liveness: link.LivenessFast})
 		return peerlinktest.Pair{
 			A: a, B: b, AName: "a", BName: "b",
 			DeadAfter: a.DeadAfter(),

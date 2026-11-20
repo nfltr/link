@@ -195,7 +195,7 @@ func quicNode(o opts, m *metrics, server, client *tls.Config, listen bool) (peer
 		}()
 	}
 	client = client.Clone()
-	client.NextProtos = []string{quiclink.ALPNChain, quiclink.ALPN}
+	client.NextProtos = []string{quiclink.ALPNEndAck, quiclink.ALPNChain, quiclink.ALPN}
 	qc := quiclink.Config{Liveness: link.LivenessFast, TLS: server,
 		ServedPeer: func(q *quic.Conn) (string, error) { watch(q, "prev"); return "prev", nil }}
 	if o.role != "echo" {

@@ -114,6 +114,13 @@ type EndAcker interface {
 // (Session.CloseWriteSync; tlsend's, under TLS).
 type endSyncer interface{ CloseWriteSync() error }
 
+// receiptSyncer is an endSyncer that also reports the next hop's receipt
+// before the far end's acknowledgement (link.Session's, quiclink's): a
+// join's hold ends there (spec/HopHold.tla, mutant hold-until-ack).
+type receiptSyncer interface {
+	CloseWriteSyncReceived(received func()) error
+}
+
 // syncerOf is c's endSyncer: a link session, a Node's, or a conn that
 // passes CloseWriteSync on; nil for any other.
 func syncerOf(c net.Conn) endSyncer {
@@ -638,8 +645,8 @@ func (j *joint) sync(src net.Conn, ds endSyncer) {
 		// ENDACK: with FINs crossing, two joins each held the end the
 		// other's ENDACK waits for (spec/HopHold.tla, mutant hold-until-ack).
 		var err error
-		if ls, ok := ds.(*link.Session); ok {
-			err = ls.CloseWriteSyncReceived(func() { j.unhold(true) })
+		if r, ok := ds.(receiptSyncer); ok { // a link session, a quiclink one (ALPNEndAck)
+			err = r.CloseWriteSyncReceived(func() { j.unhold(true) })
 		} else {
 			err = ds.CloseWriteSync()
 		}

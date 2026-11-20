@@ -3,6 +3,8 @@
 
 package quiclink
 
+import "time"
+
 // PeerGone reports whether peer sent GOAWAY on a connection it dialled
 // in to n.
 func PeerGone(n *Node, peer string) bool {
@@ -48,3 +50,6 @@ var (
 
 // DatagramsDroppedForTest is n's count of dropped DATAGRAM frames.
 func DatagramsDroppedForTest(n *Node) uint64 { return n.dgDropped.Load() }
+
+// SetEndAckIdleForTest sets n's CloseWriteSync idle bound.
+func SetEndAckIdleForTest(n *Node, d time.Duration) { n.endAckIdle = d }

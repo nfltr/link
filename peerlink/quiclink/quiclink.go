@@ -25,7 +25,8 @@
 // carries sessions that answer opens (peerlink.ChainSession): an open's
 // link.Chain precedes its preamble, the accepter's answer precedes its
 // bytes, and an Abort's code and hops travel in the stream error code
-// (chain.go). One that negotiated ALPN is as before.
+// (chain.go). One that negotiated ALPN is as before. One that negotiated
+// ALPNEndAck also acknowledges ends (CloseWriteSync, endack.go).
 //
 // TLS 1.3 is QUIC's own and the caller's: Config.TLS (the listener's
 // certificate, its ClientAuth) and the tls.Config the caller dials with.
@@ -81,10 +82,10 @@ const ALPN = "peerlink"
 
 // ALPNChain is the application protocol of a connection whose sessions
 // answer opens and carry typed aborts (peerlink.ChainSession, since
-// v0.4.0). A listener's TLS without NextProtos offers both, ALPNChain
-// first; a dialler offers NextProtos{ALPNChain, ALPN} (Config.Dial's TLS
-// is the caller's) and gets chaining from a v0.4.0 listener, plain
-// sessions from an older one.
+// v0.4.0). A listener's TLS without NextProtos offers ALPNEndAck, then
+// it, then ALPN; a dialler offers NextProtos{ALPNEndAck, ALPNChain, ALPN}
+// (Config.Dial's TLS is the caller's) and gets chaining from a v0.4.0
+// listener, plain sessions from an older one.
 const ALPNChain = "peerlink-chain"
 
 // Stream error codes: the peer reads a *quic.StreamError with one.
@@ -170,7 +171,8 @@ type Node struct {
 	live     map[*conn]bool // the connections running (run), for Stats
 	ended    link.ConnStats // the counters of those that ended
 
-	dgDropped atomic.Uint64 // DATAGRAM frames dropped
+	dgDropped  atomic.Uint64 // DATAGRAM frames dropped
+	endAckIdle time.Duration // CloseWriteSync's idle bound (endack.go)
 }
 
 var (
@@ -198,7 +200,7 @@ func New(cfg Config) (*Node, error) {
 	if err := (link.Config{Liveness: cfg.Liveness, Window: cfg.Window, MaxSessions: cfg.MaxSessions}).Validate(); err != nil {
 		return nil, fmt.Errorf("quiclink: %w", err)
 	}
-	n := &Node{cfg: cfg, dialled: map[string]*peerConns{}, served: map[*conn]bool{}, live: map[*conn]bool{},
+	n := &Node{cfg: cfg, endAckIdle: endAckIdle, dialled: map[string]*peerConns{}, served: map[*conn]bool{}, live: map[*conn]bool{},
 		changed: make(chan struct{}), drained: make(chan struct{})}
 	l := n.liveness()
 	window := uint64(max(cmpOr(cfg.Window, link.DefaultWindow), 1)) // #nosec G115 -- at least 1
@@ -262,7 +264,9 @@ type conn struct {
 	done  chan struct{} // the peer sent DONE
 	dOnce sync.Once
 
-	chain bool // ALPNChain negotiated
+	chain  bool    // ALPNChain or ALPNEndAck negotiated
+	endack bool    // ALPNEndAck negotiated (endack.go)
+	ec     endConn // its sessions by stream id, the control stream's writer
 
 	// under n.mu
 	active int
@@ -273,8 +277,9 @@ type conn struct {
 }
 
 func (n *Node) newConn(q *quic.Conn, peer string) *conn {
+	proto := q.ConnectionState().TLS.NegotiatedProtocol
 	return &conn{q: q, peer: peer, n: n, done: make(chan struct{}), idle: make(chan struct{}),
-		chain: q.ConnectionState().TLS.NegotiatedProtocol == ALPNChain}
+		chain: proto == ALPNChain || proto == ALPNEndAck, endack: proto == ALPNEndAck}
 }
 
 // addLocked counts a session on c; false once draining.
@@ -463,43 +468,6 @@ func (c *conn) run() {
 	}
 }
 
-// control reads the peer's control stream: GOAWAY, then DONE.
-func (c *conn) control() {
-	us, err := c.q.AcceptUniStream(context.Background())
-	if err != nil {
-		return
-	}
-	b := make([]byte, 1)
-	for {
-		if _, err := us.Read(b); err != nil {
-			return
-		}
-		switch b[0] {
-		case 'G':
-			c.gone.Store(true)
-			c.n.changedNow()
-		case 'D':
-			c.dOnce.Do(func() { close(c.done) })
-		}
-	}
-}
-
-// send writes a control byte to the peer (opening the control stream).
-func (c *conn) send(b byte) {
-	c.n.mu.Lock()
-	if c.ctl == nil {
-		s, err := c.q.OpenUniStream()
-		if err != nil {
-			c.n.mu.Unlock()
-			return
-		}
-		c.ctl = s
-	}
-	s := c.ctl
-	c.n.mu.Unlock()
-	_, _ = s.Write([]byte{b})
-}
-
 func (c *conn) usable() bool { return c.q.Context().Err() == nil && !c.gone.Load() }
 
 func (n *Node) changedNow() {
@@ -551,6 +519,7 @@ func (n *Node) Open(ctx context.Context, peer string, header []byte) (peerlink.S
 		st, err := c.q.OpenStreamSync(ctx)
 		if err == nil {
 			s := &Session{Stream: st, c: c}
+			s.track()
 			var pre []byte
 			if c.chain {
 				ch, _ := link.ChainFromContext(ctx)
@@ -758,7 +727,9 @@ func (n *Node) acceptStream(c *conn, st *quic.Stream) {
 		st.CancelRead(CodeRefused)
 		return
 	}
-	accept(c.peer, h, &Session{Stream: st, c: c, accepter: true, chain: ch})
+	s := &Session{Stream: st, c: c, accepter: true, chain: ch}
+	s.track()
+	accept(c.peer, h, s)
 }
 
 // Serve takes the sessions peers open until Drain: on the connections it
@@ -823,8 +794,8 @@ func (n *Node) Serve(accept func(peer string, header []byte, s peerlink.Session)
 	}
 }
 
-// withALPN returns tc with NextProtos ALPNChain and ALPN when it names
-// none.
+// withALPN returns tc with NextProtos ALPNEndAck, ALPNChain and ALPN when
+// it names none.
 func withALPN(tc *tls.Config) *tls.Config {
 	if tc == nil {
 		tc = &tls.Config{MinVersion: tls.VersionTLS13}
@@ -833,7 +804,7 @@ func withALPN(tc *tls.Config) *tls.Config {
 		return tc
 	}
 	tc = tc.Clone()
-	tc.NextProtos = []string{ALPNChain, ALPN}
+	tc.NextProtos = []string{ALPNEndAck, ALPNChain, ALPN}
 	return tc
 }
 
@@ -1020,6 +991,8 @@ type Session struct {
 	aDone    bool
 	aErr     error
 	pathLen  uint8
+
+	ends endState // ALPNEndAck (endack.go)
 }
 
 var _ net.Conn = (*Session)(nil)
@@ -1027,6 +1000,7 @@ var _ net.Conn = (*Session)(nil)
 func (s *Session) ended() {
 	s.once.Do(func() {
 		s.over.Store(true)
+		s.untrack()
 		s.c.forgetDatagrams(s.StreamID())
 		s.c.end()
 	})
@@ -1049,6 +1023,7 @@ func (s *Session) Close() error {
 	if !s.reset.Load() {
 		err = s.Stream.Close()
 	}
+	s.failEnd() // the peer's end not read: never acknowledged
 	s.Stream.CancelRead(CodeClosed)
 	s.ended()
 	return err
@@ -1061,6 +1036,7 @@ func (s *Session) Reset() error {
 		return s.AbortWith(&link.Abort{Code: link.CodeUnspecified, Msg: ""})
 	}
 	s.reset.Store(true)
+	s.failEnd()
 	s.Stream.CancelWrite(CodeReset)
 	s.Stream.CancelRead(CodeReset)
 	s.ended()
@@ -1073,18 +1049,3 @@ func (s *Session) LocalAddr() net.Addr { return s.c.q.LocalAddr() }
 // RemoteAddr is the QUIC connection's peer address (it changes as the
 // peer migrates).
 func (s *Session) RemoteAddr() net.Addr { return s.c.q.RemoteAddr() }
-
-// OnGrant sets f to be called with each window update the peer sends for
-// the session (QUIC's MAX_STREAM_DATA), as link's Session.OnGrant: n more
-// bytes of what this side wrote left the peer's receive buffer (its reader
-// took them). The peer sends one per at least a quarter of its window
-// read, so f is how a writer sees its bytes still moving after its last
-// Write returned. f runs on the connection's loop: it must not block. A
-// later call replaces f; nil removes it.
-func (s *Session) OnGrant(f func(n int)) {
-	if f == nil {
-		s.Stream.SetSendWindowCallback(nil)
-		return
-	}
-	s.Stream.SetSendWindowCallback(func(n int64) { f(int(n)) })
-}

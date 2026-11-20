@@ -146,7 +146,21 @@ What it costs, and when not to use it:
 - Settings: window per session `Config.Window` (default 1 MiB, link's),
   16 windows per connection, `Config.MaxSessions` streams per connection
   (default 1024, link's). TLS 1.3 only; a listener without NextProtos
-  offers ALPN `peerlink-chain` (`ALPNChain`), then `peerlink` (`ALPN`).
+  offers ALPN `peerlink-chain-endack` (`ALPNEndAck`), `peerlink-chain`
+  (`ALPNChain`), then `peerlink` (`ALPN`).
+- End acknowledgements (lane ENDACKQUIC): on a connection that
+  negotiated `ALPNEndAck` (chaining included) `CloseWriteSync` returns
+  nil only once the far end read every byte and the FIN, through any
+  `peerlink.Join` (it holds the end, `HoldEndAck`, and acknowledges it,
+  `AckEnd`, once its onward peer did), as link's FeatureEndAck: an error
+  once the far end failed or closed before reading the end
+  (`link.ErrReset`), the connection ended (`link.ErrConnClosed`), or
+  nothing of the session was acknowledged (MAX_STREAM_DATA) for 30 s
+  (`link.ErrEndAckIdle`, the session reset). A join's hold ends at the
+  next hop's receipt (`CloseWriteSyncReceived`), never at the far end's
+  acknowledgement (link's `spec/HopHold.tla`). Against an older peer
+  (`AcksEnds()` false) `CloseWriteSync` is `CloseWrite`, best effort as
+  before. Link's `spec/EndAckLeg.tla` (Kind quic); `TestEndAck*`.
 - Chaining (v0.4.0): on a connection that negotiated `ALPNChain`
   sessions are `peerlink.ChainSession`s (`Answers()` true) and work with
   `peerlink.Forward` and `peerlink.Join` as link's do: an open carries
@@ -178,8 +192,10 @@ quiclink's wire is QUIC (RFC 9000) with TLS 1.3, plus the bytes below;
 every integer is big endian. It is outside link's v1 promise (a module
 of its own, v0); vectors are owed before quiclink v1.
 
-- ALPN: `peerlink-chain` (`ALPNChain`, since v0.4.0), else `peerlink`
-  (`ALPN`); a listener without `NextProtos` offers both, in that order.
+- ALPN: `peerlink-chain-endack` (`ALPNEndAck`, lane ENDACKQUIC: chaining
+  and end acknowledgements), `peerlink-chain` (`ALPNChain`, since
+  v0.4.0), else `peerlink` (`ALPN`); a listener without `NextProtos`
+  offers all three, in that order.
 - A session is one bidirectional stream, opened by either end. On an
   `ALPNChain` connection the opener writes the open's chain first:
   hops (1 byte) and trace (16 bytes). Then the preamble: the header's
@@ -194,7 +210,14 @@ of its own, v0); vectors are owed before quiclink v1.
   carries no message).
 - Control: each end may open one unidirectional stream and write
   single bytes on it: `G` (GOAWAY: open nothing more on this
-  connection), then `D` (DONE: none of its sessions is left here).
+  connection), then `D` (DONE: none of its sessions is left here). On
+  an `ALPNEndAck` connection also, each followed by a stream id (an RFC
+  9000 variable-length integer), about the peer's end of that stream:
+  `R` (receipt: this side read its FIN after every byte), `E` (the end
+  acknowledged: the far end holds it; a joint sends it once its onward
+  peer acknowledged), `A` (never acknowledged: this side failed or closed
+  before). A waiting side reads only these, never the stream's
+  RESET_STREAM, which may overtake an `E`.
 - Connection close codes: 0 drained, 1 a Drain's deadline passed with
   sessions open, 2 the peer was not named (`ServedPeer`), 3 dead peer
   (nothing arrived for `DeadAfter`).
