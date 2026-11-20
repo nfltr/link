@@ -316,7 +316,7 @@ still let the agent exit 0 while the client's own link stopped carrying
 
 Design (`FeatureEndAck`, WIRE.md section 13): A's Close
 (`CloseWriteSync`) returns clean once the far end C took the end (C's
-Mux received the FIN: an ENDACK); the relay's joint J, a hop
+Mux received the FIN, in order after every byte: an ENDACK); the relay's joint J, a hop
 (`Config.Hop`), holds the ENDACK of the session it reads and sends it
 only once its onward `CloseWriteSync` onto C returned at C's ENDACK.
 C's connection's end fails that onward wait (the joint aborts A's
@@ -325,21 +325,30 @@ FIN was read before it failed reads its bytes, then io.EOF; the joint
 passes the tail, the FIN, then the failure (an ABORT), and the other
 direction's failed write leaves its abort to that one while it runs
 (`joint.held`). Prior art: SSH's channel close is answered by the
-peer's (RFC 4254 5.3), passed hop by hop as Chaining's accept is.
+peer's (RFC 4254 5.3), passed hop by hop as Chaining's accept is. Every such
+wait (A's, the joint's onward one) gives up N s after its last progress
+(the session's bytes acknowledged advancing), whatever the connection's
+pings say, so a far end that answers pings but never acknowledges (mute)
+holds no Close (lane V1READY's finding: relay psConn.Close held 600 s);
+prior art TCP's user timeout (RFC 5482), which counts unacknowledged
+data, not keepalives.
 `RelayedClose.tla` (`RelayedClose.cfg`, `make spec` and `make
-spec-invariants`, 10,757 states, every action taken): A writes K bytes
+spec-invariants`, 30,545 states, every action taken): A writes K bytes
 and closes; A may then exit, be reset, or its connection cut; C's
-connection may be cut; the relay may crash; C may write a byte.
-Invariants `NoSilentLoss`, `CloseTruth` (clean only once C read every
-byte and io.EOF: pipe `spec/Pipe.tla` CleanExit); liveness
+connection may be cut; the relay may crash; C may write a byte or turn
+mute (`CMute`); A's and J's idle timers (`AIdle`, `JIdle`) fire only
+while no acknowledgement is under way (`Stalled`: time is abstract).
+Invariants `NoSilentLoss`, `CloseTruth` (clean only once C holds every
+byte and the FIN: pipe `spec/Pipe.tla` CleanExit); liveness
 `TailDelivered` (once J read the FIN, C reads every byte and io.EOF
 unless C's connection or the relay ended), `CloseEnds`, `SyncEnds`.
 Mutants: `close-before-ack` (the SDK's code before) and
 `relay-read-ack` (the first fix) (`CloseTruth`), `ack-lost-hang`
 (`CloseEnds`), `sync-hang` (`SyncEnds`), `fail-drops-fin` (link's code
 before) and `abort-at-write-fail` (the joint's code before)
-(`TailDelivered`). Witnesses: `WitnessExitThenEof`,
-`WitnessFinThenAbort`, `WitnessHeld`, `WitnessCloseErr`.
+(`TailDelivered`), `liveness-counts-as-progress` (`CloseEnds`,
+`SyncEnds`). Witnesses: `WitnessExitThenEof`, `WitnessFinThenAbort`,
+`WitnessHeld`, `WitnessCloseErr`, `WitnessIdle`.
 
 | assumption | source |
 |---|---|
@@ -350,7 +359,7 @@ before) and `abort-at-write-fail` (the joint's code before)
 
 | actions | code |
 |---|---|
-| `AClose`, `ARecv`, `ADown` | `mux.go` `CloseWriteSync`, `endack.go` (`waitAck`, `ackDone`, `nack`); relay `client/agent/queue_close.go` (an accepted session), `client/nfnet/conn.go` `Conn.Close` and `client/tlsend` `CloseWriteSync` (a dialled one; under TLS) |
+| `AClose`, `ARecv`, `ADown`, `AIdle`, `JIdle` | `mux.go` `CloseWriteSync`, `endack.go` (`waitAck`, `ackDone`, `nack`); relay `client/agent/queue_close.go` (an accepted session), `client/nfnet/conn.go` `Conn.Close` and `client/tlsend` `CloseWriteSync` (a dialled one; under TLS) |
 | `JRecv`, `JDown`, `CRecv`, `CEnd` (`ReadsEof`) | `mux.go` `Mux.handle` (CLOSE, ENDACK), `Mux.close`, `Session.fail`, `Session.end`; `conn.go` (frame 11) |
 | `D1Copy`, `D1End`, `JAck`, `JSyncFail`, `D0CFail`, `D0Fail` | `join.go` `joint.ended` (`onwardTook`), `peerlink/chain.go` `joint.ended`, `sync`, `holdEnds`, `ackEnd` |
 

@@ -7,7 +7,7 @@
 (*                                                                         *)
 (* The design (FeatureEndAck, WIRE.md section 13). A's Close              *)
 (* (CloseWriteSync) returns clean once the far end acknowledged its end:  *)
-(* C's reads reached io.EOF after every byte, and C sent an endack; J,    *)
+(* C's Mux received the FIN after every byte, and C sent an endack; J,    *)
 (* whose onward CloseWriteSync onto C returns at that endack, sends its    *)
 (* own endack to A only then. An error once the session failed or A's     *)
 (* connection ended first, never a wait past it: C's cut ends J's onward  *)
@@ -18,6 +18,13 @@
 (* then the failure (an ABORT); J's direction C -> A, whose write onto A's *)
 (* failed session fails, leaves C's abort to the other direction while    *)
 (* that one runs (held), so the abort never overtakes the tail.           *)
+(*                                                                         *)
+(* Progress bound (lane RELAYCLOSE, V1READY's finding): a far end that    *)
+(* answers the link's pings but never acknowledges (mute) holds no wait   *)
+(* past the idle bound: a wait (A's Close, J's onward one) gives up N s   *)
+(* after its last progress (the session's bytes acknowledged advancing),  *)
+(* whatever the connection's liveness says. Time is abstract: the idle    *)
+(* timer may fire while no acknowledgement is under way (Stalled).        *)
 EXTENDS Naturals, Sequences
 
 CONSTANTS
@@ -33,7 +40,10 @@ CONSTANTS
              \* "fail-drops-fin": a failure after the peer's FIN makes
              \* the reads end with the error (the code before: C read every
              \* byte, then a reset); "abort-at-write-fail": J's failed write
-             \* toward A aborts C at once, before the tail (the code before)
+             \* toward A aborts C at once, before the tail (the code before);
+             \* "liveness-counts-as-progress": the idle timer restarts at
+             \* every frame heard (pings), so it never fires on a live
+             \* connection (relay psConn.Close before: V1READY's 600 s hang)
 
 VARIABLES
     aw,      \* bytes A wrote
@@ -59,13 +69,14 @@ VARIABLES
     crd,     \* bytes C read
     cend,    \* how C's reads ended: "", "eof", "err"
     fromC,   \* frames C -> J: "eack"
-    ccut     \* C's connection to the relay ended
+    ccut,    \* C's connection to the relay ended
+    mute     \* C answers pings but never acknowledges (broken or hostile)
 
 vars == <<aw, ret, rst, exited, toJ, fromJ, afail, lost1, gone, jq, jfin, jfail, d1, d0,
-          cw, cabort, toC, cq, cfin, cfail, crd, cend, fromC, ccut>>
+          cw, cabort, toC, cq, cfin, cfail, crd, cend, fromC, ccut, mute>>
 aVars == <<aw, ret, rst, exited, afail>>
 jVars == <<jq, jfin, jfail, d1, d0, cabort>>
-cVars == <<cw, cq, cfin, cfail, crd, cend, fromC, ccut>>
+cVars == <<cw, cq, cfin, cfail, crd, cend, fromC, ccut, mute>>
 
 Init ==
     /\ aw = 0 /\ ret = "no" /\ rst = FALSE /\ exited = FALSE /\ afail = FALSE
@@ -73,7 +84,7 @@ Init ==
     /\ jq = 0 /\ jfin = FALSE /\ jfail = FALSE /\ d1 = "run" /\ d0 = "run"
     /\ cw = FALSE /\ cabort = FALSE /\ toC = <<>>
     /\ cq = 0 /\ cfin = FALSE /\ cfail = FALSE /\ crd = 0 /\ cend = ""
-    /\ fromC = <<>> /\ ccut = FALSE
+    /\ fromC = <<>> /\ ccut = FALSE /\ mute = FALSE
 
 \* A reader's end once its queue drained: io.EOF when the peer's FIN came
 \* (before any failure: frames are read in order), else the failure.
@@ -112,6 +123,16 @@ ADown ==
     /\ ret' = "err"
     /\ UNCHANGED <<aw, rst, exited, afail, toJ, fromJ, lost1, gone>> /\ UNCHANGED jVars /\ UNCHANGED <<toC>> /\ UNCHANGED cVars
 
+\* No acknowledgement is under way: the far end is mute and none is in
+\* flight. The idle timer fires only then (N s with no progress); with
+\* the mutant only once the connection is gone (pings restart it).
+Stalled(alive) == mute /\ fromC = <<>> /\ fromJ = <<>>
+                  /\ (Mutant = "liveness-counts-as-progress" => ~alive)
+\* A's idle bound: its Close gives up (resets the session).
+AIdle ==
+    /\ ret = "wait" /\ ~lost1 /\ Stalled(~gone)
+    /\ ret' = "err" /\ toJ' = Append(toJ, "rst")
+    /\ UNCHANGED <<aw, rst, exited, afail, fromJ, lost1, gone>> /\ UNCHANGED jVars /\ UNCHANGED <<toC>> /\ UNCHANGED cVars
 \* The agent's stop resets the session after its Close returned.
 AReset ==
     /\ ret \in {"clean", "err"} /\ ~rst /\ ~lost1
@@ -186,8 +207,16 @@ JAck ==
             /\ d0' = IF d0 = "held" THEN "done" ELSE d0
        ELSE UNCHANGED <<d1, d0, fromJ, toC, cabort>>
     /\ UNCHANGED aVars /\ UNCHANGED <<toJ, lost1, gone, jq, jfin, jfail>>
-    /\ UNCHANGED <<cw, cq, cfin, cfail, crd, cend, ccut>>
+    /\ UNCHANGED <<cw, cq, cfin, cfail, crd, cend, ccut, mute>>
 
+\* J's idle bound: its onward wait gives up; J aborts A's session.
+JIdle ==
+    /\ ~gone /\ d1 = "sync" /\ Stalled(~ccut)
+    /\ d1' = "done"
+    /\ fromJ' = IF lost1 THEN fromJ ELSE Append(fromJ, "abort")
+    /\ abortC
+    /\ d0' = IF d0 = "held" THEN "done" ELSE d0
+    /\ UNCHANGED aVars /\ UNCHANGED <<toJ, lost1, gone, jq, jfin, jfail>> /\ UNCHANGED cVars
 \* C's connection ended: the onward wait fails (link: the session's end).
 JSyncFail ==
     /\ ~gone /\ d1 = "sync" /\ ccut /\ fromC = <<>> /\ Mutant # "sync-hang"
@@ -214,7 +243,7 @@ RelayGone ==
     /\ ~gone
     /\ gone' = TRUE /\ lost1' = TRUE /\ toJ' = <<>> /\ fromJ' = <<>> /\ toC' = <<>> /\ cfail' = TRUE
     /\ fromC' = <<>> /\ ccut' = TRUE
-    /\ UNCHANGED aVars /\ UNCHANGED jVars /\ UNCHANGED <<cw, cq, cfin, crd, cend>>
+    /\ UNCHANGED aVars /\ UNCHANGED jVars /\ UNCHANGED <<cw, cq, cfin, crd, cend, mute>>
 
 \* ---- C ----
 
@@ -222,7 +251,7 @@ CWrite ==
     /\ ~cw /\ cend = "" /\ ~ccut
     /\ cw' = TRUE
     /\ UNCHANGED aVars /\ UNCHANGED <<toJ, fromJ, lost1, gone, toC>> /\ UNCHANGED jVars
-    /\ UNCHANGED <<cq, cfin, cfail, crd, cend, fromC, ccut>>
+    /\ UNCHANGED <<cq, cfin, cfail, crd, cend, fromC, ccut, mute>>
 
 CRecv ==
     /\ toC # <<>>
@@ -230,19 +259,27 @@ CRecv ==
     /\ CASE Head(toC) = "d"     -> cq' = cq + 1 /\ UNCHANGED <<cfin, cfail>>
          [] Head(toC) = "fin"   -> cfin' = TRUE /\ UNCHANGED <<cq, cfail>>
          [] Head(toC) = "abort" -> cfail' = TRUE /\ UNCHANGED <<cq, cfin>>
-    /\ UNCHANGED aVars /\ UNCHANGED <<toJ, fromJ, lost1, gone>> /\ UNCHANGED jVars /\ UNCHANGED <<cw, crd, cend, fromC, ccut>>
+    \* the far end's Mux acknowledges the FIN on receipt (in order: it
+    \* holds every byte before it), unless mute or failed
+    /\ fromC' = IF Head(toC) = "fin" /\ ~cfail /\ ~mute THEN Append(fromC, "eack") ELSE fromC
+    /\ UNCHANGED aVars /\ UNCHANGED <<toJ, fromJ, lost1, gone>> /\ UNCHANGED jVars /\ UNCHANGED <<cw, crd, cend, ccut, mute>>
 
 CRead ==
     /\ cq > 0 /\ cend = ""
     /\ cq' = cq - 1 /\ crd' = crd + 1
-    /\ UNCHANGED aVars /\ UNCHANGED <<toJ, fromJ, lost1, gone, toC>> /\ UNCHANGED jVars /\ UNCHANGED <<cw, cfin, cfail, cend, fromC, ccut>>
+    /\ UNCHANGED aVars /\ UNCHANGED <<toJ, fromJ, lost1, gone, toC>> /\ UNCHANGED jVars /\ UNCHANGED <<cw, cfin, cfail, cend, fromC, ccut, mute>>
 
-\* C's reads end; at io.EOF C's Mux sends its endack (the far end).
+\* C's reads end.
 CEnd ==
     /\ cend = "" /\ cq = 0 /\ (cfin \/ cfail)
     /\ cend' = IF ReadsEof(cfin, cfail) THEN "eof" ELSE "err"
-    /\ fromC' = IF cend' = "eof" /\ ~ccut THEN Append(fromC, "eack") ELSE fromC
-    /\ UNCHANGED aVars /\ UNCHANGED <<toJ, fromJ, lost1, gone, toC>> /\ UNCHANGED jVars /\ UNCHANGED <<cw, cq, cfin, cfail, crd, ccut>>
+    /\ UNCHANGED aVars /\ UNCHANGED <<toJ, fromJ, lost1, gone, toC>> /\ UNCHANGED jVars /\ UNCHANGED <<cw, cq, cfin, cfail, crd, fromC, ccut, mute>>
+\* C turns mute (a broken or hostile far end): its connection stays up.
+CMute ==
+    /\ ~mute
+    /\ mute' = TRUE
+    /\ UNCHANGED aVars /\ UNCHANGED <<toJ, fromJ, lost1, gone, toC>> /\ UNCHANGED jVars
+    /\ UNCHANGED <<cw, cq, cfin, cfail, crd, cend, fromC, ccut>>
 
 \* The network cuts C's connection: its unread frames are lost both ways,
 \* C's session fails, J's writes onto it fail.
@@ -250,20 +287,20 @@ CCut ==
     /\ ~ccut /\ ~gone
     /\ ccut' = TRUE /\ toC' = <<>> /\ fromC' = <<>> /\ cfail' = TRUE /\ cabort' = TRUE
     /\ UNCHANGED aVars /\ UNCHANGED <<toJ, fromJ, lost1, gone, jq, jfin, jfail, d1, d0>>
-    /\ UNCHANGED <<cw, cq, cfin, crd, cend>>
+    /\ UNCHANGED <<cw, cq, cfin, crd, cend, mute>>
 
 Next ==
-    \/ AWrite \/ AClose \/ ARecv \/ ADown \/ AReset \/ Exit \/ Cut
-    \/ JRecv \/ JDown \/ D1Copy \/ D1End \/ JAck \/ JSyncFail \/ D0CFail \/ D0Fail \/ RelayGone
-    \/ CWrite \/ CRecv \/ CRead \/ CEnd \/ CCut
+    \/ AWrite \/ AClose \/ ARecv \/ ADown \/ AIdle \/ AReset \/ Exit \/ Cut
+    \/ JRecv \/ JDown \/ D1Copy \/ D1End \/ JAck \/ JIdle \/ JSyncFail \/ D0CFail \/ D0Fail \/ RelayGone
+    \/ CWrite \/ CRecv \/ CRead \/ CEnd \/ CCut \/ CMute
 
 \* A, J and C take their own steps; the program's exit, its stop's reset,
-\* the network's cuts, the relay's crash and C's write are the
-\* environment's (no fairness).
+\* the network's cuts, the relay's crash, C's write and C turning mute are
+\* the environment's (no fairness); the idle timers are A's and J's.
 Fairness ==
     /\ WF_vars(AWrite) /\ WF_vars(AClose) /\ WF_vars(ARecv) /\ WF_vars(ADown)
     /\ WF_vars(JRecv) /\ WF_vars(JDown) /\ WF_vars(D1Copy) /\ WF_vars(D1End) /\ WF_vars(D0Fail)
-    /\ WF_vars(JAck) /\ WF_vars(JSyncFail) /\ WF_vars(D0CFail)
+    /\ WF_vars(JAck) /\ WF_vars(JSyncFail) /\ WF_vars(D0CFail) /\ WF_vars(AIdle) /\ WF_vars(JIdle)
     /\ WF_vars(CRecv) /\ WF_vars(CRead) /\ WF_vars(CEnd)
 
 Spec == Init /\ [][Next]_vars /\ Fairness
@@ -271,21 +308,22 @@ Spec == Init /\ [][Next]_vars /\ Fairness
 TypeOK ==
     /\ aw \in 0..K /\ ret \in {"no", "wait", "clean", "err"}
     /\ d1 \in {"run", "sync", "done"} /\ d0 \in {"run", "held", "done"}
-    /\ cend \in {"", "eof", "err"} /\ crd \in 0..K /\ jq \in 0..K /\ cq \in 0..K
+    /\ cend \in {"", "eof", "err"} /\ crd \in 0..K /\ jq \in 0..K /\ cq \in 0..K /\ mute \in BOOLEAN
 
 \* C reads io.EOF only after every byte A wrote.
 NoSilentLoss == cend = "eof" => crd = K
 
-\* A's Close returns clean only once C read every byte and io.EOF: a
-\* program that exits then loses nothing it wrote (pipe spec/Pipe.tla
-\* CleanExit).
-CloseTruth == ret = "clean" => (cend = "eof" /\ crd = K)
+\* A's Close returns clean only once C holds every byte and the FIN (its
+\* Mux received them; C's reads need no network then): a program that
+\* exits then loses nothing it wrote (pipe spec/Pipe.tla CleanExit).
+CloseTruth == ret = "clean" => (cfin /\ crd + cq = K)
 
 \* Once J read A's FIN, C reads every byte and io.EOF whatever A does
 \* next (exit, a cut, a reset), unless C's connection or the relay ended.
 TailDelivered == jfin ~> ((cend = "eof" /\ crd = K) \/ gone \/ ccut)
 
-\* A Close ends: never a wait past its connection's or the far end's end.
+\* A Close ends: never a wait past its connection's or the far end's end,
+\* nor past the idle bound when the far end is mute.
 CloseEnds == (ret = "wait") ~> (ret \in {"clean", "err"})
 
 \* J's onward wait ends (unless the relay crashed).
@@ -299,4 +337,6 @@ WitnessExitThenEof == ~(ret = "clean" /\ exited /\ cend = "eof")
 WitnessFinThenAbort == ~(cfin /\ cfail /\ cend = "eof" /\ ~gone)
 WitnessHeld == d0 # "held"
 WitnessCloseErr == ~(ret = "err" /\ ccut /\ ~lost1)
+\* A Close that gives up at the idle bound on a live connection.
+WitnessIdle == ~(ret = "err" /\ mute /\ ~lost1 /\ ~ccut /\ ~gone /\ ~afail)
 =============================================================================
