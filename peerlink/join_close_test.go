@@ -126,3 +126,62 @@ func TestPeerFailureAfterFinDeliversTheTail(t *testing.T) {
 		t.Fatalf("read %d of the agent's %d bytes, then %v: want all, then EOF", len(got), len(tail), err)
 	}
 }
+
+// endConn is a conn that records EndDelivered.
+type endConn struct {
+	net.Conn
+	delivered chan struct{}
+}
+
+func (c endConn) EndDelivered() { close(c.delivered) }
+
+// TestPeerEndDelivered: Join tells a source conn (an EndNotifier) once
+// its clean end, passed onto a link session, was read by the session's
+// peer (CloseWriteSync): the relay SDK's accepted conn waits for it in
+// Close (spec/RelayedClose.tla CloseTruth, lane RELAYCLOSE).
+func TestPeerEndDelivered(t *testing.T) {
+	ln, rn := tcpPair(t)
+	ctx := context.Background()
+	got := make(chan []byte, 1)
+	go func() {
+		c, _, err := link.Server(ctx, ln, link.Config{Auth: link.NoAuth})
+		if err != nil {
+			_ = ln.Close()
+			return
+		}
+		_ = link.NewMux(c).Serve(func(_ []byte, s *link.Session) {
+			b, _ := io.ReadAll(s)
+			got <- b
+		})
+	}()
+	rc, err := link.Client(ctx, rn, link.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rm := link.NewMux(rc)
+	go func() { _ = rm.Serve(nil) }()
+	s, err := rm.Open([]byte("h"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !peerlink.SyncsEnd(s) {
+		t.Fatal("SyncsEnd(*link.Session) is false")
+	}
+	target, user := net.Pipe()
+	ec := endConn{Conn: target, delivered: make(chan struct{})}
+	go func() { _ = peerlink.Join(ec, s) }()
+	go func() { _, _ = user.Write([]byte("tail")); _ = user.Close() }()
+	select {
+	case <-ec.delivered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Join never told the source its end was delivered")
+	}
+	select {
+	case b := <-got:
+		if string(b) != "tail" {
+			t.Fatalf("the session's peer read %q", b)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the session's peer never read the end")
+	}
+}

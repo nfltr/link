@@ -47,6 +47,12 @@ version 2 unless an entry says otherwise.
   `TestJoinFailureAfterFinDeliversTheTail`,
   `TestPeerFailureAfterFinDeliversTheTail` (each red before). Local
   behaviour only: the wire is unchanged.
+- `peerlink`: `EndNotifier` and `SyncsEnd`: `Join` tells a source conn
+  with an `EndDelivered` method once its clean end, passed onto a link
+  session (`SyncsEnd`), was read by the session's peer
+  (`CloseWriteSync`). The relay SDK's accepted relayed conn returns from
+  `Close` then (lane RELAYCLOSE, spec/RelayedClose.tla `CloseTruth`);
+  guard `TestPeerEndDelivered`.
 - A Read beside WriteTo (io.Copy(dst, sess) while another goroutine
   reads) or Pump on one session no longer hands the unread tail of a Read
   out twice, cuts a tail a Read left after it, or reads a buffer already

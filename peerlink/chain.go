@@ -56,6 +56,12 @@ var (
 // aborts the other: AbortWith on a ChainSession (an *link.Abort received
 // goes on with Hops+1, a local cause with Hops 0), Reset on a Session,
 // an RST on a *net.TCPConn (SetLinger(0)), else Close.
+//
+// A clean end passed onto a *link.Session (SyncsEnd) ends its direction
+// once the session's peer read it (Session.CloseWriteSync); a source conn
+// with an EndDelivered method is then told (EndNotifier), else aborted
+// when that failed: a relay SDK's accepted conn returns from Close only
+// once its tail is safe (spec/RelayedClose.tla CloseTruth).
 func Join(a, b net.Conn) error {
 	if la, lb := native(a), native(b); la != nil && lb != nil {
 		err := link.Join(la, lb)
@@ -77,6 +83,19 @@ func Join(a, b net.Conn) error {
 	j.dir(1)
 	return <-ch
 }
+
+// EndNotifier is a conn Join tells that its clean end reached the peer
+// of the session it was joined to (SyncsEnd): Session.CloseWriteSync
+// returned nil. Join calls EndDelivered at most once, from its own
+// goroutine; it must not block.
+type EndNotifier interface {
+	EndDelivered()
+}
+
+// SyncsEnd reports whether Join passes a clean end onto c by
+// Session.CloseWriteSync (c is a *link.Session, a Node's among them): the
+// other conn, an EndNotifier, is then told once c's peer read it.
+func SyncsEnd(c net.Conn) bool { return native(c) != nil }
 
 // native is c's *link.Session, unwrapped from a Node's, or nil.
 func native(c net.Conn) *link.Session {
@@ -552,6 +571,8 @@ func (j *joint) sync(src net.Conn, ds *link.Session) {
 		err := ds.CloseWriteSync()
 		if err != nil {
 			j.abort(src, abortOf(err))
+		} else if n, ok := src.(EndNotifier); ok {
+			n.EndDelivered()
 		}
 		j.mu.Lock()
 		j.syncing = false
