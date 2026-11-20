@@ -18,7 +18,10 @@ import (
 // (go test -race reports it; without -race the sum is off).
 func TestSessionConcurrentReads(t *testing.T) {
 	s, p := openPair(t, v2cfg, v2cfg)
-	const n = 1 << 20
+	n := 1 << 20
+	if traceOn { // spec-traces checks each step: a trace TLC takes in seconds
+		n = 2000
+	}
 	go func() {
 		b := make([]byte, 1000)
 		for i := range b {
@@ -72,7 +75,11 @@ func TestSessionConcurrentReads(t *testing.T) {
 func TestSessionReadDeadlineClearedNeverEOF(t *testing.T) {
 	s, p := openPair(t, v2cfg, v2cfg)
 	b := make([]byte, 1)
-	for i := range 20000 {
+	rounds := 20000
+	if traceOn {
+		rounds = 400
+	}
+	for i := range rounds {
 		_ = s.SetReadDeadline(time.Now().Add(20 * time.Microsecond))
 		errc := make(chan error, 1)
 		go func() { _, err := s.Read(b); errc <- err }()
@@ -137,7 +144,14 @@ func TestSessionReadBesideWriteTo(t *testing.T) {
 		msg[i] = byte(i%251) + 1
 		want += int(msg[i])
 	}
-	for i := range 300 {
+	rounds := 300
+	if traceOn {
+		rounds = 6
+	}
+	for i := range rounds {
+		if traceOn && i%3 == 2 { // Pump's drain runs on goroutines of its own: not traced (spec/README.md "Session reads")
+			continue
+		}
 		p, err := dm.Open([]byte("h"))
 		if err != nil {
 			t.Fatal(err)

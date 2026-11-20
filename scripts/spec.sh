@@ -20,7 +20,8 @@
 #   traces   the tests in TRACE_TESTS and TRACE_DEAD_TESTS run with -tags
 #            linktrace, each connection's trace checked against the model
 #            (spec/Trace.tla).
-#   trace F  one recorded trace.
+#   trace F  one recorded trace (rtrace F: a session's reads; wtrace F: a
+#            session credit's waiters).
 #   behaviours  TLC -simulate walks for the model-based tests (testdata/mbt).
 # TLC_WORKERS (default 4) caps TLC's threads. Java and tla2tools.jar come
 # from scripts/fetch-tla.sh.
@@ -174,6 +175,57 @@ CFG
 	META=$work/states-$(basename "$1")-$2 tlc "$cfg" TraceDirectPath.tla -deadlock >"$cfg.out" 2>&1 || dst=$?
 	cat "$cfg.out"
 	[ $dst != 0 ] && grep -q '^Error: Invariant TraceUnfinished is violated' "$cfg.out"
+}
+
+# rtrace FILE: TLC on one session's recorded reads (spec/TraceSessionRead.tla,
+# lane LINKTRACE); it fails unless TLC takes every line.
+rtrace() {
+	cfg=$work/$(basename "$1").cfg
+	cat >"$cfg" <<CFG
+CONSTANTS
+    TraceFile = "$1"
+    Readers <- TraceReaders
+    Slices <- TraceSlices
+    Copier <- TraceCopier
+    Bytes <- TraceBytes
+    SliceOf <- TraceSliceOf
+    Mutant = "none"
+POSTCONDITION TraceAccepted
+INIT TraceInit
+NEXT TraceNext
+INVARIANTS
+    Once
+    InOrder
+    NoLoss
+    ReleaseOnce
+    NoUseAfterRelease
+    NoForgedEOF
+CFG
+	META=$work/states-$(basename "$1") tlc "$cfg" TraceSessionRead.tla -deadlock
+}
+
+# wtrace FILE: TLC on one session credit's recorded waiters
+# (spec/TraceCreditWaiters.tla, lane LINKTRACE); it fails unless TLC takes
+# every line.
+wtrace() {
+	cfg=$work/$(basename "$1").cfg
+	cat >"$cfg" <<CFG
+CONSTANTS
+    TraceFile = "$1"
+    Waiters <- TraceWaiters
+    Need <- TraceNeed
+    K = 1
+    W <- TraceW
+    Mutant = "none"
+POSTCONDITION TraceAccepted
+INIT TraceInit
+NEXT TraceNext
+INVARIANTS
+    TypeOK
+    Conservation
+    NoStrandedWaiter
+CFG
+	META=$work/states-$(basename "$1") tlc "$cfg" TraceCreditWaiters.tla -deadlock
 }
 
 # tlcrun CFG: TLC on MCLink.tla with CFG, which must pass.
@@ -385,6 +437,25 @@ mutants)
 		*) echo "$(basename "$1"): rejected, as expected" ;;
 		esac
 	}
+	# okfixture CHECK FILE: a trace with a bug put in (spec/traces/read-*,
+	# wait-*): CHECK (rtrace, wtrace) must accept *-ok* and reject each
+	# other one.
+	okfixture() {
+		st=0
+		TLC_WORKERS=1 $1 "$PWD/$2" >"$jw/m.out" 2>&1 || st=$?
+		case $(basename "$2"):$st in
+		*-ok*:0) echo "$(basename "$2"): accepted, as expected" ;;
+		*-ok*:*) echo "$(basename "$2"): rejected"; grep -E -A6 'rejected at|Error' "$jw/m.out" | head -10; return 1 ;;
+		*:0) echo "$(basename "$2"): accepted (a bug the trace check misses)"; return 1 ;;
+		*)
+			if grep -q 'trace rejected at line\|Invariant .* is violated' "$jw/m.out"; then
+				echo "$(basename "$2"): rejected, as expected"
+			else
+				echo "$(basename "$2"): TLC failed:"; tail -10 "$jw/m.out"; return 1
+			fi
+			;;
+		esac
+	}
 	poolfixture() {
 		st=0
 		TLC_WORKERS=1 ptrace "$PWD/$1" >"$jw/m.out" 2>&1 || st=$?
@@ -565,6 +636,8 @@ mutants)
 	for f in spec/traces/join-*.ndjson; do job joinfixture "$f"; done
 	for f in spec/traces/pool-*.ndjson; do job poolfixture "$f"; done
 	for f in spec/traces/path-*.ndjson; do job pathfixture "$f"; done
+	for f in spec/traces/read-*.ndjson; do job okfixture rtrace "$f"; done
+	for f in spec/traces/wait-*.ndjson; do job okfixture wtrace "$f"; done
 	wait
 	fail=0
 	i=0
@@ -743,6 +816,50 @@ traces)
 	done
 	echo
 	echo "events no trace took:${gap:- none}"
+	# Session reads (TraceSessionRead.tla) and credit's waiters
+	# (TraceCreditWaiters.tla), lane LINKTRACE: each session's file, its
+	# events counted; an event no trace took is a test gap.
+	for k in read wait; do
+		mkdir -p "$work/$k"
+		case $k in
+		read) env=LINKTRACE_READ check=rtrace tests=${TRACE_READ_TESTS:-'^(TestSessionConcurrentReads|TestSessionReadDeadlineClearedNeverEOF|TestSessionReadBesideWriteTo)$'} model=TraceSessionRead ;;
+		wait) env=LINKTRACE_WAIT check=wtrace tests=${TRACE_WAIT_TESTS:-'^(TestConcurrentAcquiresShareAGrant|TestSessionWriteWaitingForCreditSeesFirstDeadline|TestMuxSlowSessionIsolated)$'} model=TraceCreditWaiters ;;
+		esac
+		env "$env=$work/$k" go test -tags linktrace -count=1 -run "$tests" . >"$work/test.out" 2>&1 || {
+			cat "$work/test.out"
+			exit 1
+		}
+		m=0
+		for t in "$work/$k"/*.ndjson; do
+			[ -s "$t" ] || continue
+			m=$((m + 1))
+			(export TLC_JVMS="${TLC_WORKERS:-4}" && TLC_WORKERS=1 $check "$t" >"$t.out" 2>&1 && touch "$t.ok") &
+			[ $((m % ${TLC_WORKERS:-4})) != 0 ] || wait
+		done
+		wait
+		for t in "$work/$k"/*.ndjson; do
+			[ -s "$t" ] || continue
+			n=$((n + 1))
+			if [ -f "$t.ok" ]; then
+				echo "$k $(basename "$t"): $(wc -l <"$t" | tr -d ' ') lines: accepted"
+			else
+				bad=$((bad + 1))
+				echo "$k $(basename "$t"): $(wc -l <"$t" | tr -d ' ') lines: REJECTED"
+				grep -E -A6 'rejected at|Error' "$t.out" | head -12
+				[ -z "${TRACE_KEEP:-}" ] || cp "$t" "$TRACE_KEEP/"
+			fi
+		done
+		cat "$work/$k"/*.ndjson >"$work/${k}all"
+		gap=
+		for e in $(grep -o 'E.ev = "[A-Za-z]*"' "spec/$model.tla" | sed 's/.*"\(.*\)"/\1/' | sort -u); do
+			c=$(grep -c "\"ev\":\"$e\"" "$work/${k}all" || true)
+			[ "$c" != 0 ] || gap="$gap $e"
+			printf '%s %s; ' "$e" "$c"
+		done
+		echo
+		echo "$k events no trace took:${gap:- none}"
+	done
+	echo "$n traces, $bad rejected"
 	[ "$bad" = 0 ]
 	;;
 behaviours)
@@ -792,6 +909,12 @@ jtrace)
 	;;
 dtrace)
 	dtrace "$2" "$3"
+	;;
+rtrace)
+	rtrace "$2"
+	;;
+wtrace)
+	wtrace "$2"
 	;;
 *)
 	echo "usage: spec.sh check|invariants|nightly|mutants|traces|trace FILE" >&2

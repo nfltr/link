@@ -74,6 +74,7 @@ type sessionCredit struct {
 	answered bool          // FeatureChain connections: byUs, the peer's ACCEPT or refusal came; byPeer, this side's went
 	onGrant  func(int)     // Session.OnGrant's; nil: none
 	fins     uint8         // the half CLOSEs: finSent (this side's buffered), finRecv (the peer's read)
+	wt       waitTrace     // linktrace builds only (trace_wait_on.go); zero size otherwise
 }
 
 const (
@@ -150,6 +151,9 @@ func (c *Credit) open(sid string, by int) {
 		by = byCaller // the connection ended: SessionClose was reported for its sessions
 	}
 	c.sessions[sid] = &sessionCredit{n: c.peerWindow, by: by} // no wake channel until a sender waits (TestCreditOpenMakesNoWakeChannel)
+	if traceOn {
+		traceWaitUp(c.sessions[sid], c.peerWindow)
+	}
 	if by != byCaller {
 		c.opened[by-1]++
 		if old == nil {
@@ -268,6 +272,10 @@ func (c *Credit) Acquire(sid string, n int) bool {
 // refund (a Session's Write).
 func (c *Credit) acquire(sid string, n int, flush func() error, stop <-chan struct{}, track bool) (ok, stopped bool) {
 	var waited time.Time
+	var tw int // the trace's waiter (spec/TraceCreditWaiters.tla)
+	if traceOn {
+		tw = traceWaiter()
+	}
 	for {
 		c.mu.Lock()
 		s := c.sessions[sid]
@@ -282,6 +290,7 @@ func (c *Credit) acquire(sid string, n int, flush func() error, stop <-chan stru
 			}
 			if traceOn {
 				traceEv(c.tr, traceEvent{ev: "Acquire", sid: sid, n: n, credit: s.n})
+				s.traceWait("Check", tw, n, true)
 			}
 			c.mu.Unlock()
 			if !waited.IsZero() {
@@ -298,6 +307,9 @@ func (c *Credit) acquire(sid string, n int, flush func() error, stop <-chan stru
 			s.wake = make(chan struct{})
 		}
 		wake := s.wake
+		if traceOn {
+			s.traceWait("Check", tw, n, false)
+		}
 		c.mu.Unlock()
 		if waited.IsZero() {
 			waited = time.Now()
@@ -340,6 +352,9 @@ func (c *Credit) refund(sid string, n int) {
 	if s != nil {
 		s.n += n
 		s.pend -= n
+		if traceOn {
+			s.traceWait("Grant", 0, n, false)
+		}
 		s.wakeAll()
 	}
 }
@@ -494,6 +509,7 @@ func (c *Credit) Grant(sid string, n int) error {
 	s.n += n
 	if traceOn {
 		traceEv(c.tr, traceEvent{ev: "Recv", t: "win", sid: sid, n: n, credit: s.n})
+		s.traceWait("Grant", 0, n, false)
 	}
 	s.wakeAll()
 	f := s.onGrant

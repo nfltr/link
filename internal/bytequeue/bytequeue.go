@@ -18,6 +18,7 @@ import (
 // Queue is safe for one or more pushers and poppers.
 type Queue struct {
 	mu     sync.Mutex
+	tr     traceHook // linktrace builds only (trace_on.go); zero size otherwise
 	cond   sync.Cond
 	bufs   [][]byte // queued from head on; a drained queue keeps its array
 	head   int
@@ -79,6 +80,9 @@ func (q *Queue) pushLocked(b []byte) {
 	}
 	q.bufs = append(q.bufs, b)
 	q.size += len(b)
+	if traceOn {
+		q.trace("Push", false, 1, len(b))
+	}
 	q.cond.Broadcast()
 }
 
@@ -101,6 +105,9 @@ func (q *Queue) Append(b []byte) bool {
 	}
 	*last = append(*last, b...)
 	q.size += len(b)
+	if traceOn {
+		q.trace("Append", false, 1, len(b))
+	}
 	q.cond.Broadcast()
 	return true
 }
@@ -183,6 +190,9 @@ func (q *Queue) PopUnless(stop *atomic.Bool) (b []byte, ok, stopped bool) {
 	q.mu.Lock()
 	for {
 		if stop != nil && stop.Load() {
+			if traceOn {
+				q.trace("Stopped", true, 0, 0)
+			}
 			q.mu.Unlock()
 			return nil, false, true
 		}
@@ -190,6 +200,9 @@ func (q *Queue) PopUnless(stop *atomic.Bool) (b []byte, ok, stopped bool) {
 			break
 		}
 		if q.closed {
+			if traceOn {
+				q.trace("Ended", stop != nil, 0, 0)
+			}
 			q.mu.Unlock()
 			return nil, false, false
 		}
@@ -200,6 +213,9 @@ func (q *Queue) PopUnless(stop *atomic.Bool) (b []byte, ok, stopped bool) {
 	q.trim(1)
 	q.size -= len(b)
 	q.pops++
+	if traceOn {
+		q.trace("Pop", stop != nil, 1, len(b))
+	}
 	q.cond.Broadcast()
 	q.mu.Unlock()
 	q.popped(len(b))
@@ -215,6 +231,9 @@ func (q *Queue) PopBatch(dst [][]byte, max int) ([][]byte, bool) {
 		q.cond.Wait()
 	}
 	if q.queued() == 0 {
+		if traceOn {
+			q.trace("Ended", false, 0, 0)
+		}
 		q.mu.Unlock()
 		return dst, false
 	}
@@ -227,6 +246,9 @@ func (q *Queue) TryPopBatch(dst [][]byte, max int) (out [][]byte, ok, ended bool
 	q.mu.Lock()
 	if q.queued() == 0 {
 		ended = q.closed
+		if traceOn && ended {
+			q.trace("Ended", false, 0, 0)
+		}
 		q.mu.Unlock()
 		return dst, false, ended
 	}
@@ -256,6 +278,9 @@ func (q *Queue) popBatchLocked(dst [][]byte, max int) [][]byte {
 	q.trim(k)
 	q.size -= n
 	q.pops++
+	if traceOn {
+		q.trace("Pop", false, k, n)
+	}
 	q.cond.Broadcast()
 	q.mu.Unlock()
 	q.popped(n)
@@ -274,6 +299,9 @@ func (q *Queue) trim(k int) {
 // stay poppable, so a writer can deliver them before it closes its conn.
 func (q *Queue) Close() {
 	q.mu.Lock()
+	if traceOn && !q.closed {
+		q.trace("Close", false, 0, 0)
+	}
 	q.closed = true
 	q.mu.Unlock()
 	q.cond.Broadcast()

@@ -158,6 +158,9 @@ func (m *Mux) add(sid string, header []byte, c Chain, accepter bool) (*Session, 
 		s.answered = make(chan struct{})
 	}
 	s.q.OnPop(func(n int) { m.c.credit.Consumed(sid, n) })
+	if traceOn {
+		traceReadUp(s)
+	}
 	m.sess[sid] = s
 	m.used.Store(true)
 	if debugOn {
@@ -626,6 +629,7 @@ func (m *Mux) closeIdle() {
 type Session struct {
 	m      *Mux
 	dbg    debugState // linkdebug builds only (debug_on.go); zero size otherwise
+	rt     readTrace  // linktrace builds only (trace_read_on.go); zero size otherwise
 	id     string
 	header []byte
 	q      *bytequeue.Queue
@@ -757,12 +761,16 @@ func (s *Session) ended() {
 
 // Read reads the peer's bytes in order: io.EOF once the peer ended its
 // writes, or the error that cut the session (see Session).
-func (s *Session) Read(b []byte) (int, error) {
+func (s *Session) Read(b []byte) (n int, err error) {
 	if debugOn {
 		defer debugEnter(s, debugRead)()
 	}
 	s.rmu.Lock()
 	defer s.rmu.Unlock()
+	if traceOn { // spec/TraceSessionRead.tla: under rmu
+		s.traceRead("Begin", false, len(s.rest), false)
+		defer func() { s.traceReadEnd(err) }()
+	}
 	if len(s.rest) == 0 {
 		data, ok, stopped := s.q.PopUnless(&s.dlPast)
 		if !ok {
@@ -773,10 +781,13 @@ func (s *Session) Read(b []byte) (int, error) {
 		}
 		s.rest, s.cur = data, data
 	}
-	n := copy(b, s.rest)
+	n = copy(b, s.rest)
 	if s.rest = s.rest[n:]; len(s.rest) == 0 {
 		releaseData(s.cur)
 		s.cur = nil
+	}
+	if traceOn {
+		s.traceRead("Copy", false, n, len(s.rest) == 0)
 	}
 	return n, nil
 }
@@ -802,6 +813,10 @@ func (s *Session) WriteTo(w io.Writer) (int64, error) {
 		n, err := w.Write(rest)
 		total += int64(n)
 		releaseData(cur)
+		if traceOn {
+			s.traceRead("WWrite", true, n, false)
+			s.traceRead("WRel", true, 0, false)
+		}
 		if err != nil {
 			return total, err
 		}
@@ -815,6 +830,10 @@ func (s *Session) WriteTo(w io.Writer) (int64, error) {
 		}
 		n, err := bw.write(w, bufs)
 		total += n
+		if traceOn {
+			s.traceRead("WWrite", true, int(n), false)
+			s.traceRead("WRel", true, 0, false)
+		}
 		if err != nil {
 			return total, err
 		}
@@ -830,6 +849,9 @@ func (s *Session) takeRest() (rest, cur []byte) {
 	s.rmu.Lock()
 	rest, cur = s.rest, s.cur
 	s.rest, s.cur = nil, nil
+	if traceOn {
+		s.traceRead("WTake", true, len(rest), false)
+	}
 	s.rmu.Unlock()
 	return rest, cur
 }
@@ -954,6 +976,10 @@ func (s *Session) writeOwned(w OwnedWriter) (int64, error) {
 		}
 		if err := w.WriteOwned(b); err != nil {
 			return total, err
+		}
+		if traceOn {
+			s.traceRead("WWrite", true, len(b), false)
+			s.traceRead("WRel", true, 0, false)
 		}
 		total += int64(len(b))
 		b = nil
@@ -1272,7 +1298,7 @@ func (s *Session) SetReadDeadline(t time.Time) error {
 		s.dlTimer = nil
 	}
 	d := time.Until(t)
-	s.dlPast.Store(!t.IsZero() && d <= 0)
+	s.setDLPast(!t.IsZero() && d <= 0)
 	if s.dlPast.Load() {
 		s.q.Wake()
 	}
@@ -1281,7 +1307,7 @@ func (s *Session) SetReadDeadline(t time.Time) error {
 		s.dlTimer = time.AfterFunc(d, func() {
 			s.dlMu.Lock()
 			if s.dlGen == gen {
-				s.dlPast.Store(true)
+				s.setDLPast(true)
 			}
 			s.dlMu.Unlock()
 			s.q.Wake()
