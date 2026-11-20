@@ -135,8 +135,11 @@ ADown ==
 
 \* No acknowledgement is under way: the far end is mute and none is in
 \* flight. The idle timer fires only then (N s with no progress); with
-\* the mutant only once the connection is gone (pings restart it).
-Stalled(alive) == mute /\ fromC = <<>> /\ fromJ = <<>>
+\* the mutant only once the connection is gone (pings restart it). An
+\* abort in flight is no acknowledgement: a wait may give up while J's
+\* abort travels to A (waitAck counts only the session's acknowledged
+\* bytes; TraceRelayedClose.tla found it: JIdle, then AIdle).
+Stalled(alive) == mute /\ fromC = <<>> /\ (\A i \in DOMAIN fromJ : fromJ[i] # "eack")
                   /\ (Mutant = "liveness-counts-as-progress" => ~alive)
 \* A's idle bound: its Close gives up (resets the session).
 AIdle ==

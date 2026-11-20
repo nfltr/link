@@ -370,10 +370,38 @@ bound; nfltr connect's `Pump`, a local EOF then a local failure) and
 | `JRecv`, `JDown`, `CRecv`, `CEnd` (`ReadsEof`) | `mux.go` `Mux.handle` (CLOSE, ENDACK), `Mux.close`, `Session.fail`, `Session.end`; `conn.go` (frame 11) |
 | `D1Copy`, `D1End`, `JAck`, `JSyncFail`, `D0CFail`, `D0Fail` | `join.go` `joint.ended` (`onwardTook`), `peerlink/chain.go` `joint.ended`, `sync`, `holdEnds`, `ackEnd` |
 
-Open: no trace recorder logs these steps yet (the joint's recorder logs
-no failed write or ENDACK; `Trace.tla` checks the Mux's frames, not
-ENDACK). A link `Join` hop whose onward peer lacks the bit acknowledges
-at the onward pong (the next hop read it).
+Trace recorder (lane ENDACKCODE; `-tags linktrace`,
+`LINKTRACE_RELAYED=<dir>`, `trace_relayed_on.go`): a test marks the
+four sessions of one relayed path (`traceRelayed`: A, J's in and out,
+C; the hop rig of `endack_test.go`), and each of RelayedClose's steps
+one of them takes is a line of `<dir>/relayedclose-<test>.ndjson`
+under the process-wide trace lock (all three parties in one process: a
+frame's send logged before its write, its receipt after its read, so
+the order is causal; no vector clocks). Logged: `AClose`, `ARecv`,
+`ADown`, `AIdle`, `AReset` (one of the three resets, by `ret`),
+`JRecv`, `D1End`, `JAck`, `JIdle`, `JSyncFail`, `D0CFail`, `CRecv`,
+and the test's `CCut`, `CMute`; `ARet` is an observation (what A's
+ENDACK wait returned must be the model's `ret`: `CloseTruth` on the
+code's own result). The bytes are not logged: `TraceRelayedClose.tla`
+lets TLC take them (K = 1). `make spec-traces` checks the traces of
+`TestEndAckWaitsForTheFarEnd`, `...FailsWhenTheFarEndIsCut`,
+`...GivesUpWithoutProgress`, `...ResetEndsTheWait`;
+`TestRelayedCloseTraceEventsMapped` keeps the hook points and the
+module's steps the same both ways. Fixtures (`make spec-mutants`):
+`relayedclose-ok`, `relayedclose-ok-idle-abort-in-flight` accepted;
+`relayedclose-relay-read-ack`, `relayedclose-close-before-ack`,
+`relayedclose-reset-keeps-wait` (the mutants of those names) and
+`relayedclose-unknown-step` rejected. Finding (the recorder's first
+run): `Stalled` required nothing at all in flight toward A, so the
+code's A giving up at the idle bound while J's abort (after `JIdle`)
+travelled to it was no behaviour of the model; an abort is no
+acknowledgement (`waitAck` counts the session's acknowledged bytes), so
+`Stalled` now excludes only an ENDACK in flight (the mutants still
+fail as before). Not recorded: `Exit`, `Cut`, `JDown`, `D0Fail`,
+`RelayGone` (no hop-rig test takes them), and peerlink's joint
+(`peerlink/join_close_test.go`, the next recorder). A link `Join` hop
+whose onward peer lacks the bit acknowledges at the onward pong (the
+next hop read it).
 
 ## A joint's side closed whole (JoinClose.tla, 2026-11-12, lane REFUSALFLAKE)
 
@@ -1101,7 +1129,7 @@ holds in a `Spec-Reviewed:` trailer).
 | `QuicWatch.tla`, `MBTWatch.tla` | quiclink's liveness: `conn.watch`, `watchState.tick`, `keepAliveAfter`, QUIC's idle timeout as its backstop | `peerlink/quiclink/quiclink.go` |
 | `Join.tla`, `TraceJoin.tla` | `peerlink.join`'s clean end (`Session.sync`, hold, the watch) | `peerlink/chain.go`, `join.go`, `peerlink/trace_on.go` |
 | `JoinClose.tla`, `TraceJoinClose.tla` | a joint's side closed whole by its peer while the other side writes: who closes the other side, and when | `join.go`, `peerlink/chain.go`, `trace_join_on.go` |
-| `RelayedClose.tla` | a relayed session's Close, then the program's exit or reset: a FIN then a failure reads io.EOF, the joint passes the tail before the failure | `mux.go`, `join.go`, `peerlink/chain.go` |
+| `RelayedClose.tla`, `TraceRelayedClose.tla` | a relayed session's Close, then the program's exit or reset: a FIN then a failure reads io.EOF, the joint passes the tail before the failure | `mux.go`, `join.go`, `endack.go`, `peerlink/chain.go`, `trace_relayed_on.go` |
 | `HopHold.tla` | two joints on one path (the agent's, the relay's), both ends TCP apps, crossing half closes: the hold ends at the next hop's receipt, the ENDACK at the onward end | `peerlink/chain.go`, `endack.go` |
 | `EndAckLeg.tla` | one leg's end acknowledgement per transport: link, gRPC frames, TCP's kernel ACK, QUIC (reassembly, control stream); the idle bound's progress rule | `endack.go`, `peerlink/quiclink/quiclink.go`, `pathswitch/conn.go` |
 | `CreditWaiters.tla`, `TraceCreditWaiters.tla` | senders waiting in `Credit.Acquire` on one session: the wait and `wakeAll` | `credit.go`, `trace_wait_on.go` |
@@ -1472,7 +1500,8 @@ one file per session, checked in the same target ("Session reads",
 "Credit's waiters", "Session writes"); `TestSpecReadWaitEventsMapped`
 keeps their events and the three modules' steps the same both ways. A
 joint's (`LINKTRACE_JOIN`, `TraceJoinClose.tla`, one file per joint):
-"A joint's side closed whole".
+"A joint's side closed whole"; a relayed path's Close (`LINKTRACE_RELAYED`,
+`TraceRelayedClose.tla`, one file per test): "A relayed session's Close".
 
 ## Design of the fixes (2026-11-02)
 
