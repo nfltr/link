@@ -72,6 +72,11 @@ func chain(t *testing.T, base opts) {
 	if !sum.Pass || sum.Hops != 1 || sum.Throughput <= 0 || sum.EchoP50 <= 0 || sum.EchoP99 < sum.EchoP50 {
 		t.Fatalf("summary %+v", sum)
 	}
+	// no faults here: every echo's half close came back acknowledged through
+	// the hop (Hop: true, chainsoak's CloseWriteSync), none failed
+	if len(sum.Errors) != 0 {
+		t.Fatalf("errors with no fault: %v", sum.Errors)
+	}
 	key := `linkhop_echoes_total{role="origin",hop="0"}`
 	if !(mid[key] > 0 && end[key] > mid[key]) {
 		t.Errorf("%s: %v mid, %v end", key, mid[key], end[key])

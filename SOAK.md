@@ -79,7 +79,11 @@ counts echoes, bytes, integrity failures, errors by `*link.Abort` code,
 hop and kind, and the largest in-flight measure, and states the path's
 `hops` (`-hops`), `transport`, `throughput_bytes_per_s` (bytes echoed
 over the run) and `echo_p50_ms` / `echo_p99_ms` (open to the echo's
-last byte, interpolated within the latency histogram's buckets). It
+last byte, interpolated within the latency histogram's buckets). A `hop`'s links are `link.Config.Hop`: it acknowledges an end only
+once its onward peer did, so each echo's half close
+(`CloseWriteSync`) returns clean only once the echo's Mux took it,
+through every hop; one that fails is an error (`TestChainPlain` and its
+twins: none with no fault). It
 exits 1 on an integrity failure, on no echo completed, or on an
 in-flight measure over `-bound` (links x window + hops x 256 KiB).
 Faults are yours (delete or drain a hop's pod, a NetworkPolicy): errors

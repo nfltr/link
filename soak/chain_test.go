@@ -46,6 +46,7 @@ func newChainNode(t *testing.T, name string, next *chainNode) *chainNode {
 	c := &chainNode{px: peerlinktest.NewProxy(t, ln.Addr().String())}
 	cfg := peerlink.Config{Listener: ln, Link: link.Config{Liveness: link.LivenessFast, Auth: nameAuth(name)}}
 	if next != nil {
+		cfg.Link.Hop = true // a hop: ENDACK once the onward peer's came (spec/RelayedClose.tla)
 		cfg.Dial = func(ctx context.Context, _ string) (net.Conn, error) {
 			var d net.Dialer
 			return d.DialContext(ctx, "tcp", next.px.Addr())

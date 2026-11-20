@@ -155,6 +155,9 @@ func newNode(o opts, m *metrics) (peerlink.Link, string, error) {
 	if server != nil {
 		pc.Link.Auth = link.CertAuth
 	}
+	// a hop acknowledges an end only once its onward peer did (FeatureEndAck,
+	// spec/RelayedClose.tla): the origin's CloseWriteSync is the far end's
+	pc.Link.Hop = o.role == "hop"
 	if o.role != "echo" {
 		pc.Dial = func(ctx context.Context, _ string) (net.Conn, error) {
 			if client != nil {

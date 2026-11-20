@@ -60,8 +60,9 @@ func Hop(l peerlink.Link, next string, cfg link.ForwardConfig) func(string, []by
 
 // EchoOnce opens a session to peer on l, waits for the far end's answer
 // (when the session answers), sends n random bytes and checks by SHA-256
-// that the same came back: intact false is an integrity failure; err is
-// why the echo failed (a *link.Abort says where and why).
+// that the same came back, its half close acknowledged by the far end
+// (closeWrite): intact false is an integrity failure; err is why the echo
+// failed (a *link.Abort says where and why).
 func EchoOnce(ctx context.Context, l peerlink.Link, peer string, n int) (intact bool, err error) {
 	s, err := l.Open(ctx, peer, []byte("echo"))
 	if err != nil {
@@ -80,7 +81,7 @@ func EchoOnce(ctx context.Context, l peerlink.Link, peer string, n int) (intact 
 	go func() {
 		_, err := s.Write(payload)
 		if err == nil {
-			err = s.CloseWrite()
+			err = closeWrite(s)
 		}
 		werr <- err
 	}()
@@ -93,6 +94,16 @@ func EchoOnce(ctx context.Context, l peerlink.Link, peer string, n int) (intact 
 		return true, fmt.Errorf("read after %d of %d bytes: %w", got, n, rerr)
 	}
 	return got == int64(n) && bytes.Equal(h.Sum(nil), want[:]), nil
+}
+
+// closeWrite ends s's writes; a link session's (CloseWriteSync) only once
+// the far end took the end, through every hop (Config.Hop): a hop that
+// acknowledged on receipt, or a Close left waiting, fails the echo.
+func closeWrite(s peerlink.Session) error {
+	if cs, ok := s.(interface{ CloseWriteSync() error }); ok {
+		return cs.CloseWriteSync()
+	}
+	return s.CloseWrite()
 }
 
 // InFlight opens a Stuck session to peer on l and writes into it until
