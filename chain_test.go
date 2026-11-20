@@ -118,14 +118,13 @@ func (r *chainRig) route(h int) Route {
 		if a := r.refuseAt[h]; a != nil {
 			return nil, a
 		}
-		ch, _ := ChainFromContext(ctx)
-		return r.links[h].dm.OpenChain(in.Header(), ch)
+		return r.links[h].dm.Open(ctx, in.Header())
 	}
 }
 
 func (r *chainRig) open(header string) *Session {
 	r.t.Helper()
-	s, err := r.links[0].dm.Open([]byte(header))
+	s, err := r.links[0].dm.Open(context.Background(), []byte(header))
 	if err != nil {
 		r.t.Fatal(err)
 	}
@@ -172,7 +171,7 @@ func (o *hopObserver) kinds() []HopKind {
 // origin did (Pump: no goroutine while idle).
 func farEcho(_ []byte, s *Session) {
 	_ = s.Accept()
-	s.Pump(s, func(_ int64, err error) {
+	s.startPump(s, func(_ int64, err error) {
 		if err != nil {
 			_ = s.Reset()
 			return
@@ -547,8 +546,7 @@ func TestChainMaxHops(t *testing.T) {
 	cfg := ForwardConfig{MaxHops: 6}
 	to := func(m *Mux) Route {
 		return func(ctx context.Context, in *Session) (*Session, error) {
-			ch, _ := ChainFromContext(ctx)
-			return m.OpenChain(in.Header(), ch)
+			return m.Open(ctx, in.Header())
 		}
 	}
 	for _, m := range []*Mux{oa, ab, bA} {
@@ -557,7 +555,7 @@ func TestChainMaxHops(t *testing.T) {
 	go func() { _ = ao.Serve(Forward(to(ab), cfg)) }()
 	go func() { _ = aB.Serve(Forward(to(ab), cfg)) }()
 	go func() { _ = ba.Serve(Forward(to(bA), cfg)) }()
-	s, err := oa.Open([]byte("loop"))
+	s, err := oa.Open(context.Background(), []byte("loop"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -592,7 +590,7 @@ func TestChainDrainMiddleHop(t *testing.T) {
 			defer cancel()
 			drained := make(chan error, 1)
 			go func() { drained <- r.links[k-1].lm.Drain(ctx) }()
-			waitUntil(t, func() bool { return r.links[k-1].dm.Conn().GoingAway() })
+			waitUntil(t, func() bool { return r.links[k-1].dm.Conn().isGoingAway() })
 			a := errAbort(t, r.open("new").Answered(context.Background()))
 			if !a.Refused || a.Code != CodeDraining || int(a.Hops) != k-2 {
 				t.Fatalf("new open: %+v", a)

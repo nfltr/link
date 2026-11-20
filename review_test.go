@@ -96,11 +96,11 @@ func TestWriteParkedForItsTurnSendsNothingAfterFIN(t *testing.T) {
 		}
 		_ = s.Close()
 	}, v2cfg, v2cfg)
-	sa, err := dm.Open([]byte("a"))
+	sa, err := dm.Open(context.Background(), []byte("a"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	sb, err := dm.Open([]byte("b"))
+	sb, err := dm.Open(context.Background(), []byte("b"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,11 +132,11 @@ func TestWriteParkedForItsTurnSendsNothingAfterFIN(t *testing.T) {
 // the pong (drained), then the OPEN, and refused it as a broken protocol.
 func TestOpenParkedPastPeerGoAwayIsNotSent(t *testing.T) {
 	dm, lm, g := gatedMuxPair(t, func(_ []byte, s *Session) { _, _ = io.Copy(io.Discard, s); _ = s.Close() }, v2cfg, v2cfg)
-	sa, err := dm.Open([]byte("a"))
+	sa, err := dm.Open(context.Background(), []byte("a"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	sb, err := dm.Open([]byte("b"))
+	sb, err := dm.Open(context.Background(), []byte("b"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +145,7 @@ func TestOpenParkedPastPeerGoAwayIsNotSent(t *testing.T) {
 	bdone := stuckWriter(t, g, sa, sb)
 	opened := make(chan error, 1)
 	go func() {
-		_, err := dm.Open([]byte("late"))
+		_, err := dm.Open(context.Background(), []byte("late"))
 		opened <- err
 	}()
 	waitConn(t, c, "the OPEN parked with a ticket", func() bool { return len(c.waiters) == 2 })
@@ -177,7 +177,7 @@ func TestAbortAtMaxSessionsRacingOpenKeepsTheConnection(t *testing.T) {
 	lcfg := v2cfg
 	lcfg.MaxSessions = 1
 	dm, _ := v2muxPair(t, func(_ []byte, s *Session) { _, _ = io.Copy(s, s); _ = s.Close() }, v2cfg, lcfg)
-	s, err := dm.Open([]byte("a"))
+	s, err := dm.Open(context.Background(), []byte("a"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +186,7 @@ func TestAbortAtMaxSessionsRacingOpenKeepsTheConnection(t *testing.T) {
 	testHookAbortForgot = func() {
 		go func() {
 			var err error
-			sb, err = dm.Open([]byte("b"))
+			sb, err = dm.Open(context.Background(), []byte("b"))
 			opened <- err
 		}()
 		// The Open either buffered its OPEN (the code before) or waits for wmu.
@@ -231,7 +231,7 @@ func waitStack(t *testing.T, fn, in string, done chan error) {
 // F4: a Mux takes as many sessions as the connection allows each
 // direction (Config.MaxSessions), not its own 1024 for both.
 func TestMuxHonoursConfigMaxSessions(t *testing.T) {
-	const n = MaxSessions + 100
+	const n = DefaultMaxSessions + 100
 	cfg := v2cfg
 	cfg.MaxSessions = n
 	hold := make(chan struct{})
@@ -243,11 +243,11 @@ func TestMuxHonoursConfigMaxSessions(t *testing.T) {
 		_ = s.Close()
 	}, cfg, cfg)
 	for i := range n {
-		if _, err := dm.Open([]byte("a")); err != nil {
+		if _, err := dm.Open(context.Background(), []byte("a")); err != nil {
 			t.Fatalf("session %d of %d: %v", i, n, err)
 		}
 	}
-	if _, err := dm.Open([]byte("a")); !errors.Is(err, ErrFull) {
+	if _, err := dm.Open(context.Background(), []byte("a")); !errors.Is(err, ErrFull) {
 		t.Fatalf("session past Config.MaxSessions: %v, want ErrFull", err)
 	}
 	for end := time.Now().Add(10 * time.Second); accepted.Load() < n && time.Now().Before(end); time.Sleep(time.Millisecond) {
@@ -263,10 +263,10 @@ func TestMuxHonoursConfigMaxSessions(t *testing.T) {
 // were charged to the new one.
 func TestOpenOfAnOpenIDIsRefused(t *testing.T) {
 	c, l := v2pair(t, v2cfg, v2cfg)
-	if err := c.SendOpen("1", nil); err != nil {
+	if err := c.sendOpenFrame("1", nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.SendOpen("1", nil); !errors.Is(err, errSIDInUse) {
+	if err := c.sendOpenFrame("1", nil); !errors.Is(err, errSIDInUse) {
 		t.Fatalf("second SendOpen of an open id: %v, want errSIDInUse", err)
 	}
 	c.wmu.Lock() // a peer that sends one anyway
@@ -275,11 +275,11 @@ func TestOpenOfAnOpenIDIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = c.Flush()
-	if f, err := l.Recv(); err != nil || !f.Open {
+	_ = c.flush()
+	if f, err := l.recvFrame(); err != nil || !f.Open {
 		t.Fatalf("first open: %+v, %v", f, err)
 	}
-	if f, err := l.Recv(); !errors.Is(err, ErrFrame) {
+	if f, err := l.recvFrame(); !errors.Is(err, ErrFrame) {
 		t.Fatalf("open of an open id: %+v, %v; want ErrFrame", f, err)
 	}
 }
@@ -294,10 +294,10 @@ func TestReceiveLoopReadsWhileARefusalWaits(t *testing.T) {
 	c := dm.c
 	g.mu.Lock()
 	t.Cleanup(g.mu.Unlock)
-	if _, err := lm.Open([]byte("refused")); err != nil {
+	if _, err := lm.Open(context.Background(), []byte("refused")); err != nil {
 		t.Fatal(err)
 	}
-	s, err := lm.Open([]byte("second"))
+	s, err := lm.Open(context.Background(), []byte("second"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -319,7 +319,7 @@ func TestReceiveLoopReadsWhileARefusalWaits(t *testing.T) {
 // returned nil (Mux.sendClose dropped the error).
 func TestCloseWriteReportsAFailedFIN(t *testing.T) {
 	dm, _, g := gatedMuxPair(t, func(_ []byte, s *Session) { <-s.Done() }, v2cfg, v2cfg)
-	s, err := dm.Open([]byte("fin"))
+	s, err := dm.Open(context.Background(), []byte("fin"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -356,22 +356,22 @@ func TestGrantCountsCreditInAWrite(t *testing.T) {
 // Open of it.
 func TestSendOpenAfterCreditOpen(t *testing.T) {
 	c, l := v2pair(t, v2cfg, v2cfg)
-	c.Credit().Open("1")
-	if !c.Credit().Acquire("1", c.Credit().PeerWindow()) {
+	c.credit.Open("1")
+	if !c.credit.Acquire("1", c.credit.PeerWindow()) {
 		t.Fatal("Acquire of the caller's credit")
 	}
-	if err := c.SendOpen("1", nil); err != nil {
+	if err := c.sendOpenFrame("1", nil); err != nil {
 		t.Fatalf("SendOpen after the caller's Credit.Open: %v", err)
 	}
 	if n := c.credit.sessions["1"].n; n != 0 {
 		t.Fatalf("credit after SendOpen = %d, want 0: the acquired window still counts", n)
 	}
-	_ = c.Flush()
-	if f, err := l.Recv(); err != nil || !f.Open {
+	_ = c.flush()
+	if f, err := l.recvFrame(); err != nil || !f.Open {
 		t.Fatalf("open: %+v, %v", f, err)
 	}
-	c.Credit().Open("1")
-	if err := c.SendOpen("1", nil); !errors.Is(err, errSIDInUse) {
+	c.credit.Open("1")
+	if err := c.sendOpenFrame("1", nil); !errors.Is(err, errSIDInUse) {
 		t.Fatalf("SendOpen of a link-opened id after Credit.Open: %v, want errSIDInUse", err)
 	}
 }
@@ -387,7 +387,7 @@ func TestCloseWriteEndingBothHalvesFreesItsSessionAtOnce(t *testing.T) {
 	lcfg.MaxSessions = 1
 	hooked := make(chan struct{}) // the listener's CloseWrite waits for the hook below
 	dm, _ := v2muxPair(t, func(_ []byte, s *Session) { _, _ = io.Copy(s, s); <-hooked; _ = s.CloseWrite() }, v2cfg, lcfg)
-	sa, err := dm.Open([]byte("a"))
+	sa, err := dm.Open(context.Background(), []byte("a"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -407,7 +407,7 @@ func TestCloseWriteEndingBothHalvesFreesItsSessionAtOnce(t *testing.T) {
 				got <- errors.New("session a never ended at the dialer")
 				return
 			}
-			sb, err := dm.Open([]byte("b"))
+			sb, err := dm.Open(context.Background(), []byte("b"))
 			if err == nil {
 				_, err = sb.Write([]byte("echo"))
 			}

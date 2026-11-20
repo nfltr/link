@@ -36,7 +36,7 @@ func (c bufConn) Write(b []byte) (int, error) { return c.w.Write(b) }
 // newTestConn is a bound Conn over nc without a hello: window is this
 // side's window, peerWindow the peer's.
 func newTestConn(nc net.Conn, window, peerWindow int) *Conn {
-	return newConnV2(nc, Config{Window: window, MaxSessions: MaxSessions}, peerWindow, MaxSessions, false)
+	return newConnV2(nc, Config{Window: window, MaxSessions: DefaultMaxSessions}, peerWindow, DefaultMaxSessions, false)
 }
 
 func pair(t *testing.T) (*Conn, *Conn) {
@@ -57,20 +57,20 @@ func TestFramesRoundTrip(t *testing.T) {
 	big := bytes.Repeat([]byte("x"), maxData+5) // split in two frames
 	go func() {
 		for _, err := range []error{
-			ca.SendMsg([]byte("open 7")),
-			ca.SendData("7", []byte("hello")),
-			ca.SendMsg([]byte{0x0a, 0x00}),
-			ca.SendData("_fingerprint", []byte("ab:cd")),
-			ca.SendData("7", big),
-			ca.SendMsg([]byte("close 7")),
-			ca.Flush(),
+			ca.sendMsg([]byte("open 7")),
+			ca.sendDataFrame("7", []byte("hello")),
+			ca.sendMsg([]byte{0x0a, 0x00}),
+			ca.sendDataFrame("_fingerprint", []byte("ab:cd")),
+			ca.sendDataFrame("7", big),
+			ca.sendMsg([]byte("close 7")),
+			ca.flush(),
 		} {
 			if err != nil {
 				t.Error(err)
 			}
 		}
 	}()
-	for i, w := range []Frame{
+	for i, w := range []rxFrame{
 		{Msg: []byte("open 7")},
 		{SID: "7", Data: []byte("hello")},
 		{Msg: []byte{0x0a, 0x00}},
@@ -79,7 +79,7 @@ func TestFramesRoundTrip(t *testing.T) {
 		{SID: "7", Data: big[maxData:]},
 		{Msg: []byte("close 7")},
 	} {
-		got, err := cb.Recv()
+		got, err := cb.recvFrame()
 		if err != nil {
 			t.Fatalf("frame %d: %v", i, err)
 		}
@@ -94,10 +94,10 @@ func TestFramesRoundTrip(t *testing.T) {
 func TestDataFrameIsRaw(t *testing.T) {
 	var buf bytes.Buffer
 	c := newTestConn(bufConn{w: &buf}, testWindow, testWindow)
-	if err := c.SendData("12", []byte("abc")); err != nil {
+	if err := c.sendDataFrame("12", []byte("abc")); err != nil {
 		t.Fatal(err)
 	}
-	_ = c.Flush()
+	_ = c.flush()
 	want := []byte{0, 0, 0, 6, typeData, 2, '1', '2', 'a', 'b', 'c'}
 	if !bytes.Equal(buf.Bytes(), want) {
 		t.Fatalf("got % x, want % x", buf.Bytes(), want)
@@ -106,10 +106,10 @@ func TestDataFrameIsRaw(t *testing.T) {
 
 func TestSendRefusesWhatTheFormatCannotCarry(t *testing.T) {
 	c := newTestConn(bufConn{w: io.Discard}, testWindow, testWindow)
-	if c.SendMsg(nil) == nil {
+	if c.sendMsg(nil) == nil {
 		t.Fatal("empty message sent")
 	}
-	if c.SendData(strings.Repeat("s", MaxSID+1), []byte("x")) == nil {
+	if c.sendDataFrame(strings.Repeat("s", MaxSID+1), []byte("x")) == nil {
 		t.Fatal("session id of 256 bytes sent")
 	}
 }
@@ -127,7 +127,7 @@ func TestRecvRejectsMalformedFrames(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := newTestConn(bufConn{r: bytes.NewReader(raw)}, testWindow, testWindow)
-			if _, err := c.Recv(); err == nil {
+			if _, err := c.recvFrame(); err == nil {
 				t.Fatal("accepted")
 			}
 		})
@@ -137,29 +137,29 @@ func TestRecvRejectsMalformedFrames(t *testing.T) {
 func TestCreditBoundsUnacknowledgedData(t *testing.T) {
 	ca, cb := pair(t)
 	for _, sid := range []string{"slow", "other"} {
-		ca.Credit().Open(sid)
-		cb.Credit().Open(sid)
+		ca.credit.Open(sid)
+		cb.credit.Open(sid)
 	}
 	go func() { // cb's receive loop: frames out, window frames applied
 		for {
-			if _, err := cb.Recv(); err != nil {
+			if _, err := cb.recvFrame(); err != nil {
 				return
 			}
 		}
 	}()
 	for range testWindow / MaxChunk {
-		if !ca.Credit().Acquire("slow", MaxChunk) {
+		if !ca.credit.Acquire("slow", MaxChunk) {
 			t.Fatal("credit within the window refused")
 		}
 	}
 	got := make(chan bool, 1)
-	go func() { got <- ca.Credit().Acquire("slow", MaxChunk) }()
+	go func() { got <- ca.credit.Acquire("slow", MaxChunk) }()
 	select {
 	case <-got:
 		t.Fatal("sent past the peer's window")
 	case <-time.After(50 * time.Millisecond):
 	}
-	if !ca.Credit().Acquire("other", MaxChunk) {
+	if !ca.credit.Acquire("other", MaxChunk) {
 		t.Fatal("a full session held up another")
 	}
 
@@ -167,18 +167,18 @@ func TestCreditBoundsUnacknowledgedData(t *testing.T) {
 	// window, so ca's receive loop (here) applies it.
 	go func() {
 		for {
-			if _, err := ca.Recv(); err != nil {
+			if _, err := ca.recvFrame(); err != nil {
 				return
 			}
 		}
 	}()
-	cb.Credit().Consumed("slow", testWindow/4-1)
+	cb.credit.Consumed("slow", testWindow/4-1)
 	select {
 	case <-got:
 		t.Fatal("credit returned before a quarter window was consumed")
 	case <-time.After(50 * time.Millisecond):
 	}
-	cb.Credit().Consumed("slow", 1)
+	cb.credit.Consumed("slow", 1)
 	select {
 	case ok := <-got:
 		if !ok {
@@ -188,16 +188,16 @@ func TestCreditBoundsUnacknowledgedData(t *testing.T) {
 		t.Fatal("consumed data returned no credit")
 	}
 
-	go func() { got <- ca.Credit().Acquire("slow", testWindow) }() // more than is left
-	ca.Credit().Forget("slow")
-	if ok := <-got; ok || ca.Credit().Acquire("slow", 1) {
+	go func() { got <- ca.credit.Acquire("slow", testWindow) }() // more than is left
+	ca.credit.Forget("slow")
+	if ok := <-got; ok || ca.credit.Acquire("slow", 1) {
 		t.Fatal("a forgotten session still sends")
 	}
-	ca.Credit().Open("late")
-	if !ca.Credit().Acquire("late", testWindow) {
+	ca.credit.Open("late")
+	if !ca.credit.Acquire("late", testWindow) {
 		t.Fatal("a new session has no credit")
 	}
-	go func() { got <- ca.Credit().Acquire("late", 1) }()
+	go func() { got <- ca.credit.Acquire("late", 1) }()
 	_ = ca.Close()
 	select {
 	case ok := <-got:
@@ -224,12 +224,12 @@ func TestCreditCapsMaliciousPeer(t *testing.T) {
 	}
 	recvAll := func(wire []byte, setup func(*Conn)) error {
 		c := newTestConn(bufConn{r: bytes.NewReader(wire)}, testWindow, testWindow)
-		c.Credit().Open("s")
+		c.credit.Open("s")
 		if setup != nil {
 			setup(c)
 		}
 		for {
-			if _, err := c.Recv(); err != nil {
+			if _, err := c.recvFrame(); err != nil {
 				if errors.Is(err, io.EOF) {
 					return nil
 				}
@@ -245,7 +245,7 @@ func TestCreditCapsMaliciousPeer(t *testing.T) {
 	}{
 		"huge grant":             {wire: frameOf(typeWindow, window("s", 1<<32-1)), wantErr: true},
 		"grant on full credit":   {wire: frameOf(typeWindow, window("s", 1)), wantErr: true},
-		"grant of what was sent": {wire: frameOf(typeWindow, window("s", MaxChunk)), setup: func(c *Conn) { c.Credit().Acquire("s", MaxChunk) }},
+		"grant of what was sent": {wire: frameOf(typeWindow, window("s", MaxChunk)), setup: func(c *Conn) { c.credit.Acquire("s", MaxChunk) }},
 		"grant for unknown sid":  {wire: frameOf(typeWindow, window("x", 1<<32-1))},
 		"data up to the window":  {wire: append(data("s", testWindow/2), data("s", testWindow/2)...)},
 		"data past the window":   {wire: append(data("s", testWindow), data("s", 1)...), wantErr: true},
@@ -261,11 +261,11 @@ func TestCreditCapsMaliciousPeer(t *testing.T) {
 	}
 	// Data a message carries is charged by the caller (Received).
 	c := newTestConn(bufConn{r: bytes.NewReader(nil)}, testWindow, testWindow)
-	c.Credit().Open("s")
-	if err := c.Credit().Received("s", testWindow); err != nil {
+	c.credit.Open("s")
+	if err := c.credit.Received("s", testWindow); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.Credit().Received("s", 1); !errors.Is(err, ErrCredit) {
+	if err := c.credit.Received("s", 1); !errors.Is(err, ErrCredit) {
 		t.Fatalf("message data past the window: %v, want ErrCredit", err)
 	}
 }
@@ -276,21 +276,21 @@ func TestCreditReturnedDataIsAcceptedAgain(t *testing.T) {
 	var wire bytes.Buffer
 	peer := newTestConn(bufConn{w: &wire}, testWindow, testWindow)
 	for range 3 {
-		if err := peer.SendData("s", make([]byte, testWindow/2)); err != nil {
+		if err := peer.sendDataFrame("s", make([]byte, testWindow/2)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := peer.Flush(); err != nil {
+	if err := peer.flush(); err != nil {
 		t.Fatal(err)
 	}
 	c := newTestConn(bufConn{r: &wire, w: io.Discard}, testWindow, testWindow)
-	c.Credit().Open("s")
+	c.credit.Open("s")
 	for i := range 3 {
-		if _, err := c.Recv(); err != nil {
+		if _, err := c.recvFrame(); err != nil {
 			t.Fatalf("frame %d: %v", i, err)
 		}
 		if i == 1 {
-			c.Credit().Consumed("s", testWindow/2) // returns half a window
+			c.credit.Consumed("s", testWindow/2) // returns half a window
 		}
 	}
 }
@@ -303,9 +303,9 @@ func TestCreditReturnedDataIsAcceptedAgain(t *testing.T) {
 func TestSendOpenHoldsThePeersMaxSessions(t *testing.T) {
 	for round := range 500 {
 		a, b := net.Pipe()
-		c := newConnV2(a, Config{Window: testWindow, MaxSessions: MaxSessions}, testWindow, 2, false)
+		c := newConnV2(a, Config{Window: testWindow, MaxSessions: DefaultMaxSessions}, testWindow, 2, false)
 		go func() { _, _ = io.Copy(io.Discard, b) }()
-		if err := c.SendOpen("s0", nil); err != nil {
+		if err := c.sendOpenFrame("s0", nil); err != nil {
 			t.Fatal(err)
 		}
 		start := make(chan struct{})
@@ -314,7 +314,7 @@ func TestSendOpenHoldsThePeersMaxSessions(t *testing.T) {
 		for i := range 8 {
 			wg.Go(func() {
 				<-start
-				if c.SendOpen(fmt.Sprint("s", i+1), nil) == nil {
+				if c.sendOpenFrame(fmt.Sprint("s", i+1), nil) == nil {
 					opened.Add(1)
 				}
 			})

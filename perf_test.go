@@ -4,6 +4,7 @@
 package link
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"sync"
@@ -28,7 +29,7 @@ func TestSteadyStateAllocs(t *testing.T) {
 	for _, size := range []int{64, 1 << 10, 4 << 10, 64 << 10} {
 		t.Run(fmt.Sprint(size), func(t *testing.T) {
 			r := newPerfRig(t, "tcp", perfEcho)
-			s, err := r.a.Open([]byte("echo"))
+			s, err := r.a.Open(context.Background(), []byte("echo"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -71,7 +72,7 @@ func TestFramesAndReadsPerMessage(t *testing.T) {
 	} {
 		t.Run(fmt.Sprint(tc.size), func(t *testing.T) {
 			r := newPerfRig(t, "tcp", perfSink)
-			s, err := r.a.Open([]byte("sink"))
+			s, err := r.a.Open(context.Background(), []byte("sink"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -107,7 +108,7 @@ func TestIdleConnHoldsNoReadBuffer(t *testing.T) {
 	served := make(chan struct{})
 	go func() { _ = a.Serve(nil) }()
 	go func() { _ = b.Serve(perfEcho); close(served) }()
-	s, err := a.Open([]byte("echo"))
+	s, err := a.Open(context.Background(), []byte("echo"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,11 +137,11 @@ func TestIdleConnHoldsNoReadBuffer(t *testing.T) {
 func TestShortFramesQueuePacked(t *testing.T) {
 	got := make(chan *Session, 2)
 	dm, _ := v2muxPair(t, func(_ []byte, s *Session) { got <- s }, v2cfg, v2cfg)
-	a, err := dm.Open([]byte("a"))
+	a, err := dm.Open(context.Background(), []byte("a"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := dm.Open([]byte("b"))
+	b, err := dm.Open(context.Background(), []byte("b"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +182,7 @@ func TestManyWritersWakeForTheirTurn(t *testing.T) {
 	const sessions, per = 64, 40
 	ss := make([]*Session, sessions)
 	for i := range ss {
-		s, err := r.a.Open([]byte("sink"))
+		s, err := r.a.Open(context.Background(), []byte("sink"))
 		if err != nil {
 			t.Fatal(err)
 		}

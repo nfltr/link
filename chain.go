@@ -14,13 +14,13 @@ import (
 	"unicode/utf8"
 )
 
-// FeatureChain is feature bit 1 (WIRE.md section 6): the side reads
+// featureChain is feature bit 1 (WIRE.md section 6): the side reads
 // ACCEPT, ABORT and CHAIN-OPEN frames, answers every session opened to it
 // (Accept or Refuse) and opens sessions with CHAIN-OPEN. A connection
 // where both sides announced it carries answers and typed aborts
 // (Session.Answers); one where either did not is byte for byte the
 // v0.9.4 connection.
-const FeatureChain uint32 = 1 << 1
+const featureChain uint32 = 1 << 1
 
 // Trace identifies a path of joined sessions end to end: the origin picks
 // it and every hop carries it unchanged. It is for correlation (logs,
@@ -29,14 +29,14 @@ type Trace [16]byte
 
 // Chain is where an open is on its path.
 type Chain struct {
-	Trace Trace // the origin's; zero in OpenChain: link picks one (crypto/rand)
+	Trace Trace // the origin's; zero in Open: link picks one (crypto/rand)
 	Hops  uint8 // joins the open crossed: 0 from the origin
 }
 
 type chainKey struct{}
 
 // ContextWithChain returns ctx carrying c: Pool.Open (and peerlink.Node's
-// Open) open with it (Mux.OpenChain). Forward hands its Route a ctx
+// Open) open with it (Mux.Open). Forward hands its Route a ctx
 // carrying the inbound session's Chain with Hops+1.
 func ContextWithChain(ctx context.Context, c Chain) context.Context {
 	return context.WithValue(ctx, chainKey{}, c)
@@ -256,9 +256,9 @@ type HopEvent struct {
 func (s *Session) Answers() bool { return s.answers }
 
 // Chain is where the session is on its path: the CHAIN-OPEN's for a
-// session the peer opened, OpenChain's (its Trace picked) for one this
+// session the peer opened, Open's (its Trace picked) for one this
 // side opened. Zero on a connection without FeatureChain, but for
-// OpenChain's own.
+// Open's own.
 func (s *Session) Chain() Chain { return s.chain }
 
 // PathLen is, once Answered returned nil, the hops beyond the peer to the
@@ -361,10 +361,10 @@ func (s *Session) AbortWith(a *Abort) error {
 		if s.answers {
 			err = s.m.c.sendAbort(s.id, a)
 		} else {
-			err = s.m.c.SendReset(s.id)
+			err = s.m.c.sendResetFrame(s.id)
 		}
 		if err == nil {
-			_ = s.m.c.Flush()
+			_ = s.m.c.flush()
 		}
 	})
 	return nil

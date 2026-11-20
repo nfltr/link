@@ -5,6 +5,7 @@ package link
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"testing"
 	"time"
@@ -28,16 +29,16 @@ func TestJoinWholeCloseDeliversTheTail(t *testing.T) {
 	})
 	onward := make(chan *Session, 1)
 	relay := muxPair(t, func(_ []byte, in *Session) {
-		out, err := agent.Open([]byte("agent"))
+		out, err := agent.Open(context.Background(), []byte("agent"))
 		if err != nil {
 			t.Error(err)
 			_ = in.Close()
 			return
 		}
 		onward <- out
-		_ = Join(in, out)
+		_ = join(in, out)
 	})
-	c, err := relay.Open([]byte("client"))
+	c, err := relay.Open(context.Background(), []byte("client"))
 	if err != nil {
 		t.Fatal(err)
 	}

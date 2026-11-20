@@ -4,6 +4,7 @@
 package link
 
 import (
+	"context"
 	"io"
 	"testing"
 	"time"
@@ -24,7 +25,7 @@ func TestSessionOnGrant(t *testing.T) {
 			readDone <- n
 		}
 	})
-	s, err := client.Open([]byte("slow"))
+	s, err := client.Open(context.Background(), []byte("slow"))
 	if err != nil {
 		t.Fatal(err)
 	}

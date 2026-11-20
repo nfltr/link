@@ -97,13 +97,13 @@ func TestSlowFrameIsNoDeadPeer(t *testing.T) {
 		t.Run(strconv.Itoa(size), func(t *testing.T) {
 			t.Parallel()
 			a, raw := net.Pipe()
-			c := newConnV2(a, Config{Window: testWindow, MaxSessions: MaxSessions, Liveness: live}, testWindow, MaxSessions, false)
+			c := newConnV2(a, Config{Window: testWindow, MaxSessions: DefaultMaxSessions, Liveness: live}, testWindow, DefaultMaxSessions, false)
 			t.Cleanup(func() { _ = c.Close(); _ = raw.Close() })
 			go func() { _, _ = io.Copy(io.Discard, raw) }() // c's pings
 			c.up(nil, Identity{})
 			got := make(chan error, 1)
 			go func() {
-				f, err := c.Recv()
+				f, err := c.recvFrame()
 				if err == nil && len(f.Msg) != size {
 					err = fmt.Errorf("message of %d bytes, want %d", len(f.Msg), size)
 				}
@@ -119,7 +119,7 @@ func TestSlowFrameIsNoDeadPeer(t *testing.T) {
 			for off := 0; off < size; off += step {
 				time.Sleep(100 * time.Millisecond)
 				if _, err := raw.Write(body[off:min(off+step, size)]); err != nil {
-					t.Fatalf("at %d of %d: %v (%v)", off, size, err, c.Err())
+					t.Fatalf("at %d of %d: %v (%v)", off, size, err, c.endErr())
 				}
 			}
 			if err := <-got; err != nil {

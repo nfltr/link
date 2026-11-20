@@ -21,7 +21,7 @@ import (
 //	Pool      n: Min, c: Max
 //	Start     an Open begins (o)
 //	Pick      t: closed | place (c) | dial | full | wait; grow: a background growth dial (unmodelled)
-//	Place     n: 1 when OpenChain on c opened the session, 0 when it sends the Open back to pick
+//	Place     n: 1 when Open on c opened the session, 0 when it sends the Open back to pick
 //	OpenErr   Open returned another error (unmodelled)
 //	End       the session Open o placed on c ended (its Done)
 //	MaintainWait, MaintainDial: maintain's check waits on p.changed or reserves a dial

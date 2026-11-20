@@ -70,7 +70,7 @@ const (
 	// code 2 only to a peer that announced it, else code 0.
 	featureReset uint32 = 1 << 0
 
-	features = featureReset | FeatureChain | FeatureEndAck // what this package announces
+	features = featureReset | featureChain | featureEndAck // what this package announces
 )
 
 // traceLen is a CHAIN-OPEN's trace.
@@ -130,12 +130,12 @@ var (
 	errHeader = errors.New("link: session header too long")
 )
 
-// Frame is a received frame: a session's data (SID, Data), a message
+// rxFrame is a received frame: a session's data (SID, Data), a message
 // (Msg, the caller's bytes), a session's open (SID, Open,
 // Header: the opener's bytes) or close (SID, Close; Half when the peer
 // only stopped sending). Window, ping, pong and goaway frames never
 // surface: Recv applies them.
-type Frame struct {
+type rxFrame struct {
 	SID    string
 	Data   []byte
 	Msg    []byte
@@ -239,7 +239,7 @@ type Conn struct {
 func newConnV2(nc net.Conn, cfg Config, peerWindow, peerMaxSessions int, dialer bool) *Conn {
 	c := &Conn{nc: nc}
 	c.credit = NewCredit(cfg.Window, peerWindow, c.sendWindow)
-	c.credit.flush = c.Flush
+	c.credit.flush = c.flush
 	c.dialer, c.peerMaxSessions, c.live = dialer, peerMaxSessions, cfg.Liveness
 	c.maxSessions = cfg.MaxSessions
 	c.hop = cfg.Hop
@@ -266,32 +266,19 @@ func (c *Conn) up(obs Observer, id Identity) {
 }
 
 // chain reports whether both sides announced FeatureChain.
-func (c *Conn) chain() bool { return c.features&c.peerFeatures&FeatureChain != 0 }
+func (c *Conn) chain() bool { return c.features&c.peerFeatures&featureChain != 0 }
 
 // endAcks reports whether both sides announced FeatureEndAck.
-func (c *Conn) endAcks() bool { return c.features&c.peerFeatures&FeatureEndAck != 0 }
-
-// Credit is the connection's per-session flow control: a caller with its
-// own receive loop acquires credit before SendData (Credit.Acquire) and
-// acknowledges what it consumed (Credit.Consumed).
-func (c *Conn) Credit() *Credit { return c.credit }
+func (c *Conn) endAcks() bool { return c.features&c.peerFeatures&featureEndAck != 0 }
 
 // Version is the connection's wire version: 2, the only one since v0.5.0.
 func (c *Conn) Version() int { return MaxVersion }
 
-// Identity is who the peer is, as the listener's Authenticator said (zero
-// on the dialer).
-func (c *Conn) Identity() Identity { return c.id }
-
-// PeerMaxSessions is how many sessions this side may have open toward the
-// peer at once.
-func (c *Conn) PeerMaxSessions() int { return c.peerMaxSessions }
-
-// SendMsg buffers a message frame; Flush, or a full buffer, writes it. The
+// sendMsg buffers a message frame; Flush, or a full buffer, writes it. The
 // caller does not modify b afterwards. The peer reads it from Recv
 // (Frame.Msg); a Mux on the peer drops it, so messages are for callers that
 // drive the Conn themselves.
-func (c *Conn) SendMsg(b []byte) error {
+func (c *Conn) sendMsg(b []byte) error {
 	if len(b) == 0 {
 		return errEmpty
 	}
@@ -300,11 +287,11 @@ func (c *Conn) SendMsg(b []byte) error {
 	return c.frameLocked(typeMsg, "", b, nil)
 }
 
-// SendData buffers sid's data as data frames, as SendMsg does. The caller
+// sendDataFrame buffers sid's data as data frames, as SendMsg does. The caller
 // acquired credit for it (Credit().Acquire). On a FeatureChain connection
 // the first data or close of a session the peer opened is preceded by an
 // ACCEPT when nothing answered it yet (a Mux's Session answers itself).
-func (c *Conn) SendData(sid string, data []byte) error {
+func (c *Conn) sendDataFrame(sid string, data []byte) error {
 	if len(sid) > MaxSID {
 		return errSID
 	}
@@ -380,14 +367,14 @@ func (c *Conn) dataLocked(sid string, data []byte, wd *writeDeadline, recheck fu
 	return nil
 }
 
-// SendOpen buffers an OPEN frame for session sid, with header
+// sendOpenFrame buffers an OPEN frame for session sid, with header
 // (the opener's bytes, at most 64 KiB), and starts the session's credit
 // (or takes over the credit its caller opened with Credit.Open). It
 // refuses an id the link opened whose credit lives (WIRE.md section 5).
 // It refuses a session past the peer's max sessions (ErrFull) and any on a
 // connection that is going away (ErrGoAway). On a FeatureChain
 // connection the frame is a CHAIN-OPEN with a zero Chain.
-func (c *Conn) SendOpen(sid string, header []byte) error {
+func (c *Conn) sendOpenFrame(sid string, header []byte) error {
 	return c.sendOpen(sid, header, Chain{})
 }
 
@@ -575,10 +562,10 @@ func (s *ConnStats) add(o ConnStats) {
 	s.CreditWait += o.CreditWait
 }
 
-// SendClose buffers a CLOSE frame for sid: half, the side
+// sendCloseFrame buffers a CLOSE frame for sid: half, the side
 // sends no more of the session and still takes the peer's; else it
 // neither sends nor takes more, and the session's credit ends.
-func (c *Conn) SendClose(sid string, half bool) error {
+func (c *Conn) sendCloseFrame(sid string, half bool) error {
 	code := byte(closeFull)
 	if half {
 		code = closeHalf
@@ -586,10 +573,10 @@ func (c *Conn) SendClose(sid string, half bool) error {
 	return c.sendClose(sid, code)
 }
 
-// SendReset is SendClose of the whole session saying it failed: a peer
+// sendResetFrame is SendClose of the whole session saying it failed: a peer
 // that reads CLOSE code 2 (link v0.3.0 and later) reads it as a reset,
 // an older one as a close.
-func (c *Conn) SendReset(sid string) error {
+func (c *Conn) sendResetFrame(sid string) error {
 	code := byte(closeFull)
 	if c.peerFeatures&featureReset != 0 {
 		code = closeReset
@@ -641,10 +628,10 @@ func (c *Conn) sendCloseLocked(sid string, code byte) error {
 	return err
 }
 
-// GoAway tells the peer to open no more sessions on this
+// goAway tells the peer to open no more sessions on this
 // connection: the open ones may run for drain, then this side closes it.
 // It also stops this side opening more (ErrGoAway). It writes at once.
-func (c *Conn) GoAway(drain time.Duration, reason string) error {
+func (c *Conn) goAway(drain time.Duration, reason string) error {
 	if len(reason) > maxReason {
 		reason = reason[:maxReason]
 	}
@@ -731,28 +718,15 @@ func (c *Conn) synced(t int64) {
 	c.syncs = c.syncs[:k]
 }
 
-// Drained is closed once the peer answered a ping this side
-// sent after its GOAWAY (Mux.Drain sends one at once): the peer has read
-// the GOAWAY, so it opens nothing more here, and every OPEN it sent
-// before has arrived (frames keep their order). An OPEN that crossed the
-// GOAWAY is a session like any other; one after Drained breaks the
-// protocol. A peer before v0.4.2 answers only one of two pings that
-// arrive together: then a later ping of the liveness's closes it, or the
-// drain deadline ends the connection.
-func (c *Conn) Drained() <-chan struct{} { return c.drained }
-
-// PeerGoAway is closed once the peer sent GOAWAY.
-func (c *Conn) PeerGoAway() <-chan struct{} { return c.peerGoAway }
-
-// GoingAway reports whether either side sent GOAWAY.
-func (c *Conn) GoingAway() bool { return c.goingAway.Load() }
+// isGoingAway reports whether either side sent GOAWAY.
+func (c *Conn) isGoingAway() bool { return c.goingAway.Load() }
 
 // Done is closed once the connection is closed.
 func (c *Conn) Done() <-chan struct{} { return c.credit.closed }
 
-// Err is why the connection ended when the link ended it (ErrDeadPeer),
+// endErr is why the connection ended when the link ended it (ErrDeadPeer),
 // else nil.
-func (c *Conn) Err() error {
+func (c *Conn) endErr() error {
 	c.errMu.Lock()
 	defer c.errMu.Unlock()
 	return c.err
@@ -1134,10 +1108,10 @@ func (c *Conn) writeFailed() bool {
 	return c.werr != nil
 }
 
-// Flush writes the buffered frames: inline when no write is in flight,
+// flush writes the buffered frames: inline when no write is in flight,
 // else the write in flight takes them next. The buffer goes back to the
 // pool once written, so an idle connection holds none.
-func (c *Conn) Flush() error {
+func (c *Conn) flush() error {
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
 	c.flushLocked()
@@ -1154,15 +1128,15 @@ func (c *Conn) flushLocked() {
 	}
 }
 
-// Recv returns the next data, message, open or close frame; it applies
+// recvFrame returns the next data, message, open or close frame; it applies
 // the others itself and charges data frames against their session's
 // window. A peer that breaks the credit rules gets ErrCredit (credit.go);
 // the caller closes the connection on any error. A connection the link
 // ended returns why (ErrDeadPeer).
-func (c *Conn) Recv() (Frame, error) {
+func (c *Conn) recvFrame() (rxFrame, error) {
 	f, err := c.next()
 	if err != nil {
-		return Frame{}, err
+		return rxFrame{}, err
 	}
 	if f.sid != nil { // a data frame: the caller's own sid and payload
 		f.SID = string(f.sid)
@@ -1172,7 +1146,7 @@ func (c *Conn) Recv() (Frame, error) {
 			f.Data = d
 		}
 	}
-	return f.Frame, nil
+	return f.rxFrame, nil
 }
 
 // next is Recv for a receive loop that takes a data frame's sid and short
@@ -1181,7 +1155,7 @@ func (c *Conn) next() (rframe, error) {
 	for {
 		f, ok, err := c.recv()
 		if err != nil {
-			if e := c.Err(); e != nil {
+			if e := c.endErr(); e != nil {
 				return rframe{}, e
 			}
 			c.lost(err)
@@ -1224,9 +1198,9 @@ func (c *Conn) recv() (rframe, bool, error) {
 			if err != nil {
 				return rframe{}, false, err
 			}
-			return rframe{sid: b[:l], Frame: Frame{Data: b[l:]}, view: true}, true, nil
+			return rframe{sid: b[:l], rxFrame: rxFrame{Data: b[l:]}, view: true}, true, nil
 		}
-		f := rframe{sid: c.rhdr[6 : 6+l], Frame: Frame{Data: newData(n - 1 - l)}}
+		f := rframe{sid: c.rhdr[6 : 6+l], rxFrame: rxFrame{Data: newData(n - 1 - l)}}
 		if err := c.readFull(f.sid); err != nil {
 			return rframe{}, false, err
 		}
@@ -1240,7 +1214,7 @@ func (c *Conn) recv() (rframe, bool, error) {
 		if err := c.readFull(b[1:]); err != nil {
 			return rframe{}, false, err
 		}
-		return rframe{Frame: Frame{Msg: b}}, true, nil
+		return rframe{rxFrame: rxFrame{Msg: b}}, true, nil
 	case typeWindow:
 		b, err := c.small(n, 5, 5+MaxSID)
 		if err != nil {
@@ -1275,12 +1249,12 @@ func (c *Conn) recv() (rframe, bool, error) {
 		if traceOn {
 			traceEv(c.credit.tr, traceEvent{ev: "Recv", t: "open", sid: sid})
 		}
-		f := Frame{SID: sid, Open: true, Header: b[l+fixed:]}
+		f := rxFrame{SID: sid, Open: true, Header: b[l+fixed:]}
 		if fixed > 0 {
 			f.Chain.Hops = b[l]
 			copy(f.Chain.Trace[:], b[l+1:])
 		}
-		return rframe{Frame: f}, true, nil
+		return rframe{rxFrame: f}, true, nil
 	case typeAccept:
 		if !c.chain() {
 			return rframe{}, false, ErrFrame
@@ -1301,7 +1275,7 @@ func (c *Conn) recv() (rframe, bool, error) {
 		if err != nil || !known {
 			return rframe{}, false, err // an unknown session's: ignored
 		}
-		return rframe{Frame: Frame{SID: sid, Accept: true, Chain: Chain{Hops: b[n-1]}}}, true, nil
+		return rframe{rxFrame: rxFrame{SID: sid, Accept: true, Chain: Chain{Hops: b[n-1]}}}, true, nil
 	case typeAbort:
 		l := int(c.rhdr[5])
 		if !c.chain() || n < 9+l || n > 9+l+MaxAbortMsg {
@@ -1330,7 +1304,7 @@ func (c *Conn) recv() (rframe, bool, error) {
 			traceEv(c.credit.tr, traceEvent{ev: "Recv", t: "close", sid: sid, n: code})
 		}
 		c.abort(a, true)
-		return rframe{Frame: Frame{SID: sid, Close: true, Reset: true, Abort: a}}, true, nil
+		return rframe{rxFrame: rxFrame{SID: sid, Close: true, Reset: true, Abort: a}}, true, nil
 	case typeClose:
 		b, err := c.small(n, 2, 2+MaxSID)
 		if err != nil {
@@ -1351,7 +1325,7 @@ func (c *Conn) recv() (rframe, bool, error) {
 		default:
 			c.credit.Forget(sid)
 		}
-		return rframe{Frame: Frame{SID: sid, Close: true, Half: half, Reset: b[n-1] == closeReset}}, true, nil
+		return rframe{rxFrame: rxFrame{SID: sid, Close: true, Half: half, Reset: b[n-1] == closeReset}}, true, nil
 	case typePing, typePong:
 		b, err := c.small(n, pingLen, pingLen)
 		if err != nil {
@@ -1414,16 +1388,16 @@ func (c *Conn) recv() (rframe, bool, error) {
 		if l := int(b[0]); l != n-1 {
 			return rframe{}, false, ErrFrame
 		}
-		return rframe{Frame: Frame{SID: string(b[1:n]), EndAck: true}}, true, nil
+		return rframe{rxFrame: rxFrame{SID: string(b[1:n]), EndAck: true}}, true, nil
 	default:
 		return rframe{}, false, ErrFrame
 	}
 }
 
-// SendEndAck buffers an ENDACK for sid (FeatureEndAck): this side's
+// sendEndAck buffers an ENDACK for sid (FeatureEndAck): this side's
 // reader took the peer's half close (WIRE.md section 13). On a
 // connection without the bit it sends nothing.
-func (c *Conn) SendEndAck(sid string) error {
+func (c *Conn) sendEndAck(sid string) error {
 	if len(sid) > MaxSID {
 		return errSID
 	}

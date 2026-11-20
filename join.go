@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-// Join splices a and b, sessions of the same Mux or of two, until both
+// join splices a and b, sessions of the same Mux or of two, until both
 // directions ended, and returns nil after a clean end, else the *Abort it
 // sent on (the first). It answers either one the peer opened and that is
 // not answered yet (Accept).
@@ -25,20 +25,20 @@ import (
 // CloseWrite passed on is buffered on the other session's connection, not
 // yet read by its peer (a session's interface, spec/README.md); a caller
 // that needs the far end to have read it waits for its answer, and
-// peerlink.Join, which ends a plain conn, syncs first. An error on either side (an Abort or
+// peerlink.join, which ends a plain conn, syncs first. An error on either side (an Abort or
 // Reset, its connection's end, a write deadline set on a session that
 // passed) aborts the other: an *Abort received goes on with Hops+1 (a
 // plain reset as CodeUnspecified, Hops 1), a local cause as an Abort with
 // Hops 0 and CodeConnLost, CodeTimeout or CodeDrainDeadline.
 //
-// Join takes a batch (at most 256 KiB) from one side's receive queue only
+// join takes a batch (at most 256 KiB) from one side's receive queue only
 // when it writes it to the other, and the queue returns credit as bytes
 // leave it: what a joined session holds is its two windows plus two
 // batches. It holds no goroutine while the sessions are idle (Pump):
-// only the caller's waits in Join. Join sets no deadline; idle limits are
+// only the caller's waits in join. join sets no deadline; idle limits are
 // the caller's, who may Abort either session. An Observer of a's
 // connection (else b's) gets a HopEnded event.
-func Join(a, b *Session) error {
+func join(a, b *Session) error {
 	_ = a.answer(0, true)
 	_ = b.answer(0, true)
 	ch := make(chan error, 1)
@@ -52,7 +52,7 @@ func Join(a, b *Session) error {
 // else that gives a *Session), or returns why not: an *Abort (its Code and
 // Msg answer in), ErrGoAway (CodeDraining) or any other error
 // (CodeNoRoute, with its text). ctx
-// carries in's Chain with Hops+1 (Pool.Open and Mux.OpenChain read it:
+// carries in's Chain with Hops+1 (Pool.Open and Mux.Open read it:
 // ChainFromContext) and ends when in ends, when ForwardConfig's
 // AnswerTimeout passes, or once the onward answer came. A Route may wait
 // for the onward answer itself (Answered) to try another next hop.
@@ -265,7 +265,7 @@ func (w *joinWriter) Write(p []byte) (int, error) {
 }
 
 func (w *joinWriter) WriteBuffers(b [][]byte) (int64, error) {
-	n, err := w.s.WriteBuffers(b)
+	n, err := w.s.writeBuffers(b)
 	if err != nil {
 		w.err = err
 	}
@@ -297,7 +297,7 @@ func (j *joint) dir(i int) {
 	if traceOn {
 		w.traceJoinW(j, i)
 	}
-	j.s[i].Pump(w, func(n int64, err error) { j.ended(i, n, err, w.err) })
+	j.s[i].startPump(w, func(n int64, err error) { j.ended(i, n, err, w.err) })
 }
 
 // answered ends the wait for the onward answer: accepted, direction 1

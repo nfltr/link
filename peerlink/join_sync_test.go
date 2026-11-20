@@ -124,7 +124,7 @@ func TestJoinCleanEndOnlyOnceThePeerReadTheFIN(t *testing.T) {
 	}
 	rm := link.NewMux(rc)
 	go func() { _ = rm.Serve(nil) }()
-	s, err := rm.Open([]byte("h"))
+	s, err := rm.Open(context.Background(), []byte("h"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +197,7 @@ func TestJoinPeerFinDuringSyncIsHeld(t *testing.T) {
 	}
 	rm := link.NewMux(rc)
 	go func() { _ = rm.Serve(nil) }()
-	s, err := rm.Open([]byte("h"))
+	s, err := rm.Open(context.Background(), []byte("h"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +253,7 @@ func TestJoinLostWhileTheClientIsIdle(t *testing.T) {
 	}
 	rm := link.NewMux(rc)
 	go func() { _ = rm.Serve(nil) }()
-	s, err := rm.Open([]byte("h"))
+	s, err := rm.Open(context.Background(), []byte("h"))
 	if err != nil {
 		t.Fatal(err)
 	}

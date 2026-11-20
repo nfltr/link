@@ -21,7 +21,7 @@ func openPair(t *testing.T, dialer, listener Config) (*Session, *Session) {
 	t.Helper()
 	got := make(chan *Session, 1)
 	dm, _ := v2muxPair(t, func(_ []byte, s *Session) { got <- s }, dialer, listener)
-	s, err := dm.Open([]byte("h"))
+	s, err := dm.Open(context.Background(), []byte("h"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestSessionWriteBuffers(t *testing.T) {
 	want := bytes.Repeat([]byte("0123456789abcdef"), 3*testWindow/16+5)
 	bufs := [][]byte{want[:7], want[7 : len(want)/2], want[len(want)/2:]}
 	go func() {
-		if n, err := p.WriteBuffers(bufs); err != nil || n != int64(len(want)) {
+		if n, err := p.writeBuffers(bufs); err != nil || n != int64(len(want)) {
 			t.Errorf("WriteBuffers: %d, %v", n, err)
 		}
 		_ = p.CloseWrite()
@@ -115,8 +115,8 @@ func TestSessionResetToAnOldPeer(t *testing.T) {
 	if b, err := io.ReadAll(s); err != nil || len(b) != 0 {
 		t.Fatalf("read %q, %v; want a clean end", b, err)
 	}
-	if s.m.c.Err() != nil {
-		t.Fatalf("connection failed: %v", s.m.c.Err())
+	if s.m.c.endErr() != nil {
+		t.Fatalf("connection failed: %v", s.m.c.endErr())
 	}
 }
 
@@ -298,13 +298,13 @@ func TestMuxDropsDataOfASessionWithoutCredit(t *testing.T) {
 	c, l := v2pair(t, v2cfg, v2cfg)
 	got := make(chan *Session, 1)
 	go func() { _ = NewMux(l).Serve(func(_ []byte, s *Session) { got <- s }) }()
-	if err := c.SendOpen("1", []byte("h")); err != nil {
+	if err := c.sendOpenFrame("1", []byte("h")); err != nil {
 		t.Fatal(err)
 	}
-	_ = c.Flush()
+	_ = c.flush()
 	s := <-got
 	l.credit.Forget("1") // as Conn.sendClose and Conn.sendAbort do before their frame
-	for _, err := range []error{c.SendData("1", []byte("late")), c.SendClose("1", true), c.Flush()} {
+	for _, err := range []error{c.sendDataFrame("1", []byte("late")), c.sendCloseFrame("1", true), c.flush()} {
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -326,7 +326,7 @@ func TestCloseWriteRacingThePeersFINDropsAfterItsCLOSE(t *testing.T) {
 	dm, _ := v2muxPair(t, func(_ []byte, s *Session) { got <- s }, v2cfg, v2cfg)
 	t.Cleanup(func() { _ = dm.Close() })
 	open := func() (*Session, *Session) {
-		s, err := dm.Open([]byte("h"))
+		s, err := dm.Open(context.Background(), []byte("h"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -383,20 +383,20 @@ func TestWriteAfterRefuseSendsNoData(t *testing.T) {
 	if _, err := p.m.c.sendData(p.id, []byte("x"), &p.wd, &p.halfClosed, true); err != io.ErrClosedPipe {
 		t.Fatalf("data after the refusal took the answer: %v, want io.ErrClosedPipe", err)
 	}
-	if err := s.m.c.Flush(); err != nil || s.m.c.Err() != nil {
-		t.Fatalf("the opener's connection: %v %v", err, s.m.c.Err())
+	if err := s.m.c.flush(); err != nil || s.m.c.endErr() != nil {
+		t.Fatalf("the opener's connection: %v %v", err, s.m.c.endErr())
 	}
 	p.once.Do(func() { // its second (AbortWith)
 		defer p.m.drop(p)
 		_ = p.m.c.sendAbort(p.id, &Abort{Refused: true, Code: CodeApp, Msg: "no"})
-		_ = p.m.c.Flush()
+		_ = p.m.c.flush()
 	})
 	if err := s.Answered(context.Background()); err == nil {
 		t.Fatal("the opener read no refusal")
 	}
 	select {
 	case <-s.m.c.Done():
-		t.Fatalf("the opener's connection ended: %v", s.m.c.Err())
+		t.Fatalf("the opener's connection ended: %v", s.m.c.endErr())
 	default:
 	}
 }

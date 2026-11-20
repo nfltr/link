@@ -53,12 +53,12 @@ func FuzzServerHello(f *testing.F) {
 			return
 		}
 		defer c.Close() //nolint:errcheck
-		if c.Credit().PeerWindow() < MinWindow || c.Credit().PeerWindow() > MaxWindow {
-			t.Fatalf("bound a peer window of %d", c.Credit().PeerWindow())
+		if c.credit.PeerWindow() < MinWindow || c.credit.PeerWindow() > MaxWindow {
+			t.Fatalf("bound a peer window of %d", c.credit.PeerWindow())
 		}
 		if c.Version() == 2 {
-			if c.PeerMaxSessions() < 1 || c.PeerMaxSessions() > maxSessionsWire || c.live.Validate() != nil {
-				t.Fatalf("bound max sessions %d liveness %v", c.PeerMaxSessions(), c.live)
+			if c.peerMaxSessions < 1 || c.peerMaxSessions > maxSessionsWire || c.live.Validate() != nil {
+				t.Fatalf("bound max sessions %d liveness %v", c.peerMaxSessions, c.live)
 			}
 		}
 	})
@@ -92,8 +92,8 @@ func FuzzClientReply(f *testing.F) {
 			}
 		case err == nil:
 			defer c.Close() //nolint:errcheck
-			if reply[0] != statusBound || reply[1] != 2 || c.Credit().PeerWindow() != int(binary.BigEndian.Uint32(reply[6:])) ||
-				c.Credit().PeerWindow() < MinWindow || c.Credit().PeerWindow() > MaxWindow {
+			if reply[0] != statusBound || reply[1] != 2 || c.credit.PeerWindow() != int(binary.BigEndian.Uint32(reply[6:])) ||
+				c.credit.PeerWindow() < MinWindow || c.credit.PeerWindow() > MaxWindow {
 				t.Fatalf("bound on %x", reply)
 			}
 		}
@@ -139,7 +139,7 @@ func chainSeeds(f *testing.F) [][]byte {
 	var seeds [][]byte
 	for _, send := range []func() error{
 		func() error { return c.sendAccept("7", 2) },
-		func() error { return c.SendData("7", []byte("after the accept")) },
+		func() error { return c.sendDataFrame("7", []byte("after the accept")) },
 		func() error { return c.sendAbort("7", &Abort{Refused: true, Code: CodeHopLimit, Hops: 3, Msg: "loop"}) },
 		func() error { return c.sendAbort("7", &Abort{Code: CodeApp + 1, Msg: "reset"}) },
 		func() error { return c.sendOpen("9", []byte("hdr"), Chain{Hops: 4, Trace: Trace{1, 2, 3}}) },
@@ -148,7 +148,7 @@ func chainSeeds(f *testing.F) [][]byte {
 		if err := send(); err != nil {
 			f.Fatal(err)
 		}
-		if err := c.Flush(); err != nil {
+		if err := c.flush(); err != nil {
 			f.Fatal(err)
 		}
 		seeds = append(seeds, bytes.Clone(out.Bytes()))
@@ -162,18 +162,18 @@ func recvV2(t *testing.T, wire []byte, chain bool) {
 		c.features, c.peerFeatures = features, features
 		c.credit.open("7", byUs)
 	} else {
-		c.Credit().Open("7")
+		c.credit.Open("7")
 	}
 	answers := 0
 	{
 		accepted := 0
 		for {
-			m, err := c.Recv()
+			m, err := c.recvFrame()
 			if s := c.credit.sessions["7"]; s != nil && s.n > testWindow {
 				t.Fatalf("send credit %d past the peer's window", s.n)
 			}
-			if c.Credit().count(byPeer) > c.maxSessions {
-				t.Fatalf("%d sessions open by the peer, max %d", c.Credit().count(byPeer), c.maxSessions)
+			if c.credit.count(byPeer) > c.maxSessions {
+				t.Fatalf("%d sessions open by the peer, max %d", c.credit.count(byPeer), c.maxSessions)
 			}
 			if err != nil {
 				return
@@ -211,13 +211,13 @@ func FuzzMuxServeV2(f *testing.F) {
 	var sent bytes.Buffer
 	s := v2Conn(bufConn{w: &sent})
 	for _, err := range []error{
-		s.SendOpen("1", []byte("h")),
-		s.SendData("1", []byte("hello")),
-		s.SendClose("1", true),
-		s.SendOpen("3", nil),
-		s.SendClose("3", false),
-		s.SendData("5", []byte("orphan")),
-		s.Flush(),
+		s.sendOpenFrame("1", []byte("h")),
+		s.sendDataFrame("1", []byte("hello")),
+		s.sendCloseFrame("1", true),
+		s.sendOpenFrame("3", nil),
+		s.sendCloseFrame("3", false),
+		s.sendDataFrame("5", []byte("orphan")),
+		s.flush(),
 	} {
 		if err != nil {
 			f.Fatal(err)
@@ -276,12 +276,12 @@ func FuzzForward(f *testing.F) {
 	s.features, s.peerFeatures = features, features
 	for _, err := range []error{
 		s.sendOpen("1", []byte("echo"), Chain{Trace: Trace{7}}),
-		s.SendData("1", []byte("hello")),
-		s.SendClose("1", true),
+		s.sendDataFrame("1", []byte("hello")),
+		s.sendCloseFrame("1", true),
 		s.sendOpen("3", []byte("refuse"), Chain{Hops: 7}),
 		s.sendOpen("5", []byte("echo"), Chain{Hops: 200}),
 		s.sendAbort("1", &Abort{Code: CodeApp}),
-		s.Flush(),
+		s.flush(),
 	} {
 		if err != nil {
 			f.Fatal(err)
@@ -319,8 +319,7 @@ func FuzzForward(f *testing.F) {
 		c.features, c.peerFeatures = features, features
 		m := NewMux(c)
 		route := func(ctx context.Context, in *Session) (*Session, error) {
-			ch, _ := ChainFromContext(ctx)
-			return onward.OpenChain(in.Header(), ch)
+			return onward.Open(ctx, in.Header())
 		}
 		if err := m.Serve(Forward(route, ForwardConfig{AnswerTimeout: time.Second})); err == nil {
 			t.Fatal("Serve returned nil")

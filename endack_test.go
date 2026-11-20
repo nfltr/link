@@ -5,6 +5,7 @@ package link
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"net"
@@ -74,14 +75,14 @@ func newHopRigMute(t *testing.T, mute bool) *hopRig {
 	go func() { _ = r.cMux.Serve(func(_ []byte, s *Session) { accepted <- s }) }()
 	t.Cleanup(func() { _ = r.hToC.Close(); _ = r.cMux.Close() })
 	am, _ := v2muxPair(t, func(_ []byte, in *Session) {
-		out, err := r.hToC.Open([]byte("c"))
+		out, err := r.hToC.Open(context.Background(), []byte("c"))
 		if err != nil {
 			_ = in.Reset()
 			return
 		}
-		_ = Join(in, out)
+		_ = join(in, out)
 	}, Config{Window: testWindow, Auth: testToken, endAckIdle: idle}, Config{Window: testWindow, Auth: testToken, Hop: true, endAckIdle: idle})
-	if r.a, err = am.Open([]byte("h")); err != nil {
+	if r.a, err = am.Open(context.Background(), []byte("h")); err != nil {
 		t.Fatal(err)
 	}
 	r.c = <-accepted
@@ -107,7 +108,7 @@ func TestEndAckWaitsForTheFarEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	ret := make(chan error, 1)
-	go func() { ret <- r.a.CloseWriteSync() }()
+	go func() { ret <- r.a.closeWriteSync() }()
 	select {
 	case err := <-ret:
 		t.Fatalf("CloseWriteSync returned %v while C's connection carried nothing", err)
@@ -136,7 +137,7 @@ func TestEndAckFailsWhenTheFarEndIsCut(t *testing.T) {
 		t.Fatal(err)
 	}
 	ret := make(chan error, 1)
-	go func() { ret <- r.a.CloseWriteSync() }()
+	go func() { ret <- r.a.closeWriteSync() }()
 	time.Sleep(100 * time.Millisecond) // the hop holds the end
 	_ = r.hToC.Close()                 // C's connection ends at the hop
 	select {
@@ -160,7 +161,7 @@ func TestEndAckGivesUpWithoutProgress(t *testing.T) {
 		t.Fatal(err)
 	}
 	ret := make(chan error, 1)
-	go func() { ret <- r.a.CloseWriteSync() }()
+	go func() { ret <- r.a.closeWriteSync() }()
 	select {
 	case err := <-ret:
 		if err == nil {

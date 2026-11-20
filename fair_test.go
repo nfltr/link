@@ -84,7 +84,7 @@ func TestSessionsTakeTurnsOnASlowConn(t *testing.T) {
 	start := time.Now()
 	var wg sync.WaitGroup
 	for i := range n {
-		s, err := dm.Open([]byte{byte(i)})
+		s, err := dm.Open(context.Background(), []byte{byte(i)})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -159,7 +159,7 @@ func TestTurnsKeepTheirPlace(t *testing.T) {
 	var sent sync.WaitGroup
 	send := func(sid string, n int) {
 		sent.Go(func() {
-			if err := c.SendData(sid, make([]byte, n)); err != nil {
+			if err := c.sendDataFrame(sid, make([]byte, n)); err != nil {
 				t.Error(err)
 			}
 		})

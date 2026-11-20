@@ -8,11 +8,11 @@ import (
 	"time"
 )
 
-// FeatureEndAck is feature bit 2 (WIRE.md sections 6 and 13): the side
+// featureEndAck is feature bit 2 (WIRE.md sections 6 and 13): the side
 // reads ENDACK frames and sends one when its reader takes the peer's half
 // close, so the peer's CloseWriteSync returns once the far end has the
 // session's whole stream, through any joins (spec/RelayedClose.tla).
-const FeatureEndAck uint32 = 1 << 2
+const featureEndAck uint32 = 1 << 2
 
 // ackWait is a half close's wait for the peer's ENDACK.
 type ackWait struct {
@@ -119,8 +119,8 @@ func (s *Session) AckEnd() {
 		return
 	}
 	s.acked = true
-	if s.m.c.SendEndAck(s.id) == nil {
-		_ = s.m.c.Flush()
+	if s.m.c.sendEndAck(s.id) == nil {
+		_ = s.m.c.flush()
 	}
 }
 
@@ -156,7 +156,7 @@ func (s *Session) ackAtClose() {
 // clean one (the peer, or the far end a hop passed it from, closed the
 // session: it takes no more, as a TCP peer's close) nil; a reset or an
 // abort its error.
-func closeAckErr(f Frame) error {
+func closeAckErr(f rxFrame) error {
 	switch {
 	case f.Abort != nil:
 		return f.Abort
@@ -198,7 +198,7 @@ func (s *Session) onwardTook() error {
 	if w := s.ack.Load(); w != nil {
 		return s.waitAck(w)
 	}
-	return s.Sync()
+	return s.sync()
 }
 
 // nack tells a peer still waiting for this session's ENDACK, once the
@@ -214,8 +214,8 @@ func (s *Session) nack() bool {
 		return false
 	}
 	s.acked = true
-	if s.m.c.SendReset(s.id) == nil {
-		_ = s.m.c.Flush()
+	if s.m.c.sendResetFrame(s.id) == nil {
+		_ = s.m.c.flush()
 	}
 	return true
 }

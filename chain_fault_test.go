@@ -69,7 +69,7 @@ func chainFaultRun(t *testing.T, o rigOpts, fault func(r *chainRig)) (bad, faile
 				case p >= 4:
 					size = rand.IntN(64 << 10)
 				}
-				s, err := r.links[0].dm.Open([]byte("echo"))
+				s, err := r.links[0].dm.Open(context.Background(), []byte("echo"))
 				if err != nil {
 					return
 				}
@@ -177,13 +177,13 @@ func TestChainMiddleHopFaultsIntegrity(t *testing.T) {
 func TestPumpEndSeesPeerHalfClose(t *testing.T) {
 	late := make(chan bool, 1)
 	a := muxPair(t, func(_ []byte, s *Session) {
-		s.Pump(io.Discard, func(_ int64, err error) {
+		s.startPump(io.Discard, func(_ int64, err error) {
 			late <- err == nil && !s.peerHalf.Load()
 			_ = s.Close()
 		})
 	})
 	for range 2000 {
-		s, err := a.Open(nil)
+		s, err := a.Open(context.Background(), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -208,7 +208,7 @@ func TestWriteFailsWithPeerAbort(t *testing.T) {
 	})
 	buf := make([]byte, 2*testWindow)
 	for range 300 {
-		s, err := a.Open(nil)
+		s, err := a.Open(context.Background(), nil)
 		if err != nil {
 			t.Fatal(err)
 		}

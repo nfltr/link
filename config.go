@@ -51,10 +51,10 @@ type Config struct {
 func (cfg Config) announce() uint32 {
 	f := features
 	if cfg.noChain {
-		f &^= FeatureChain
+		f &^= featureChain
 	}
 	if cfg.noEndAck {
-		f &^= FeatureEndAck
+		f &^= featureEndAck
 	}
 	return f
 }
@@ -272,7 +272,7 @@ func (cfg Config) withDefaults() Config {
 		cfg.Window = DefaultWindow
 	}
 	if cfg.MaxSessions == 0 {
-		cfg.MaxSessions = MaxSessions
+		cfg.MaxSessions = DefaultMaxSessions
 	}
 	return cfg
 }

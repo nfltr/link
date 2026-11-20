@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/nfltr/link"
+	"github.com/nfltr/link/internal/linkhook"
 )
 
 // Config is a Node's settings. Every policy in it is the caller's.
@@ -170,7 +171,7 @@ func (n *Node) openServed(ctx context.Context, peer string, header []byte) (Sess
 		names := map[string]bool{}
 		for m, p := range n.served {
 			names[p] = true
-			if p == peer && !refused[m] && !m.Conn().GoingAway() && (best == nil || m.Sessions() < best.Sessions()) {
+			if p == peer && !refused[m] && !linkhook.GoingAway(m.Conn()) && (best == nil || m.Sessions() < best.Sessions()) {
 				best = m
 			}
 		}
@@ -184,15 +185,14 @@ func (n *Node) openServed(ctx context.Context, peer string, header []byte) (Sess
 				return nil, fmt.Errorf("%w %q (no connection from it; connected: %q): %w", ErrPeerUnreachable, peer, slices.Sorted(maps.Keys(names)), ctx.Err())
 			}
 		}
-		ch, _ := link.ChainFromContext(ctx)
-		s, err := best.OpenChain(header, ch)
+		s, err := best.Open(ctx, header)
 		if err == nil {
 			return s, nil
 		}
 		// It stopped taking sessions meanwhile, or its writes failed (the
 		// peer reset it; its Serve has yet to see it end): another, or the
 		// peer's next, connection may take the session.
-		if !errors.Is(err, link.ErrGoAway) && !errors.Is(err, link.ErrFull) && !errors.Is(err, net.ErrClosed) && best.Conn().Flush() == nil {
+		if !errors.Is(err, link.ErrGoAway) && !errors.Is(err, link.ErrFull) && !errors.Is(err, net.ErrClosed) && linkhook.Flush(best.Conn()) == nil {
 			return nil, err
 		}
 		refused[best] = true

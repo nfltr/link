@@ -29,8 +29,7 @@ func chain3(far func([]byte, *link.Session), wrap func(net.Conn) net.Conn, live 
 		onward := link.NewMux(out)
 		go onward.Serve(nil)
 		go link.NewMux(in).Serve(link.Forward(func(ctx context.Context, s *link.Session) (*link.Session, error) {
-			c, _ := link.ChainFromContext(ctx)
-			return onward.OpenChain(s.Header(), c)
+			return onward.Open(ctx, s.Header())
 		}, link.ForwardConfig{}))
 	}
 	forward(h1, h1out)
@@ -98,7 +97,7 @@ func Example_deadlines() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	s, err := m.Open([]byte("5s"))
+	s, err := m.Open(ctx, []byte("5s"))
 	if err != nil {
 		panic(err)
 	}
@@ -137,7 +136,7 @@ func Example_deadMiddleHop() {
 	}, func(c net.Conn) net.Conn { return silent{c, off} }, link.Liveness{Interval: time.Second, Timeout: 2 * time.Second})
 	defer m.Close()
 
-	s, _ := m.Open(nil)
+	s, _ := m.Open(context.Background(), nil)
 	if err := s.Answered(context.Background()); err != nil {
 		panic(err)
 	}

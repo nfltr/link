@@ -45,7 +45,7 @@ func linkPair(b *testing.B) (opener *link.Mux, first, accepted *link.Session, mo
 	m := link.NewMux(dc)
 	go m.Serve(nil)
 	b.Cleanup(func() { _ = m.Close() })
-	s, err := m.Open(nil)
+	s, err := m.Open(context.Background(), nil)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func BenchmarkPathswitchMoves(b *testing.B) {
 				return
 			}
 			next += 8 << 20
-			ns, err := m.Open(nil)
+			ns, err := m.Open(context.Background(), nil)
 			if err != nil {
 				b.Fatal(err)
 			}

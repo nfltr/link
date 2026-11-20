@@ -30,7 +30,7 @@ func chainRecord(t *testing.T) map[string][]byte {
 	t.Helper()
 	segs := map[string][]byte{}
 	var out bytes.Buffer
-	reply := appendReplyV2(nil, replyV2{features: features &^ FeatureEndAck, window: 0x00040000, maxSessions: 512})
+	reply := appendReplyV2(nil, replyV2{features: features &^ featureEndAck, window: 0x00040000, maxSessions: 512})
 	hc, err := Client(context.Background(), closingConn{bufConn{r: bytes.NewReader(reply), w: &out}},
 		Config{Window: 0x00050000, Liveness: LivenessFast, Auth: tokenAuth(v2Token), noEndAck: true})
 	if err != nil {
@@ -44,10 +44,10 @@ func chainRecord(t *testing.T) map[string][]byte {
 	o.features, o.peerFeatures = features, features
 	for _, err := range []error{
 		o.sendOpen("\x01", v2Header, Chain{Trace: chainTrace}),
-		o.SendData("\x01", []byte("hello")), // before the answer: no round trip
+		o.sendDataFrame("\x01", []byte("hello")), // before the answer: no round trip
 		o.sendOpen("\x03", []byte("agent\x00elsewhere:22"), Chain{Trace: chainTrace}),
-		o.SendClose("\x01", true),
-		o.Flush(),
+		o.sendCloseFrame("\x01", true),
+		o.flush(),
 	} {
 		if err != nil {
 			t.Fatal(err)
@@ -60,10 +60,10 @@ func chainRecord(t *testing.T) map[string][]byte {
 	h.features, h.peerFeatures = features, features
 	for _, err := range []error{
 		h.sendAccept("\x01", 1),
-		h.SendData("\x01", []byte("hello back")),
+		h.sendDataFrame("\x01", []byte("hello back")),
 		h.sendAbort("\x03", &Abort{Refused: true, Code: CodeHopLimit, Hops: 1, Msg: "the path crossed 8 hops"}),
 		h.sendAbort("\x01", &Abort{Code: CodeConnLost, Hops: 1, Msg: "dead peer"}),
-		h.Flush(),
+		h.flush(),
 	} {
 		if err != nil {
 			t.Fatal(err)
@@ -93,19 +93,19 @@ func TestChainGolden(t *testing.T) {
 			t.Fatalf("%s:\ngot  %x\nwant %x", name, got[name], want[name])
 		}
 	}
-	if h := want["hello"]; h[9]&byte(FeatureChain|featureReset) != 3 {
+	if h := want["hello"]; h[9]&byte(featureChain|featureReset) != 3 {
 		t.Fatalf("hello features %x", h[6:10])
 	}
 
-	recv := func(b []byte, opened ...string) []Frame {
+	recv := func(b []byte, opened ...string) []rxFrame {
 		c := v2Conn(bufConn{r: bytes.NewReader(b)})
 		c.features, c.peerFeatures = features, features
 		for _, sid := range opened {
 			c.credit.open(sid, byUs)
 		}
-		var fs []Frame
+		var fs []rxFrame
 		for {
-			f, err := c.Recv()
+			f, err := c.recvFrame()
 			if errors.Is(err, io.EOF) {
 				return fs
 			}
@@ -116,7 +116,7 @@ func TestChainGolden(t *testing.T) {
 		}
 	}
 	ch := Chain{Trace: chainTrace}
-	if fs, want := recv(want["origin"]), []Frame{
+	if fs, want := recv(want["origin"]), []rxFrame{
 		{SID: "\x01", Open: true, Header: v2Header, Chain: ch},
 		{SID: "\x01", Data: []byte("hello")},
 		{SID: "\x03", Open: true, Header: []byte("agent\x00elsewhere:22"), Chain: ch},
@@ -124,7 +124,7 @@ func TestChainGolden(t *testing.T) {
 	}; !reflect.DeepEqual(fs, want) {
 		t.Fatalf("origin's frames %+v\nwant %+v", fs, want)
 	}
-	if fs, want := recv(want["hop"], "\x01", "\x03"), []Frame{
+	if fs, want := recv(want["hop"], "\x01", "\x03"), []rxFrame{
 		{SID: "\x01", Accept: true, Chain: Chain{Hops: 1}},
 		{SID: "\x01", Data: []byte("hello back")},
 		{SID: "\x03", Close: true, Reset: true, Abort: &Abort{Refused: true, Code: CodeHopLimit, Hops: 1, Msg: "the path crossed 8 hops"}},

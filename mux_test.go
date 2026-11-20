@@ -49,7 +49,7 @@ func TestMuxSessions(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := range 8 {
 		wg.Go(func() {
-			s, err := client.Open([]byte("echo"))
+			s, err := client.Open(context.Background(), []byte("echo"))
 			if err != nil {
 				t.Error(err)
 				return
@@ -66,7 +66,7 @@ func TestMuxSessions(t *testing.T) {
 	wg.Wait()
 
 	// A refused open is a close: the opener reads io.EOF, its writes fail.
-	s, err := client.Open([]byte("nope"))
+	s, err := client.Open(context.Background(), []byte("nope"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ func TestMuxSlowSessionIsolated(t *testing.T) {
 		t.Error("hung: closing the mux")
 		_ = client.Close()
 	}).Stop()
-	slow, err := client.Open([]byte("slow"))
+	slow, err := client.Open(context.Background(), []byte("slow"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func TestMuxSlowSessionIsolated(t *testing.T) {
 	big := bytes.Repeat([]byte("s"), 3*testWindow)
 	go func() { _, err := slow.Write(big); wrote <- err }()
 
-	fast, err := client.Open([]byte("fast"))
+	fast, err := client.Open(context.Background(), []byte("fast"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +159,7 @@ func TestMuxWriteFlushesBeforeWaitingForCredit(t *testing.T) {
 			got <- n
 		})
 	}()
-	s, err := client.Open([]byte("sink"))
+	s, err := client.Open(context.Background(), []byte("sink"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,8 +190,8 @@ func TestMuxMaxSessions(t *testing.T) {
 		_ = s.Close()
 	})
 	var first *Session
-	for i := range MaxSessions {
-		s, err := client.Open([]byte("a"))
+	for i := range DefaultMaxSessions {
+		s, err := client.Open(context.Background(), []byte("a"))
 		if err != nil {
 			t.Fatalf("session %d: %v", i, err)
 		}
@@ -199,11 +199,11 @@ func TestMuxMaxSessions(t *testing.T) {
 			first = s
 		}
 	}
-	if _, err := client.Open([]byte("a")); !errors.Is(err, ErrFull) {
+	if _, err := client.Open(context.Background(), []byte("a")); !errors.Is(err, ErrFull) {
 		t.Fatalf("session past MaxSessions: %v, want ErrFull", err)
 	}
 	_ = first.Close()
-	if _, err := client.Open([]byte("a")); err != nil {
+	if _, err := client.Open(context.Background(), []byte("a")); err != nil {
 		t.Fatalf("after one closed: %v", err)
 	}
 	// An open past the accepting side's limit: TestMuxV2MaxSessions.
@@ -240,11 +240,11 @@ func TestConnCombinesWrites(t *testing.T) {
 	for s := range sessions {
 		wg.Go(func() {
 			for i := range frames {
-				if err := sender.SendData(fmt.Sprint(s), []byte(fmt.Sprintf("%d.%d;", s, i))); err != nil {
+				if err := sender.sendDataFrame(fmt.Sprint(s), []byte(fmt.Sprintf("%d.%d;", s, i))); err != nil {
 					t.Error(err)
 					return
 				}
-				if err := sender.Flush(); err != nil {
+				if err := sender.flush(); err != nil {
 					t.Error(err)
 					return
 				}
@@ -253,7 +253,7 @@ func TestConnCombinesWrites(t *testing.T) {
 	}
 	got := map[string]*bytes.Buffer{}
 	for range sessions * frames {
-		f, err := receiver.Recv()
+		f, err := receiver.recvFrame()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -387,15 +387,15 @@ func TestWriteDeadlineStuckNetwork(t *testing.T) {
 			_ = s.Close()
 		})
 	}()
-	sa, err := dm.Open([]byte("a"))
+	sa, err := dm.Open(context.Background(), []byte("a"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	sb, err := dm.Open([]byte("b"))
+	sb, err := dm.Open(context.Background(), []byte("b"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	sc, err := dm.Open([]byte("c"))
+	sc, err := dm.Open(context.Background(), []byte("c"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -458,20 +458,20 @@ func TestMuxOpenSkipsAnIDThePeerTook(t *testing.T) {
 	go func() { _ = m.Serve(func(_ []byte, s *Session) { <-hold }) }()
 	go func() {
 		for {
-			if _, err := raw.Recv(); err != nil {
+			if _, err := raw.recvFrame(); err != nil {
 				return
 			}
 		}
 	}()
 	taken := string(binary.AppendUvarint(nil, 1)) // the dialer's first id
-	if err := raw.SendOpen(taken, []byte("h")); err != nil {
+	if err := raw.sendOpenFrame(taken, []byte("h")); err != nil {
 		t.Fatal(err)
 	}
-	if err := raw.Flush(); err != nil {
+	if err := raw.flush(); err != nil {
 		t.Fatal(err)
 	}
 	waitUntil(t, func() bool { return m.Sessions() == 1 })
-	s, err := m.Open([]byte("h"))
+	s, err := m.Open(context.Background(), []byte("h"))
 	if err != nil {
 		t.Fatalf("Open with the peer on this side's next id: %v", err)
 	}

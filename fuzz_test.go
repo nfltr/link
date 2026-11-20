@@ -49,10 +49,10 @@ func FuzzRecv(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, wire []byte) {
 		c := newTestConn(bufConn{r: bytes.NewReader(wire)}, testWindow, testWindow)
-		c.Credit().Open("7") // window frames for "7" reach the credit path
+		c.credit.Open("7") // window frames for "7" reach the credit path
 		accepted := 0
 		for {
-			m, err := c.Recv()
+			m, err := c.recvFrame()
 			if s := c.credit.sessions["7"]; s != nil && s.n > testWindow { // a close frame forgets it
 				t.Fatalf("send credit %d past the peer's window %d", s.n, testWindow)
 			}
@@ -84,19 +84,19 @@ func FuzzSendRecvRoundTrip(f *testing.F) {
 	f.Fuzz(func(t *testing.T, sid string, body []byte, msg bool) {
 		var wire bytes.Buffer
 		s := newTestConn(bufConn{w: &wire}, testWindow, testWindow)
-		want, send := Frame{SID: sid, Data: body}, func() error { return s.SendData(sid, body) }
+		want, send := rxFrame{SID: sid, Data: body}, func() error { return s.sendDataFrame(sid, body) }
 		if msg {
-			want, send = Frame{Msg: body}, func() error { return s.SendMsg(body) }
+			want, send = rxFrame{Msg: body}, func() error { return s.sendMsg(body) }
 		}
 		err := send()
 		if err != nil || len(body) == 0 || len(body) > maxData {
 			return // refused, nothing sent, or split (TestFramesRoundTrip)
 		}
-		if err := s.Flush(); err != nil {
+		if err := s.flush(); err != nil {
 			t.Fatal(err)
 		}
 		cr := &countingReader{r: bytes.NewReader(wire.Bytes())}
-		got, err := newTestConn(bufConn{r: cr}, testWindow, testWindow).Recv()
+		got, err := newTestConn(bufConn{r: cr}, testWindow, testWindow).recvFrame()
 		if err != nil {
 			t.Fatalf("Recv of a sent frame: %v", err)
 		}

@@ -5,6 +5,7 @@ package link
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"testing"
@@ -46,12 +47,12 @@ func TestFinThenFailureReadsEOF(t *testing.T) {
 			sent := make(chan *Session, 1)
 			c, srv := muxPairCut(t, func(_ []byte, s *Session) {
 				_, _ = s.Write(tail)
-				if err := s.CloseWriteSync(); err != nil {
+				if err := s.closeWriteSync(); err != nil {
 					t.Error(err)
 				}
 				sent <- s
 			})
-			s, err := c.Open([]byte("x"))
+			s, err := c.Open(context.Background(), []byte("x"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -88,23 +89,23 @@ func TestJoinFailureAfterFinDeliversTheTail(t *testing.T) {
 	agentDone := make(chan struct{})
 	agent, agentSrv := muxPairCut(t, func(_ []byte, s *Session) {
 		_, _ = s.Write(tail)
-		if err := s.CloseWriteSync(); err != nil {
+		if err := s.closeWriteSync(); err != nil {
 			t.Error(err)
 		}
 		close(agentDone)
 	})
 	onward := make(chan *Session, 1)
 	relay := muxPair(t, func(_ []byte, in *Session) {
-		out, err := agent.Open([]byte("agent"))
+		out, err := agent.Open(context.Background(), []byte("agent"))
 		if err != nil {
 			t.Error(err)
 			_ = in.Close()
 			return
 		}
 		onward <- out
-		_ = Join(in, out)
+		_ = join(in, out)
 	})
-	c, err := relay.Open([]byte("client"))
+	c, err := relay.Open(context.Background(), []byte("client"))
 	if err != nil {
 		t.Fatal(err)
 	}

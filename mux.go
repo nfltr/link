@@ -19,11 +19,11 @@ import (
 	"github.com/nfltr/link/internal/bytequeue"
 )
 
-// MaxSessions is Config.MaxSessions's default: the most sessions the
+// DefaultMaxSessions is Config.DefaultMaxSessions's default: the most sessions the
 // peer may have open toward this side at once. Open refuses more toward
 // the peer than its hello allows (ErrFull); a peer that opens more than
 // this side's ends the connection (ErrFull).
-const MaxSessions = 1024
+const DefaultMaxSessions = 1024
 
 // ErrFull is Open's refusal of a session past the most sessions allowed.
 var ErrFull = errors.New("link: connection carries its most sessions")
@@ -96,18 +96,25 @@ func (m *Mux) nextSID() string {
 // once and does not wait for the peer, so a peer that speaks first is
 // reached without the caller's bytes.
 //
-// On a connection that negotiated FeatureChain the open is a CHAIN-OPEN
-// from the origin (OpenChain with a zero Chain) and the peer answers it
-// (Answered).
-func (m *Mux) Open(header []byte) (*Session, error) { return m.OpenChain(header, Chain{}) }
+// ctx carries the session's path (ContextWithChain: Forward's Route opens
+// the next leg with the ctx it was given); without one the session starts
+// a new path. A zero Trace is a new path, for which link picks a random
+// one. On a connection that negotiated FeatureChain the open is a
+// CHAIN-OPEN and the peer answers it (Answered); on one without, the
+// Chain is kept locally only and the session does not answer (Answers is
+// false). Open does not wait, so ctx's deadline does not bound it; a ctx
+// already done fails it with ctx's error.
+func (m *Mux) Open(ctx context.Context, header []byte) (*Session, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	c, _ := ChainFromContext(ctx)
+	return m.openChain(header, c)
+}
 
-// OpenChain is Open of a session on a path (Forward's Route opens the
-// next leg with the Chain its ctx carries): a zero Trace is a new path,
-// for which link picks a random one. On a connection without
-// FeatureChain it is Open (the Chain is kept locally only) and the
-// session does not answer (Answers is false).
-func (m *Mux) OpenChain(header []byte, c Chain) (*Session, error) {
-	if m.c.GoingAway() {
+// openChain is Open of a session on the path c.
+func (m *Mux) openChain(header []byte, c Chain) (*Session, error) {
+	if m.c.isGoingAway() {
 		return nil, ErrGoAway
 	}
 	if c.Trace == (Trace{}) && m.c.chain() {
@@ -124,7 +131,7 @@ func (m *Mux) OpenChain(header []byte, c Chain) (*Session, error) {
 	}
 	err = m.c.sendOpen(sid, header, c)
 	if err == nil {
-		err = m.c.Flush()
+		err = m.c.flush()
 	}
 	if err != nil {
 		s.peerClosed.Store(true) // the peer never heard of it
@@ -233,9 +240,9 @@ func (m *Mux) get(sid string) *Session {
 // sendClose sends the frame that closes sid (half: its write side): the
 // error is the frame's or its flush's.
 func (m *Mux) sendClose(sid string, half bool) error {
-	err := m.c.SendClose(sid, half)
+	err := m.c.sendCloseFrame(sid, half)
 	if err == nil {
-		err = m.c.Flush()
+		err = m.c.flush()
 	}
 	return err
 }
@@ -254,7 +261,7 @@ func (m *Mux) Serve(accept func(open []byte, s *Session)) error {
 		case len(f.Data) > 0:
 			m.data(f)
 		case f.sid == nil: // not an empty data frame
-			m.serve(f.Frame, accept)
+			m.serve(f.rxFrame, accept)
 		}
 	}
 }
@@ -296,7 +303,7 @@ func (m *Mux) data(f rframe) {
 
 // serve applies a frame other than data. Messages have no meaning to a
 // Mux.
-func (m *Mux) serve(f Frame, accept func([]byte, *Session)) {
+func (m *Mux) serve(f rxFrame, accept func([]byte, *Session)) {
 	switch {
 	case f.Open:
 		var s *Session
@@ -409,10 +416,10 @@ func (m *Mux) sendRefusals() {
 		if m.c.chain() {
 			err = m.c.sendAbort(r.sid, r.a)
 		} else {
-			err = m.c.SendReset(r.sid)
+			err = m.c.sendResetFrame(r.sid)
 		}
 		if err == nil {
-			_ = m.c.Flush()
+			_ = m.c.flush()
 		}
 	}
 }
@@ -583,7 +590,7 @@ func (m *Mux) goAway(deadline time.Time) error {
 	if !deadline.IsZero() {
 		drain = max(time.Until(deadline), time.Millisecond)
 	}
-	if err := m.c.GoAway(drain, ""); err != nil {
+	if err := m.c.goAway(drain, ""); err != nil {
 		return err
 	}
 	m.c.ping() // its pong: the peer read the GOAWAY (Drained)
@@ -911,7 +918,8 @@ type batchWriter struct {
 	nb net.Buffers
 }
 
-// buffersWriter writes a batch at once and keeps none of it (Session).
+// buffersWriter writes a batch at once and keeps none of it: a writer onto
+// a Session (joinWriter, peerlink's connWriter).
 type buffersWriter interface {
 	WriteBuffers(bufs [][]byte) (int64, error)
 }
@@ -921,7 +929,9 @@ func (bw *batchWriter) write(w io.Writer, bufs [][]byte) (int64, error) {
 	// bufs keeps them for the release.
 	var n int64
 	var err error
-	if b, ok := w.(buffersWriter); ok { // a Session: one flush for the batch
+	if s, ok := w.(*Session); ok { // one flush for the batch
+		n, err = s.writeBuffers(bufs)
+	} else if b, ok := w.(buffersWriter); ok { // a Session's writer (join, peerlink)
 		n, err = b.WriteBuffers(bufs)
 	} else {
 		bw.wb = append(bw.wb[:0], bufs...)
@@ -936,15 +946,15 @@ func (bw *batchWriter) write(w io.Writer, bufs [][]byte) (int64, error) {
 	return n, err
 }
 
-// Pump writes the peer's bytes to w as WriteTo does, without a goroutine
+// startPump writes the peer's bytes to w as WriteTo does, without a goroutine
 // waiting while the session is idle: one runs only while bytes are
 // queued, started as they arrive (the receive loop never waits for it).
 // done gets what WriteTo would return, once, from that goroutine: the
 // session ended, or w failed (the session's further bytes stay unread:
-// close it). Pump takes over the session's reads: a Read after it
+// close it). startPump takes over the session's reads: a Read after it
 // returns an error (the tail of a Read before it goes to w first); no
-// WriteTo or second Pump after it.
-func (s *Session) Pump(w io.Writer, done func(n int64, err error)) {
+// WriteTo or second startPump after it.
+func (s *Session) startPump(w io.Writer, done func(n int64, err error)) {
 	s.setPump(&pump{w: w, done: done})
 	s.kick()
 }
@@ -1094,10 +1104,10 @@ func (s *Session) writeErr(err error) error {
 	return s.closedPipe()
 }
 
-// WriteBuffers is Write of each of bufs in turn, with one flush at the
+// writeBuffers is Write of each of bufs in turn, with one flush at the
 // end (and before any wait for credit): a backlog goes to the network in
 // one write.
-func (s *Session) WriteBuffers(bufs [][]byte) (int64, error) {
+func (s *Session) writeBuffers(bufs [][]byte) (int64, error) {
 	if debugOn {
 		defer debugEnter(s, debugWrite)()
 	}
@@ -1119,7 +1129,7 @@ func (s *Session) WriteBuffers(bufs [][]byte) (int64, error) {
 // (docs/performance.md, P5).
 func (s *Session) send(b []byte, flush bool) (int, error) {
 	if len(b) == 0 && flush {
-		return 0, s.m.c.Flush()
+		return 0, s.m.c.flush()
 	}
 	for p := b; len(p) > 0; {
 		n := min(len(p), MaxChunk)
@@ -1170,7 +1180,7 @@ func (s *Session) flush() error {
 	if s.wd.set.Load() {
 		return s.m.c.flushAsync()
 	}
-	return s.m.c.Flush()
+	return s.m.c.flush()
 }
 
 // writeWait is closed once the write deadline passes or changes. It is
@@ -1205,14 +1215,14 @@ func (s *Session) CloseWrite() error {
 	return err
 }
 
-// CloseWriteSync is CloseWrite, then Sync, with Sync's ping buffered with
+// closeWriteSync is CloseWrite, then Sync, with Sync's ping buffered with
 // the CLOSE under one write lock, so the Sync is pending before the peer
 // can read the CLOSE: a draining connection closes once its sessions
 // ended (Mux.leave), but not before that pong was read, whereas a ping
 // buffered after the close would never be sent, failing a Sync whose
 // CLOSE the peer read (spec/Join.tla DrainNeverResets, lane LINKDRAIN).
 // Once CloseWrite was called (or the session ended) it is Sync.
-func (s *Session) CloseWriteSync() error {
+func (s *Session) closeWriteSync() error {
 	if s.m.c.endAcks() { // the far end's ENDACK, not the next hop's pong
 		if _, err := s.closeWrite(false); err != nil {
 			return err
@@ -1220,14 +1230,14 @@ func (s *Session) CloseWriteSync() error {
 		if w := s.ack.Load(); w != nil {
 			return s.waitAck(w)
 		}
-		return s.Sync()
+		return s.sync()
 	}
 	synced, err := s.closeWrite(true)
 	switch {
 	case err != nil:
 		return err
 	case synced == nil:
-		return s.Sync()
+		return s.sync()
 	}
 	return waitSync(s.m.c, synced)
 }
@@ -1255,7 +1265,7 @@ func (s *Session) closeWrite(sync bool) (<-chan struct{}, error) {
 	var err error
 	if sync { // the ping with the CLOSE: pending before the peer can answer it
 		if synced, err = s.m.c.sendCloseSync(s.id); err == nil {
-			err = s.m.c.Flush()
+			err = s.m.c.flush()
 		}
 	} else {
 		err = s.m.sendClose(s.id, true)
@@ -1280,13 +1290,13 @@ func (s *Session) closeWrite(sync bool) (<-chan struct{}, error) {
 // is buffered, before the session can be dropped.
 var testHookCloseWriteSent atomic.Pointer[func()]
 
-// Sync waits until the peer's Mux read every frame this side buffered
+// sync waits until the peer's Mux read every frame this side buffered
 // on the session's connection before the call (its bytes, its CloseWrite):
 // a ping buffered after them was answered (WIRE.md section 8). It returns
 // the connection's error once the connection ended first. The connection's
 // liveness bounds the wait. peerlink.Join syncs after a CloseWrite before
 // it ends the other side cleanly (spec/Join.tla).
-func (s *Session) Sync() error {
+func (s *Session) sync() error {
 	c := s.m.c
 	select {
 	case <-c.Done():
@@ -1314,7 +1324,7 @@ func waitSync(c *Conn, synced <-chan struct{}) error {
 
 // syncEnded is a Sync's error once the connection ended first.
 func syncEnded(c *Conn) error {
-	if err := c.Err(); err != nil {
+	if err := c.endErr(); err != nil {
 		return err
 	}
 	return ErrConnClosed
@@ -1375,8 +1385,8 @@ func (s *Session) Reset() error {
 		if s.peerClosed.Load() {
 			return
 		}
-		if s.m.c.SendReset(s.id) == nil {
-			_ = s.m.c.Flush()
+		if s.m.c.sendResetFrame(s.id) == nil {
+			_ = s.m.c.flush()
 		}
 	})
 	return nil
@@ -1424,7 +1434,7 @@ func (s *Session) SetReadDeadline(t time.Time) error {
 	return nil
 }
 
-// SetWriteDeadline makes a pending or later Write (WriteBuffers) return
+// SetWriteDeadline makes a pending or later Write (writeBuffers) return
 // os.ErrDeadlineExceeded once t passed; zero t clears it. While one is
 // set, writes leave the network write to a goroutine (see Write).
 func (s *Session) SetWriteDeadline(t time.Time) error {

@@ -358,7 +358,7 @@ func TestPoolDrainReplacesAFullConnectionFirst(t *testing.T) {
 		p = mustPool(t, PoolConfig{Link: v2cfg, Max: 1, Dial: func(ctx context.Context) (net.Conn, error) {
 			if dials.Add(1) == 2 {
 				p.mu.Lock()
-				brokeFirst.Store(p.conns[0].c.GoingAway())
+				brokeFirst.Store(p.conns[0].c.isGoingAway())
 				p.mu.Unlock()
 			}
 			return fullPeerDial(ctx)

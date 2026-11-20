@@ -47,11 +47,11 @@ func TestPingFloodBoundsBuffer(t *testing.T) {
 		wire.Write(frame(pingLen, typePing, 0, 0, 0, 0, 0, 0, byte(i>>8), byte(i)))
 	}
 	nc := &stuckConn{r: &wire, closed: make(chan struct{})}
-	c := newConnV2(nc, Config{Window: testWindow, MaxSessions: MaxSessions, Liveness: LivenessDatacenter}, testWindow, MaxSessions, false)
+	c := newConnV2(nc, Config{Window: testWindow, MaxSessions: DefaultMaxSessions, Liveness: LivenessDatacenter}, testWindow, DefaultMaxSessions, false)
 	c.up(nil, Identity{})
 	defer c.Close() //nolint:errcheck
 	for {
-		if _, err := c.Recv(); err != nil {
+		if _, err := c.recvFrame(); err != nil {
 			break // every ping read
 		}
 	}

@@ -112,7 +112,7 @@ func (cfg PoolConfig) Validate() error {
 
 // takes reports whether m takes a new session.
 func takes(m *Mux) bool {
-	return !ended(m) && !m.c.GoingAway() && m.Sessions() < min(MaxSessions, m.c.PeerMaxSessions())
+	return !ended(m) && !m.c.isGoingAway() && m.Sessions() < min(DefaultMaxSessions, m.c.peerMaxSessions)
 }
 
 // Stats is the Pool's load.
@@ -162,7 +162,7 @@ func (p *Pool) stayingLocked() int {
 	}
 	n := p.dials
 	for _, m := range p.conns {
-		if !m.c.GoingAway() && !ended(m) {
+		if !m.c.isGoingAway() && !ended(m) {
 			n++
 		}
 	}
@@ -229,7 +229,7 @@ func (p *Pool) pick(o int) (best *Mux, grow, growBG bool, changed <-chan struct{
 }
 
 // Open opens a session with header on one of the Pool's connections,
-// with the Chain ctx carries (ContextWithChain; Mux.OpenChain) when it
+// with the Chain ctx carries (ContextWithChain; Mux.Open) when it
 // carries one. It fails ErrFull when every connection Max allows carries
 // its peer's most sessions and no dial is in flight; while one is, it
 // waits for it.
@@ -287,7 +287,7 @@ func (p *Pool) Open(ctx context.Context, header []byte) (s *Session, err error) 
 			continue
 		}
 		ch, _ := ChainFromContext(ctx)
-		s, err := m.OpenChain(header, ch)
+		s, err := m.openChain(header, ch)
 		if traceOn && o != 0 {
 			p.traceEv("Place", o, m, map[bool]int{true: 1}[err == nil])
 			if err == nil {
@@ -335,7 +335,7 @@ func (p *Pool) dial(ctx context.Context, next bool) (*Mux, error) {
 	if traceOn {
 		cap := 0
 		if m != nil {
-			cap = min(MaxSessions, m.c.PeerMaxSessions())
+			cap = min(DefaultMaxSessions, m.c.peerMaxSessions)
 		}
 		tracePoolEv(p, "Dial", "", 0, m, cap)
 	}
@@ -355,7 +355,7 @@ func (p *Pool) dial(ctx context.Context, next bool) (*Mux, error) {
 	p.conns = append(p.conns, m)
 	go func() { // it stops counting toward Min: maintain replaces it now (spec/Pool.tla, P1)
 		select {
-		case <-m.c.PeerGoAway():
+		case <-m.c.peerGoAway:
 			p.mu.Lock()
 			p.changedLocked()
 			if traceOn {
@@ -369,7 +369,7 @@ func (p *Pool) dial(ctx context.Context, next bool) (*Mux, error) {
 		up := time.Now()
 		_ = m.Serve(p.cfg.Accept)
 		p.mu.Lock()
-		if !m.used.Load() && (closed(m.c.PeerGoAway()) || time.Since(up) < m.c.live.Interval) {
+		if !m.used.Load() && (closed(m.c.peerGoAway) || time.Since(up) < m.c.live.Interval) {
 			p.refused++
 		} else {
 			p.refused = 0
@@ -496,7 +496,7 @@ func (p *Pool) Drain(ctx context.Context) error {
 	old := slices.Clone(p.conns)
 	staying := 0
 	for _, m := range old {
-		if !m.c.GoingAway() && !ended(m) { // full ones too (spec/Pool.tla, M1)
+		if !m.c.isGoingAway() && !ended(m) { // full ones too (spec/Pool.tla, M1)
 			staying++
 		}
 	}

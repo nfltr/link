@@ -113,11 +113,11 @@ func TestHandshakeV2(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close() //nolint:errcheck
-	if id != (Identity{Method: "token", Subject: "agent-1"}) || c.Identity() != id {
+	if id != (Identity{Method: "token", Subject: "agent-1"}) || c.id != id {
 		t.Fatalf("identity %+v", id)
 	}
-	if c.Version() != 2 || c.Credit().Window() != 2*testWindow || c.Credit().PeerWindow() != testWindow || c.PeerMaxSessions() != 7 {
-		t.Fatalf("version %d window %d peer window %d peer max %d", c.Version(), c.Credit().Window(), c.Credit().PeerWindow(), c.PeerMaxSessions())
+	if c.Version() != 2 || c.credit.Window() != 2*testWindow || c.credit.PeerWindow() != testWindow || c.peerMaxSessions != 7 {
+		t.Fatalf("version %d window %d peer window %d peer max %d", c.Version(), c.credit.Window(), c.credit.PeerWindow(), c.peerMaxSessions)
 	}
 	if c.live != LivenessFast {
 		t.Fatalf("listener liveness %v, want the dialer's", c.live)
@@ -207,7 +207,7 @@ func v2echo(header []byte, s *Session) {
 }
 
 func openV2(m *Mux, header string) (*Session, error) {
-	return m.Open([]byte(header))
+	return m.Open(context.Background(), []byte(header))
 }
 
 func TestMuxV2Sessions(t *testing.T) {
@@ -369,7 +369,7 @@ func TestMuxV2GoAway(t *testing.T) {
 		t.Fatal(err)
 	}
 	select {
-	case <-dm.c.PeerGoAway():
+	case <-dm.c.peerGoAway:
 	case <-time.After(5 * time.Second):
 		t.Fatal("GOAWAY not received")
 	}
@@ -408,8 +408,8 @@ func TestPingRTTObserved(t *testing.T) {
 	dcfg.Observer, dcfg.Liveness = obs, LivenessFast
 	scfg.Observer = obs
 	c, s := v2pair(t, dcfg, scfg)
-	go func() { _, _ = c.Recv() }()
-	go func() { _, _ = s.Recv() }()
+	go func() { _, _ = c.recvFrame() }()
+	go func() { _, _ = s.recvFrame() }()
 	waitUntil(t, func() bool { return obs.rtt.Load() > 0 })
 }
 
@@ -660,7 +660,7 @@ func TestPoolAccept(t *testing.T) {
 		}
 		p := mustPool(t, pc)
 		m := <-served
-		s, err := m.Open([]byte("x"))
+		s, err := m.Open(context.Background(), []byte("x"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -683,12 +683,12 @@ func TestPoolAccept(t *testing.T) {
 // version-1 connection.
 func TestSendOpenLimits(t *testing.T) {
 	c, _ := v2pair(t, v2cfg, v2cfg)
-	if err := c.SendOpen(string(make([]byte, MaxSID+1)), nil); !errors.Is(err, errSID) {
+	if err := c.sendOpenFrame(string(make([]byte, MaxSID+1)), nil); !errors.Is(err, errSID) {
 		t.Fatal(err)
 	}
 	h := make([]byte, maxHeader+1)
 	_, _ = rand.Read(h)
-	if err := c.SendOpen("a", h); !errors.Is(err, errHeader) {
+	if err := c.sendOpenFrame("a", h); !errors.Is(err, errHeader) {
 		t.Fatal(err)
 	}
 }

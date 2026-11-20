@@ -36,15 +36,14 @@ func ExampleForward() {
 	onward := link.NewMux(h2)
 	go onward.Serve(nil)
 	go link.NewMux(h1).Serve(link.Forward(func(ctx context.Context, in *link.Session) (*link.Session, error) {
-		c, _ := link.ChainFromContext(ctx)
-		return onward.OpenChain(in.Header(), c)
+		return onward.Open(ctx, in.Header())
 	}, link.ForwardConfig{}))
 
 	// The origin.
 	m := link.NewMux(o)
 	go m.Serve(nil)
 	defer m.Close()
-	s, _ := m.Open([]byte("echo"))
+	s, _ := m.Open(context.Background(), []byte("echo"))
 	_, _ = io.WriteString(s, "hello") // before the answer: no round trip per hop
 	_ = s.CloseWrite()
 	if err := s.Answered(context.Background()); err != nil {
@@ -53,7 +52,7 @@ func ExampleForward() {
 	reply, _ := io.ReadAll(s)
 	fmt.Printf("%s, %d hop(s) beyond the peer\n", reply, s.PathLen())
 
-	r, _ := m.Open([]byte("ftp"))
+	r, _ := m.Open(context.Background(), []byte("ftp"))
 	var a *link.Abort
 	if errors.As(r.Answered(context.Background()), &a) {
 		fmt.Printf("refused %d hop(s) beyond the peer: code %d, %s\n", a.Hops, a.Code-link.CodeApp, a.Msg)

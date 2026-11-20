@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/nfltr/link"
+	"github.com/nfltr/link/internal/linkhook"
 )
 
 // ChainSession is a Session on a Link that answers opens: a Node's over a
@@ -47,7 +48,8 @@ var (
 // Join splices a and b until both directions ended and closes both;
 // it returns nil after a clean end, else the *link.Abort it sent on (or,
 // toward a conn without answers, the error that ended the other side).
-// Two *link.Session (a Node's sessions among them) go through link.Join.
+// Two *link.Session (a Node's sessions among them) go through link's own
+// join.
 // Otherwise it copies both ways, from a *link.Session with Pump (no
 // goroutine while idle) and into one with WriteBuffers; it answers a
 // ChainSession the peer opened (Accept) first. A clean end of one side's
@@ -64,7 +66,7 @@ var (
 // once its tail is safe (spec/RelayedClose.tla CloseTruth).
 func Join(a, b net.Conn) error {
 	if la, lb := native(a), native(b); la != nil && lb != nil {
-		err := link.Join(la, lb)
+		err := linkhook.Join(la, lb)
 		_ = a.Close() // a Node's wrapper: Drain stops waiting for it
 		_ = b.Close()
 		return err
@@ -110,14 +112,19 @@ type EndAcker interface {
 }
 
 // endSyncer is a conn whose half close returns once its peer took it
-// (Session.CloseWriteSync; tlsend's, under TLS).
+// (a link session's, sessionSyncer; tlsend's, under TLS).
 type endSyncer interface{ CloseWriteSync() error }
+
+// sessionSyncer is a link session's endSyncer (link's closeWriteSync).
+type sessionSyncer struct{ s *link.Session }
+
+func (s sessionSyncer) CloseWriteSync() error { return linkhook.CloseWriteSync(s.s) }
 
 // syncerOf is c's endSyncer: a link session, a Node's, or a conn that
 // passes CloseWriteSync on; nil for any other.
 func syncerOf(c net.Conn) endSyncer {
 	if s := native(c); s != nil {
-		return s
+		return sessionSyncer{s}
 	}
 	if s, ok := c.(endSyncer); ok {
 		return s
@@ -314,7 +321,7 @@ func passed(a *link.Abort) *link.Abort {
 }
 
 // abortOf is the Abort a join sends on after err ended one side (as
-// link.Join's): an *link.Abort one hop further, a plain reset as
+// link's join): an *link.Abort one hop further, a plain reset as
 // CodeUnspecified one hop further, a drain's deadline here as
 // CodeDrainDeadline, a deadline as CodeTimeout, anything else as
 // CodeConnLost.
@@ -399,7 +406,7 @@ func (w *connWriter) WriteBuffers(b [][]byte) (int64, error) {
 	var n int64
 	var err error
 	if s := native(w.c); s != nil {
-		n, err = s.WriteBuffers(b)
+		n, err = linkhook.WriteBuffers(s, b)
 	} else {
 		for _, p := range b {
 			var k int
@@ -429,7 +436,7 @@ func (j *joint) dir(i int) {
 	}
 	end := func(n int64, err error) { j.ended(i, n, err, w.err) }
 	if s := native(src); s != nil {
-		s.Pump(w, end)
+		linkhook.Pump(s, w, end)
 		return
 	}
 	if ds := native(w.c); ds != nil {

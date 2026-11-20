@@ -157,12 +157,12 @@ func TestChainAgainstV094(t *testing.T) {
 		if m.Conn().chain() {
 			t.Fatal("FeatureChain negotiated with v0.9.4")
 		}
-		s, _ := m.Open([]byte("echo"))
+		s, _ := m.Open(context.Background(), []byte("echo"))
 		if s.Answers() || !errors.Is(s.Answered(context.Background()), ErrNoAnswers) {
 			t.Fatal("answers from v0.9.4")
 		}
 		roundTrip(t, s, 1<<20)
-		r, _ := m.Open([]byte("refuse"))
+		r, _ := m.Open(context.Background(), []byte("refuse"))
 		if _, err := io.ReadAll(r); !errors.Is(err, ErrReset) {
 			t.Fatalf("refused: %v", err)
 		}
@@ -174,16 +174,15 @@ func TestChainAgainstV094(t *testing.T) {
 		go func() { _ = om.Serve(nil) }()
 		go func() {
 			_ = hm.Serve(Forward(func(ctx context.Context, in *Session) (*Session, error) {
-				ch, _ := ChainFromContext(ctx)
-				return onward.OpenChain(in.Header(), ch)
+				return onward.Open(ctx, in.Header())
 			}, ForwardConfig{}))
 		}()
-		s, _ = om.Open([]byte("echo"))
+		s, _ = om.Open(context.Background(), []byte("echo"))
 		if err := s.Answered(context.Background()); err != nil || s.PathLen() != 1 {
 			t.Fatalf("through a hop: %v, PathLen %d", err, s.PathLen())
 		}
 		roundTrip(t, s, 1<<20)
-		r, _ = om.Open([]byte("refuse"))
+		r, _ = om.Open(context.Background(), []byte("refuse"))
 		_ = r.Answered(context.Background())
 		_, err = io.ReadAll(r)
 		if a := errAbort(t, err); a.Code != CodeUnspecified || a.Hops != 1 {

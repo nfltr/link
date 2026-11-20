@@ -42,7 +42,7 @@ func TestSessionPump(t *testing.T) {
 	waitUntil(t, func() bool { return s.q.Ready() })
 	var got lockedBuffer
 	done := make(chan pumpResult, 2)
-	s.Pump(&got, func(n int64, err error) { done <- pumpResult{n, err} })
+	s.startPump(&got, func(n int64, err error) { done <- pumpResult{n, err} })
 	go func() {
 		for i := 100; i < len(want); i += 1000 { // many small frames: the pump stops and restarts
 			if _, err := p.Write(want[i:min(i+1000, len(want))]); err != nil {
@@ -87,7 +87,7 @@ func TestSessionPumpIdleHoldsNoGoroutine(t *testing.T) {
 			t.Fatal(err)
 		}
 		p := <-got
-		p.Pump(io.Discard, func(int64, error) {})
+		p.startPump(io.Discard, func(int64, error) {})
 	}
 	waitUntil(t, func() bool { return runtime.NumGoroutine() <= before+n/10 })
 }
@@ -98,7 +98,7 @@ func TestSessionPumpErrors(t *testing.T) {
 	s, p := openPair(t, v2cfg, v2cfg)
 	done := make(chan pumpResult, 2)
 	boom := errors.New("boom")
-	s.Pump(failWriter{boom}, func(n int64, err error) { done <- pumpResult{n, err} })
+	s.startPump(failWriter{boom}, func(n int64, err error) { done <- pumpResult{n, err} })
 	if _, err := p.Write([]byte("abc")); err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestSessionPumpErrors(t *testing.T) {
 	}
 
 	s, p = openPair(t, v2cfg, v2cfg)
-	s.Pump(io.Discard, func(n int64, err error) { done <- pumpResult{n, err} })
+	s.startPump(io.Discard, func(n int64, err error) { done <- pumpResult{n, err} })
 	_ = p.Reset()
 	if r := <-done; !errors.Is(r.err, ErrReset) {
 		t.Fatalf("done(%d, %v) after a reset; want ErrReset", r.n, r.err)
@@ -133,7 +133,7 @@ func TestSessionPumpStuckWriterIsolation(t *testing.T) {
 		if string(h) == "stuck" {
 			w = blockWriter(stuck)
 		}
-		s.Pump(w, func(int64, error) { _ = s.Close() })
+		s.startPump(w, func(int64, error) { _ = s.Close() })
 	}
 	dm, _ := v2muxPair(t, accept, v2cfg, v2cfg)
 	st, err := openV2(dm, "stuck")
@@ -192,7 +192,7 @@ func TestSessionReadAfterPumpRefused(t *testing.T) {
 	}
 	var got lockedBuffer
 	done := make(chan pumpResult, 1)
-	s.Pump(&got, func(n int64, err error) { done <- pumpResult{n, err} })
+	s.startPump(&got, func(n int64, err error) { done <- pumpResult{n, err} })
 	if n, err := s.Read(b); n != 0 || !errors.Is(err, errPumped) {
 		t.Fatalf("Read after Pump: (%d, %v); want (0, errPumped)", n, err)
 	}

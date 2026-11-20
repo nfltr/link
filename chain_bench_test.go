@@ -20,7 +20,7 @@ var benchHops = []int{0, 1, 2, 4}
 // farSink: the far end accepts and reads to the end, then closes.
 func farSink(_ []byte, s *Session) {
 	_ = s.Accept()
-	s.Pump(io.Discard, func(int64, error) { _ = s.Close() })
+	s.startPump(io.Discard, func(int64, error) { _ = s.Close() })
 }
 
 // BenchmarkChainThroughput: MB/s origin -> far end, 8 MiB per session,
@@ -80,7 +80,7 @@ func BenchmarkChainLatency(b *testing.B) {
 	}
 }
 
-// BenchmarkChainOpen: OpenChain -> Answered (the far end accepted).
+// BenchmarkChainOpen: Open -> Answered (the far end accepted).
 func BenchmarkChainOpen(b *testing.B) {
 	for _, hops := range benchHops {
 		b.Run(fmt.Sprintf("hops=%d", hops), func(b *testing.B) {

@@ -282,7 +282,7 @@ func benchThroughput(b *testing.B, tr string, size, sessions int, both bool) {
 	var jobs []job
 	for _, m := range sides {
 		for i := range sessions {
-			s, err := m.Open([]byte("sink"))
+			s, err := m.Open(context.Background(), []byte("sink"))
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -322,7 +322,7 @@ func BenchmarkWriteTo(b *testing.B) {
 				_, _ = s.WriteTo(io.Discard)
 				_ = s.Close()
 			})
-			s, err := r.a.Open([]byte("sink"))
+			s, err := r.a.Open(context.Background(), []byte("sink"))
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -354,7 +354,7 @@ func BenchmarkLatency(b *testing.B) {
 					held = append(held, rawEcho(b, tr))
 				case "held", "held-mixed":
 					for range map[bool]int{true: 1, false: 2}[mode == "held"] {
-						s, err := r.a.Open([]byte("echo"))
+						s, err := r.a.Open(context.Background(), []byte("echo"))
 						if err != nil {
 							b.Fatal(err)
 						}
@@ -373,7 +373,7 @@ func BenchmarkLatency(b *testing.B) {
 					if held != nil {
 						s = held[i%len(held)]
 					} else {
-						o, err := r.a.Open([]byte("echo"))
+						o, err := r.a.Open(context.Background(), []byte("echo"))
 						if err != nil {
 							b.Fatal(err)
 						}
@@ -457,7 +457,7 @@ func BenchmarkIdleSessions(b *testing.B) {
 			g0 := runtime.NumGoroutine()
 			x := make([]byte, 1)
 			for range idle {
-				s, err := r.a.Open([]byte("idle"))
+				s, err := r.a.Open(context.Background(), []byte("idle"))
 				if err != nil {
 					b.Fatal(err)
 				}
@@ -478,7 +478,7 @@ func BenchmarkIdleSessions(b *testing.B) {
 			ss := make([]*Session, sessions)
 			for i := range ss {
 				var err error
-				if ss[i], err = r.a.Open([]byte("sink")); err != nil {
+				if ss[i], err = r.a.Open(context.Background(), []byte("sink")); err != nil {
 					b.Fatal(err)
 				}
 			}

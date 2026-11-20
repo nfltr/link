@@ -78,13 +78,13 @@ func TestStarvedProcessKeepsALivePeer(t *testing.T) {
 	select {
 	case <-released:
 	case <-c.Done():
-		t.Fatalf("ended before the starvation: %v", c.Err())
+		t.Fatalf("ended before the starvation: %v", c.endErr())
 	case <-time.After(3 * (l.Interval + l.Timeout)):
 		t.Fatal("no fire with a ping waiting")
 	}
 	select {
 	case <-c.Done():
-		t.Fatalf("a live peer taken for dead after the process ran again: %v", c.Err())
+		t.Fatalf("a live peer taken for dead after the process ran again: %v", c.endErr())
 	case <-time.After(l.Interval + l.Timeout/2):
 	}
 }

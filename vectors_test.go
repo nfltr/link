@@ -244,18 +244,18 @@ func (v wireVector) encode(t *testing.T) hexBytes {
 		err = c.frameLocked(typeData, sid, f.Payload, nil)
 		c.wmu.Unlock()
 	case "message":
-		err = c.SendMsg(f.Payload)
+		err = c.sendMsg(f.Payload)
 	case "window":
 		c.sendWindow(sid, int(f.Increment))
 	case "open":
-		err = c.SendOpen(sid, f.Header)
+		err = c.sendOpenFrame(sid, f.Header)
 	case "close":
 		switch f.Code {
 		case closeFull, closeHalf:
-			err = c.SendClose(sid, f.Code == closeHalf)
+			err = c.sendCloseFrame(sid, f.Code == closeHalf)
 		default:
 			c.peerFeatures = featureReset
-			err = c.SendReset(sid)
+			err = c.sendResetFrame(sid)
 		}
 	case "ping", "pong":
 		typ := byte(typePing)
@@ -266,12 +266,12 @@ func (v wireVector) encode(t *testing.T) hexBytes {
 		err = c.frameLocked(typ, "", f.Ping, nil)
 		c.wmu.Unlock()
 	case "goaway":
-		err = c.GoAway(time.Duration(f.DrainMS)*time.Millisecond, f.Reason)
+		err = c.goAway(time.Duration(f.DrainMS)*time.Millisecond, f.Reason)
 	default:
 		t.Fatalf("%s: frame type %q", v.Name, f.Type)
 	}
 	if err == nil {
-		err = c.Flush()
+		err = c.flush()
 	}
 	if err != nil {
 		t.Fatalf("%s: %v", v.Name, err)
@@ -322,12 +322,12 @@ func decodeFrame(t *testing.T, name string, b []byte, inc uint32, chain bool) (*
 	if chain {
 		chainConn(c)
 	} else {
-		c.Credit().Open(string(vecSID))
+		c.credit.Open(string(vecSID))
 	}
-	if inc > 0 && !c.Credit().Acquire(string(vecSID), int(inc)) { // room for the window frame's grant
+	if inc > 0 && !c.credit.Acquire(string(vecSID), int(inc)) { // room for the window frame's grant
 		t.Fatalf("%s: acquire", name)
 	}
-	f, err := c.Recv()
+	f, err := c.recvFrame()
 	if err != nil && !errors.Is(err, io.EOF) {
 		return nil, err
 	}
@@ -357,7 +357,7 @@ func decodeFrame(t *testing.T, name string, b []byte, inc uint32, chain bool) (*
 		got = &vecFrame{Type: "message", Payload: f.Msg}
 	case err == nil:
 		got = &vecFrame{Type: "data", SID: hexBytes(f.SID), Payload: f.Data}
-	case closed(c.PeerGoAway()):
+	case closed(c.peerGoAway):
 		got = &vecFrame{Type: "goaway"} // drain and reason are informational: Recv keeps neither
 	case len(c.pong) == 1:
 		p := <-c.pong
@@ -368,7 +368,7 @@ func decodeFrame(t *testing.T, name string, b []byte, inc uint32, chain bool) (*
 		got = &vecFrame{Type: "pong"} // applied with no effect: no GOAWAY of this side's waits on it
 	}
 	if err == nil {
-		if _, err := c.Recv(); err == nil {
+		if _, err := c.recvFrame(); err == nil {
 			t.Fatalf("%s: bytes left after the frame", name)
 		} else if !errors.Is(err, io.EOF) {
 			return nil, err // a second frame the first makes invalid

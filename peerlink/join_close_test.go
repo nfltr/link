@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/nfltr/link"
+	"github.com/nfltr/link/internal/linkhook"
 	"github.com/nfltr/link/peerlink"
 )
 
@@ -47,7 +48,7 @@ func TestPeerWholeCloseDeliversTheTail(t *testing.T) {
 	}
 	rm := link.NewMux(rc)
 	go func() { _ = rm.Serve(nil) }()
-	s, err := rm.Open([]byte("h"))
+	s, err := rm.Open(context.Background(), []byte("h"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +93,7 @@ func TestPeerFailureAfterFinDeliversTheTail(t *testing.T) {
 		}
 		_ = link.NewMux(c).Serve(func(_ []byte, s *link.Session) {
 			_, _ = s.Write(tail)
-			_ = s.CloseWriteSync()
+			_ = linkhook.CloseWriteSync(s)
 			close(agentSent)
 		})
 	}()
@@ -102,7 +103,7 @@ func TestPeerFailureAfterFinDeliversTheTail(t *testing.T) {
 	}
 	rm := link.NewMux(rc)
 	go func() { _ = rm.Serve(nil) }()
-	s, err := rm.Open([]byte("h"))
+	s, err := rm.Open(context.Background(), []byte("h"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +161,7 @@ func TestPeerEndDelivered(t *testing.T) {
 	}
 	rm := link.NewMux(rc)
 	go func() { _ = rm.Serve(nil) }()
-	s, err := rm.Open([]byte("h"))
+	s, err := rm.Open(context.Background(), []byte("h"))
 	if err != nil {
 		t.Fatal(err)
 	}

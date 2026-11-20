@@ -90,7 +90,7 @@ Per side `p` and session `s`:
 | `End(p, s)` | the same, once the CLOSE/ABORT is buffered (it may wait for room between the two) |
 | `Read(p, s, k)` | a pop of the session's queue -> `Credit.Consumed` |
 | `SendWindow(p, s)` | `Credit.Consumed`'s `grant` -> `Conn.sendWindow` |
-| `GoAway(p)` | `Conn.GoAway` (from `Mux.goAway`) |
+| `GoAway(p)` | `Conn.goAway` (from `Mux.goAway`) |
 | `Ping(p)`, `Pong(p)` | `Conn.control` (`ping`, `keepAlive`'s answer, a waiting pong replaced) |
 | `Recv(p)` | `Conn.recv`/`Conn.next` for each frame type, then `Mux.serve`/`Mux.data` |
 | `CloseConn(p, k)` | `Conn.Close` (first call) |
@@ -257,8 +257,8 @@ a connection that dies then cuts the peer's end (`lost`) after this
 side's application saw a clean end, as TCP's close does. relay-core's
 frame streams give that guarantee (`NoSilentLoss`, their end
 acknowledgement); a layer that needs it over link waits for an answer of
-the peer's application, or syncs after its CloseWrite (`Session.Sync`: a
-ping after the FIN, answered: the peer's Mux read it), as `peerlink.Join`
+the peer's application, or syncs after its CloseWrite (`Session.sync`: a
+ping after the FIN, answered: the peer's Mux read it), as `peerlink.join`
 does ("Join's clean end" below). `CloseWrite`'s result is not that
 guarantee either: an error says its CLOSE could not be written (the
 connection's writes failed or it closed: the peer reads `lost`), nil only
@@ -292,7 +292,7 @@ open its session after the connection ended.** With I1 fixed, TLC found
 `OpenCheck`, a crash, `Down`, then `OpenBuffer`: a session open at a side
 whose Mux had stopped (the interface: a connection's end ends every
 session). The code does not: `Mux.add` refuses once the Mux is done, and
-an OPEN buffered after `Conn.Close` fails at `OpenChain`'s Flush, which
+an OPEN buffered after `Conn.Close` fails at `openChain`'s Flush, which
 drops the session. The model now refuses it (`OpenBuffer` needs the
 connection open; `OpenRefused` also takes a closed one; `Trace.tla` maps
 an `Open` logged after the close to the refusal). The interface's refused
@@ -302,7 +302,7 @@ byte. Severity: low (model only).
 ## A relayed session's Close (RelayedClose.tla, 2026-11-20, lane RELAYCLOSE)
 
 An agent's accepted relayed session (the relay SDK's `QueueConn`, joined
-to its agent-link session by `peerlink.Join`) returned from `Close` at
+to its agent-link session by `peerlink.join`) returned from `Close` at
 once, before its tail left the process; a program that exits then lost
 it. Once the relay held the tail and the FIN, the agent's exit or its
 stop's reset still cut it: the relay's session toward the agent read the
@@ -380,8 +380,8 @@ at the onward pong (the next hop read it).
 nfltr's connect conformance `TestE2EE/exit_10` flaked on Linux: a client
 refused by an organisation service read EOF without the agent's TLS
 alert ("cut in transit", exit 6 for 10). The agent writes the alert,
-then closes its session whole; the relay's joint (`link.Join`, and
-`peerlink.Join` toward a plain conn) copies the alert toward the client
+then closes its session whole; the relay's joint (`link.join`, and
+`peerlink.join` toward a plain conn) copies the alert toward the client
 while the client's own bytes (its last handshake flight's tail) go the
 other way. Once the agent's CLOSE is read, the write onto its session
 fails (`io.ErrClosedPipe`), and `ended` closed the client's side at
@@ -411,7 +411,7 @@ the joint's trace recorder logs no step of this path (a failed write,
 `TraceJoin.tla` (whose `Join.tla` leaves the whole close out) would
 reject one: the peerlink guard is outside spec-traces' `^TestJoin`.
 
-**Traces** (lane LINKTRACE2, 2026-11-20): `link.Join`'s and `Forward`'s
+**Traces** (lane LINKTRACE2, 2026-11-20): `link.join`'s and `Forward`'s
 joint (`join.go`) records, with `-tags linktrace` and
 `LINKTRACE_JOIN=<dir>`, its steps of this model to
 `<dir>/joinclose-<n>.ndjson` (`trace_join_on.go`): `D1Copy` (a write onto
@@ -431,14 +431,14 @@ rejected at the `D0Fail` (fixture `joinclose-close-at-write-fail`);
 
 ## Join's clean end (Join.tla, 2026-11-03, lane SPECTRIM)
 
-relay-core finding 23: `peerlink.Join` of a client's TCP conn and a link
+relay-core finding 23: `peerlink.join` of a client's TCP conn and a link
 session ended the client cleanly once both directions ended, while the
 client's tail and FIN could still be in the link connection's write buffer;
 a connection that died then cut the peer (`lost`) after the client saw a
 clean end. The same holds at an agent, its target joined to the session.
 
 Design: a direction that ends with the session's `CloseWrite` then syncs
-(`Session.Sync`: `Conn.sync` registers a wait for every ping from here on,
+(`Session.sync`: `Conn.sync` registers a wait for every ping from here on,
 buffers a ping; a pong of one of them answers it; pings carry strictly
 growing times, `lastPing`, so a pong says which frames the peer read:
 every frame before its ping, WIRE.md section 8, no wire change). The
@@ -471,7 +471,7 @@ the spec was stronger than the code. Fixed: that branch goes through
 `hold` too; mutant `done-skips-hold` (the code before: the same step as
 `no-hold`, caught by `NoSilentLoss`); guard
 `TestJoinPeerFinDuringSyncIsHeld` (failed before, 3 of 3).
-Open: `link.Join` (two link sessions: a relay's forwarding hop) passes a
+Open: `link.join` (two link sessions: a relay's forwarding hop) passes a
 FIN on without a sync; end to end over several hops the last hop's sync
 answers only for its own connection (Join 3, decided). The joint's trace
 recorder and `TraceJoin.tla`: "Conformance" below. `LostEnds` (weak
@@ -489,7 +489,7 @@ lost (`PFlush` writes one), and the connection ends cleanly (`ConnEnd`).
 The code before buffered Sync's ping in a step after the CloseWrite, so
 a leave between the two never sent it and the clean end reset the
 client. Invariant `DrainNeverResets`: a reset only after a `Crash`.
-Fixed: `Session.CloseWriteSync` buffers the CLOSE and Sync's ping under
+Fixed: `Session.closeWriteSync` buffers the CLOSE and Sync's ping under
 one write lock (`Conn.sendCloseSync`), the Sync pending before the peer
 can read the CLOSE, and `Mux.leave` closes only once every Sync's pong
 was read (`Leave` not while `d0` is `sync`). A first fix registered the
@@ -506,7 +506,7 @@ x 150 (failed 3 of 4 before; after, 0 in 30 such rounds).
 | model | Go |
 |---|---|
 | `CloseWrite`, `RRecv` (pong), `Finish`, `Lost` | `peerlink/chain.go` (`joint.ended`, `sync`, `hold`, `finish`, `abort`) |
-| the ping and its pong | `mux.go` (`Session.Sync`), `conn.go` (`sync`, `synced`, `pingTime`, `keepAlive`) |
+| the ping and its pong | `mux.go` (`Session.sync`), `conn.go` (`sync`, `synced`, `pingTime`, `keepAlive`) |
 | `ARecv` | `conn.go` (`recv`: a ping handed to `keepAlive` after every frame before it) |
 
 ## Session reads (SessionRead.tla, 2026-11-14, lane LINKREAD)
@@ -780,12 +780,12 @@ goroutine or timer.
 |---|---|---|---|---|---|
 | the drain's cut | `mux.go` `Mux.cut` | `m.mu`: `cutting`, snapshot, `fail`; per session `Conn.sendAbort` (`wmu`: forget; frame, may wait); `closeFlushed` (`wmu`: flush; unlock; `CloseWrite`; wait for the peer's close, 1 s); 2 s timer; `Mux.Close`; `close(cutEnded)` | goAway's `AfterFunc` (timer goroutine), Drain's ctx | no: 6 steps, 2 callers | **split** (was: per-session `Closing(ABT)`): `CutBegin`, `CutWait`, `CutForget`, `CutSend`, `CutFlush`, `CutClose`, `CutEnd`, `CutReturn` |
 | Drain's return | `mux.go` `Mux.Drain`, `lateErr` | `goAway`; select on `Done` or ctx; ctx: `cut` | the caller | no: returns after `cut` returns or the connection closed | **added**: `CutReturn`; `DrainReturnsAfterCut` (a return on `Done` is after `closed` by construction) |
-| goAway / drain | `mux.go` `Mux.goAway`, `conn.go` `Conn.GoAway` | `goingAway` (no lock); `wmu`: GOAWAY, `goAwayAt`, flush; `ping` (`wmu`); `m.mu`: `leaving`; timer; goroutine waits for `drained` -> `leave` | Drain, `Pool.goAway` | no | already split: `GoAway`, `DrainPing`, `LeaveWhenDrained`; `goingAway` before `wmu` is the open's recheck (`OpenCheck`/`OpenBuffer`, review F2) |
+| goAway / drain | `mux.go` `Mux.goAway`, `conn.go` `Conn.goAway` | `goingAway` (no lock); `wmu`: GOAWAY, `goAwayAt`, flush; `ping` (`wmu`); `m.mu`: `leaving`; timer; goroutine waits for `drained` -> `leave` | Drain, `Pool.goAway` | no | already split: `GoAway`, `DrainPing`, `LeaveWhenDrained`; `goingAway` before `wmu` is the open's recheck (`OpenCheck`/`OpenBuffer`, review F2) |
 | close after GOAWAY | `mux.go` `Mux.leave`, `conn.go` `Conn.closeFlushed` | `m.mu`: decide `left`; goroutine: `wmu` flush loop, unlock, `CloseWrite`, wait | `drop`, goAway's goroutine, `closeIdle`, the cut | no: a frame buffered between unlock and `CloseWrite` goes or not | one step (`Leave`): sound, a frame's step falls before or after it as in the code; a second call (leave and the cut) does nothing more (`CutFlush` on a shut side) |
 | the connection's end | `conn.go` `Conn.Close`, `mux.go` `Mux.close` | `credit.Close`, `nc.Close`, `downOne`; `m.mu`: `done`, sessions taken; each session's end | many (`Mux.Close`, the cut, closeFlushed's timer, keepAlive, `recv`'s EOF); `Mux.close` from Serve only | `Conn.Close` idempotent (`downOne`); `Mux.close` one caller | `CloseConn` (first call), `Down` |
 | credit grant, window update | `credit.go` `Credit.Consumed`, `conn.go` `Conn.sendWindow` | `credit.mu`: count, grant decided; unlock; `wmu`: WINDOW | the session's reader (`OnPop`) | no | already split: `Read` (gpend), `SendWindow`; a grant after the session's ABORT goes out and the peer ignores it (`RecvWindow` of an unknown session) |
 | Write | `mux.go` `Session.send`, `credit.go` `Credit.acquire`, `conn.go` `Conn.sendData` | credit taken; `wmu`: check, frame (may wait), check again | the writer | no | already split: `Acquire`, `SendCheck`, `SendBuffer`, `Refund` |
-| open | `mux.go` `Mux.OpenChain`, `conn.go` `Conn.sendOpen` | `goingAway`; `m.mu`: `add`; `wmu`: check, frame (may wait), check again; Flush; on error `drop` | the opener | no | already split: `OpenCheck`, `OpenBuffer`, `OpenRefused`; a session in `Mux.sess` before its OPEN is in the cut's snapshot (`CutCand`); against the connection's close: `OpenRefused` (closed during the wait), `CloseAt` (a buffered OPEN dropped), `Down` (the opener reads lost) |
+| open | `mux.go` `Mux.openChain`, `conn.go` `Conn.sendOpen` | `goingAway`; `m.mu`: `add`; `wmu`: check, frame (may wait), check again; Flush; on error `drop` | the opener | no | already split: `OpenCheck`, `OpenBuffer`, `OpenRefused`; a session in `Mux.sess` before its OPEN is in the cut's snapshot (`CutCand`); against the connection's close: `OpenRefused` (closed during the wait), `CloseAt` (a buffered OPEN dropped), `Down` (the opener reads lost) |
 | accept of a peer's open | `conn.go` `Conn.recv` (credit opened, trace `Recv`), `mux.go` `Mux.serve` (`add` under `m.mu`) | two: the credit, then the Mux | the receive loop | no: the cut's snapshot can fall between | `RecvOpen` one step; the trace's `CutBegin` takes a snapshot that may lack it; since lane LINKOPENREFUSE one read after the snapshot is refused (`Mux.add` under `m.mu`: `OpensAnswered`, "The crossed open's refusal") |
 | answer | `chain.go` `Session.answer`, `conn.go` `Conn.sendAccept` | `ansOnce`; `wmu`: ACCEPT | `autoAccept` (first frame), `AcceptPath` | one `wmu` step; not checked against a forgotten credit: an ACCEPT after the cut's ABORT goes out, the peer ignores it | `Accept` (no credit guard, as the code) |
 | Close, Reset, Abort | `mux.go` `Session.Close`/`Reset`, `chain.go` `Session.AbortWith`, `conn.go` `sendClose`/`sendAbort` | `once`; `wmu`: forget, frame (may wait); `m.mu`: `drop` | the application, a joint (`joint.abort`, `ended`) | no: the drop follows the frame | already split: `Closing`, `End`; the gap before the drop puts an ended session in the cut's snapshot (`CutCand`: its ABORT goes out after the CLOSE, the peer drops it) |
@@ -1099,7 +1099,7 @@ holds in a `Spec-Reviewed:` trailer).
 | `Liveness.tla`, `TraceLive.tla` | `keepAlive`, the dead-peer bound, `rxAt` | `conn.go`, `read.go`, `liveness.go` |
 | `Pool.tla`, `TracePool.tla` | `Pool`: Min, Max, `Open`'s pick, dial and growth, `Drain`, `Close` | `pool.go`, `trace_pool_on.go` |
 | `QuicWatch.tla`, `MBTWatch.tla` | quiclink's liveness: `conn.watch`, `watchState.tick`, `keepAliveAfter`, QUIC's idle timeout as its backstop | `peerlink/quiclink/quiclink.go` |
-| `Join.tla`, `TraceJoin.tla` | `peerlink.Join`'s clean end (`Session.Sync`, hold, the watch) | `peerlink/chain.go`, `join.go`, `peerlink/trace_on.go` |
+| `Join.tla`, `TraceJoin.tla` | `peerlink.join`'s clean end (`Session.sync`, hold, the watch) | `peerlink/chain.go`, `join.go`, `peerlink/trace_on.go` |
 | `JoinClose.tla`, `TraceJoinClose.tla` | a joint's side closed whole by its peer while the other side writes: who closes the other side, and when | `join.go`, `peerlink/chain.go`, `trace_join_on.go` |
 | `RelayedClose.tla` | a relayed session's Close, then the program's exit or reset: a FIN then a failure reads io.EOF, the joint passes the tail before the failure | `mux.go`, `join.go`, `peerlink/chain.go` |
 | `HopHold.tla` | two joints on one path (the agent's, the relay's), both ends TCP apps, crossing half closes: the hold ends at the next hop's receipt, the ENDACK at the onward end | `peerlink/chain.go`, `endack.go` |
@@ -1140,15 +1140,15 @@ no longer writes.
 | `Session.halfClosed` (`ss.wfin`) | `Session.closeWrite` | `CloseWriteMark` |
 | `Session.finSent` (`ss.fin`) | `Session.closeWrite` | `CloseWriteSend` |
 | `Session.peerHalf` (`ss.rfin`) | `Mux.serve` | `RecvClose` code 1 |
-| `Session.peerClosed` (`ss.pclosed`) | `Mux.serve`, `Mux.close`, `Mux.OpenChain`, `Session.closeWrite` | `RecvClose` 0, 2, 3; `Down`; `OpenRefused` (the peer never heard of it); `CloseWriteSend` after the peer's FIN (both halves: `Mux.drop`) |
+| `Session.peerClosed` (`ss.pclosed`) | `Mux.serve`, `Mux.close`, `Mux.openChain`, `Session.closeWrite` | `RecvClose` 0, 2, 3; `Down`; `OpenRefused` (the peer never heard of it); `CloseWriteSend` after the peer's FIN (both halves: `Mux.drop`) |
 | `Session.closed` (`ss.st = "gone"`) | `Session.ended` | every end: `End`, `RecvClose`, `Down`, `CloseWriteSend` with `rfin` |
 | `Mux.sess` (`ss.st`) | `Mux.add`, `Mux.drop`, `Mux.close` | `OpenCheck`, `RecvOpen` (add); every end (drop; `Drop` after a CloseWrite that ended both halves); `Down` |
 | `Mux.leaving` | `Mux.goAway` | `GoAway` |
 | `Mux.left` | `Mux.leave`, `Mux.closeIdle` | `Leave` (`LeaveWhenDrained`); `closeIdle` is `Pool.Close`'s `Leave` without a GOAWAY (`Pool.tla` `CloseSnap`) |
 | `Mux.cutting` | `Mux.cut` | `CutBegin`, `CutWait` (README "The drain's cut") |
 | `Mux.done` (`down`) | `Mux.close` | `Down` |
-| `Conn.goingAway` (`ga`) | `Conn.GoAway`, `Conn.recv`, `Pool.goAway` | `GoAway`, `Recv` of a GOAWAY; `Pool.goAway` marks leaving just before its `Conn.GoAway`s (C10), the same `GoAway` |
-| `Conn.goAwayAt` (`sentGA`) | `Conn.GoAway` | `GoAway` |
+| `Conn.goingAway` (`ga`) | `Conn.goAway`, `Conn.recv`, `Pool.goAway` | `GoAway`, `Recv` of a GOAWAY; `Pool.goAway` marks leaving just before its `Conn.goAway`s (C10), the same `GoAway` |
+| `Conn.goAwayAt` (`sentGA`) | `Conn.goAway` | `GoAway` |
 | `Conn.lastPing` (the drain barrier's order) | `Conn.pingTime` | `Ping` |
 | `Conn.closing` (`wshut`) | `Conn.closeFlushed` | `Leave` |
 | `Conn.rxAt` (`Liveness.tla` `rx`) | `Conn.read` | `Liveness.tla` `Recv` |
@@ -1185,7 +1185,7 @@ answered (`Conn.control`) changes no variable of the model.
 |---|---|
 | `MaintainCheck`, `MaintainWake`, `MaintainDial` | `Pool.maintain`: the need check under `p.mu` (its second check reserves: `dials++`), the wait on `p.changed`, `Pool.dial` |
 | `DialUp(c)`, `DialFails` | `Pool.dial`'s end under `p.mu`: `dials--`, `changedLocked`, the connection added (closed when `p.ctx` ended) or the error |
-| `OpenStart`, `Pick`, `Place`, `OpenDial`, `OpenWake` | `Pool.Open`'s loop: `pick` (best, room, `p.changed` read under `p.mu`), `Mux.OpenChain` (`ErrGoAway`, `ErrFull`, `net.ErrClosed`: pick again), `dial` (Backoff, or its error), `waitChange` |
+| `OpenStart`, `Pick`, `Place`, `OpenDial`, `OpenWake` | `Pool.Open`'s loop: `pick` (best, room, `p.changed` read under `p.mu`), `Mux.openChain` (`ErrGoAway`, `ErrFull`, `net.ErrClosed`: pick again), `dial` (Backoff, or its error), `waitChange` |
 | `SessionClose` | the application's `Session.Close` (its end on the Mux) |
 | `OpenStart`'s growth, `GrowDial` | `pick`'s `growBG` (`PoolConfig.Grow`, room, one at a time: `growing`), `Pool.grow`'s `dial`; `GrowWait`: the Open takes the new connection |
 | `DrainStart`, `DrainDial`, `DrainBack`, `DrainGoAway` | `Pool.Drain`: the snapshot, count and first reservation under one `p.mu`, `dial(ctx, next)` per replacement, a failure's `goAway(reps)`, `goAway(old)` |
@@ -1211,11 +1211,11 @@ session):
 |---|---|
 | `CWrite`, `CFin` | the client (environment) |
 | `Copy` | `joint.dir(0)`'s copy: `connWriter.Write` onto the session |
-| `CloseWrite` | `joint.ended(0)` -> `joint.sync`: `syncing` set, `Session.CloseWriteSync` (`Conn.sendCloseSync`: the CLOSE, the Sync registered and its ping, under one `wmu`) |
-| `SyncPing` | mutant `ping-late` only: the code before, `Session.Sync`'s ping after `CloseWrite` |
+| `CloseWrite` | `joint.ended(0)` -> `joint.sync`: `syncing` set, `Session.closeWriteSync` (`Conn.sendCloseSync`: the CLOSE, the Sync registered and its ping, under one `wmu`) |
+| `SyncPing` | mutant `ping-late` only: the code before, `Session.sync`'s ping after `CloseWrite` |
 | `ARecv`, `AFin` | the peer's `Conn.recv` (and `keepAlive`'s pong); the peer's application's `CloseWrite` |
 | `RRecv` (FIN) | `joint.dir(1)`'s Pump ends at the peer's FIN: `joint.ended(1)` -> `hold` while syncing, else `closeWrite` on the client (`Eof`) |
-| `RRecv` (pong) | `Session.Sync` returns: `sync`'s goroutine runs the held end (`fin`) and `finish` |
+| `RRecv` (pong) | `Session.sync` returns: `sync`'s goroutine runs the held end (`fin`) and `finish` |
 | `Finish` | `joint.finish` of both directions: the client closed |
 | `Crash` | the environment (the link connection ends) |
 | `Drain` | `Mux.Drain` / `goAway` on the session's connection (peerlink `Node.Drain` on an accepted one) |
@@ -1304,15 +1304,15 @@ each checked here):
 | the connection's end ends every session (`lost`); GOAWAY and the end are final | `GConn` |
 | sessions end once both applications ended them; a closed connection goes down on both sides; a drained one closes | `SessionsEnd`, `ConnEnds`, `DrainEnds` (`Link.tla` liveness) |
 | a dead peer is declared within Interval + Timeout + 2 x Late of its last bytes, never a live one | `Liveness.tla` `DetectBound` (tight), `NoFalseDead`, `NeverEarly` |
-| `peerlink.Join`: a clean end to a plain conn only once the peer read its bytes and FIN; a dead link connection ends the conn however idle | `Join.tla` `NoSilentLoss`, `LostEnds` |
-| `Join` and `peerlink.Join`: a side closed whole by its peer has every byte it sent delivered to the other side before that side's close, and the other side is closed whole in the end | `JoinClose.tla` `TailDelivered`, `AClosedInTheEnd` |
+| `peerlink.join`: a clean end to a plain conn only once the peer read its bytes and FIN; a dead link connection ends the conn however idle | `Join.tla` `NoSilentLoss`, `LostEnds` |
+| `Join` and `peerlink.join`: a side closed whole by its peer has every byte it sent delivered to the other side before that side's close, and the other side is closed whole in the end | `JoinClose.tla` `TailDelivered`, `AClosedInTheEnd` |
 | a session whose peer's FIN was read before it failed reads io.EOF; `Join` passes such a tail and FIN on before the failure, and holds the other direction's abort for it | `RelayedClose.tla` `TailDelivered`, `NoSilentLoss` |
 | a Pool: no session on a connection going away, within Max but Drain's make-before-break, Min held, every Open progresses and every waiting Open wakes, ErrFull only with the room full and no dial in flight, nothing left after Close | `Pool.tla` `NoSessionOnLeaving`, `MaxHolds`, `MakeBeforeBreak`, `MinHeld`, `OpensProgress`, `WaitWakes`, `FullOnlyAtMax`, `NoLeak`, `CloseEnds` |
 
 Not a guarantee (stated above, "The session interface"): a session that
 ended cleanly at one side had its tail read by the peer; a layer that
-needs that syncs (`Session.Sync`) or waits for the peer's answer.
-`Session.Sync`'s own guarantee (its pong answers every frame before its
+needs that syncs (`Session.sync`) or waits for the peer's answer.
+`Session.sync`'s own guarantee (its pong answers every frame before its
 ping) is assumed by `Join.tla` and guarded by `TestJoin*`, not yet a
 property of `Link.tla` (LinkSession 3, Join 7: decided, argued below).
 
@@ -1420,7 +1420,7 @@ requires TLC to catch.
 | LinkSession 7: configurations miss a listener-opened session, crossed opens, data both ways | low | **done** (lane CONFORM-link): `LinkBoth.cfg` (a session of each side opened at once, a byte each way on each, a FIN each way; invariants and `Refines`) in `make spec-nightly-wide` |
 | LinkSession 8: traces cover no answers (refusal code 4, `Drop`) | low | **done** (lane CONFORM-link): `Trace.tla` maps code 4 (W5-LINK); the refusal tests are traced, 29 refusals accepted ("Conformance") |
 | Join 2: a dead link connection does not end the joint while the client is idle | medium | **fixed** (lane CONFORM-link, C2): `joint.watch`, `LostEnds`, mutant `no-watch`, `TestJoinLostWhileTheClientIsIdle` |
-| Join 3: `link.Join` (two sessions, a forwarding hop) passes a FIN on without a sync | medium | **decided**: a clean end is per link: `Join.tla` models one link, `link.Join`'s doc says so; end to end over several hops needs the far end's answer (an application acknowledgement), not a sync per hop |
+| Join 3: `link.join` (two sessions, a forwarding hop) passes a FIN on without a sync | medium | **decided**: a clean end is per link: `Join.tla` models one link, `link.join`'s doc says so; end to end over several hops needs the far end's answer (an application acknowledgement), not a sync per hop |
 | Join 4: no trace recorder for the joint | medium | **done** (lane CONFORM-link): `peerlink/trace_on.go`, `TraceJoin.tla`, in `make spec-traces`; fixtures in `make spec-mutants` |
 | Join 5: steps the code takes that `Join.tla` does not model | low | **done**: listed in "Action map" (Forward's answer wait, a write deadline, the peer's whole close: outside the model on purpose); the traced `TestJoin*` take none |
 | Join 6: a peer's whole close during the client's tail ends the client cleanly | low | **decided**: as WIRE.md section 5 says, a whole close (code 0) is "neither sends nor reads more": bytes after it are dropped by the peer's choice, not lost; `NoSilentLoss` is stated for a peer that reads to the FIN |
@@ -1624,7 +1624,7 @@ both in full, liveness included; `make spec-mutants` their mutants).
 sessions `Open` places on them, `maintain`'s Min, `Drain`, and what the
 peer and the network do (GOAWAY, a dead path, a failed dial). Sessions
 are modelled only by what `Link.tla` guarantees: a connection that ends
-ends its sessions with an error, `OpenChain` refuses once either side
+ends its sessions with an error, `openChain` refuses once either side
 sent GOAWAY (`ErrGoAway`) or the connection closed, and the side that
 sent GOAWAY closes the connection once its sessions ended. A dead path is
 detected eventually (the bound is `Liveness.tla`'s). `p.changed` is a wake
@@ -1643,7 +1643,7 @@ racing `maintain`, three connection slots, two environment events; about
   session (`OpensOpen`).
 - Mutants: `no-wake-on-goaway` (finding P1, the code before),
   `drain-past-max` (finding P2, the code before), `open-on-goaway`
-  (`OpenChain` without its GOAWAY check), `maintain-no-recheck`
+  (`openChain` without its GOAWAY check), `maintain-no-recheck`
   (`maintain` reserves its dial on what it decided before letting go of
   `p.mu`: an `Open` dialled meanwhile, past Max), `wait-takes-late`
   (finding H1: `Pick`'s wait split from the step that takes `p.changed`),

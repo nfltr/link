@@ -111,8 +111,8 @@ func deadAt(t *testing.T, who string, c *Conn) <-chan time.Time {
 	go func() {
 		<-c.Done()
 		end := time.Now()
-		if !errors.Is(c.Err(), ErrDeadPeer) {
-			t.Errorf("%s: ended with %v", who, c.Err())
+		if !errors.Is(c.endErr(), ErrDeadPeer) {
+			t.Errorf("%s: ended with %v", who, c.endErr())
 		}
 		at <- end
 	}()
@@ -215,8 +215,8 @@ func TestDeadPeerWorstCaseIdle(t *testing.T) {
 				do, lo := &pongCut{}, &pongCut{}
 				c, s, cut := livePair(t, l, do, lo)
 				probe := startLateProbe(t)
-				go func() { _, _ = c.Recv() }()
-				go func() { _, _ = s.Recv() }()
+				go func() { _, _ = c.recvFrame() }()
+				go func() { _, _ = s.recvFrame() }()
 				started := make(chan time.Time, 1)
 				f := func() { cut(); started <- time.Now() }
 				armed := c

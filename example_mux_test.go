@@ -51,7 +51,7 @@ func ExampleMux() {
 	m := link.NewMux(dc)
 	go m.Serve(nil) // the dialer takes no sessions
 	defer m.Close()
-	s, err := m.Open([]byte("count"))
+	s, err := m.Open(context.Background(), []byte("count"))
 	if err != nil {
 		panic(err)
 	}
@@ -61,31 +61,6 @@ func ExampleMux() {
 	_ = s.Close()
 	fmt.Println(string(reply))
 	// Output: count: 12 bytes
-}
-
-// ExampleConn drives a Conn without a Mux: message frames, the caller's
-// own bytes, one receive loop.
-func ExampleConn() {
-	dc, lc := bind(link.NoAuth)
-	defer dc.Close()
-	defer lc.Close()
-
-	go func() {
-		for _, msg := range []string{"one", "two"} {
-			_ = dc.SendMsg([]byte(msg))
-		}
-		_ = dc.Flush() // a send buffers; Flush writes
-	}()
-	for range 2 {
-		f, err := lc.Recv()
-		if err != nil {
-			panic(err)
-		}
-		fmt.Println(string(f.Msg))
-	}
-	// Output:
-	// one
-	// two
 }
 
 // ExampleClient binds the dialer's end of a connection and Server the

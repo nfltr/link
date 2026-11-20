@@ -58,13 +58,13 @@ func v2Record(t *testing.T) map[string][]byte {
 	out.Reset()
 	c := v2Conn(bufConn{w: &out})
 	for _, err := range []error{
-		c.SendOpen(v2Session, v2Header),
-		c.SendData(v2Session, []byte("hello")),
-		c.SendMsg([]byte("_ctl")),
-		c.SendClose(v2Session, true),
-		c.SendClose("\x02", false),
-		c.SendReset("\x03"), // a peer without FeatureReset: code 0
-		func() error { c.peerFeatures = featureReset; return c.SendReset("\x04") }(),
+		c.sendOpenFrame(v2Session, v2Header),
+		c.sendDataFrame(v2Session, []byte("hello")),
+		c.sendMsg([]byte("_ctl")),
+		c.sendCloseFrame(v2Session, true),
+		c.sendCloseFrame("\x02", false),
+		c.sendResetFrame("\x03"), // a peer without FeatureReset: code 0
+		func() error { c.peerFeatures = featureReset; return c.sendResetFrame("\x04") }(),
 	} {
 		if err != nil {
 			t.Fatal(err)
@@ -77,7 +77,7 @@ func v2Record(t *testing.T) map[string][]byte {
 		c.flushLocked()
 		c.wmu.Unlock()
 	}
-	if err := c.GoAway(5*time.Second, "restart"); err != nil {
+	if err := c.goAway(5*time.Second, "restart"); err != nil {
 		t.Fatal(err)
 	}
 	segs["frames"] = out.Bytes()
@@ -127,7 +127,7 @@ func TestV2Golden(t *testing.T) {
 	h := want["hello"]
 	be := binary.BigEndian
 	if string(h[:4]) != "NFDP" || h[4] != 2 || h[5] != 2 || be.Uint32(h[6:]) != featureReset ||
-		be.Uint32(h[10:]) != 0x00050000 || be.Uint32(h[14:]) != MaxSessions ||
+		be.Uint32(h[10:]) != 0x00050000 || be.Uint32(h[14:]) != DefaultMaxSessions ||
 		be.Uint32(h[18:]) != 1500 || be.Uint32(h[22:]) != 3000 || h[26] != MethodToken ||
 		int(be.Uint16(h[27:])) != 32 || string(h[29:]) != v2Token {
 		t.Fatalf("hello %x", h)
@@ -176,9 +176,9 @@ func TestV2Golden(t *testing.T) {
 	// Recv: opens, data, messages and closes surface; window, ping, pong
 	// and goaway are applied.
 	dec := v2Conn(bufConn{r: bytes.NewReader(want["frames"])})
-	var surfaced []Frame
+	var surfaced []rxFrame
 	for {
-		f, err := dec.Recv()
+		f, err := dec.recvFrame()
 		if errors.Is(err, io.EOF) {
 			break
 		}
@@ -186,11 +186,11 @@ func TestV2Golden(t *testing.T) {
 			t.Fatalf("Recv after %d frames: %v", len(surfaced), err)
 		}
 		if f.Open { // the window frame below returns credit sent meanwhile
-			dec.Credit().Acquire(f.SID, 0x8000)
+			dec.credit.Acquire(f.SID, 0x8000)
 		}
 		surfaced = append(surfaced, f)
 	}
-	wantSurfaced := []Frame{
+	wantSurfaced := []rxFrame{
 		{SID: v2Session, Open: true, Header: v2Header},
 		{SID: v2Session, Data: []byte("hello")},
 		{Msg: []byte("_ctl")},
@@ -206,11 +206,11 @@ func TestV2Golden(t *testing.T) {
 		t.Fatalf("pong queued %x", got)
 	}
 	select {
-	case <-dec.PeerGoAway():
+	case <-dec.peerGoAway:
 	default:
 		t.Fatal("GOAWAY not applied")
 	}
-	if !dec.Credit().Acquire(v2Session, testWindow) {
+	if !dec.credit.Acquire(v2Session, testWindow) {
 		t.Fatal("window frame not applied")
 	}
 }

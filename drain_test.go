@@ -50,7 +50,7 @@ func TestGoAwayDrainKeepsTails(t *testing.T) {
 	defer cancel()
 	drained := make(chan error, 1)
 	go func() { drained <- lm.Drain(ctx) }()
-	waitUntil(t, lm.c.GoingAway)
+	waitUntil(t, lm.c.isGoingAway)
 	close(release)
 	var wg sync.WaitGroup
 	var intact atomic.Int32
@@ -395,10 +395,10 @@ func TestPingBeforeGoAwayIsNotTheBarrier(t *testing.T) {
 	a, raw := net.Pipe()
 	c := newTestConn(a, testWindow, testWindow)
 	t.Cleanup(func() { _ = c.Close(); _ = raw.Close() })
-	recv := make(chan Frame)
+	recv := make(chan rxFrame)
 	go func() {
 		for {
-			f, err := c.Recv()
+			f, err := c.recvFrame()
 			if err != nil {
 				return
 			}
@@ -430,7 +430,7 @@ func TestPingBeforeGoAwayIsNotTheBarrier(t *testing.T) {
 	at := readPing()
 	c.goAwayAt.Store(int64(binary.BigEndian.Uint64(at))) // GoAway read the clock as the ping did
 	errc := make(chan error, 1)
-	go func() { errc <- c.GoAway(time.Second, "") }()
+	go func() { errc <- c.goAway(time.Second, "") }()
 	if _, err := io.ReadFull(raw, make([]byte, 5+4)); err != nil {
 		t.Fatal(err)
 	}
@@ -438,12 +438,12 @@ func TestPingBeforeGoAwayIsNotTheBarrier(t *testing.T) {
 		t.Fatal(err)
 	}
 	pong(at)
-	if closed(c.Drained()) {
+	if closed(c.drained) {
 		t.Fatal("the pong of a ping buffered before the GOAWAY closed Drained")
 	}
 	c.ping()
 	pong(readPing())
-	if !closed(c.Drained()) {
+	if !closed(c.drained) {
 		t.Fatal("the pong of a ping buffered after the GOAWAY left Drained open")
 	}
 }
@@ -471,7 +471,7 @@ func TestCloseWriteSyncOnALeavingConnection(t *testing.T) {
 		drained := make(chan error, 1)
 		go func() { drained <- lm.Drain(context.Background()) }()
 		waitUntil(t, func() bool { return closed(lm.c.drained) }) // the peer read the GOAWAY
-		if err := s.CloseWriteSync(); err != nil {
+		if err := s.closeWriteSync(); err != nil {
 			t.Fatalf("round %d: CloseWriteSync on a leaving connection: %v", i, err)
 		}
 		if b, err := io.ReadAll(o); err != nil || len(b) != 0 {
@@ -586,11 +586,11 @@ func TestDrainReturnsAfterTheCutItRaced(t *testing.T) {
 	defer close(hold)
 	go func() { _ = lm.Serve(func(_ []byte, _ *Session) { <-hold }) }()
 	go func() { _ = dm.Serve(nil) }()
-	if _, err := dm.Open([]byte("held")); err != nil {
+	if _, err := dm.Open(context.Background(), []byte("held")); err != nil {
 		t.Fatal(err)
 	}
 	waitUntil(t, func() bool { return lm.Sessions() == 1 })
-	if err := lm.Conn().GoAway(0, ""); err != nil { // a cut follows a GOAWAY (spec/Link.tla CutBegin)
+	if err := lm.Conn().goAway(0, ""); err != nil { // a cut follows a GOAWAY (spec/Link.tla CutBegin)
 		t.Fatal(err)
 	}
 	gc.armed.Store(true) // the first cut's ABORT waits here
@@ -631,12 +631,12 @@ func TestDrainDeadlineKeepsAnEndedSessionsClose(t *testing.T) {
 	accepted := make(chan *Session, 1)
 	go func() { _ = lm.Serve(func(_ []byte, s *Session) { accepted <- s }) }()
 	go func() { _ = dm.Serve(nil) }()
-	ds, err := dm.Open([]byte("ends"))
+	ds, err := dm.Open(context.Background(), []byte("ends"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	ls := <-accepted
-	if err := lm.Conn().GoAway(0, ""); err != nil { // a cut follows a GOAWAY
+	if err := lm.Conn().goAway(0, ""); err != nil { // a cut follows a GOAWAY
 		t.Fatal(err)
 	}
 	gc.armed.Store(true)

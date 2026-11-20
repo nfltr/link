@@ -35,7 +35,7 @@ const (
 // and its payload when view is set (shorter than viewMax), are slices of
 // the read buffers, valid until the next read.
 type rframe struct {
-	Frame
+	rxFrame
 	sid   []byte // a data frame's; nil for other frames
 	view  bool
 	known bool // a data frame's session has credit here (Credit.receivedSID)

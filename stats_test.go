@@ -26,7 +26,7 @@ func TestStatsCountTheWire(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				s, err := m.Open([]byte("sink"))
+				s, err := m.Open(context.Background(), []byte("sink"))
 				if err != nil {
 					t.Error(err)
 					return
@@ -72,7 +72,7 @@ func TestStatsCreditAndQueue(t *testing.T) {
 	dcfg := v2cfg
 	dcfg.Observer = obs
 	dm, lm := v2muxPair(t, accept, dcfg, v2cfg)
-	s, err := dm.Open([]byte("x"))
+	s, err := dm.Open(context.Background(), []byte("x"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +106,7 @@ func TestSessionAbortObserved(t *testing.T) {
 	dcfg, lcfg := v2cfg, v2cfg
 	dcfg.Observer, lcfg.Observer = dobs, lobs
 	dm, lm := v2muxPair(t, func(_ []byte, s *Session) { accepted <- s; <-s.done }, dcfg, lcfg)
-	s, err := dm.Open([]byte("x"))
+	s, err := dm.Open(context.Background(), []byte("x"))
 	if err != nil {
 		t.Fatal(err)
 	}

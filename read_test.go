@@ -4,6 +4,7 @@
 package link
 
 import (
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -150,7 +151,7 @@ func TestSessionReadBesideWriteTo(t *testing.T) {
 		rounds = 6
 	}
 	for i := range rounds {
-		p, err := dm.Open([]byte("h"))
+		p, err := dm.Open(context.Background(), []byte("h"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -183,7 +184,7 @@ func TestSessionReadBesideWriteTo(t *testing.T) {
 			_, err = s.WriteTo(ownedSumWriter{w})
 		default:
 			done := make(chan error, 1)
-			s.Pump(w, func(_ int64, err error) { done <- err })
+			s.startPump(w, func(_ int64, err error) { done <- err })
 			err = <-done
 		}
 		if err != nil {
