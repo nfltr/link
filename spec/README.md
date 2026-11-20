@@ -335,6 +335,24 @@ the joint's trace recorder logs no step of this path (a failed write,
 `TraceJoin.tla` (whose `Join.tla` leaves the whole close out) would
 reject one: the peerlink guard is outside spec-traces' `^TestJoin`.
 
+**Traces** (lane LINKTRACE2, 2026-11-20): `link.Join`'s and `Forward`'s
+joint (`join.go`) records, with `-tags linktrace` and
+`LINKTRACE_JOIN=<dir>`, its steps of this model to
+`<dir>/joinclose-<n>.ndjson` (`trace_join_on.go`): `D1Copy` (a write onto
+A, ok or failed), `D1End` (direction 1's clean end, logged under the
+joint's lock where `over` is set, which is where its fin or close is
+decided: `whole` cannot change after it) and `D0Fail` (the failed write
+onto B, in `closeNow`: A closed now, or left to direction 1).
+`TraceJoinClose.tla` lets TLC take the peers' and the network's steps
+between two lines, as `TraceJoin.tla` does; direction 0's copies and
+clean end, which the model leaves out, are not logged. In `make
+spec-traces`: `TestJoinWholeCloseDeliversTheTail` and
+`TestChainHalfClose`. Code mutant: `close-at-write-fail` put back
+(`closeNow` closes A at once); the guard failed and the trace was
+rejected at the `D0Fail` (fixture `joinclose-close-at-write-fail`);
+`joinclose-ok` accepted. peerlink's joint (a plain conn) is still
+`TraceJoin.tla`'s only.
+
 ## Join's clean end (Join.tla, 2026-11-03, lane SPECTRIM)
 
 relay-core finding 23: `peerlink.Join` of a client's TCP conn and a link
@@ -496,11 +514,7 @@ ordered with the pop that looks at it. Readers are goroutines (minus the
 goroutine for its `WriteTo`); every step is logged, so a line the model
 cannot take rejects the trace. In `make spec-traces`: the three guards
 above, sized down under the tag (2,000 bytes; 400 rounds; 4 rounds),
-every event taken. Not traced: `Pump`, whose drain runs on a goroutine per
-burst and takes the tail (`takeRest`) at each run, where the model's
-copier takes it once (with a `Read` beside it, which `Pump`'s doc forbids,
-a later run can write a tail older than bytes it already wrote:
-`InOrder`; open, low). Code mutant (planted by hand, lane LINKTRACE):
+every event taken. Code mutant (planted by hand, lane LINKTRACE):
 `Read` without `rmu` (the code before LINKREAD): `TestSessionConcurrentReads`
 passed without `-race`, its trace was rejected at line 3 (a second
 `Begin` while the first reader held `rmu`); kept as fixture
@@ -510,6 +524,32 @@ released with bytes left, `NoUseAfterRelease`), `read-forged-eof` (the
 end read before the peer's, `NoForgedEOF`), `read-timeout-unfired`,
 `read-twice` (WriteTo takes bytes a Read had, `Once`) and `read-lost`
 (fewer bytes written than taken, `NoLoss`) rejected.
+
+**Pump** (lane LINKTRACE2, 2026-11-20): LINKTRACE left `Pump` untraced,
+and found why the model's copier did not fit it: its drain runs on a
+goroutine per burst and takes the tail (`takeRest`) at each run, so a
+`Read` beside it (forbidden by `Pump`'s doc only) could leave a tail the
+drain's next run wrote after newer bytes (`InOrder`; low: link's own
+callers never read a pumped session). `Pumps` (with `Copier`): the copier
+runs `Pump`, `PumpOn` sets `pumped`, and its drain takes the tail at the
+start of each run (`WTake` from `batch` too: more often than the code).
+The design: `Read` looks at `s.pump` under `rmu` and returns `errPumped`
+(`Refuse`), so a Read that began first ends before the drain's
+`takeRest` takes its tail, and none after leaves one.
+`SessionReadPump.cfg` (`make spec`, `spec-invariants`): 816 distinct
+states, every action taken but the mutants' `Decide` and `Cut`; mutant
+`read-beside-pump` (the code before) breaks `InOrder`; witnesses
+`WitnessWriteToTail` (the drain takes a tail a Read left before `Pump`)
+and `WitnessRefused`. Guard: `TestSessionReadAfterPumpRefused` (red
+before: the Read took bytes). Unexported error: `Pump`'s one caller is
+peerlink (`docs/v1-api-review.md` #6). Traced: `Pump` is logged under
+the queue's lock (`setPump`), and `Read`'s look at it there too (`Begin`
+or `Refuse`, `pumpedRead`); the drain's lines are reader -1, whatever
+goroutine runs it. `TestSessionReadBesideWriteTo`'s Pump rounds are
+traced now, and `TestSessionReadAfterPumpRefused` and
+`TestSessionPumpErrors` run in `spec-traces`. Code mutant: no refusal;
+the guard failed and the traces were rejected at the `Begin` after
+`Pump` (fixture `read-beside-pump`); `read-ok-pump` accepted.
 
 ## Session writes (SessionWrite.tla, 2026-11-15, lane P2PLEFT)
 
@@ -527,15 +567,17 @@ grant happen at any time.
 | `Fire` | the timer of a future deadline, its generation current |
 | `Grant` | the peer's window update (`Credit.Grant`, `wakeAll`) |
 | `Take(w)` | `writeWait` under `wdMu` |
-| `Check(w)` | `acquire`'s look at `wd.past`, then the credit |
-| `Wake(w)` | `Credit.acquire`'s select: a grant, or the channel closed (look again) |
+| `CheckPast(w)` | `acquire`'s look at `wd.past` |
+| `CheckCredit(w)` | `Credit.acquire`'s look at the credit, under its lock: taken (`Need(w)` bytes), or it waits |
+| `Wake(w)` | `Credit.acquire`'s select: a grant (the credit looked at again), or the channel closed (look again) |
 
 - **`NoStrandedWriter`**: a Write waiting for credit past its deadline
   holds a closed channel, so it looks again and returns
   `os.ErrDeadlineExceeded`.
 
 `SessionWrite.cfg` (in `make spec` and `spec-invariants`): two writers,
-two `SetWriteDeadline` calls: 4,592 distinct states, about a second;
+two `SetWriteDeadline` calls: 6,712 distinct states (4,592 before lane
+LINKTRACE2 split the check and counted the credit), about a second;
 every action taken (`-coverage 1`). Mutant (`make spec-mutants`):
 `nil-channel` (the code before: `writeWait` returned `wdCh`, nil until a
 first `SetWriteDeadline`, so a Write waiting when the first deadline was
@@ -544,6 +586,30 @@ set waited on nil) breaks `NoStrandedWriter`. Witnesses (violated):
 `TestSessionWriteWaitingForCreditSeesFirstDeadline` (write_test.go; red
 every run before; found by nettest's PresentTimeout, 1 run in 40, through
 relay's `client/nfnet` `TestConnIsANetConn`).
+
+**Traces** (lane LINKTRACE2, 2026-11-20): the model before took
+`acquire`'s two looks (`wd.past`, then the credit under `Credit.mu`) as
+one step and a grant as credit for every Write; a trace of the code
+needs both as they are: `CheckPast` and `CheckCredit`, a deadline set
+between them being the closed channel the wait holds, and the credit a
+count (`Window`, `Need(w)`, `GrantOf(k)`; the model's one grant gives
+enough for every Write). With `-tags linktrace` and
+`LINKTRACE_WRITE=<dir>` each session writes its steps to
+`<dir>/write-<n>.ndjson` (`trace_write_on.go`): `Set` (its kind), `Fire`
+and `Take` (the channel's number, the model's: the session's count of
+channels made, 0 nil) under `wdMu`, the first two before the channel's
+close, so a woken Write's `Wake` comes after; `Past` (acquire's look,
+under `wdMu` in a traced build); `Check` and `Grant` (refunds too) under
+`Credit.mu`, and `Wake` at `Credit.acquire`'s stop. Each call of
+`acquire` is a writer; a `Check` of a waiting writer is
+`Credit.acquire`'s look again after a grant (`Wake`, or with too little
+a step that changes nothing). `TraceSessionWrite.tla` checks each file
+step by step. In `make spec-traces`:
+`TestSessionWriteWaitingForCreditSeesFirstDeadline`, `TestWriteDeadline`,
+`TestWriteDeadlineStuckNetwork`, every event taken. Code mutant: the
+nil-channel bug put back (`writeWait` makes no channel); the guard hung
+to its bound and the trace was rejected at line 2 (a `Take` of channel
+0), fixture `write-nil-channel`; `write-ok` accepted.
 
 ## Credit's waiters (CreditWaiters.tla, 2026-11-05, lane LINKWAKE)
 
@@ -882,10 +948,10 @@ holds in a `Spec-Reviewed:` trailer).
 | `Pool.tla`, `TracePool.tla` | `Pool`: Min, Max, `Open`'s pick, dial and growth, `Drain`, `Close` | `pool.go`, `trace_pool_on.go` |
 | `QuicWatch.tla`, `MBTWatch.tla` | quiclink's liveness: `conn.watch`, `watchState.tick`, `keepAliveAfter`, QUIC's idle timeout as its backstop | `peerlink/quiclink/quiclink.go` |
 | `Join.tla`, `TraceJoin.tla` | `peerlink.Join`'s clean end (`Session.Sync`, hold, the watch) | `peerlink/chain.go`, `join.go`, `peerlink/trace_on.go` |
-| `JoinClose.tla` | a joint's side closed whole by its peer while the other side writes: who closes the other side, and when | `join.go`, `peerlink/chain.go` |
+| `JoinClose.tla`, `TraceJoinClose.tla` | a joint's side closed whole by its peer while the other side writes: who closes the other side, and when | `join.go`, `peerlink/chain.go`, `trace_join_on.go` |
 | `CreditWaiters.tla`, `TraceCreditWaiters.tla` | senders waiting in `Credit.Acquire` on one session: the wait and `wakeAll` | `credit.go`, `trace_wait_on.go` |
-| `SessionRead.tla`, `TraceSessionRead.tla` | `Session.Read` from several goroutines (or one running `WriteTo`), the read deadline set and cleared meanwhile | `mux.go`, `internal/bytequeue/`, `trace_read_on.go` |
-| `SessionWrite.tla` | `Session.Write` waiting for credit while `SetWriteDeadline` and its timer run | `mux.go`, `credit.go` |
+| `SessionRead.tla`, `TraceSessionRead.tla` | `Session.Read` from several goroutines (or one running `WriteTo` or `Pump`), the read deadline set and cleared meanwhile | `mux.go`, `internal/bytequeue/`, `trace_read_on.go` |
+| `SessionWrite.tla`, `TraceSessionWrite.tla` | `Session.Write` waiting for credit while `SetWriteDeadline` and its timer run | `mux.go`, `credit.go`, `trace_write_on.go` |
 | `DirectPath.tla`, `TraceDirectPath.tla` | the path layer: OPEN, RESUME, ACK, END, ABORT, the window, `Move` and `Attach` | `pathswitch/conn.go`, `pathswitch/frame.go`, `pathswitch/trace_on.go` |
 
 ## Action map (lane CONFORM-link)
@@ -1243,11 +1309,14 @@ fast preset) and checks every connection's trace with `Trace.tla`, one TLC
 per trace. `TraceLog.tla` holds the parsed file: TLC evaluates an
 extended module's constants first, so the file is read once (defined in
 `Trace.tla` itself, it was read again for each reference, quadratic).
-The session reads (`LINKTRACE_READ`, `TraceSessionRead.tla`) and credit's
-waiters (`LINKTRACE_WAIT`, `TraceCreditWaiters.tla`) have recorders of
-their own, one file per session, checked in the same target ("Session
-reads", "Credit's waiters"); `TestSpecReadWaitEventsMapped` keeps their
-events and the two modules' steps the same both ways.
+The session reads (`LINKTRACE_READ`, `TraceSessionRead.tla`), credit's
+waiters (`LINKTRACE_WAIT`, `TraceCreditWaiters.tla`) and session writes
+(`LINKTRACE_WRITE`, `TraceSessionWrite.tla`) have recorders of their own,
+one file per session, checked in the same target ("Session reads",
+"Credit's waiters", "Session writes"); `TestSpecReadWaitEventsMapped`
+keeps their events and the three modules' steps the same both ways. A
+joint's (`LINKTRACE_JOIN`, `TraceJoinClose.tla`, one file per joint):
+"A joint's side closed whole".
 
 ## Design of the fixes (2026-11-02)
 

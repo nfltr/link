@@ -8,6 +8,20 @@ version 2 unless an entry says otherwise.
 
 ## Unreleased
 
+- A Read once Pump was called returns an error and takes nothing (lane
+  LINKTRACE2). Before, Pump's doc alone forbade it: such a Read could
+  leave a tail that Pump's next run wrote after newer bytes, out of
+  order. A Read that began before Pump ends first, and its tail still
+  goes to Pump's writer first. spec/SessionRead.tla
+  (`SessionReadPump.cfg`), mutant `read-beside-pump`; guard
+  `TestSessionReadAfterPumpRefused`. No exported name: link's only
+  caller of Pump (peerlink) never reads a pumped session.
+- Trace recorders for `SessionWrite.tla` and `JoinClose.tla`, and Pump
+  in `SessionRead.tla`'s (lane LINKTRACE2): with `-tags linktrace`,
+  `LINKTRACE_WRITE` writes a session's writes waiting for credit with a
+  write deadline and `LINKTRACE_JOIN` a joint's side closed whole, which
+  `make spec-traces` checks (`TraceSessionWrite.tla`,
+  `TraceJoinClose.tla`). Without the tag nothing changes.
 - Trace recorders for `SessionRead.tla` and `CreditWaiters.tla` (lane
   LINKTRACE): with `-tags linktrace`, `LINKTRACE_READ` and
   `LINKTRACE_WAIT` write each session's read steps and its send credit's
