@@ -229,13 +229,8 @@ func (s *Session) Refuse(code uint32, msg string) error {
 	return s.AbortWith(&link.Abort{Refused: true, Code: code, Msg: msg})
 }
 
-// Abort resets the session with code (the stream error carries no
-// message). Without ALPNChain it is Reset.
-func (s *Session) Abort(code uint32, msg string) error {
-	return s.AbortWith(&link.Abort{Code: code, Msg: msg})
-}
-
-// AbortWith is Refuse (a.Refused) or Abort with a's code and hops.
+// AbortWith resets the session with a's code and hops (the stream error
+// carries no message; a.Refused: Refuse). Without ALPNChain it is Reset.
 func (s *Session) AbortWith(a *link.Abort) error {
 	if !s.c.chain {
 		s.reset.Store(true)

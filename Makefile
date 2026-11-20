@@ -90,13 +90,12 @@ check-govulncheck:
 check-api:
 	./scripts/check-api.sh . '' link
 	./scripts/check-api.sh peerlink/quiclink peerlink/quiclink/ quiclink
-	./scripts/check-api.sh peerlink/grpclink peerlink/grpclink/ grpclink
 
-# peerlink over gRPC (peerlink/grpclink, a module of its own: gRPC never
-# enters link's dependencies): build, vet, the conformance suite with -race.
-.PHONY: check-grpclink
-check-grpclink:
-	cd peerlink/grpclink && GOWORK=off go build ./... && GOWORK=off go vet ./... && GOWORK=off go test -count=1 -race ./...
+# pathswitch (a module of its own, v0 until its wire is: pathswitch/WIRE.md):
+# build, vet, the suite with -race. Its check-api starts with its first tag.
+.PHONY: check-pathswitch
+check-pathswitch:
+	cd pathswitch && GOWORK=off go build ./... && GOWORK=off go vet ./... && GOWORK=off go test -count=1 -race ./...
 
 # peerlink over QUIC (peerlink/quiclink, a module of its own: quic-go never
 # enters link's dependencies): build, vet, the conformance suite with -race.

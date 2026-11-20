@@ -27,7 +27,7 @@ import (
 // relay, here a pipe).
 type linkStream struct{ *link.Session }
 
-func (s linkStream) Reset() error { return s.Abort(0, "reset") }
+func (s linkStream) Reset() error { return s.AbortWith(&link.Abort{Code: 0, Msg: "reset"}) }
 
 func addrPort(t *testing.T, pc net.PacketConn) netip.AddrPort {
 	t.Helper()
@@ -60,7 +60,7 @@ func newDirectPair(t *testing.T) *directPair {
 	p.a, err = quiclink.New(quiclink.Config{Liveness: link.LivenessFast,
 		Dial: func(ctx context.Context, peer string, qc *quic.Config) (*quic.Conn, error) {
 			p.punches.Add(1)
-			if err := quiclink.Probe(trB, []netip.AddrPort{addrPort(t, pa)}); err != nil { // b's half
+			if err := quiclink.ProbeForTest(trB, []netip.AddrPort{addrPort(t, pa)}); err != nil { // b's half
 				return nil, err
 			}
 			ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -143,7 +143,7 @@ func (p *directPair) attach(s pathswitch.Stream, path string) {
 // session opens session id relayed (one at a time); the client falls
 // back to the relay when its stream ends.
 func (p *directPair) session(t *testing.T, id byte) (c, s *pathswitch.Conn) {
-	first, err := p.relayA.Open([]byte{'F', id})
+	first, err := p.relayA.Open(context.Background(), []byte{'F', id})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +153,7 @@ func (p *directPair) session(t *testing.T, id byte) (c, s *pathswitch.Conn) {
 	c = pathswitch.Client(linkStream{first}, "relay", pathswitch.Config{OnStreamEnd: func(uint64, error) {
 		mu.Lock()
 		defer mu.Unlock()
-		if rs, err := p.relayA.Open([]byte("attach")); err == nil {
+		if rs, err := p.relayA.Open(context.Background(), []byte("attach")); err == nil {
 			_, _ = c.Move(linkStream{rs}, "relay", tok)
 		}
 	}})

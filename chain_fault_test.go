@@ -204,7 +204,7 @@ func TestWriteFailsWithPeerAbort(t *testing.T) {
 	a := muxPair(t, func(_ []byte, s *Session) {
 		_ = s.Accept()
 		_, _ = io.CopyN(io.Discard, s, 1)
-		_ = s.Abort(CodeApp, "no")
+		_ = s.AbortWith(&Abort{Code: CodeApp, Msg: "no"})
 	})
 	buf := make([]byte, 2*testWindow)
 	for range 300 {

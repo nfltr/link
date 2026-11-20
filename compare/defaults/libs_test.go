@@ -82,7 +82,7 @@ func linkPair(tb testing.TB, x, y net.Conn) mux {
 	go func() { _ = b.Serve(func(_ []byte, s *link.Session) { acc <- s }) }()
 	tb.Cleanup(func() { _ = a.Close(); _ = b.Close() })
 	return mux{
-		open:   func() (net.Conn, error) { return a.Open(nil) },
+		open:   func() (net.Conn, error) { return a.Open(context.Background(), nil) },
 		accept: chanAccept(acc, b.Conn().Done()),
 	}
 }

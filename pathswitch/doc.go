@@ -30,17 +30,8 @@
 // since the client alone can open another stream for it (a server that
 // left answers one with its count and FIN).
 //
-// Wire: one type byte, then uvarints.
-//
-//	D len payload                 DATA, 1..16384 bytes
-//	K n                           ACK: the peer holds every position below n
-//	O epoch rcvd flags len token  OPEN (flags 1: the client reset the session)
-//	R n                           RESUME: the server holds every position below n
-//	E n                           END after byte n-1 (position n)
-//	X                             ABORT
-//
-// Positions count bytes from the session's start and the END as one more:
-// an ACK of n+1 after END(n) frees the END.
+// Wire: WIRE.md in this module (DATA, ACK, OPEN, RESUME, END, ABORT), with
+// test vectors (testdata/wire_vectors.json).
 //
 // Trace mode (go test -tags linktrace, LINKTRACE=<dir>) records each
 // session's steps; make spec-traces checks them against the model.

@@ -1,11 +1,47 @@
+Incompatible changes:
+- package github.com/nfltr/link/pathswitch: removed
+- ./peerlink/peerlinktest.ChainPath: removed
+- ./peerlink/peerlinktest.NewChainPath: removed
+- ./peerlink/peerlinktest.Within: removed
+- (*Conn).Credit: removed
+- (*Conn).Drained: removed
+- (*Conn).Err: removed
+- (*Conn).Flush: removed
+- (*Conn).GoAway: removed
+- (*Conn).GoingAway: removed
+- (*Conn).Identity: removed
+- (*Conn).PeerGoAway: removed
+- (*Conn).PeerMaxSessions: removed
+- (*Conn).Recv: removed
+- (*Conn).SendClose: removed
+- (*Conn).SendData: removed
+- (*Conn).SendMsg: removed
+- (*Conn).SendOpen: removed
+- (*Conn).SendReset: removed
+- (*Mux).Open: changed from func([]byte) (*Session, error) to func(context.Context, []byte) (*Session, error)
+- (*Mux).OpenChain: removed
+- (*Session).Abort: removed
+- (*Session).CloseWriteSync: removed
+- (*Session).Pump: removed
+- (*Session).Sync: removed
+- (*Session).WriteBuffers: removed
+- FeatureChain: removed
+- Frame: removed
+- Join: removed
+- MaxSessions: removed
+- ./peerlink.ChainSession.Abort: removed
+- ./peerlink.Config.HandshakeError: removed
 Compatible changes:
-- (*Conn).SendEndAck: added
 - (*Session).AckEnd: added
 - (*Session).HoldEndAck: added
 - Config.Hop: added
+- DefaultMaxSessions: added
 - ErrEndAckIdle: added
-- FeatureEndAck: added
-- Frame.EndAck: added
+- MaxData: added
+- MaxFrame: added
+- MaxHeader: added
+- MaxReason: added
+- MaxSessionsWire: added
 - ./peerlink.EndAcker: added
 - ./peerlink.EndNotifier: added
 - ./peerlink.SyncsEnd: added

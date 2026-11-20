@@ -38,7 +38,7 @@ func inLink(p *types.Package) bool {
 }
 
 // isSession: *link.Session, peerlink.Session or ChainSession, or such a
-// type of another link package (quiclink, grpclink).
+// type of another link package (quiclink).
 func isSession(t types.Type) bool {
 	if p, ok := t.(*types.Pointer); ok {
 		t = p.Elem()

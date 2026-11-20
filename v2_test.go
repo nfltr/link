@@ -686,7 +686,7 @@ func TestSendOpenLimits(t *testing.T) {
 	if err := c.sendOpenFrame(string(make([]byte, MaxSID+1)), nil); !errors.Is(err, errSID) {
 		t.Fatal(err)
 	}
-	h := make([]byte, maxHeader+1)
+	h := make([]byte, MaxHeader+1)
 	_, _ = rand.Read(h)
 	if err := c.sendOpenFrame("a", h); !errors.Is(err, errHeader) {
 		t.Fatal(err)

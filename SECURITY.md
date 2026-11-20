@@ -135,15 +135,14 @@ trust:
   opener, a refusal after an accept, or data before the accept ends the
   connection (`ErrFrame`).
 
-## peerlink, grpclink, quiclink
+## peerlink, quiclink
 
 `peerlink.Node` inherits link's guarantees and bounds each accepted
 connection's handshake by its dead-peer bound. `quiclink` uses QUIC's
 TLS 1.3 (0-RTT off: its data can be replayed); a stream's header preamble
 is read under the dead-peer bound and is at most 64 KiB
 (`FuzzPreamble`); an ALPNChain answer is at most 1032 bytes and its
-message valid UTF-8 (`FuzzAnswer`). `grpclink` leaves transport security and peer naming to
-gRPC's credentials and `Config.Identify`.
+message valid UTF-8 (`FuzzAnswer`).
 
 ## Review record
 

@@ -193,7 +193,7 @@ func TestAbortAtMaxSessionsRacingOpenKeepsTheConnection(t *testing.T) {
 		waitStack(t, "link.(*Conn).sendOpen", "sync.(*Mutex).Lock", opened)
 	}
 	t.Cleanup(func() { testHookAbortForgot = nil })
-	_ = s.Abort(1, "gone")
+	_ = s.AbortWith(&Abort{Code: 1, Msg: "gone"})
 	testHookAbortForgot = nil
 	if err := <-opened; err != nil {
 		t.Fatalf("Open after the Abort: %v", err)

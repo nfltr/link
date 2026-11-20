@@ -40,15 +40,15 @@ const (
 	// FeatureEndAck only.
 	typeEndAck = 11
 
-	// maxData is the largest payload of one data frame; SendData splits
-	// larger.
-	maxData = 1 << 20
-	// maxFrame bounds the body Recv accepts for one frame.
-	maxFrame = 1 + MaxSID + maxData
-	// maxHeader bounds an OPEN frame's header.
-	maxHeader = 64 << 10
-	// maxReason bounds a GOAWAY frame's reason.
-	maxReason = 1024
+	// MaxData is the largest payload of one data frame (WIRE.md section
+	// 10); a sender splits larger.
+	MaxData = 1 << 20
+	// MaxFrame bounds a frame's body (WIRE.md section 4).
+	MaxFrame = 1 + MaxSID + MaxData
+	// MaxHeader bounds an open's header (Mux.Open, WIRE.md section 4).
+	MaxHeader = 64 << 10
+	// MaxReason bounds a goaway's reason (WIRE.md section 4).
+	MaxReason = 1024
 	// pingLen is a PING's and a PONG's body.
 	pingLen = 8
 
@@ -355,7 +355,7 @@ func (c *Conn) sendData(sid string, data []byte, wd *writeDeadline, wclosed *ato
 // (nil: none) as frameWaitLocked's, which logs the frame's SendData.
 func (c *Conn) dataLocked(sid string, data []byte, wd *writeDeadline, recheck func(n int) error) error {
 	for len(data) > 0 {
-		n := min(len(data), maxData)
+		n := min(len(data), MaxData)
 		if err := c.frameWaitLocked(typeData, sid, data[:n], wd, recheck); err != nil {
 			return err
 		}
@@ -383,7 +383,7 @@ func (c *Conn) sendOpen(sid string, header []byte, ch Chain) error {
 	switch {
 	case len(sid) > MaxSID:
 		return errSID
-	case len(header) > maxHeader:
+	case len(header) > MaxHeader:
 		return errHeader
 	}
 	c.wmu.Lock()
@@ -632,8 +632,8 @@ func (c *Conn) sendCloseLocked(sid string, code byte) error {
 // connection: the open ones may run for drain, then this side closes it.
 // It also stops this side opening more (ErrGoAway). It writes at once.
 func (c *Conn) goAway(drain time.Duration, reason string) error {
-	if len(reason) > maxReason {
-		reason = reason[:maxReason]
+	if len(reason) > MaxReason {
+		reason = reason[:MaxReason]
 	}
 	c.goingAway.Store(true)
 	b := binary.BigEndian.AppendUint32(nil, uint32(max(drain, 0).Milliseconds())) // #nosec G115 -- a drain in ms fits
@@ -1182,7 +1182,7 @@ func (c *Conn) recv() (rframe, bool, error) {
 		return rframe{}, false, err
 	}
 	n := int(binary.BigEndian.Uint32(c.rhdr[:4]))
-	if n > maxFrame || n < 1 {
+	if n > MaxFrame || n < 1 {
 		return rframe{}, false, ErrFrame
 	}
 	typ := c.rhdr[4]
@@ -1231,7 +1231,7 @@ func (c *Conn) recv() (rframe, bool, error) {
 		if typ == typeChainOpen {
 			fixed = 1 + traceLen
 		}
-		if (typ == typeChainOpen) != c.chain() || l > n-1-fixed || n-1-l-fixed > maxHeader {
+		if (typ == typeChainOpen) != c.chain() || l > n-1-fixed || n-1-l-fixed > MaxHeader {
 			return rframe{}, false, ErrFrame
 		}
 		b := make([]byte, n-1)
@@ -1359,7 +1359,7 @@ func (c *Conn) recv() (rframe, bool, error) {
 		}
 		return rframe{}, false, nil
 	case typeGoAway:
-		if n < 4 || n > 4+maxReason {
+		if n < 4 || n > 4+MaxReason {
 			return rframe{}, false, ErrFrame
 		}
 		b := make([]byte, n-1)

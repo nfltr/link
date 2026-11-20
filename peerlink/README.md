@@ -102,7 +102,7 @@ functions: an implementation on another transport brings its own. The suite call
 both. With `Pair.Reverse`, B dials A and A opens its sessions on B's
 connections (the reverse direction); the suite then calls `Serve` on A
 too, and runs every case that way, plus `Unreachable`. Every time bound comes from your `DeadAfter` or is a generous bound
-for work that must finish at all (`peerlinktest.Within`); none is tied to a
+for work that must finish at all (a minute); none is tied to a
 transport. Cases: `Echo`, `Header`, `HalfCloseOpenerFirst`,
 `HalfCloseAccepterFirst`, `Large` (64 MiB each way, checksummed),
 `Concurrent` (32 sessions), `StuckReader` (8 sessions beside a stuck one),
@@ -165,32 +165,30 @@ session and the TCP connection to its target, say), and
 link v0.10.0, quiclink v0.4.0's over `ALPNChain`) answers opens and
 carries typed aborts (`*link.Abort`: code, message, which hop). The
 suite's `Chain*` cases run a path of two Pairs through a Forward hop
-(`peerlinktest.NewChainPath`) and check the typed outcomes where the
+and check the typed outcomes where the
 sessions answer, the plain contract where they do not.
 
 ## Implementations
 
-| | `peerlink.Node` (this package) | `grpclink.Node` (`peerlink/grpclink`) | `quiclink.Node` (`peerlink/quiclink`) |
-|---|---|---|---|
-| carries sessions over | `link.Pool` per peer (dialling), `link.Mux` per accepted connection | one gRPC bidirectional stream per session, a `grpc.ClientConn` per peer | one QUIC stream per session, a QUIC connection per peer |
-| dependencies | standard library | google.golang.org/grpc (a module of its own) | github.com/nfltr/quic-go, nfltr's fork of quic-go (a module of its own) |
-| who the opener is | the `Identity.Subject` of the caller's `link.Authenticator` | the caller's `Identify(ctx)` (metadata, credentials) | the caller's `ServedPeer(conn)`, else the client certificate's CommonName |
-| dead-peer bound (`DeadAfter`) | Interval + Timeout of the liveness (`LivenessFast`: 4.5 s) | max(Interval, 10 s) + Timeout + 5 s (`LivenessFast`: 18 s): gRPC clients ping no more often than every 10 s, and a client whose writes are stuck waits 5 s to send GOAWAY before closing | Interval + Timeout (`LivenessFast`: 4.5 s): keep-alive after Interval, QUIC's idle timeout of Timeout, and a check that closes a connection silent for Interval + Timeout/2 (QUIC's idle timer alone runs late on a side that cannot send) |
-| deadlines | read and write deadlines | none (`errors.ErrUnsupported`) | read and write deadlines |
-| reverse direction (`Open` on connections the peer dialled) | yes, without `Config.Dial` | no: a gRPC stream starts at the client (`TestReverseUnsupported`) | yes, without `Config.Dial` |
-| survives the dialler's address changing | no (TCP) | no (TCP) | yes (QUIC connection migration, `TestMigration`) |
-| suite | every case, both directions | every case (forward) | every case, both directions (through `peerlinktest.UDPProxy`) |
+| | `peerlink.Node` (this package) | `quiclink.Node` (`peerlink/quiclink`) |
+|---|---|---|
+| carries sessions over | `link.Pool` per peer (dialling), `link.Mux` per accepted connection | one QUIC stream per session, a QUIC connection per peer |
+| dependencies | standard library | github.com/nfltr/quic-go, nfltr's fork of quic-go (a module of its own) |
+| who the opener is | the `Identity.Subject` of the caller's `link.Authenticator` | the caller's `ServedPeer(conn)`, else the client certificate's CommonName |
+| dead-peer bound (`DeadAfter`) | Interval + Timeout of the liveness (`LivenessFast`: 4.5 s) | Interval + Timeout (`LivenessFast`: 4.5 s): keep-alive after Interval, QUIC's idle timeout of Timeout, and a check that closes a connection silent for Interval + Timeout/2 (QUIC's idle timer alone runs late on a side that cannot send) |
+| deadlines | read and write deadlines | read and write deadlines |
+| reverse direction (`Open` on connections the peer dialled) | yes, without `Config.Dial` | yes, without `Config.Dial` |
+| survives the dialler's address changing | no (TCP) | yes (QUIC connection migration, `TestMigration`) |
+| suite | every case, both directions | every case, both directions (through `peerlinktest.UDPProxy`) |
 
-Suite results on loopback (an arm64 laptop, `-race`, three runs each): both pass
-every case; link in both directions (reverse: the same dead-peer and
+Suite results on loopback (an arm64 laptop, `-race`, three runs each): link passes
+every case in both directions (reverse: the same dead-peer and
 fairness figures, opens working again within 30 ms of a cut, once the
 dialler redialled). Dead peer: link surfaces it on all six sessions at 4.50 s
-(bound 4.5 s); gRPC at 4.5 s on the listener and 13.0 s on the dialer, 18.0 s when its
-writes were stuck (bound 18 s).
+(bound 4.5 s).
 Fairness at 1 MiB/s, 8 sessions: link 448-544 KiB each in 4 s (longest
 wait for a turn under 0.5 s, 20 runs under load; before v0.8.0, when
-senders waiting for room raced for it, 0.8-3.2 s), gRPC 480-512 KiB
-(under 0.3 s). The case now runs at 4 MiB/s and bounds a wait in the
+senders waiting for room raced for it, 0.8-3.2 s). The case now runs at 4 MiB/s and bounds a wait in the
 path's bytes: half the run, past the 7 MiB the other sessions' credit
 allows on a deep path (`verdict` in peerlinktest.go).
 QUIC (quiclink, both directions): dead peer at 3.0 s with a session
@@ -198,13 +196,8 @@ busy, up to 4.5 s idle (bound 4.5 s); fairness 499-505 KiB each (under
 0.1 s); opens working again 3.0-5.0 s after a cut (on UDP a cut is a
 path gone silent: the old connection must time out first).
 
-`grpclink` runs with `make check-grpclink` (build, vet, the suite with
-`-race`), `quiclink` with `make check-quiclink`.
-
-`grpclink/example_test.go` (`Example`) is application code written against
-`peerlink.Link` only (a service and a caller over `net.Conn` sessions),
-wired to gRPC in one function; swapping in `peerlink.Node` changes that
-function alone.
+`quiclink` runs with `make check-quiclink` (build, vet, the suite with
+`-race`).
 
 ## What shaped the API
 

@@ -154,8 +154,7 @@ func ExampleParseLiveness() {
 }
 ```
 
-quiclink takes the same `link.Liveness` and keeps the same bound;
-grpclink's is longer (gRPC limits client pings): see
+quiclink takes the same `link.Liveness` and keeps the same bound: see
 [peerlink/README.md](../peerlink/README.md#implementations).
 
 ## gRPC over a link
@@ -163,60 +162,6 @@ grpclink's is longer (gRPC limits client pings): see
 Give a `grpc.Server` a `peerlink.Listener` (the sessions a Node takes),
 and dial with `Open` through `grpc.WithContextDialer`. gRPC's connection
 is then one session, beside the others on the same link connections.
-(`peerlink/grpclink` is the other way round: peerlink sessions carried
-over gRPC, for networks that pass only gRPC.) `Example_grpcOverLink` in
-[peerlink/grpclink](../peerlink/grpclink/example_test.go):
-
-```go
-func Example_grpcOverLink() {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		panic(err)
-	}
-	server, err := peerlink.New(peerlink.Config{Listener: ln, Link: link.Config{Auth: link.NameAuth("server")}})
-	if err != nil {
-		panic(err)
-	}
-	sessions := peerlink.NewListener()
-	go server.Serve(sessions.Handle) //nolint:errcheck // ends with Drain
-	gs := grpc.NewServer()
-	healthpb.RegisterHealthServer(gs, health.NewServer()) // any gRPC service
-	go gs.Serve(sessions)                                 //nolint:errcheck // ends with Stop
-
-	client, err := peerlink.New(peerlink.Config{
-		Link: link.Config{Auth: link.NameAuth("client")},
-		Dial: func(ctx context.Context, peer string) (net.Conn, error) {
-			var d net.Dialer
-			return d.DialContext(ctx, "tcp", ln.Addr().String())
-		},
-	})
-	if err != nil {
-		panic(err)
-	}
-	cc, err := grpc.NewClient("passthrough:///server", // the target names the peer
-		grpc.WithContextDialer(func(ctx context.Context, peer string) (net.Conn, error) {
-			return client.Open(ctx, peer, []byte("grpc"))
-		}),
-		grpc.WithTransportCredentials(insecure.NewCredentials()), // the link's connection is secured, or not, below
-	)
-	if err != nil {
-		panic(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	resp, err := healthpb.NewHealthClient(cc).Check(ctx, &healthpb.HealthCheckRequest{})
-	if err != nil {
-		panic(err)
-	}
-	fmt.Println(resp.GetStatus())
-
-	_ = cc.Close()
-	gs.Stop()
-	_ = client.Drain(ctx)
-	_ = server.Drain(ctx)
-	// Output: SERVING
-}
-```
 
 When gRPC shares the Node with other sessions, route by header: call
 `sessions.Handle` from your accept for the header `"grpc"` only.
@@ -424,7 +369,7 @@ func Example_observer() {
 
 The dialer's `Open` returns the reason (test it with `errors.Is`: the
 [README's table](../README.md#errors)). The listener closes such a
-connection and goes on; to hear of it, set
-`peerlink.Config.HandshakeError`: a wrong credential is `link.ErrAuth`
-(wrapping your `Verify`'s error); a TLS mismatch, a certificate TLS refused or a
-dialer that is not link's is `link.ErrHandshake`; each says what to check.
+connection and goes on (its `Server` errors: a wrong credential is
+`link.ErrAuth`, wrapping your `Verify`'s error; a TLS mismatch, a
+certificate TLS refused or a dialer that is not link's is
+`link.ErrHandshake`; each says what to check).

@@ -54,7 +54,7 @@ func frame(n uint32, typ byte, body ...byte) []byte {
 
 func TestFramesRoundTrip(t *testing.T) {
 	ca, cb := pair(t)
-	big := bytes.Repeat([]byte("x"), maxData+5) // split in two frames
+	big := bytes.Repeat([]byte("x"), MaxData+5) // split in two frames
 	go func() {
 		for _, err := range []error{
 			ca.sendMsg([]byte("open 7")),
@@ -75,8 +75,8 @@ func TestFramesRoundTrip(t *testing.T) {
 		{SID: "7", Data: []byte("hello")},
 		{Msg: []byte{0x0a, 0x00}},
 		{SID: "_fingerprint", Data: []byte("ab:cd")},
-		{SID: "7", Data: big[:maxData]},
-		{SID: "7", Data: big[maxData:]},
+		{SID: "7", Data: big[:MaxData]},
+		{SID: "7", Data: big[MaxData:]},
 		{Msg: []byte("close 7")},
 	} {
 		got, err := cb.recvFrame()
@@ -116,7 +116,7 @@ func TestSendRefusesWhatTheFormatCannotCarry(t *testing.T) {
 
 func TestRecvRejectsMalformedFrames(t *testing.T) {
 	for name, raw := range map[string][]byte{
-		"too large":        frame(maxFrame+1, typeData),
+		"too large":        frame(MaxFrame+1, typeData),
 		"unknown type":     frame(1, 9, 0),
 		"sid past body":    frame(2, typeData, 5, 'a'),
 		"empty body":       frame(0, typeData),

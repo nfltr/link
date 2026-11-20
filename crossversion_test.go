@@ -207,7 +207,7 @@ func TestChainAgainstV094(t *testing.T) {
 			}
 			_ = NewMux(c).Serve(func(h []byte, s *Session) {
 				if s.Answers() {
-					_ = s.Abort(CodeApp, "answers with v0.9.4")
+					_ = s.AbortWith(&Abort{Code: CodeApp, Msg: "answers with v0.9.4"})
 					return
 				}
 				if string(h) == "refuse" {

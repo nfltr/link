@@ -5,7 +5,8 @@ go 1.27.0
 replace github.com/nfltr/link => ../../
 
 require (
-	github.com/nfltr/link v0.12.20
+	github.com/nfltr/link v0.12.18
+	github.com/nfltr/link/pathswitch v0.0.0-00010101000000-000000000000
 	github.com/nfltr/quic-go v0.63.1-nfltr.2.0.20261112202211-40e0a2570e52
 )
 
@@ -14,3 +15,5 @@ require (
 	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 )
+
+replace github.com/nfltr/link/pathswitch => ../../pathswitch

@@ -100,7 +100,8 @@ type Identity struct{ Method, Subject string }
 // NoAuth sends no credential and accepts only peers that send none: for
 // connections whose security is elsewhere (an mTLS peer port, a pipe).
 // Every peer it accepts has the zero Identity: a peerlink.Node names them
-// all "" (see NameAuth and CertAuth for peers with names).
+// all "" (see NameAuth and CertAuth for peers with names). Do not assign
+// it: a dialer's nil Config.Auth is noAuth{} whatever NoAuth holds.
 var NoAuth Authenticator = noAuth{}
 
 // NameAuth is an Authenticator for a trusted network (plaintext inside a
@@ -131,7 +132,7 @@ func (nameAuth) Verify(_ context.Context, _ tls.ConnectionState, method byte, pa
 // credential, and the listener accepts a dialer whose client certificate
 // its tls.Config verified (ClientAuth: tls.RequireAndVerifyClientCert),
 // named by the certificate's Subject CommonName, else its first DNS name.
-// Give Server (or peerlink.Config.Listener) a *tls.Conn.
+// Give Server (or peerlink.Config.Listener) a *tls.Conn. Do not assign it.
 var CertAuth Authenticator = certAuth{}
 
 type certAuth struct{}
@@ -285,8 +286,8 @@ func (cfg Config) Validate() error {
 	if cfg.Window < MinWindow || cfg.Window > MaxWindow {
 		return fmt.Errorf("link: Config.Window %d: set 0 (DefaultWindow) or a value in [MinWindow %d, MaxWindow %d]", cfg.Window, MinWindow, MaxWindow)
 	}
-	if cfg.MaxSessions < 1 || cfg.MaxSessions > maxSessionsWire {
-		return fmt.Errorf("link: Config.MaxSessions %d: set 0 (MaxSessions) or a value in [1, %d]", cfg.MaxSessions, maxSessionsWire)
+	if cfg.MaxSessions < 1 || cfg.MaxSessions > MaxSessionsWire {
+		return fmt.Errorf("link: Config.MaxSessions %d: set 0 (MaxSessions) or a value in [1, %d]", cfg.MaxSessions, MaxSessionsWire)
 	}
 	if cfg.Liveness != (Liveness{}) {
 		if err := cfg.Liveness.Validate(); err != nil {

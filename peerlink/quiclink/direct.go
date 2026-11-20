@@ -20,7 +20,7 @@ import (
 // their NATs. Both ends use the one quic.Transport (one UDP socket) their
 // agent link to the relay runs on, so the NAT mapping the relay saw (QAD)
 // is the one the punch uses. The client (the side that dials) runs Punch;
-// the agent sends Probe datagrams to the client's candidates at the same
+// the agent sends probe datagrams to the client's candidates at the same
 // time, opening its NAT's filter, and accepts on a Node with
 // Config.Transport. One Node per end keeps one direct connection per
 // machine pair (a Node's connection per peer: Config.Dial runs Punch);
@@ -34,7 +34,7 @@ import (
 const MaxCandidates = 8
 
 // Punch dials every candidate on tr at once (QUIC retransmits its Initial
-// while the peer's Probe opens its NAT) and returns the first connection
+// while the peer's probe opens its NAT) and returns the first connection
 // whose handshake passes tc's verification; it closes the others. ctx
 // bounds it (the design's 5 s per punch).
 func Punch(ctx context.Context, tr *quic.Transport, cands []netip.AddrPort, tc *tls.Config, qc *quic.Config) (*quic.Conn, error) {
@@ -74,11 +74,11 @@ func Punch(ctx context.Context, tr *quic.Transport, cands []netip.AddrPort, tc *
 	return won, nil
 }
 
-// Probe sends one datagram from tr to each candidate: the answering
+// probe sends one datagram from tr to each candidate: the answering
 // end's half of a punch, opening its NAT's filter toward the client's
 // mappings. The datagram is one zero byte, which a QUIC endpoint drops
 // (too short for any packet).
-func Probe(tr *quic.Transport, cands []netip.AddrPort) error {
+func probe(tr *quic.Transport, cands []netip.AddrPort) error {
 	if len(cands) > MaxCandidates {
 		return fmt.Errorf("quiclink: probe: %d candidates (at most %d)", len(cands), MaxCandidates)
 	}

@@ -19,8 +19,9 @@ import (
 // it does not speak; its highest version follows.
 const statusVersion = 2
 
-// maxSessionsWire bounds a hello's max sessions.
-const maxSessionsWire = 1 << 20
+// MaxSessionsWire bounds a hello's or reply's max_sessions (WIRE.md
+// section 2), and so Config.MaxSessions.
+const MaxSessionsWire = 1 << 20
 
 // helloV2 is a version-2 hello after its Magic and version byte (doc.go).
 type helloV2 struct {
@@ -77,7 +78,7 @@ func readHelloV2(r io.Reader) (helloV2, error) {
 	if _, err := CheckWindow(h.window); err != nil {
 		return helloV2{}, fmt.Errorf("%w: hello: %w", ErrFrame, err)
 	}
-	if h.maxSessions < 1 || h.maxSessions > maxSessionsWire {
+	if h.maxSessions < 1 || h.maxSessions > MaxSessionsWire {
 		return helloV2{}, fmt.Errorf("%w: hello max sessions %d out of range", ErrFrame, h.maxSessions)
 	}
 	if err := h.liveness.Validate(); err != nil {
@@ -132,7 +133,7 @@ func readReplyV2(r io.Reader) (replyV2, error) {
 	if _, err := CheckWindow(rep.window); err != nil {
 		return replyV2{}, fmt.Errorf("%w: reply: %w", ErrFrame, err)
 	}
-	if rep.maxSessions < 1 || rep.maxSessions > maxSessionsWire {
+	if rep.maxSessions < 1 || rep.maxSessions > MaxSessionsWire {
 		return replyV2{}, fmt.Errorf("%w: reply max sessions %d out of range", ErrFrame, rep.maxSessions)
 	}
 	return rep, nil
@@ -185,10 +186,10 @@ func Client(ctx context.Context, nc net.Conn, cfg Config) (*Conn, error) {
 	}
 	cfg = cfg.withDefaults()
 	if cfg.Auth == nil {
-		cfg.Auth = NoAuth
+		cfg.Auth = noAuth{}
 	}
 	if cfg.Liveness == (Liveness{}) {
-		cfg.Liveness = LivenessDefault
+		cfg.Liveness = livenessDefault
 	}
 	defer handshake(ctx, nc)()
 	cs := connState(nc)

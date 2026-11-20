@@ -57,7 +57,7 @@ func FuzzServerHello(f *testing.F) {
 			t.Fatalf("bound a peer window of %d", c.credit.PeerWindow())
 		}
 		if c.Version() == 2 {
-			if c.peerMaxSessions < 1 || c.peerMaxSessions > maxSessionsWire || c.live.Validate() != nil {
+			if c.peerMaxSessions < 1 || c.peerMaxSessions > MaxSessionsWire || c.live.Validate() != nil {
 				t.Fatalf("bound max sessions %d liveness %v", c.peerMaxSessions, c.live)
 			}
 		}
@@ -178,7 +178,7 @@ func recvV2(t *testing.T, wire []byte, chain bool) {
 			if err != nil {
 				return
 			}
-			if len(m.Header) > maxHeader || len(m.Data)+len(m.Msg) > maxFrame {
+			if len(m.Header) > MaxHeader || len(m.Data)+len(m.Msg) > MaxFrame {
 				t.Fatalf("frame %+v past the bounds", m)
 			}
 			if m.SID == "7" && !m.Open {

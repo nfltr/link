@@ -104,7 +104,7 @@ func Example_deadlines() {
 	if err := s.Answered(ctx); err != nil { // the open, across every hop, within ctx
 		panic(err)
 	}
-	stop := context.AfterFunc(ctx, func() { _ = s.Abort(link.CodeApp+1, "caller gave up") })
+	stop := context.AfterFunc(ctx, func() { _ = s.AbortWith(&link.Abort{Code: link.CodeApp + 1, Msg: "caller gave up"}) })
 	defer stop()
 
 	_ = s.SetReadDeadline(time.Now().Add(200 * time.Millisecond)) // this side only

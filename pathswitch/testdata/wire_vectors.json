@@ -1,0 +1,17 @@
+[
+  {"name": "data", "type": "D", "data": "68656c6c6f", "hex": "440568656c6c6f"},
+  {"name": "ack", "type": "K", "n": 300, "hex": "4bac02"},
+  {"name": "ack-zero", "type": "K", "hex": "4b00"},
+  {"name": "resume", "type": "R", "n": 7, "hex": "5207"},
+  {"name": "end", "type": "E", "n": 128, "hex": "458001"},
+  {"name": "abort", "type": "X", "hex": "58"},
+  {"name": "open", "type": "O", "epoch": 1, "n": 5, "token": "aabb", "hex": "4f01050002aabb"},
+  {"name": "open-reset", "type": "O", "epoch": 2, "abort": true, "hex": "4f02000100"},
+  {"name": "data-empty", "invalid": "ErrProtocol", "hex": "4400"},
+  {"name": "data-over-16384", "invalid": "ErrProtocol", "hex": "44818001"},
+  {"name": "open-unknown-flag", "invalid": "ErrProtocol", "hex": "4f01000200"},
+  {"name": "open-token-over-256", "invalid": "ErrProtocol", "hex": "4f0100008102"},
+  {"name": "unknown-type", "invalid": "ErrProtocol", "hex": "5a00"},
+  {"name": "data-truncated", "invalid": "truncated", "hex": "440568656c"},
+  {"name": "ack-truncated", "invalid": "truncated", "hex": "4b80"}
+]

@@ -155,12 +155,12 @@ far end`, each arrow a connection of its own (its own TLS, liveness and
 credit). `link.Forward(route, cfg)` is an accept function that makes a
 `Mux` (or `Pool`) a hop: your `Route` opens the next leg (on any `Mux`,
 `Pool` or peer you choose), Forward passes the far end's answer back and
-splices the two sessions with `link.Join`, holding no goroutine while
+splices the two sessions, holding no goroutine while
 they are idle. Where both ends of a connection announce `FeatureChain`
 (every v0.10.0 side does; WIRE.md section 12), each open is answered:
 `Session.Answered` returns nil only once the far end accepted
 (`Accept`, or its first write), or the `*link.Abort` of a refusal
-(`Refuse(code, msg)`) or reset (`Abort(code, msg)`): its `Code` (link's
+(`Refuse(code, msg)`) or reset (`AbortWith(&link.Abort{Code: code, Msg: msg})`): its `Code` (link's
 below `CodeApp`, yours from it), its `Msg`, and `Hops`, which hop it came
 from (0: your peer). A dead hop reaches the origin as `CodeConnLost` from
 the hop before it; a draining hop refuses new opens (`CodeDraining`)
@@ -338,7 +338,7 @@ func Example_deadlines() {
 	if err := s.Answered(ctx); err != nil { // the open, across every hop, within ctx
 		panic(err)
 	}
-	stop := context.AfterFunc(ctx, func() { _ = s.Abort(link.CodeApp+1, "caller gave up") })
+	stop := context.AfterFunc(ctx, func() { _ = s.AbortWith(&link.Abort{Code: link.CodeApp + 1, Msg: "caller gave up"}) })
 	defer stop()
 
 	_ = s.SetReadDeadline(time.Now().Add(200 * time.Millisecond)) // this side only
@@ -380,7 +380,6 @@ says how.
 |---|---|
 | sessions between named peers over TCP or TLS: **start here** | `peerlink.Node` ([peerlink](peerlink/README.md)) |
 | the same over QUIC (UDP), surviving address changes | `quiclink.Node` ([peerlink/quiclink](peerlink/quiclink/README.md), a module of its own) |
-| the same over a network that passes only gRPC | `grpclink.Node` (`peerlink/grpclink`, a module of its own) |
 | gRPC or HTTP served over a link | `peerlink.Listener` ([recipes](docs/recipes.md#grpc-over-a-link)) |
 | code that works with any of these, and tests that check them | the `peerlink.Link` interface; `peerlinktest.Run` (the conformance suite) |
 | advanced: your own connection management | `link.Pool` (connections to one peer), `link.Mux` (sessions on one connection), `link.Client`/`link.Server` (the handshake) |
@@ -428,12 +427,12 @@ the messages name what to change.
 
 | error | where you see it | what it means | what to change |
 |---|---|---|---|
-| `link.ErrHandshake` (wraps the network's error) | `Open` (dialing), `Client`, `Server`, `peerlink.Config.HandshakeError` (`func(net.Conn, error)`) | the hello or its reply did not arrive whole: the other end closed or timed out, is not link, speaks TLS where this end does not, or TLS refused a certificate | TLS on both ends or neither; the address of a link listener; the certificates (the CA each end trusts, the names, expiry), as the message says |
+| `link.ErrHandshake` (wraps the network's error) | `Open` (dialing), `Client`, `Server` | the hello or its reply did not arrive whole: the other end closed or timed out, is not link, speaks TLS where this end does not, or TLS refused a certificate | TLS on both ends or neither; the address of a link listener; the certificates (the CA each end trusts, the names, expiry), as the message says |
 | `link.ErrRefused` | `Open` (dialing), `Client` | the listener's Authenticator refused the dialer's credential | the dialer's `Config.Auth`: what the listener accepts (`CertAuth`'s certificate, the token) |
-| `link.ErrAuth` (wraps `Verify`'s error) | `Server`, `peerlink.Config.HandshakeError` (`func(net.Conn, error)`) | this listener refused a dialer | the reason it wraps; the dialer's credential or this `Config.Auth` |
+| `link.ErrAuth` (wraps `Verify`'s error) | `Server` | this listener refused a dialer | the reason it wraps; the dialer's credential or this `Config.Auth` |
 | `link.ErrVersion`, `*link.VersionError` | `Client`, `Server` | the peer speaks another wire version | upgrade the older end (every release since v0.5.0 speaks version 2) |
 | `link.ErrDeadPeer` (a `net.Error` with `Timeout()` true) | session reads, `Mux.Serve`, `Observer.ConnDown` | nothing arrived for the liveness bound: the peer or the path died | nothing, if it did; else a preset with a longer bound for a path that goes silent (`LivenessNAT`, `LivenessMobile`) |
-| `link.ErrGoAway` | `Mux.Open`, `Conn.SendOpen` | the connection is going away (a drain) | open on another connection (`Pool` and `Node` do) |
+| `link.ErrGoAway` | `Mux.Open`, `Pool.Open` | the connection is going away (a drain) | open on another connection (`Pool` and `Node` do) |
 | `link.ErrFull` | `Open` | the peer's most sessions at once are open | close sessions sooner, raise the peer's `Config.MaxSessions`, or allow more connections (`Pool.Max`) |
 | `peerlink.ErrDraining` | `Node.Open` | this Node is draining | nothing: it is shutting down |
 | `peerlink.ErrPeerUnreachable` (and the context's error) | `Node.Open` without `Dial` | no connection from that peer before the context ended | the peer's name (the error lists the connected ones); that peer's `Connect` and `Dial`; a longer context |
@@ -441,13 +440,13 @@ the messages name what to change.
 | `*link.Abort` (`errors.As`), `link.ErrOpenRefused`, `link.ErrReset` | `Session.Answered`, session reads (`FeatureChain`) | the far end (or the hop `Hops` says) refused the open or reset the session, with a `Code` and a `Msg` | what the code says: `CodeDraining` open elsewhere, `CodeHopLimit` a routing loop, `CodeConnLost` a hop's connection died, `CodeApp`+ the application's own |
 | `link.ErrNoAnswers` | `Session.Answered` | the connection's peer does not answer opens (link before v0.10.0, or no `FeatureChain`) | nothing: use the session without an answer, or refuse such a leg in your Route |
 | `link.ErrConnClosed` (wraps why: `ErrDeadPeer`, the network's error) | session reads; writes return `io.ErrClosedPipe` wrapping it | the connection closed under the session | open a new session (`Pool` and `Node` redial) |
-| `link.ErrFrame`, `link.ErrCredit` | `Conn.Recv`, `Mux.Serve` | the peer broke the wire protocol | a peer that is not link, or a bug: please report it |
+| `link.ErrFrame`, `link.ErrCredit` | `Mux.Serve` | the peer broke the wire protocol | a peer that is not link, or a bug: please report it |
 | a message naming a field | `peerlink.New`, `link.NewPool`, `Validate`, `Client`, `Server` | a configuration that cannot work | the field it names, as it says |
 | `io.EOF` | session reads | the peer ended its writes on purpose (`CloseWrite`, `Close`) | nothing: the normal end |
 | `os.ErrDeadlineExceeded` | session reads | the read deadline passed | nothing, or a later deadline |
 
 quiclink adds its own codes (`quiclink.Code*`, in the QUIC errors its
-sessions read); grpclink's are gRPC statuses.
+sessions read).
 
 ## Finding misuse: linkvet and debug mode
 
@@ -473,7 +472,7 @@ or `go build -tags linkdebug`), link reports on stderr:
 | report | means |
 |---|---|
 | `session 3 (header "x") opened and garbage-collected, never closed`, with the stack that opened it | this side never called `Close`, `CloseWrite`, `Reset` or `Abort` (a session `Join` or `Forward` took counts as closed) |
-| `concurrent Reads on session ...` (or `Writes`), with both stacks | two goroutines in `Read`/`WriteTo` (or `Write`/`WriteBuffers`) of one session at once. Two `Read`s (or writes) are safe: each byte goes to one reader, or out once, but their bytes interleave. A `WriteTo` (or `Pump`) beside a `Read` is not: it takes the session's bytes for itself (the `Session` doc), and the two can hand the same bytes out twice |
+| `concurrent Reads on session ...` (or `Writes`), with both stacks | two goroutines in `Read`/`WriteTo` (or `Write`) of one session at once. Two `Read`s (or writes) are safe: each byte goes to one reader, or out once, but their bytes interleave. A `WriteTo` (or a join) beside a `Read` is not: it takes the session's bytes for itself (the `Session` doc), and the two can hand the same bytes out twice |
 | `session ... and open 30s with no Read or Write`, with the stack that opened it | with `LINKDEBUG_IDLE=30s` (any duration): a session open that long with no IO, once each; the leak a collector cannot see, since the Mux holds every session until it ends |
 
 Each Read and Write records a stack in this mode: for tests and
@@ -496,10 +495,8 @@ fail on any report.
 | `link/examples/quickstart` | the quick start above |
 | `link/linkvet` | `go vet` checks for code using link, and for gRPC clients (a module of its own, `make check-linkvet`; [linkvet/README.md](linkvet/README.md)) |
 
-`peerlink/grpclink` (a module of its own, `make check-grpclink`) implements
-`peerlink.Link` over gRPC streams and passes the same suite (one
-direction: the dialer opens). `peerlink/quiclink` (a module of its own,
-`make check-quiclink`) implements it over QUIC streams and passes the
+`peerlink/quiclink` (a module of its own,
+`make check-quiclink`) implements `peerlink.Link` over QUIC streams and passes the
 suite in both directions; its connections survive the dialler's address
 changing ([peerlink/quiclink/README.md](peerlink/quiclink/README.md)).
 
@@ -518,8 +515,8 @@ decoder, `FUZZTIME` each, default 10s), gosec, semgrep (docker),
 govulncheck. `make check-api`: the exported API against the latest
 release, with [apidiff](https://pkg.go.dev/golang.org/x/exp/cmd/apidiff);
 the changes must be the ones listed in `api/` (an API change is never
-an accident). `make check-grpclink`, `make check-quiclink`: the gRPC and
-QUIC implementations' modules; `make check-soak`: the soak module builds
+an accident). `make check-quiclink`: the QUIC
+implementation's module; `make check-soak`: the soak module builds
 and vets; `make check-linkvet`: linkvet's tests, then its checks over
 link's own packages; `make test-linkdebug` (in `check`): debug mode's
 tests. `make ci` (alias `check-all`) runs every one of them: the steps
@@ -556,9 +553,10 @@ as Go modules do for v0:
 - **Behaviour** that the docs state (bounds, errors to test with
   `errors.Is`, the peerlink contract) changes only in a minor release,
   except to fix a bug, which the changelog flags.
-- `peerlink/grpclink` and `peerlink/quiclink` are modules of their own,
-  versioned on their own (`peerlink/<name>/vX.Y.Z`). They stay v0 until
-  their transport's module is v1: quiclink's API exposes quic-go's types.
+- `peerlink/quiclink` and `pathswitch` are modules of their own,
+  versioned on their own (`<dir>/vX.Y.Z`). They stay v0: quiclink until
+  its transport's module is v1 (its API exposes quic-go's types),
+  pathswitch until its wire is (`pathswitch/WIRE.md`).
 - **Interfaces** that link calls (`Observer`) may gain methods in minor
   releases; implementations embed `NopObserver`, which the compiler
   requires. Interfaces that callers call (`peerlink.Link`,

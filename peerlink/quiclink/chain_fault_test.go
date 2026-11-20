@@ -257,7 +257,7 @@ func TestAbortAfterPeerAbort(t *testing.T) {
 			cs := s.(peerlink.ChainSession)
 			_ = cs.Accept()
 			_, _ = io.CopyN(io.Discard, s, 64<<10)
-			_ = cs.Abort(link.CodeApp, "no")
+			_ = cs.AbortWith(&link.Abort{Code: link.CodeApp, Msg: "no"})
 		})
 	}()
 	go func() { _ = a.Serve(nil) }()
@@ -272,7 +272,7 @@ func TestAbortAfterPeerAbort(t *testing.T) {
 				break // the peer's STOP_SENDING
 			}
 		}
-		_ = s.(peerlink.ChainSession).Abort(link.CodeApp+1, "passed on")
+		_ = s.(peerlink.ChainSession).AbortWith(&link.Abort{Code: link.CodeApp + 1, Msg: "passed on"})
 		_ = s.Close()
 	}
 }

@@ -20,13 +20,13 @@ import (
 // then the caller's bytes. A frame is handed only to the session of its
 // tag on that connection while that session has a receiver (OnDatagram)
 // and has not ended (Close, Reset); any other is dropped and counted
-// (DatagramsDropped). Whether the two ends offer datagrams is QUIC's own
+// (dgDropped). Whether the two ends offer datagrams is QUIC's own
 // negotiation (max_datagram_frame_size): toward a peer that does not,
 // SendDatagram fails and the caller carries the bytes on the stream.
 
-// ErrNoDatagrams: the connection carries no datagrams (an end did not
+// errNoDatagrams: the connection carries no datagrams (an end did not
 // offer them) or the session ended.
-var ErrNoDatagrams = errors.New("quiclink: no datagrams on this session")
+var errNoDatagrams = errors.New("quiclink: no datagrams on this session")
 
 // dgrams is a connection's datagram receivers, by tag.
 type dgrams struct {
@@ -38,24 +38,24 @@ type dgrams struct {
 // SendDatagram sends p as one DATAGRAM frame of the session. It waits
 // while quic-go's send queue is full (32 frames): call it from a sender of
 // its own, never from a reader that must not wait. Errors:
-// ErrNoDatagrams; *quic.DatagramTooLargeError when p does not fit in one
+// errNoDatagrams; *quic.DatagramTooLargeError when p does not fit in one
 // packet now (its MaxDatagramPayloadSize counts the tag: the caller's
-// largest p is MaxDatagramPayloadSize minus TagLen); the connection's
+// largest p is MaxDatagramPayloadSize minus tagLen); the connection's
 // error once it closed.
 func (s *Session) SendDatagram(p []byte) error {
 	if s.reset.Load() || !s.c.datagrams() {
-		return ErrNoDatagrams
+		return errNoDatagrams
 	}
 	b := binary.AppendUvarint(make([]byte, 0, binary.MaxVarintLen64+len(p)), uint64(s.StreamID())) // #nosec G115 -- a stream id is at most 2^62
 	err := s.c.q.SendDatagram(append(b, p...))
 	if e, ok := errors.AsType[*quic.DatagramTooLargeError](err); ok {
-		return &quic.DatagramTooLargeError{MaxDatagramPayloadSize: e.MaxDatagramPayloadSize - int64(s.TagLen())}
+		return &quic.DatagramTooLargeError{MaxDatagramPayloadSize: e.MaxDatagramPayloadSize - int64(s.tagLen())}
 	}
 	return err
 }
 
-// TagLen is the bytes the session's tag takes of a frame's payload.
-func (s *Session) TagLen() int {
+// tagLen is the bytes the session's tag takes of a frame's payload.
+func (s *Session) tagLen() int {
 	return len(binary.AppendUvarint(nil, uint64(s.StreamID()))) // #nosec G115 -- a stream id is at most 2^62
 }
 
@@ -117,8 +117,3 @@ func (c *conn) forgetDatagrams(id quic.StreamID) {
 	delete(c.dg.on, id)
 	c.dg.mu.Unlock()
 }
-
-// DatagramsDropped counts the DATAGRAM frames this Node's connections
-// dropped: malformed, or for no session with a receiver (an ended
-// session's, an older stream's).
-func (n *Node) DatagramsDropped() uint64 { return n.dgDropped.Load() }

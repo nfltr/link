@@ -127,13 +127,13 @@ func wireVectors() []wireVector {
 
 		{Name: "hello-bad-magic", Kind: "hello", Invalid: "ErrFrame", Hex: hexBytes("PRI * HTTP/2.0")},
 		{Name: "hello-version-0", Kind: "hello", Invalid: "ErrFrame", Hex: hexBytes("NFDP\x00")},
-		{Name: "hello-version-1", Kind: "hello", Invalid: "ErrV1", Hex: hexBytes("NFDP\x01")},
+		{Name: "hello-version-1", Kind: "hello", Invalid: "ErrVersion", Hex: hexBytes("NFDP\x01")},
 		{Name: "hello-version-3", Kind: "hello", Invalid: "ErrVersion", Hex: hexBytes("NFDP\x03")},
 		{Name: "hello-auth-too-long", Kind: "hello", Invalid: "ErrFrame", Hex: cat(hello(h2(nil))[:27], []byte{0x10, 0x01})},
 		{Name: "hello-window-too-small", Kind: "hello", Invalid: "ErrFrame", Hex: hello(h2(func(h *vecHello) { h.Window = MinWindow - 1 }))},
 		{Name: "hello-window-too-large", Kind: "hello", Invalid: "ErrFrame", Hex: hello(h2(func(h *vecHello) { h.Window = MaxWindow + 1 }))},
 		{Name: "hello-max-sessions-0", Kind: "hello", Invalid: "ErrFrame", Hex: hello(h2(func(h *vecHello) { h.MaxSessions = 0 }))},
-		{Name: "hello-max-sessions-too-many", Kind: "hello", Invalid: "ErrFrame", Hex: hello(h2(func(h *vecHello) { h.MaxSessions = maxSessionsWire + 1 }))},
+		{Name: "hello-max-sessions-too-many", Kind: "hello", Invalid: "ErrFrame", Hex: hello(h2(func(h *vecHello) { h.MaxSessions = MaxSessionsWire + 1 }))},
 		{Name: "hello-interval-too-short", Kind: "hello", Invalid: "ErrFrame", Hex: hello(h2(func(h *vecHello) { h.IntervalMS = 999 }))},
 		{Name: "hello-interval-too-long", Kind: "hello", Invalid: "ErrFrame", Hex: hello(h2(func(h *vecHello) { h.IntervalMS, h.TimeoutMS = 15001, 15001 }))},
 		{Name: "hello-timeout-under-interval", Kind: "hello", Invalid: "ErrFrame", Hex: hello(h2(func(h *vecHello) { h.TimeoutMS = 4999 }))},
@@ -162,18 +162,18 @@ func wireVectors() []wireVector {
 		{Name: "goaway-no-drain", Kind: "frame", Frame: &vecFrame{Type: "goaway"}},
 
 		{Name: "frame-length-0", Kind: "frame", Invalid: "ErrFrame", Hex: cat(be(0), []byte{typeData, 0})},
-		{Name: "frame-too-long", Kind: "frame", Invalid: "ErrFrame", Hex: cat(be(maxFrame+1), []byte{typeData, 0})},
+		{Name: "frame-too-long", Kind: "frame", Invalid: "ErrFrame", Hex: cat(be(MaxFrame+1), []byte{typeData, 0})},
 		{Name: "frame-unknown-type", Kind: "frame", Invalid: "ErrFrame", Hex: cat(be(1), []byte{8, 0})},
 		{Name: "data-sid-past-body", Kind: "frame", Invalid: "ErrFrame", Hex: cat(be(2), []byte{typeData, 2, 1})},
 		{Name: "window-short", Kind: "frame", Invalid: "ErrFrame", Hex: cat(be(4), []byte{typeWindow, 0, 0, 0, 1})},
 		{Name: "window-past-peer-window", Kind: "frame", Invalid: "ErrCredit", Hex: cat(be(6), []byte{typeWindow, 1, 1}, be(1))},
-		{Name: "open-header-too-long", Kind: "frame", Invalid: "ErrFrame", Hex: cat(be(2+maxHeader+1), []byte{typeOpen, 0})},
+		{Name: "open-header-too-long", Kind: "frame", Invalid: "ErrFrame", Hex: cat(be(2+MaxHeader+1), []byte{typeOpen, 0})},
 		{Name: "close-code-3", Kind: "frame", Invalid: "ErrFrame", Hex: cat(be(3), []byte{typeClose, 1, 1, 3})},
 		{Name: "close-sid-mismatch", Kind: "frame", Invalid: "ErrFrame", Hex: cat(be(4), []byte{typeClose, 1, 1, 1, 0})},
 		{Name: "ping-short", Kind: "frame", Invalid: "ErrFrame", Hex: cat(be(7), []byte{typePing, 1, 2, 3, 4, 5, 6, 7})},
 		{Name: "pong-long", Kind: "frame", Invalid: "ErrFrame", Hex: cat(be(9), []byte{typePong, 1, 2, 3, 4, 5, 6, 7, 8, 9})},
 		{Name: "goaway-short", Kind: "frame", Invalid: "ErrFrame", Hex: cat(be(3), []byte{typeGoAway, 0, 0, 0})},
-		{Name: "goaway-reason-too-long", Kind: "frame", Invalid: "ErrFrame", Hex: cat(be(4+maxReason+1), []byte{typeGoAway, 0})},
+		{Name: "goaway-reason-too-long", Kind: "frame", Invalid: "ErrFrame", Hex: cat(be(4+MaxReason+1), []byte{typeGoAway, 0})},
 
 		// FeatureChain (bit 1): frames 8-10.
 		{Name: "accept", Kind: "frame", Chain: true, Frame: &vecFrame{Type: "accept", SID: vecSID, Hops: 2}},
@@ -196,7 +196,7 @@ func wireVectors() []wireVector {
 		{Name: "abort-msg-too-long", Kind: "frame", Chain: true, Invalid: "ErrFrame", Hex: cat(be(10+MaxAbortMsg+1), []byte{typeAbort, 1, 1, 1}, be(0), []byte{0, 0x04, 0x01}, bytes.Repeat([]byte{'x'}, MaxAbortMsg+1))},
 		{Name: "abort-msg-not-utf8", Kind: "frame", Chain: true, Invalid: "ErrFrame", Hex: cat(be(11), []byte{typeAbort, 1, 1, 1}, be(0), []byte{0, 0, 1, 0xff})},
 		{Name: "chain-open-short", Kind: "frame", Chain: true, Invalid: "ErrFrame", Hex: cat(be(10), []byte{typeChainOpen, 1, 3, 0}, traceVec[:7])},
-		{Name: "chain-open-header-too-long", Kind: "frame", Chain: true, Invalid: "ErrFrame", Hex: cat(be(2+1+traceLen+maxHeader+1), []byte{typeChainOpen, 0})},
+		{Name: "chain-open-header-too-long", Kind: "frame", Chain: true, Invalid: "ErrFrame", Hex: cat(be(2+1+traceLen+MaxHeader+1), []byte{typeChainOpen, 0})},
 	}
 }
 
@@ -378,7 +378,7 @@ func decodeFrame(t *testing.T, name string, b []byte, inc uint32, chain bool) (*
 }
 
 var vectorErrs = map[string]error{
-	"ErrFrame": ErrFrame, "ErrCredit": ErrCredit, "ErrV1": errV1, "ErrVersion": ErrVersion, "ErrRefused": ErrRefused,
+	"ErrFrame": ErrFrame, "ErrCredit": ErrCredit, "ErrVersion": ErrVersion, "ErrRefused": ErrRefused,
 }
 
 func TestWireVectors(t *testing.T) {

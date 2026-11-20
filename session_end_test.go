@@ -408,7 +408,7 @@ func TestWriteAfterRefuseSendsNoData(t *testing.T) {
 func TestLocalAbortReadsTyped(t *testing.T) {
 	ends := map[string]func(s *Session) error{
 		"reset":  (*Session).Reset,
-		"abort":  func(s *Session) error { return s.Abort(CodeApp+7, "revoked") },
+		"abort":  func(s *Session) error { return s.AbortWith(&Abort{Code: CodeApp + 7, Msg: "revoked"}) },
 		"refuse": func(s *Session) error { return s.Refuse(CodeApp+7, "revoked") },
 	}
 	for name, end := range ends {

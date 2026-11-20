@@ -39,3 +39,12 @@ func SetWatchTickHook(f func(peer string)) {
 	}
 	testHookWatchTick.Store(&f)
 }
+
+// ErrNoDatagramsForTest, ProbeForTest: errNoDatagrams, probe.
+var (
+	ErrNoDatagramsForTest = errNoDatagrams
+	ProbeForTest          = probe
+)
+
+// DatagramsDroppedForTest is n's count of dropped DATAGRAM frames.
+func DatagramsDroppedForTest(n *Node) uint64 { return n.dgDropped.Load() }

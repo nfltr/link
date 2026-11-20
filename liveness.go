@@ -26,6 +26,10 @@ type Liveness struct {
 
 // The presets. Idle traffic is one small frame each way per Interval per
 // connection; the bound is Interval + Timeout from the peer's last frame.
+// They are variables only because Go has no struct constants: do not
+// assign them (a zero Config.Liveness is livenessDefault, link's own copy
+// of LivenessDefault taken at init, so an assignment would not change it
+// anyway).
 var (
 	// LivenessDefault: dead within 15 s, a frame each way every 5 s.
 	LivenessDefault = Liveness{Interval: 5 * time.Second, Timeout: 10 * time.Second}
@@ -45,7 +49,11 @@ var (
 	LivenessMobile = Liveness{Interval: 15 * time.Second, Timeout: 45 * time.Second}
 )
 
+// livenessDefault is a dialer's Liveness for a zero Config.Liveness.
+var livenessDefault = LivenessDefault
+
 // LivenessPresets names the presets, in the order help and docs list them.
+// Do not assign it or its elements.
 var LivenessPresets = []string{"default", "fast", "nat", "datacenter", "mobile"}
 
 var livenessByName = map[string]Liveness{

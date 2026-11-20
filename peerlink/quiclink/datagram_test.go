@@ -111,12 +111,12 @@ func TestSessionDatagrams(t *testing.T) {
 	<-in0
 
 	_ = accepted[1].Reset() // its tag is gone at a
-	before := a.DatagramsDropped()
+	before := quiclink.DatagramsDroppedForTest(a)
 	if err := opened[1].SendDatagram([]byte("late")); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(5 * time.Second)
-	for a.DatagramsDropped() == before {
+	for quiclink.DatagramsDroppedForTest(a) == before {
 		if time.Now().After(deadline) {
 			t.Fatal("a datagram for an ended session was not counted dropped")
 		}
@@ -127,7 +127,7 @@ func TestSessionDatagrams(t *testing.T) {
 		t.Fatalf("an ended session got %q", p)
 	default:
 	}
-	if err := accepted[1].SendDatagram([]byte("x")); !errors.Is(err, quiclink.ErrNoDatagrams) {
+	if err := accepted[1].SendDatagram([]byte("x")); !errors.Is(err, quiclink.ErrNoDatagramsForTest) {
 		t.Fatalf("SendDatagram on a reset session: %v, want ErrNoDatagrams", err)
 	}
 }
@@ -139,7 +139,7 @@ func TestSessionDatagramsNeedBothEnds(t *testing.T) {
 	for _, c := range []struct{ a, b bool }{{true, false}, {false, true}} {
 		_, _, opened, accepted := dgPair(t, c.a, c.b, 1)
 		for _, s := range []*quiclink.Session{opened[0], accepted[0]} {
-			if err := s.SendDatagram([]byte("x")); !errors.Is(err, quiclink.ErrNoDatagrams) {
+			if err := s.SendDatagram([]byte("x")); !errors.Is(err, quiclink.ErrNoDatagramsForTest) {
 				t.Fatalf("a=%v b=%v: SendDatagram %v, want ErrNoDatagrams", c.a, c.b, err)
 			}
 		}

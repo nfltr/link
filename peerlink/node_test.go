@@ -140,7 +140,7 @@ func TestOpenWaitsForPeer(t *testing.T) {
 	a, b := reverse(t, link.LivenessFast, link.PoolConfig{}, func(ln net.Listener) string { return ln.Addr().String() }, nil, nil)
 	opened := make(chan error, 1)
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), peerlinktest.Within)
+		ctx, cancel := context.WithTimeout(context.Background(), within)
 		defer cancel()
 		s, err := a.Open(ctx, "b", nil)
 		if err == nil {
@@ -180,7 +180,7 @@ func TestSeveralConnections(t *testing.T) {
 		func(string) link.Observer { return downObserver{down: down} })
 	serveBoth(t, a, b, echoAccept)
 	from := map[string]bool{}
-	for deadline := time.Now().Add(peerlinktest.Within); len(from) < 2; {
+	for deadline := time.Now().Add(within); len(from) < 2; {
 		if time.Now().After(deadline) {
 			t.Fatalf("sessions came on %d connection(s), want 2", len(from))
 		}
@@ -324,34 +324,6 @@ func TestServedPeer(t *testing.T) {
 	}
 	if got := <-up; got != want {
 		t.Errorf("observer of peer %q, want %q", got, want)
-	}
-}
-
-// TestHandshakeErrorHook: a connection whose handshake fails reaches
-// Config.HandshakeError with why.
-func TestHandshakeErrorHook(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := make(chan error, 1)
-	n := mustNew(t, peerlink.Config{Listener: ln, Link: link.Config{Auth: link.NameAuth("b")},
-		HandshakeError: func(_ net.Conn, err error) { got <- err }})
-	go func() { _ = n.Serve(echoAccept) }()
-	defer drainNow(n)
-	c, err := net.Dial("tcp", ln.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c.Close()
-	_, _ = io.WriteString(c, "GET / HTTP/1.1\r\n\r\n")
-	select {
-	case err := <-got:
-		if !errors.Is(err, link.ErrHandshake) {
-			t.Fatalf("HandshakeError got %v, want ErrHandshake", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("HandshakeError not called")
 	}
 }
 
@@ -579,7 +551,7 @@ func TestNodeDropsIdlePeers(t *testing.T) {
 			})
 			defer drainNow(a)
 			go func() { _ = b.Serve(echoAccept) }()
-			ctx, cancel := context.WithTimeout(context.Background(), peerlinktest.Within)
+			ctx, cancel := context.WithTimeout(context.Background(), within)
 			defer cancel()
 			s, err := a.Open(ctx, "b", nil)
 			if err != nil {
@@ -624,7 +596,7 @@ func TestNodeDropsIdlePeers(t *testing.T) {
 		defer drainNow(a)
 		go func() { _ = a.Serve(echoAccept) }()
 		go func() { _ = b.Serve(echoAccept) }()
-		ctx, cancel := context.WithTimeout(context.Background(), peerlinktest.Within)
+		ctx, cancel := context.WithTimeout(context.Background(), within)
 		defer cancel()
 		s, err := a.Open(ctx, "b", nil)
 		if err != nil {
@@ -649,3 +621,6 @@ func TestNodeDropsIdlePeers(t *testing.T) {
 		}
 	})
 }
+
+// within bounds a wait in these tests (peerlinktest's own bound).
+const within = time.Minute

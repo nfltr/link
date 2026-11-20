@@ -114,7 +114,7 @@ func TestSessionAbortObserved(t *testing.T) {
 		t.Fatal(err)
 	}
 	<-accepted
-	if err := s.Abort(CodeApp+7, "why"); err != nil {
+	if err := s.AbortWith(&Abort{Code: CodeApp + 7, Msg: "why"}); err != nil {
 		t.Fatal(err)
 	}
 	waitUntil(t, func() bool { return lm.c.Stats().SessionsAborted == 1 })

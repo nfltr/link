@@ -323,7 +323,7 @@ func TestChainAbort(t *testing.T) {
 		t.Run(fmt.Sprintf("far/links=%d", n), func(t *testing.T) {
 			r := newChainRig(t, rigOpts{n: n}, func(_ []byte, s *Session) {
 				_, _ = s.Write([]byte("hi"))
-				_ = s.Abort(CodeApp+3, "bye")
+				_ = s.AbortWith(&Abort{Code: CodeApp + 3, Msg: "bye"})
 			})
 			s := r.open("x")
 			b, err := io.ReadAll(s)
@@ -344,7 +344,7 @@ func TestChainAbort(t *testing.T) {
 			if err := s.Answered(context.Background()); err != nil {
 				t.Fatal(err)
 			}
-			_ = s.Abort(CodeApp+4, "origin")
+			_ = s.AbortWith(&Abort{Code: CodeApp + 4, Msg: "origin"})
 			a := errAbort(t, <-got)
 			if a.Code != CodeApp+4 || int(a.Hops) != n-1 || a.Msg != "origin" {
 				t.Fatalf("abort %+v", a)
@@ -379,7 +379,7 @@ func TestChainHalfClose(t *testing.T) {
 			_ = s.CloseWrite()
 			b, _ := io.ReadAll(s)
 			if string(b) != "late" {
-				_ = s.Abort(CodeApp, "lost")
+				_ = s.AbortWith(&Abort{Code: CodeApp, Msg: "lost"})
 			}
 		})
 		s := r.open("x")
@@ -675,7 +675,7 @@ func TestChainProperty(t *testing.T) {
 				case "abort":
 					_ = s.Accept()
 					_, _ = io.CopyN(io.Discard, s, 1000)
-					_ = s.Abort(CodeApp+2, "mid")
+					_ = s.AbortWith(&Abort{Code: CodeApp + 2, Msg: "mid"})
 				default:
 					farEcho(h, s)
 				}
@@ -848,7 +848,7 @@ func TestChainMiddleHopAbortsItsInbound(t *testing.T) {
 	if err := s.Answered(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	_ = (<-ins).Abort(CodeApp+5, "revoked")
+	_ = (<-ins).AbortWith(&Abort{Code: CodeApp + 5, Msg: "revoked"})
 	if a := errAbort(t, <-got); a.Code != CodeApp+5 || a.Hops != 0 || a.Msg != "revoked" {
 		t.Fatalf("far end's abort %+v", a)
 	}

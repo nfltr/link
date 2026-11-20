@@ -63,9 +63,9 @@ type Pair struct {
 	Throttle func(bytesPerSecond int)
 }
 
-// Within bounds work that must finish at all (it would hang if the
+// within bounds work that must finish at all (it would hang if the
 // contract were broken): sessions beside a stuck one, a drain.
-const Within = time.Minute
+const within = time.Minute
 
 // Run runs every case of the suite, each on a Pair of its own from newPair
 // (some cases make two). The suite calls Serve on B (and on A in a Reverse
@@ -130,7 +130,7 @@ func pair(t *testing.T, newPair func(*testing.T) Pair, accept func(peer string, 
 				if err != nil {
 					t.Errorf("Serve: %v, want nil after Drain", err)
 				}
-			case <-time.After(Within):
+			case <-time.After(within):
 				t.Error("Serve did not return after Drain")
 			}
 		}
@@ -141,7 +141,7 @@ func pair(t *testing.T, newPair func(*testing.T) Pair, accept func(peer string, 
 // open opens a session from A to B; the test's cleanup closes it.
 func open(t *testing.T, p Pair, header string) peerlink.Session {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), Within)
+	ctx, cancel := context.WithTimeout(context.Background(), within)
 	defer cancel()
 	s, err := p.A.Open(ctx, p.BName, []byte(header))
 	if err != nil {
@@ -284,7 +284,7 @@ func testHeader(t *testing.T, newPair func(*testing.T) Pair) {
 			if !bytes.Equal(g, h) {
 				t.Errorf("header of %d bytes arrived as %d bytes (equal: %v)", len(h), len(g), bytes.Equal(g, h))
 			}
-		case <-time.After(Within):
+		case <-time.After(within):
 			t.Fatal("accept not called")
 		}
 		_ = s.Close()
@@ -417,7 +417,7 @@ func testStuckReader(t *testing.T, newPair func(*testing.T) Pair) {
 	}()
 	// Wait until the stuck session's writer is blocked: nothing moved for
 	// 200 ms.
-	for last, deadline := int64(-1), time.Now().Add(Within); wrote.Load() != last; {
+	for last, deadline := int64(-1), time.Now().Add(within); wrote.Load() != last; {
 		if time.Now().After(deadline) {
 			t.Fatalf("the stuck session's writer never blocked (%d bytes written)", wrote.Load())
 		}
@@ -447,8 +447,8 @@ func testStuckReader(t *testing.T, newPair func(*testing.T) Pair) {
 		case <-time.After(time.Second):
 			if m := moved.Load(); m != last {
 				last, at = m, time.Now()
-			} else if time.Since(at) > Within {
-				t.Fatalf("%d sessions beside a stuck one moved nothing for %v (%d bytes echoed in all)", n, Within, m)
+			} else if time.Since(at) > within {
+				t.Fatalf("%d sessions beside a stuck one moved nothing for %v (%d bytes echoed in all)", n, within, m)
 			}
 			continue
 		}
@@ -572,7 +572,7 @@ func measureFairness(t *testing.T, newPair func(*testing.T) Pair) fairness {
 	}
 	select {
 	case <-start:
-	case <-time.After(Within):
+	case <-time.After(within):
 		t.Fatal("accept not called for every session")
 	}
 	time.Sleep(warm)
@@ -691,12 +691,12 @@ func testReset(t *testing.T, newPair func(*testing.T) Pair) {
 		t.Fatal(err)
 	}
 	_ = s.Reset()
-	cutErr(t, "accepter of a reset session", recvWithin(t, errs, 1, time.Now(), Within, "reset seen")[0])
+	cutErr(t, "accepter of a reset session", recvWithin(t, errs, 1, time.Now(), within, "reset seen")[0])
 
 	s = open(t, p, "accepter resets")
 	done := make(chan error, 1)
 	go func() { done <- readErr(s) }()
-	cutErr(t, "opener of a reset session", recvWithin(t, done, 1, time.Now(), Within, "reset seen")[0])
+	cutErr(t, "opener of a reset session", recvWithin(t, done, 1, time.Now(), within, "reset seen")[0])
 }
 
 // openRefused opens sessions from A to B until one is refused (at Open or
@@ -704,10 +704,10 @@ func testReset(t *testing.T, newPair func(*testing.T) Pair) {
 // work. It returns the refusal.
 func openRefused(t *testing.T, p Pair) error {
 	t.Helper()
-	deadline := time.Now().Add(Within)
+	deadline := time.Now().Add(within)
 	for {
 		err := func() error {
-			ctx, cancel := context.WithTimeout(context.Background(), Within)
+			ctx, cancel := context.WithTimeout(context.Background(), within)
 			defer cancel()
 			s, err := p.A.Open(ctx, p.BName, []byte("echo"))
 			if err != nil {
@@ -720,7 +720,7 @@ func openRefused(t *testing.T, p Pair) error {
 			return err
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("Opens still accepted %v after Drain began", Within)
+			t.Fatalf("Opens still accepted %v after Drain began", within)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -755,7 +755,7 @@ func testDrainAccepter(t *testing.T, newPair func(*testing.T) Pair) {
 	p := pair(t, newPair, echo)
 	s := open(t, p, "echo")
 	half(t, s)
-	drained := drain(p.B, Within)
+	drained := drain(p.B, within)
 	t.Logf("open toward a draining peer: %v", openRefused(t, p))
 	select {
 	case err := <-drained:
@@ -766,7 +766,7 @@ func testDrainAccepter(t *testing.T, newPair func(*testing.T) Pair) {
 		t.Fatalf("the open session across the drain: %v", err)
 	}
 	_ = s.Close()
-	if err := recvWithin(t, drained, 1, time.Now(), Within, "Drain returned")[0]; err != nil {
+	if err := recvWithin(t, drained, 1, time.Now(), within, "Drain returned")[0]; err != nil {
 		t.Errorf("Drain: %v, want nil", err)
 	}
 }
@@ -777,7 +777,7 @@ func testDrainOpener(t *testing.T, newPair func(*testing.T) Pair) {
 	p := pair(t, newPair, echo)
 	s := open(t, p, "echo")
 	half(t, s)
-	drained := drain(p.A, Within)
+	drained := drain(p.A, within)
 	if err := openRefused(t, p); !errors.Is(err, peerlink.ErrDraining) {
 		t.Errorf("Open on a draining Link: %v, want ErrDraining", err)
 	}
@@ -785,7 +785,7 @@ func testDrainOpener(t *testing.T, newPair func(*testing.T) Pair) {
 		t.Fatalf("the open session across the drain: %v", err)
 	}
 	_ = s.Close()
-	if err := recvWithin(t, drained, 1, time.Now(), Within, "Drain returned")[0]; err != nil {
+	if err := recvWithin(t, drained, 1, time.Now(), within, "Drain returned")[0]; err != nil {
 		t.Errorf("Drain: %v, want nil", err)
 	}
 	if _, err := p.A.Open(context.Background(), p.BName, nil); !errors.Is(err, peerlink.ErrDraining) {
@@ -813,11 +813,11 @@ func testDrainDeadline(t *testing.T, newPair func(*testing.T) Pair) {
 				l = p.B
 			}
 			start := time.Now()
-			err := recvWithin(t, drain(l, 300*time.Millisecond), 1, start, Within, "Drain returned")[0]
+			err := recvWithin(t, drain(l, 300*time.Millisecond), 1, start, within, "Drain returned")[0]
 			if !errors.Is(err, context.DeadlineExceeded) {
 				t.Errorf("Drain: %v, want context.DeadlineExceeded", err)
 			}
-			for _, err := range recvWithin(t, errs, 2, start, Within, "sessions cut by the drain") {
+			for _, err := range recvWithin(t, errs, 2, start, within, "sessions cut by the drain") {
 				cutErr(t, "session cut by a drain", err)
 			}
 		})

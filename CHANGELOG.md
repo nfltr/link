@@ -1,12 +1,67 @@
 # Changelog
 
 Releases of `github.com/nfltr/link` (tags `vX.Y.Z`) and of the modules in
-it (`peerlink/grpclink/vX.Y.Z`, `peerlink/quiclink/vX.Y.Z`,
-`linkvet/vX.Y.Z`). The wire
+it (`peerlink/quiclink/vX.Y.Z`, `pathswitch/vX.Y.Z`, `linkvet/vX.Y.Z`;
+`peerlink/grpclink` until v0.13.0). The wire
 format is [WIRE.md](WIRE.md); every release since v0.2.0 speaks the same
 version 2 unless an entry says otherwise.
 
-## Unreleased
+## v0.13.0 (unreleased): the v1 API cut
+
+The API link v1.0 will freeze (docs/v1-api-review.md, lane LINKAPI; done
+in lane LINKV013). The wire is unchanged: version 2, byte for byte
+(`TestWireVectors`, `TestV2Golden`). Incompatible changes, with the
+migration:
+
+- `Conn`'s frame API is unexported: `SendData`, `SendOpen`, `SendClose`,
+  `SendReset`, `SendMsg`, `SendEndAck`, `Recv`, `Flush`, type `Frame`,
+  and `Credit`, `Drained`, `PeerGoAway`, `PeerMaxSessions`, `GoAway`,
+  `Err`, `GoingAway`. Its one caller outside link, relay's agent data
+  connections, is retired (nfltr
+  docs/decisions/link-data-connections-retired-2026-11-20.md). Carry
+  sessions with `Mux`; type `Credit`, `NewCredit`, `AppendWindow`,
+  `ParseWindow` and `CheckWindow` stay, for credit over a transport of
+  your own. Message frames (type 1) are reserved: link sends none and
+  drops one it reads (WIRE.md section 4).
+- `Conn.Identity` is deleted: `Server` returns the Identity.
+- `MaxSessions` is `DefaultMaxSessions`.
+- `Mux.Open(ctx, header)`: ctx carries the session's path
+  (`ContextWithChain`; a `Route` passes its ctx on); `Mux.OpenChain` is
+  deleted. Migration: `m.Open(h)` is `m.Open(ctx, h)`;
+  `m.OpenChain(h, c)` is `m.Open(link.ContextWithChain(ctx, c), h)`, and
+  in a Route `onward.Open(ctx, in.Header())`.
+- `Join`, `Session.Pump`, `WriteBuffers`, `CloseWriteSync` and `Sync`
+  are unexported; `peerlink.Join` and `peerlink.Forward` splice sessions
+  (peerlink reaches link's through an internal package).
+- `FeatureChain` and `FeatureEndAck` are unexported (WIRE.md section 6
+  names the bits; every link side announces them).
+- `Session.Abort(code, msg)` is deleted: `AbortWith(&link.Abort{Code:
+  code, Msg: msg})`, the one way (also on `peerlink.ChainSession` and
+  quiclink's `Session`).
+- The wire limits have constants: `MaxFrame`, `MaxData`, `MaxHeader`,
+  `MaxReason`, `MaxSessionsWire` (WIRE.md section 10).
+- The presets (`LivenessDefault` and the rest, `LivenessPresets`,
+  `NoAuth`, `CertAuth`) are documented do-not-assign; a zero
+  `Config.Liveness` and a nil `Config.Auth` are link's own copies, so
+  an assignment changes neither.
+- WIRE.md: how a version above 2 is negotiated (section 3: a new hello
+  version, status 2, a new connection); auth_method 2 is `MethodName`;
+  the `ErrV1` vector label is `ErrVersion`; doc.go points to WIRE.md
+  instead of repeating it.
+- peerlink: `Config.HandshakeError` is deleted (a failed handshake
+  closes that connection; nothing reported it but tests).
+- peerlinktest: `Within`, `ChainPath` and `NewChainPath` are
+  unexported (`Run` and `Pair` are the kit).
+- `pathswitch` is a module of its own,
+  `github.com/nfltr/link/pathswitch` (v0, tags `pathswitch/vX.Y.Z`), with
+  its wire in pathswitch/WIRE.md (no version field: the decision there)
+  and test vectors (`pathswitch/testdata/wire_vectors.json`). Migration:
+  require it beside link.
+- `peerlink/grpclink` is deleted (no consumer); its last release,
+  v0.3.3, stays for anyone who pinned it.
+- quiclink (v0.6.0): `MaxHeader`, `ErrNoDatagrams`, `Probe`,
+  `Node.DatagramsDropped` and `Session.TagLen` are unexported, and
+  `Session.Abort` deleted (above); its wire is a section of its README.
 
 - Two joins whose FINs cross end cleanly (lane ENDACKJOIN): a peerlink
   join held the other direction's clean end until its own

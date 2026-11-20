@@ -127,7 +127,7 @@ func TestJoinTCPAborts(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _ = s.Write([]byte("x"))
-	_ = s.Abort(link.CodeApp+2, "give up")
+	_ = s.AbortWith(&link.Abort{Code: link.CodeApp + 2, Msg: "give up"})
 	if err := <-targetErr; err == nil {
 		t.Fatal("the target read a clean end after the origin's abort")
 	}

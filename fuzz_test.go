@@ -30,7 +30,7 @@ func (c *countingReader) Read(b []byte) (int, error) {
 // Seeds: testdata/fuzz/FuzzRecv (frames of a recorded session).
 func FuzzRecv(f *testing.F) {
 	for _, seed := range [][]byte{
-		frame(maxFrame+1, typeData),
+		frame(MaxFrame+1, typeData),
 		frame(1, 9, 0),
 		frame(2, typeData, 5, 'a'),
 		frame(0, typeData),
@@ -59,8 +59,8 @@ func FuzzRecv(f *testing.F) {
 			if err != nil {
 				return
 			}
-			if n := len(m.Data) + len(m.Msg); n > maxFrame {
-				t.Fatalf("frame of %d bytes, maxFrame %d", n, maxFrame)
+			if n := len(m.Data) + len(m.Msg); n > MaxFrame {
+				t.Fatalf("frame of %d bytes, maxFrame %d", n, MaxFrame)
 			}
 			if !m.Open && !m.Close && (m.Data == nil) == (m.Msg == nil) {
 				t.Fatalf("frame %+v is neither data, a message, an open nor a close", m)
@@ -89,7 +89,7 @@ func FuzzSendRecvRoundTrip(f *testing.F) {
 			want, send = rxFrame{Msg: body}, func() error { return s.sendMsg(body) }
 		}
 		err := send()
-		if err != nil || len(body) == 0 || len(body) > maxData {
+		if err != nil || len(body) == 0 || len(body) > MaxData {
 			return // refused, nothing sent, or split (TestFramesRoundTrip)
 		}
 		if err := s.flush(); err != nil {

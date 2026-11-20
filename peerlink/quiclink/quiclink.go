@@ -102,8 +102,8 @@ const (
 	CodeDeadPeer      quic.ApplicationErrorCode = 3 // nothing arrived for DeadAfter
 )
 
-// MaxHeader is the longest session header.
-const MaxHeader = 1<<16 - 1
+// maxHeader is the longest session header.
+const maxHeader = 1<<16 - 1
 
 // Config is a Node's settings. Every policy in it is the caller's.
 type Config struct {
@@ -142,7 +142,7 @@ type Config struct {
 	// link.DefaultWindow, 1 MiB); a connection buffers 16 windows.
 	Window int
 	// MaxSessions is how many sessions the peer may have open toward this
-	// side on one connection (0: link.MaxSessions, 1024).
+	// side on one connection (0: link.DefaultMaxSessions, 1024).
 	MaxSessions int
 	// Datagrams offers QUIC DATAGRAM frames (RFC 9221) on this Node's
 	// connections: a session's SendDatagram and OnDatagram (datagram.go),
@@ -170,7 +170,7 @@ type Node struct {
 	live     map[*conn]bool // the connections running (run), for Stats
 	ended    link.ConnStats // the counters of those that ended
 
-	dgDropped atomic.Uint64 // DatagramsDropped
+	dgDropped atomic.Uint64 // DATAGRAM frames dropped
 }
 
 var (
@@ -210,7 +210,7 @@ func New(cfg Config) (*Node, error) {
 		MaxStreamReceiveWindow:         window,
 		InitialConnectionReceiveWindow: 16 * window,
 		MaxConnectionReceiveWindow:     16 * window,
-		MaxIncomingStreams:             int64(cmpOr(cfg.MaxSessions, link.MaxSessions)),
+		MaxIncomingStreams:             int64(cmpOr(cfg.MaxSessions, link.DefaultMaxSessions)),
 		MaxIncomingUniStreams:          1, // the control stream
 		// A reset delivers what was written before it (RESET_STREAM_AT)
 		// where both ends support it: an Abort after bytes, as link's.
@@ -534,8 +534,8 @@ func (n *Node) forgetLocked(peer string, p *peerConns) {
 // whose every connection is going away (it is draining) Open fails at
 // once, with link.ErrGoAway.
 func (n *Node) Open(ctx context.Context, peer string, header []byte) (peerlink.Session, error) {
-	if len(header) > MaxHeader {
-		return nil, fmt.Errorf("quiclink: header of %d bytes, at most %d", len(header), MaxHeader)
+	if len(header) > maxHeader {
+		return nil, fmt.Errorf("quiclink: header of %d bytes, at most %d", len(header), maxHeader)
 	}
 	for {
 		c, err := n.pick(ctx, peer)
@@ -699,9 +699,9 @@ func (n *Node) pickServed(ctx context.Context, peer string) (*conn, error) {
 }
 
 // appendPreamble appends a session stream's preamble for header (at most
-// MaxHeader bytes) to b: its length (2 bytes, big endian), then header.
+// maxHeader bytes) to b: its length (2 bytes, big endian), then header.
 func appendPreamble(b, header []byte) []byte {
-	b = binary.BigEndian.AppendUint16(b, uint16(len(header))) // #nosec G115 -- at most MaxHeader, checked by Open
+	b = binary.BigEndian.AppendUint16(b, uint16(len(header))) // #nosec G115 -- at most maxHeader, checked by Open
 	return append(b, header...)
 }
 
@@ -1058,7 +1058,7 @@ func (s *Session) Close() error {
 // (on an ALPNChain connection with a *link.Abort, CodeUnspecified).
 func (s *Session) Reset() error {
 	if s.c.chain {
-		return s.Abort(link.CodeUnspecified, "")
+		return s.AbortWith(&link.Abort{Code: link.CodeUnspecified, Msg: ""})
 	}
 	s.reset.Store(true)
 	s.Stream.CancelWrite(CodeReset)

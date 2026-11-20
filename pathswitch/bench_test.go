@@ -19,7 +19,7 @@ import (
 
 type linkStream struct{ *link.Session }
 
-func (s linkStream) Reset() error { return s.Abort(0, "reset") }
+func (s linkStream) Reset() error { return s.AbortWith(&link.Abort{Code: 0, Msg: "reset"}) }
 
 // linkPair returns a session's two ends over one link connection on a
 // pipe (the relayed path), and the opener's Mux for more sessions.

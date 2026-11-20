@@ -31,7 +31,7 @@ protected by link itself: that is the stream's job.
 | 14 | 4 | max_sessions | how many sessions the listener may have open toward the dialer at once |
 | 18 | 4 | interval_ms | liveness interval, milliseconds |
 | 22 | 4 | timeout_ms | liveness timeout, milliseconds |
-| 26 | 1 | auth_method | 0 none, 1 a bearer token the listener issued, 2-127 reserved, 128-255 the application's |
+| 26 | 1 | auth_method | 0 none (`MethodNone`), 1 a bearer token the listener issued (`MethodToken`), 2 a name the dialer claims (`MethodName`), 3-127 reserved, 128-255 the application's |
 | 27 | 2 | auth_len | length of auth, at most 4096 |
 | 29 | auth_len | auth | the credential, opaque to link |
 
@@ -57,13 +57,25 @@ The first byte is a status:
 | 2 | version: the hello's version is not spoken | max_version(1), the highest version the listener speaks; it closes the stream |
 
 A listener that receives a version-1 hello (link v0.4 and older) replies
-`02 02`; such a dialer reads it as a refusal. A listener of link v0.4 or
+`02 02`; such a dialer reads it as a refusal (`ErrVersion`). A listener of link v0.4 or
 older that speaks only version 1 reads 37 bytes of a version-2 hello and
 closes the stream without a reply.
 
 The dialer refuses a bound reply whose version is not 2, whose window is
 out of range or whose max_sessions is out of range (the hello's bounds),
 and any other status (malformed).
+
+**Versions above 2.** A listener reads only magic and version (5 bytes)
+before it decides, so the bytes after the version byte belong to that
+version. A dialer that speaks version N > 2 sends a hello of version N.
+A listener that speaks N binds it (status 0, its reply in version N's
+layout); one that does not replies status 2 with the highest version it
+speaks and closes the stream. The dialer then dials a new connection
+with the highest version both speak, or fails with `ErrVersion` (in Go,
+a `*VersionError` naming the listener's highest). max_version stays
+informational: it never changes the version a listener binds. This is
+QUIC's version negotiation (RFC 9000 section 6) with the retry on a new
+connection; a listener never upgrades a hello's version in its reply.
 
 Once bound, each side has the other's window, max_sessions and features.
 Liveness is the dialer's unless the listener configured its own
@@ -75,7 +87,7 @@ Every frame, both ways:
 
 | size | field |
 |---:|---|
-| 4 | length: of the body, at least 1 and at most 1 + 255 + 2^20 = 1048832 |
+| 4 | length: of the body, at least 1 and at most 1 + 255 + 2^20 = 1048832 (`MaxFrame`) |
 | 1 | type |
 | length | body |
 
@@ -86,7 +98,7 @@ ends the connection (`ErrFrame`, `ErrCredit` or `ErrFull`).
 | type | name | body | rules |
 |---:|---|---|---|
 | 0 | data | sid, payload | sid_len at most length - 1; the payload may be empty; at most 2^20 per frame (senders split) |
-| 1 | message | the caller's bytes | never empty; carried only between callers that drive a `Conn` themselves: a `Mux` drops them |
+| 1 | message | opaque bytes | never empty; reserved since v0.13.0: link sends none and a receiver drops it (link v0.12 and older sent it for callers that drove a `Conn` themselves) |
 | 2 | window | sid, increment(4) | body exactly 5 + sid_len |
 | 3 | open | sid, header | header at most 65536 |
 | 4 | close | sid, code(1) | body exactly 2 + sid_len; code 0, 1 or 2 (section 5) |
@@ -99,10 +111,10 @@ ends the connection (`ErrFrame`, `ErrCredit` or `ErrFull`).
 | 11 | endack | sid | body exactly 1 + sid_len; `FeatureEndAck` only (section 13) |
 | 12-255 | | | unknown: a protocol error (8-10 too, on a connection without `FeatureChain`; 11 without `FeatureEndAck`) |
 
-Data, message and open frames surface to the receiver's caller (`Recv`);
-window, ping, pong and goaway frames are applied by the receiver itself.
-Session ids that begin with `_` are left to the caller by a `Mux` (it
-never picks one: its ids are uvarints, section 5).
+Data and open frames go to their sessions; window, ping, pong and goaway
+frames are applied by the receiver itself. Session ids that begin with
+`_` are never picked by link (its ids are uvarints, section 5); a peer's
+open of one is taken like any other.
 
 ## 5. Sessions
 
@@ -115,7 +127,7 @@ A session is a pair of byte streams identified by its sid.
   protocol error (`ErrFull`). An open of an id whose session the receiver
   still keeps credit for is a protocol error (`ErrFrame`): an id is free
   again only once its credit ended on both sides (a close code 0 or 2, an
-  abort, or, for a `Conn` caller, `Credit.Forget` after both half-closes).
+  abort, or both half-closes).
   A side counts a session against the peer's max_sessions until its close
   or abort of it is on the wire, so an open never overtakes it.
 - **Data.** Data frames carry a session's bytes in order, on credit.
@@ -136,7 +148,7 @@ A session is a pair of byte streams identified by its sid.
   `encoding/binary.AppendUvarint`), odd on the dialer and even on the
   listener, so the two sides never pick the same; a `Mux` refuses an open
   it does not take (no accept function, or after GOAWAY) with a reset.
-  A `Conn` without a `Mux` leaves ids to the caller, so a `Mux` takes an
+  Another implementation may pick ids its own way, so a `Mux` takes an
   open of either parity, and skips an id of its own the peer took.
 
 ## 6. Feature bits
@@ -211,15 +223,15 @@ shuts with an abort refuse (code 2, draining: nothing ran on it).
 |---|---:|---|
 | hello auth | 4096 | `MaxAuth` |
 | window | 131072 to 2^30 | `MinWindow`, `MaxWindow` (default `DefaultWindow` 1 MiB) |
-| max_sessions on the wire | 1 to 2^20 | (default `MaxSessions` 1024) |
+| max_sessions on the wire | 1 to 2^20 | `MaxSessionsWire` (default `DefaultMaxSessions` 1024) |
 | liveness interval | 1 s to 15 s | `MinLivenessInterval`, `MaxLivenessInterval` |
-| frame body | 1 to 1048832 | |
-| data per frame | 2^20 | |
+| frame body | 1 to 1048832 | `MaxFrame` |
+| data per frame | 2^20 | `MaxData` |
 | sid | 255 | `MaxSID` |
-| open header | 65536 | |
-| goaway reason | 1024 | |
+| open header | 65536 | `MaxHeader` |
+| goaway reason | 1024 | `MaxReason` |
 | abort message | 1024 | `MaxAbortMsg` |
-| chain hops | 255 (a counter, never a list) | |
+| chain hops | 255 (a counter, never a list) | the hops field's size (1 byte); `DefaultMaxHops` bounds a path |
 | credit taken at once | 65536 | `MaxChunk` |
 
 ## 11. Test vectors
@@ -237,7 +249,7 @@ objects:
 - A valid vector has its fields in `hello`, `reply` or `frame` (byte
   fields in hex): they encode to `hex`, and `hex` decodes to them.
 - An invalid vector has `invalid`: the error a decoder refuses `hex` with
-  (`ErrFrame`, `ErrCredit`, `ErrV1`, `ErrVersion`, or `error` for any).
+  (`ErrFrame`, `ErrCredit`, `ErrVersion`, or `error` for any).
 - Frame vectors are decoded on a connection where session `01` is open
   with its full credit, the listener's window 262144, and every byte of
   `hex` must be consumed. Window frames are decoded after the session

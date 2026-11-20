@@ -33,7 +33,6 @@ type ChainSession interface {
 	Accept() error
 	AcceptPath(pathLen uint8) error
 	Refuse(code uint32, msg string) error
-	Abort(code uint32, msg string) error
 	AbortWith(a *link.Abort) error
 	Answered(ctx context.Context) error
 	Chain() link.Chain

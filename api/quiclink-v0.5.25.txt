@@ -1,0 +1,7 @@
+Incompatible changes:
+- (*Node).DatagramsDropped: removed
+- (*Session).Abort: removed
+- (*Session).TagLen: removed
+- ErrNoDatagrams: removed
+- MaxHeader: removed
+- Probe: removed

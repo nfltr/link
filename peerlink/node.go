@@ -54,11 +54,6 @@ type Config struct {
 	// the Identity Link.Auth verified (its remote address, say, where
 	// peers share one credential). nil: the Identity's Subject.
 	ServedPeer func(nc net.Conn, id link.Identity) string
-	// HandshakeError, when set, gets each connection Serve accepted whose
-	// handshake failed (a wrong credential, a TLS mismatch, a dialer that
-	// is not link's) and why; the connection is closed. nil: they are
-	// closed silently.
-	HandshakeError func(nc net.Conn, err error)
 }
 
 // Node is a Link over github.com/nfltr/link: a link.Pool per peer it opens
@@ -303,10 +298,6 @@ func (s *session) Refuse(code uint32, msg string) error {
 	return s.AbortWith(&link.Abort{Refused: true, Code: code, Msg: msg})
 }
 
-func (s *session) Abort(code uint32, msg string) error {
-	return s.AbortWith(&link.Abort{Code: code, Msg: msg})
-}
-
 func (s *session) AbortWith(a *link.Abort) error {
 	err := s.Session.AbortWith(a)
 	if err == nil {
@@ -318,8 +309,7 @@ func (s *session) AbortWith(a *link.Abort) error {
 // Serve takes the sessions peers open until Drain: on the connections it
 // accepts on Config.Listener (if any), and on the connections this Node
 // dialled, Config.Connect's among them, which it dials now. A failed
-// handshake closes that connection only (Config.HandshakeError hears of
-// it). A closed listener other than by Drain ends Serve with its error;
+// handshake closes that connection only. A closed listener other than by Drain ends Serve with its error;
 // any other Accept error (EMFILE, ECONNABORTED) is retried after a backoff
 // of 5 ms doubling to 1 s, as net/http does. Until Serve began, a session
 // a peer opens on a connection Open dialled is refused (link.CodeRefused,
@@ -381,9 +371,6 @@ func (n *Node) serveConn(nc net.Conn, accept func(string, []byte, Session)) {
 	cancel()
 	if err != nil {
 		_ = nc.Close()
-		if n.cfg.HandshakeError != nil {
-			n.cfg.HandshakeError(nc, err)
-		}
 		return
 	}
 	m := link.NewMux(c)

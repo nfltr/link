@@ -166,11 +166,41 @@ What it costs, and when not to use it:
   its QUIC stream id (uvarint), then the caller's bytes; it reaches only
   the peer's session of that stream, while that one has a receiver
   (`OnDatagram`) and has not ended; any other is dropped and counted
-  (`DatagramsDropped`). `SendDatagram` waits while quic-go's send queue
-  holds 32 frames, fails with `ErrNoDatagrams` toward a peer that offers
+  (internally). `SendDatagram` waits while quic-go's send queue
+  holds 32 frames, fails toward a peer that offers
   none (QUIC's negotiation: no version flag) and with
   `*quic.DatagramTooLargeError` (the caller's maximum) when the bytes do
   not fit in a packet. `TestSessionDatagrams*`; the rate: `BenchmarkSessionDatagrams` (1200-byte datagrams one way; delivered% the share that arrived).
+
+## Wire
+
+quiclink's wire is QUIC (RFC 9000) with TLS 1.3, plus the bytes below;
+every integer is big endian. It is outside link's v1 promise (a module
+of its own, v0); vectors are owed before quiclink v1.
+
+- ALPN: `peerlink-chain` (`ALPNChain`, since v0.4.0), else `peerlink`
+  (`ALPN`); a listener without `NextProtos` offers both, in that order.
+- A session is one bidirectional stream, opened by either end. On an
+  `ALPNChain` connection the opener writes the open's chain first:
+  hops (1 byte) and trace (16 bytes). Then the preamble: the header's
+  length (2 bytes, at most 65535) and the header.
+- The answer (`ALPNChain` only): the accepter's stream starts with
+  accept, kind 0 (1 byte) and hops (1 byte), or refuse, kind 1 (1 byte),
+  hops (1 byte), code (4 bytes), message length (2 bytes) and the
+  message (valid UTF-8, at most `link.MaxAbortMsg` bytes), then FIN.
+- Stream error codes: 1 refused (draining, not serving, a bad
+  preamble), 2 reset, 3 closed (the peer reads no more). On an
+  `ALPNChain` connection an abort is `1<<61 | hops<<32 | code` (QUIC
+  carries no message).
+- Control: each end may open one unidirectional stream and write
+  single bytes on it: `G` (GOAWAY: open nothing more on this
+  connection), then `D` (DONE: none of its sessions is left here).
+- Connection close codes: 0 drained, 1 a Drain's deadline passed with
+  sessions open, 2 the peer was not named (`ServedPeer`), 3 dead peer
+  (nothing arrived for `DeadAfter`).
+- Datagrams (RFC 9221, both ends offering `max_datagram_frame_size`): a
+  frame's payload is the session's QUIC stream id (uvarint), then the
+  caller's bytes.
 
 ## Checks
 

@@ -63,7 +63,7 @@ const (
 
 var codeNames = [...]string{"unspecified", "refused", "draining", "hop limit", "no route", "connection lost", "timeout", "drain deadline"}
 
-// MaxAbortMsg bounds an Abort's message: Refuse and Abort cut a longer
+// MaxAbortMsg bounds an Abort's message: Refuse and AbortWith cut a longer
 // one at a UTF-8 boundary, decoders refuse it.
 const MaxAbortMsg = 1024
 
@@ -322,17 +322,12 @@ func (s *Session) Refuse(code uint32, msg string) error {
 	return s.AbortWith(&Abort{Refused: true, Code: code, Msg: msg})
 }
 
-// Abort resets the session with a reason, either side, any time: the
-// peer reads an *Abort with code and msg (errors.Is ErrReset). Reads and
-// writes here end with the abort too (an *Abort, errors.Is ErrReset),
-// never a clean end. On a connection without FeatureChain it is Reset.
-func (s *Session) Abort(code uint32, msg string) error {
-	return s.AbortWith(&Abort{Code: code, Msg: msg})
-}
-
-// AbortWith is Refuse (a.Refused) or Abort with every field of a: a hop
-// passing on an abort from the other side of a join sets Hops (the
-// abort's own Hops plus one).
+// AbortWith resets the session with a's reason, either side, any time
+// (a.Refused: Refuse): the peer reads an *Abort with a's code and msg
+// (errors.Is ErrReset). Reads and writes here end with the abort too (an
+// *Abort, errors.Is ErrReset), never a clean end. A hop passing on an
+// abort from the other side of a join sets Hops (the abort's own Hops
+// plus one). On a connection without FeatureChain it is Reset.
 func (s *Session) AbortWith(a *Abort) error {
 	if debugOn {
 		debugReleased(s)
@@ -343,12 +338,12 @@ func (s *Session) AbortWith(a *Abort) error {
 	}
 	if a.Refused {
 		if !s.accepter {
-			return errors.New("link: Refuse of a session this side opened (Abort it)")
+			return errors.New("link: Refuse of a session this side opened (AbortWith it)")
 		}
 		refused := false
 		s.ansOnce.Do(func() { refused = true; s.ans.Store(true) })
 		if !refused {
-			return errors.New("link: Refuse of a session already answered (Abort it)")
+			return errors.New("link: Refuse of a session already answered (AbortWith it)")
 		}
 	}
 	s.once.Do(func() {

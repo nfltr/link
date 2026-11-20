@@ -23,26 +23,26 @@ import (
 // implementation without answers) the plain contract: bytes, io.EOF only
 // at a clean end.
 
-// ChainPath is a path of two Pairs joined by a Forward hop.
-type ChainPath struct {
+// chainPath is a path of two Pairs joined by a Forward hop.
+type chainPath struct {
 	In, Out Pair // origin -> hop, hop -> far end
 }
 
-// NewChainPath makes a path from two Pairs of newPair: the hop serves
+// newChainPath makes a path from two Pairs of newPair: the hop serves
 // Forward(cfg) on In.B and opens on Out.A; the far end (Out.B) serves far.
 // The test's cleanup drains all four Links.
-func NewChainPath(t *testing.T, newPair func(*testing.T) Pair, cfg link.ForwardConfig, far func(peer string, header []byte, s peerlink.Session)) ChainPath {
+func newChainPath(t *testing.T, newPair func(*testing.T) Pair, cfg link.ForwardConfig, far func(peer string, header []byte, s peerlink.Session)) chainPath {
 	t.Helper()
 	out := pair(t, newPair, far)
 	route := func(ctx context.Context, _ string, header []byte, _ peerlink.Session) (peerlink.Session, error) {
 		return out.A.Open(ctx, out.BName, header)
 	}
 	in := pair(t, newPair, peerlink.Forward(route, cfg))
-	return ChainPath{In: in, Out: out}
+	return chainPath{In: in, Out: out}
 }
 
 // open opens a session from the origin.
-func (c ChainPath) open(t *testing.T, header string) peerlink.Session {
+func (c chainPath) open(t *testing.T, header string) peerlink.Session {
 	t.Helper()
 	return open(t, c.In, header)
 }
@@ -88,7 +88,7 @@ var chainCases = []struct {
 // ChainAccept: the origin's Answered returns once the far end accepted,
 // with the path's length (1: one hop beyond), and the echo is intact.
 func testChainAccept(t *testing.T, newPair func(*testing.T) Pair) {
-	c := NewChainPath(t, newPair, link.ForwardConfig{}, farAccept)
+	c := newChainPath(t, newPair, link.ForwardConfig{}, farAccept)
 	s := c.open(t, "echo")
 	if cs := answers(s); cs != nil {
 		if err := cs.Answered(context.Background()); err != nil || cs.PathLen() != 1 {
@@ -103,7 +103,7 @@ func testChainAccept(t *testing.T, newPair func(*testing.T) Pair) {
 // ChainRefuse: the far end's refusal reaches the origin with its code,
 // message and hop (1); without answers, as an error that is not io.EOF.
 func testChainRefuse(t *testing.T, newPair func(*testing.T) Pair) {
-	c := NewChainPath(t, newPair, link.ForwardConfig{}, func(_ string, _ []byte, s peerlink.Session) {
+	c := newChainPath(t, newPair, link.ForwardConfig{}, func(_ string, _ []byte, s peerlink.Session) {
 		if cs, ok := s.(peerlink.ChainSession); ok {
 			_ = cs.Refuse(link.CodeApp+1, "no such target")
 			return
@@ -129,10 +129,10 @@ func testChainRefuse(t *testing.T, newPair func(*testing.T) Pair) {
 // origin (after those bytes, or some of them: a QUIC reset discards what
 // was not delivered).
 func testChainAbortFar(t *testing.T, newPair func(*testing.T) Pair) {
-	c := NewChainPath(t, newPair, link.ForwardConfig{}, func(_ string, _ []byte, s peerlink.Session) {
+	c := newChainPath(t, newPair, link.ForwardConfig{}, func(_ string, _ []byte, s peerlink.Session) {
 		_, _ = s.Write([]byte("partial"))
 		if cs, ok := s.(peerlink.ChainSession); ok && cs.Answers() {
-			_ = cs.Abort(link.CodeApp+2, "target died")
+			_ = cs.AbortWith(&link.Abort{Code: link.CodeApp + 2, Msg: "target died"})
 			return
 		}
 		_ = s.Reset()
@@ -153,7 +153,7 @@ func testChainAbortFar(t *testing.T, newPair func(*testing.T) Pair) {
 // ChainAbortOrigin: the origin's reset with a code reaches the far end.
 func testChainAbortOrigin(t *testing.T, newPair func(*testing.T) Pair) {
 	got := make(chan error, 1)
-	c := NewChainPath(t, newPair, link.ForwardConfig{}, func(_ string, _ []byte, s peerlink.Session) {
+	c := newChainPath(t, newPair, link.ForwardConfig{}, func(_ string, _ []byte, s peerlink.Session) {
 		_, _ = s.Write([]byte("ready")) // answers (accepted) too
 		got <- readErr(s)
 		_ = s.Close()
@@ -164,11 +164,11 @@ func testChainAbortOrigin(t *testing.T, newPair func(*testing.T) Pair) {
 	}
 	cs := answers(s)
 	if cs != nil {
-		_ = cs.Abort(link.CodeApp+3, "origin gave up")
+		_ = cs.AbortWith(&link.Abort{Code: link.CodeApp + 3, Msg: "origin gave up"})
 	} else {
 		_ = s.Reset()
 	}
-	err := recvWithin(t, got, 1, time.Now(), Within, "far end's read")[0]
+	err := recvWithin(t, got, 1, time.Now(), within, "far end's read")[0]
 	cutErr(t, "far end", err)
 	if cs != nil {
 		if a := abortOf(t, "far end's read", err); a.Code != link.CodeApp+3 || a.Hops != 1 {
@@ -181,7 +181,7 @@ func testChainAbortOrigin(t *testing.T, newPair func(*testing.T) Pair) {
 // side first.
 func testChainHalfClose(t *testing.T, newPair func(*testing.T) Pair) {
 	t.Run("origin first", func(t *testing.T) {
-		c := NewChainPath(t, newPair, link.ForwardConfig{}, func(_ string, _ []byte, s peerlink.Session) {
+		c := newChainPath(t, newPair, link.ForwardConfig{}, func(_ string, _ []byte, s peerlink.Session) {
 			defer s.Close()
 			b, err := io.ReadAll(s)
 			if err == nil {
@@ -200,7 +200,7 @@ func testChainHalfClose(t *testing.T, newPair func(*testing.T) Pair) {
 	})
 	t.Run("far end first", func(t *testing.T) {
 		late := make(chan string, 1)
-		c := NewChainPath(t, newPair, link.ForwardConfig{}, func(_ string, _ []byte, s peerlink.Session) {
+		c := newChainPath(t, newPair, link.ForwardConfig{}, func(_ string, _ []byte, s peerlink.Session) {
 			defer s.Close()
 			_, _ = s.Write([]byte("bye"))
 			_ = s.CloseWrite()
@@ -214,7 +214,7 @@ func testChainHalfClose(t *testing.T, newPair func(*testing.T) Pair) {
 		}
 		_, _ = s.Write([]byte("still here"))
 		closeWrite(t, s)
-		if got := recvWithin(t, late, 1, time.Now(), Within, "far end's read")[0]; got != "still here" {
+		if got := recvWithin(t, late, 1, time.Now(), within, "far end's read")[0]; got != "still here" {
 			t.Fatalf("far end read %q after its half close", got)
 		}
 	})
@@ -224,11 +224,11 @@ func testChainHalfClose(t *testing.T, newPair func(*testing.T) Pair) {
 // session joined through it finishes intact, and a new open through it
 // is refused (CodeDraining, from the hop, where sessions answer).
 func testChainDrainMiddle(t *testing.T, newPair func(*testing.T) Pair) {
-	c := NewChainPath(t, newPair, link.ForwardConfig{}, farAccept)
+	c := newChainPath(t, newPair, link.ForwardConfig{}, farAccept)
 	s := c.open(t, "echo")
 	half(t, s)
-	drained := drain(c.Out.A, Within)
-	deadline := time.Now().Add(Within)
+	drained := drain(c.Out.A, within)
+	deadline := time.Now().Add(within)
 	for {
 		n := c.open(t, "echo")
 		var err error
@@ -247,7 +247,7 @@ func testChainDrainMiddle(t *testing.T, newPair func(*testing.T) Pair) {
 		}
 		_ = n.Close()
 		if time.Now().After(deadline) {
-			t.Fatalf("opens through the hop still accepted %v after its Drain began", Within)
+			t.Fatalf("opens through the hop still accepted %v after its Drain began", within)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -255,7 +255,7 @@ func testChainDrainMiddle(t *testing.T, newPair func(*testing.T) Pair) {
 		t.Fatalf("the joined session across the drain: %v", err)
 	}
 	_ = s.Close()
-	if err := recvWithin(t, drained, 1, time.Now(), Within, "Drain returned")[0]; err != nil {
+	if err := recvWithin(t, drained, 1, time.Now(), within, "Drain returned")[0]; err != nil {
 		t.Errorf("Drain: %v, want nil", err)
 	}
 }

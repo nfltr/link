@@ -35,9 +35,7 @@ func TestServeClosesAStalledHandshake(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			failed := make(chan error, 1)
-			n := mustNew(t, peerlink.Config{Listener: ln, Link: link.Config{Liveness: link.LivenessFast, Auth: link.NameAuth("b")},
-				HandshakeError: func(_ net.Conn, err error) { failed <- err }})
+			n := mustNew(t, peerlink.Config{Listener: ln, Link: link.Config{Liveness: link.LivenessFast, Auth: link.NameAuth("b")}})
 			go func() { _ = n.Serve(echoAccept) }()
 			defer drainNow(n)
 			c, err := net.Dial("tcp", ln.Addr().String())
@@ -51,11 +49,6 @@ func TestServeClosesAStalledHandshake(t *testing.T) {
 			_ = c.SetReadDeadline(start.Add(bound))
 			if _, err := io.Copy(io.Discard, c); errors.Is(err, os.ErrDeadlineExceeded) {
 				t.Fatalf("a stalled handshake held past %v", bound)
-			}
-			select {
-			case <-failed:
-			case <-time.After(time.Second):
-				t.Fatal("HandshakeError not called")
 			}
 			t.Logf("closed after %v (DeadAfter %v)", time.Since(start).Round(time.Millisecond), n.DeadAfter())
 		})

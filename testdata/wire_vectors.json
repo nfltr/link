@@ -74,7 +74,7 @@
   {
     "name": "hello-version-1",
     "kind": "hello",
-    "invalid": "ErrV1",
+    "invalid": "ErrVersion",
     "hex": "4e46445001"
   },
   {

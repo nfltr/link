@@ -200,7 +200,7 @@ func TestChainQUICRefuseAtHop(t *testing.T) {
 func TestChainQUICAbortCarriesHops(t *testing.T) {
 	p := newPath(t, 3, func(int) bool { return true }, func(_ string, _ []byte, s peerlink.Session) {
 		_, _ = s.Write(bytes.Repeat([]byte("x"), 100000))
-		_ = s.(peerlink.ChainSession).Abort(link.CodeApp+6, "")
+		_ = s.(peerlink.ChainSession).AbortWith(&link.Abort{Code: link.CodeApp + 6, Msg: ""})
 	}, nil)
 	s := p.open("x")
 	got, err := io.ReadAll(s)

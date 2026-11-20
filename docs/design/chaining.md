@@ -563,7 +563,7 @@ it, none a change of direction):
   (a clean full close for `peerlink.Join`). A listener without
   NextProtos offers `peerlink-chain`, then `peerlink`.
 - **peerlinktest**: the chain cases run inside `Run` on two Pairs
-  (`NewChainPath`, `ChainPath`: origin -> Forward hop -> far end),
+  (`newChainPath`, `chainPath`: origin -> Forward hop -> far end),
   checking the typed outcomes where the sessions answer and the plain
   contract where they do not (grpclink). QUIC carries no reset message,
   and a QUIC reset may discard undelivered bytes on a peer without
