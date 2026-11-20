@@ -1,7 +1,7 @@
 github.com/hashicorp/yamux v0.1.2 h1:XtB8kyFOyHXYVFnwT5C3+Bdo8gArse7j2AQ0DA0Uey8=
 github.com/hashicorp/yamux v0.1.2/go.mod h1:C+zze2n6e/7wshOZep2A70/aQU6QBRWJO/G6FT1wIns=
-github.com/nfltr/link/pathswitch v0.1.1 h1:Z4f6V3jXrUi5y7UYII6o68w63Ik8v/RKzO3kn7YQ2Uo=
-github.com/nfltr/link/pathswitch v0.1.1/go.mod h1:Vkj60y8dCdHq+E9tbqjI0yx8U2aDXbpn1GWoh6npWcE=
+github.com/nfltr/link/pathswitch v0.1.2 h1:ak66If6CnXjAstIPf1Yfbe+ogR4m0y48VO+BIqNZfyE=
+github.com/nfltr/link/pathswitch v0.1.2/go.mod h1:UYs3sz00ox2hjQMnLm/hFyOFdj2W4YUmieNJ9Hioi14=
 github.com/nfltr/quic-go v0.63.1-nfltr.3 h1:In8gXa8Ful4h2+AFwy8G3VcNJqlKUD+YyftJ6wqwUbA=
 github.com/nfltr/quic-go v0.63.1-nfltr.3/go.mod h1:aCcZDnvYqlhb79qzzyvg5+pkAVu3JCsGDEKOoYKqnTk=
 github.com/quic-go/go-ossfuzz-seeds v0.1.0 h1:APacT+iIaNF6fd8AGEiN3bT/Jtkd2jz4v4TzM7MFjy0=
