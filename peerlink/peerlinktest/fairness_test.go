@@ -38,8 +38,12 @@ func TestFairnessCatchesAWait(t *testing.T) {
 // others move theirs, about 2 MiB. Fairness's verdict holds there: the run
 // moves enough that this round of grants is not half of it (at 1 MiB/s
 // over 4 s it was, and Fairness failed a fair Link: link fbc982501,
-// 5f322678d).
+// 5f322678d; at 2 MiB/s, under load, now and then: lane LINKSTABLE3).
+// Half the run is past the wait the others' credit allows (verdict).
 func TestFairnessOnADeepPath(t *testing.T) {
+	if credit := int64(fairSessions-1) * link.DefaultWindow; int64(fairRate*fairRun.Seconds())/2 <= credit {
+		t.Fatalf("half of Fairness's run (%d B/s for %v) is within the %d B the other sessions' credit lets one wait", fairRate, fairRun, credit)
+	}
 	f := measureFairness(t, func(t *testing.T) Pair { return linkPair(t, 16<<20) })
 	t.Logf("%v", f)
 	if err := f.verdict(); err != nil {

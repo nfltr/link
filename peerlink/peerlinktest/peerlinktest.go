@@ -469,7 +469,7 @@ func (c counting) Read(b []byte) (int, error) {
 	return k, err
 }
 
-// Fairness: on a path throttled to 2 MiB/s, 8 sessions the accepter writes
+// Fairness: on a path throttled to 4 MiB/s, 8 sessions the accepter writes
 // to as fast as they take each get at least a quarter of a fair share and
 // none waits long for its turn.
 func testFairness(t *testing.T, newPair func(*testing.T) Pair) {
@@ -510,8 +510,15 @@ func (f fairness) String() string {
 // window, about 2 MiB, whatever the rate). At 1 MiB/s that round was half
 // the run, and the verdict failed a fair Link (KiB per session [512 x 8],
 // waits 43-55%, once its run was in that phase; link fbc982501,
-// 5f322678d); at 2 MiB/s it is a quarter. TestFairnessOnADeepPath is that
-// path.
+// 5f322678d). At 2 MiB/s a round is a quarter, but under load a session
+// misses a round now and then: its waits reached 4.2 MiB, 56% (2 of 16
+// runs failed at GOMAXPROCS=2 beside go build -a, lane LINKSTABLE3). A
+// wait is bounded by the other sessions' credit, 7 x 1 MiB: what is ahead
+// of a session's bytes on the path was sent within the others' windows.
+// At fairRate half the run (8 MiB) is past that bound, so on any path the
+// verdict fails only a Link whose wait credit cannot explain (seen at 4
+// MiB/s: 15-27%; the mutant 81-94%). TestFairnessOnADeepPath is that path
+// and checks the constants keep it so.
 func (f fairness) verdict() error {
 	if f.total == 0 || slices.Min(f.per) < f.total>>10/int64(4*len(f.per)) || f.worst > f.total/2 {
 		return fmt.Errorf("a session fell behind: %v", f)
@@ -519,8 +526,16 @@ func (f fairness) verdict() error {
 	return nil
 }
 
+// Fairness's run: fairSessions sessions on a path of fairRate bytes/s,
+// measured for fairRun after a warm-up.
+const (
+	fairSessions = 8
+	fairRate     = 4 << 20
+	fairRun      = 4 * time.Second
+)
+
 func measureFairness(t *testing.T, newPair func(*testing.T) Pair) fairness {
-	const n, rate, warm, run = 8, 2 << 20, 2 * time.Second, 4 * time.Second
+	const n, rate, warm, run = fairSessions, fairRate, 2 * time.Second, fairRun
 	var accepted atomic.Int32
 	start := make(chan struct{})
 	p := pair(t, newPair, func(_ string, _ []byte, s peerlink.Session) {

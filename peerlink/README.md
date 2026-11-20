@@ -106,7 +106,7 @@ for work that must finish at all (`peerlinktest.Within`); none is tied to a
 transport. Cases: `Echo`, `Header`, `HalfCloseOpenerFirst`,
 `HalfCloseAccepterFirst`, `Large` (64 MiB each way, checksummed),
 `Concurrent` (32 sessions), `StuckReader` (8 sessions beside a stuck one),
-`Fairness` (8 sessions on a 1 MiB/s path), `DeadPeer`, `Cut`, `Reset`,
+`Fairness` (8 sessions on a 4 MiB/s path), `DeadPeer`, `Cut`, `Reset`,
 `DrainAccepter`, `DrainOpener`, `DrainDeadline`, `Reconnect` (opens work
 again within the bound after a cut, the opener retrying), `Unreachable`
 (reverse only: `Open` toward a peer with no connection waits until its
@@ -190,8 +190,9 @@ writes were stuck (bound 18 s).
 Fairness at 1 MiB/s, 8 sessions: link 448-544 KiB each in 4 s (longest
 wait for a turn under 0.5 s, 20 runs under load; before v0.8.0, when
 senders waiting for room raced for it, 0.8-3.2 s), gRPC 480-512 KiB
-(under 0.3 s). The case's bound is 2 s (with -race on a loaded 4-CPU
-Linux host, link's longest wait reached 1.3 s).
+(under 0.3 s). The case now runs at 4 MiB/s and bounds a wait in the
+path's bytes: half the run, past the 7 MiB the other sessions' credit
+allows on a deep path (`verdict` in peerlinktest.go).
 QUIC (quiclink, both directions): dead peer at 3.0 s with a session
 busy, up to 4.5 s idle (bound 4.5 s); fairness 499-505 KiB each (under
 0.1 s); opens working again 3.0-5.0 s after a cut (on UDP a cut is a
