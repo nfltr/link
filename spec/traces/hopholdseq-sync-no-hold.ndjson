@@ -1,0 +1,12 @@
+{"ev":"CloseWrite","j":"G","n":0}
+{"ev":"CloseWrite","j":"R","n":0}
+{"ev":"CloseWrite","j":"R","n":0}
+{"ev":"Synced","j":"G","n":0}
+{"ev":"Fin","j":"G","n":0}
+{"ev":"Synced","j":"R","n":0}
+{"ev":"Acked","j":"R","n":0}
+{"ev":"AppRead","j":"R","n":0}
+{"ev":"Acked","j":"R","n":0}
+{"ev":"Closed","j":"R","n":0}
+{"ev":"Acked","j":"G","n":0}
+{"ev":"Closed","j":"G","n":0}

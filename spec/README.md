@@ -1125,7 +1125,8 @@ sync), the ENDACK at the onward end. The ENDACK waits only for Muxes and
 kernels, the hold only for a Mux: no wait-for cycle (prior art: deadlock
 freedom by a wait-for graph without cycles, Coffman et al. 1971; the
 receipt is TCP's own ACK, RFC 9293). `HopHold.tla` (`HopHold.cfg`, 118
-states, every action but `AppRead` taken; `HopHoldSeq.cfg`, 117, every one): G, R, a FIFO each way between them, both
+states, every action but `AppRead` taken; `HopHoldSeq.cfg`, 117, and
+`HopHoldConc.cfg`, 142, every one but the mutant's `HoldFin`): G, R, a FIFO each way between them, both
 apps' FINs at any time. Invariants `HoldTruth` (an app's reads end only
 once its own FIN sent before is at the next hop's Mux), `AckTruth` (an
 end is acknowledged only once the exit app's kernel has it); liveness
@@ -1230,18 +1231,41 @@ module step is taken by a trace now. With the mutant put back
 `hopholdseq-hold-in-receipt` (the lines before the idle bound's `Lost`:
 rejected) in `make spec-mutants`.
 
-Open (lane LINKGATE): a joint whose two conns both sync their ends
-(a quiclink session and a link session) passes an end onto the
-quiclink session with `joint.sync` when the session it came from has
-not ended yet (`joint.ended`'s `syncerOf(dst)` branch): no hold while
-the other direction syncs, and the recorder logs that pass as a second
-`CloseWrite` (rejected: `AppFin` of a direction already sent). Recorded
-once in 4 runs without the read gate (nfltr evidence
-`~/nfltr-evidence/LINKGATE/hophold-branch2-sync-onto-app.ndjson`). An
-app reading concurrently can then read the peer's EOF while its own FIN
-is still on the wire (`HoldTruth`); a hold there must not be released at
-the QUIC receipt (the app's read: the `hold-in-receipt` cycle again).
-Design first: which of a joint's two syncing directions holds the other.
+A joint of two syncing conns (lane LINKHOLD2, 2026-11-21; found by lane
+LINKGATE): R joins the link session toward G and a quiclink session
+whose app is a QUIC far end. Its app's FIN goes onto the session with
+`joint.sync` (syncing, the hold on); the session's end, G's FIN, took
+`joint.ended`'s `Done` branch (held) only once the session had ended
+whole, and before R's own CloseWrite went out (the sync's goroutine had
+not run it yet) the `syncerOf(dst)` branch: a second `joint.sync` onto
+the quiclink session, unheld, so an app reading beside its
+`CloseWriteSync` read the peer's EOF with its own FIN still at R, and the
+recorder logged that pass as a second `CloseWrite` (once in 4 runs:
+`hopholdseq-sync-no-hold`, rejected). Design: an end read from a link
+session onto a conn that syncs it too (not a link session) is an exit
+end like a whole close's, held while the other direction syncs and
+released at that sync's receipt, a link Mux's; the other way never
+holds: the app's FIN onto the session waits for no exit end onto the
+app, whose acknowledgement is the app's read (a sequential app reads
+only once its own `CloseWriteSync` returned: a cycle). `HopHold.tla`:
+`ConcApp` (`HopHoldConc.cfg`, 142 states: R's app a QUIC far end whose
+app reads while its `CloseWriteSync` waits; `QuicApp` = `SeqApp` \cup
+`ConcApp` acknowledge at the read), and `HoldTruth` judged at the pass
+onto the app conn (`Pass`) for every app, as for a TCP app's kernel: an
+app that half-closes after the end was passed may read it at once.
+Mutants `sync-no-hold` (the code before: `HoldTruth`, in
+`HopHoldConc.cfg` and `HopHoldSeq.cfg`), `hold-app-fin` (a hold in that
+branch for any sync, the app's FIN held until its own read:
+`NoStuck` in `HopHoldSeq.cfg`; `HoldFin`, the action only it takes);
+`hold-in-receipt` still caught; witness `WitnessConcRead`. Guards: a
+read gate is not enough, so R's link conn holds its first write (R's
+CLOSE, its `finSent` not yet set: the session cannot end whole) while
+G's FIN reaches R; the joint's hold is seen through
+`internal/linkhook.Held`: `TestJoinHoldsAnEndOntoASyncingApp` (peerlink,
+a TCP app behind a conn that syncs) and
+`TestJoinHoldsOntoAConcurrentQuicApp` (quiclink, the QUIC far end): the
+code before let the app read the peer's EOF with R's CLOSE held, every
+run.
 
 ## One leg's end acknowledgement (EndAckLeg.tla, 2026-11-20, lane ENDACK2D)
 

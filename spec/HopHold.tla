@@ -47,6 +47,19 @@
 (* cannot return and pass the app's ENDACK on, so the app never reads      *)
 (* (mutant hold-in-receipt: a state with no step, NoStuck, and BothEnd).  *)
 (* The held end runs on its own goroutine: the receipt only starts it.      *)
+(*                                                                          *)
+(* A joint of two syncing conns (lane LINKHOLD2: R of the link session     *)
+(* toward G and a quiclink session, its app a QUIC far end) passes the     *)
+(* session's end onto the app conn as an exit end, held while the app's    *)
+(* own end syncs onto the session (until that session's Mux receipt),     *)
+(* also before the session ended whole: the code before passed it with a  *)
+(* sync of its own and no hold while the session's CloseWrite was still   *)
+(* to come, so an app reading while its CloseWriteSync waits (ConcApp)    *)
+(* read the peer's EOF with its own FIN on the wire (mutant sync-no-hold, *)
+(* HoldTruth). The other way never holds: the app's end onto the session  *)
+(* waits for no exit end onto the app, whose acknowledgement is the app's  *)
+(* read (mutant hold-app-fin: a sequential app's FIN held until its own   *)
+(* read, which waits for that FIN's CloseWriteSync: NoStuck).              *)
 EXTENDS Naturals, Sequences
 
 CONSTANTS
@@ -67,23 +80,32 @@ CONSTANTS
              \* the app's end was acknowledged too; "hold-in-receipt": the
              \* held end runs inside its joint's receipt callback (peerlink
              \* joint.sync before lane HOLDCB), so the sync passes no ENDACK
-             \* to its app until the held end returned
+             \* to its app until the held end returned; "sync-no-hold": an exit
+             \* end onto a QUIC far end passes while the app's end syncs
+             \* (peerlink joint.ended's syncerOf(dst) branch before lane
+             \* LINKHOLD2: the session not yet ended whole); "hold-app-fin": an
+             \* app's FIN onto the session is held while an exit end onto that
+             \* app waits for the app's read (a hold in that branch for any sync)
     , SeqApp \* the joints whose app conn is a QUIC far end with a sequential
              \* app: its end acknowledged at the app's read, which comes only
              \* once the app's own CloseWriteSync returned
+    , ConcApp \* the joints whose app conn is a QUIC far end whose app reads
+              \* while its own CloseWriteSync waits (acknowledged at its read too)
 
 Dirs == {"up", "down"}
 Joints == {"G", "R"}
 Entry(d) == IF d = "up" THEN "G" ELSE "R"   \* the joint that reads d's FIN from its app
 Exit(d) == IF d = "up" THEN "R" ELSE "G"    \* the joint that passes d's FIN to its app
 Other(d) == IF d = "up" THEN "down" ELSE "up"  \* the direction the app reading d writes
+QuicApp == SeqApp \cup ConcApp  \* app conns that acknowledge an end at the app's read
 
 VARIABLES
-    st,       \* [Dirs -> {"open", "sent", "at", "held", "passing", "passed"}]: sent: the
+    st,       \* [Dirs -> {"open", "fheld", "sent", "at", "held", "passing", "passed"}]:
+              \* fheld: the entry joint holds its app's FIN (hold-app-fin); sent: the
               \* entry joint wrote the FIN onto the session (it syncs); at: the
               \* exit joint's Mux has it; held: the exit joint holds it; passing:
-              \* written to a SeqApp conn, its app has not read it; passed:
-              \* the exit app's kernel (a SeqApp: the app) has it (its reads
+              \* written to a QuicApp conn, its app has not read it; passed:
+              \* the exit app's kernel (a QuicApp: the app) has it (its reads
               \* end with io.EOF)
     rcvd,     \* [Dirs -> BOOLEAN]: the entry joint has the receipt (pong)
     acked,    \* [Dirs -> BOOLEAN]: the entry joint has the ENDACK
@@ -94,8 +116,8 @@ VARIABLES
     syncing,  \* [Joints -> BOOLEAN]: the joint's hold is on (joint.syncing)
     g2r,      \* the session's frames G -> R: <<kind, d>>
     r2g,      \* R -> G
-    early,    \* history: an app's reads ended while its own FIN was on the
-              \* wire, not yet at the next hop's Mux
+    early,    \* history: an end passed to an app conn (its reads may end) while
+              \* that app's own FIN was on the wire, not yet at the next hop's Mux
     heldEver, \* history: an end was held
     appClosed, \* [Joints -> BOOLEAN]: the joint closed its app's conn whole
     closedEarly \* history: a joint closed its app's conn before the app's
@@ -120,9 +142,17 @@ Blocked(j) == j \in SeqApp /\ st[AppDir(j)] # "open" /\ ~told[AppDir(j)]
 SendFrom(j, m) == IF j = "G" THEN g2r' = Append(g2r, m) /\ UNCHANGED r2g
                              ELSE r2g' = Append(r2g, m) /\ UNCHANGED g2r
 
+\* hold-app-fin: an app half-closes while an exit end onto it waits for its
+\* read; its joint holds the FIN until that read.
+HoldFin(d) ==
+    /\ st[d] = "open" /\ Mutant = "hold-app-fin" /\ st[Other(d)] = "passing"
+    /\ st' = [st EXCEPT ![d] = "fheld"]
+    /\ UNCHANGED <<rcvd, acked, told, inRcv, syncing, g2r, r2g, early, heldEver, appClosed, closedEarly>>
+
 \* An app half-closes: its joint passes the FIN on and syncs.
 AppFin(d) ==
-    /\ st[d] = "open"
+    /\ \/ st[d] = "open" /\ ~(Mutant = "hold-app-fin" /\ st[Other(d)] = "passing")
+       \/ st[d] = "fheld" /\ st[Other(d)] # "passing"
     /\ st' = [st EXCEPT ![d] = "sent"]
     /\ syncing' = [syncing EXCEPT ![Entry(d)] = TRUE]
     /\ SendFrom(Entry(d), <<"fin", d>>)
@@ -130,11 +160,12 @@ AppFin(d) ==
 
 \* The end passes to the exit app (its kernel takes the FIN) and the exit
 \* joint sends the ENDACK (unless the mutant sent it at receipt).
+\* HoldTruth is judged here, at the pass onto the app conn (a TCP app's
+\* kernel, a QUIC far end's stream): an app that half-closes after it may
+\* read the end whenever it likes, as a TCP app may.
 Pass(d) ==
-    IF Exit(d) \in SeqApp
-    THEN st' = [st EXCEPT ![d] = "passing"] /\ UNCHANGED early
-    ELSE /\ st' = [st EXCEPT ![d] = "passed"]
-         /\ early' = (early \/ st[Other(d)] = "sent")
+    /\ st' = [st EXCEPT ![d] = IF Exit(d) \in QuicApp THEN "passing" ELSE "passed"]
+    /\ early' = (early \/ st[Other(d)] = "sent")
 
 \* Joint j's Mux reads the head of its incoming FIFO.
 Recv(j) ==
@@ -174,33 +205,32 @@ CloseAtEnd(d) ==
 \* passed on (and acknowledged).
 ExitEnd(d) ==
     /\ st[d] = "at"
-    /\ IF syncing[Exit(d)] /\ Mutant # "no-hold"
+    /\ IF syncing[Exit(d)] /\ Mutant # "no-hold" /\ ~(Mutant = "sync-no-hold" /\ Exit(d) \in QuicApp)
        THEN /\ st' = [st EXCEPT ![d] = "held"] /\ heldEver' = TRUE
             /\ UNCHANGED <<early, g2r, r2g, appClosed, closedEarly>>
        ELSE /\ Pass(d) /\ UNCHANGED heldEver /\ CloseAtEnd(d)
-            /\ IF Mutant = "ack-on-receipt" \/ Exit(d) \in SeqApp THEN UNCHANGED <<g2r, r2g>> ELSE SendFrom(Exit(d), <<"eack", d>>)
+            /\ IF Mutant = "ack-on-receipt" \/ Exit(d) \in QuicApp THEN UNCHANGED <<g2r, r2g>> ELSE SendFrom(Exit(d), <<"eack", d>>)
     /\ UNCHANGED <<rcvd, acked, told, inRcv, syncing>>
 
 \* The held end runs once the joint's sync no longer holds.
 Release(d) ==
     /\ st[d] = "held" /\ ~syncing[Exit(d)]
     /\ Pass(d)
-    /\ IF Mutant \in {"ack-on-receipt", "held-end-no-ack"} \/ Exit(d) \in SeqApp THEN UNCHANGED <<g2r, r2g>> ELSE SendFrom(Exit(d), <<"eack", d>>)
+    /\ IF Mutant \in {"ack-on-receipt", "held-end-no-ack"} \/ Exit(d) \in QuicApp THEN UNCHANGED <<g2r, r2g>> ELSE SendFrom(Exit(d), <<"eack", d>>)
     /\ CloseAtEnd(d)
     \* onto a conn that acknowledges at once the held end returns here
-    /\ inRcv' = IF Exit(d) \in SeqApp THEN inRcv ELSE [inRcv EXCEPT ![Exit(d)] = FALSE]
+    /\ inRcv' = IF Exit(d) \in QuicApp THEN inRcv ELSE [inRcv EXCEPT ![Exit(d)] = FALSE]
     /\ UNCHANGED <<rcvd, acked, told, syncing, heldEver>>
 
-\* A SeqApp's app reads the end (unless it waits in its CloseWriteSync):
+\* A QuicApp's app reads the end (unless it waits in its CloseWriteSync):
 \* its conn sends the ENDACK, and the exit joint's CloseWriteSync onto it
 \* returns (a held end in a receipt callback returns with it).
 AppRead(d) ==
     /\ st[d] = "passing" /\ ~Blocked(Exit(d))
     /\ st' = [st EXCEPT ![d] = "passed"]
-    /\ early' = (early \/ st[Other(d)] = "sent")
     /\ IF Mutant = "ack-on-receipt" THEN UNCHANGED <<g2r, r2g>> ELSE SendFrom(Exit(d), <<"eack", d>>)
     /\ inRcv' = [inRcv EXCEPT ![Exit(d)] = FALSE]
-    /\ UNCHANGED <<rcvd, acked, told, syncing, heldEver, appClosed, closedEarly>>
+    /\ UNCHANGED <<rcvd, acked, told, syncing, early, heldEver, appClosed, closedEarly>>
 
 \* The entry joint's sync returned: it passes d's ENDACK to its app
 \* (ackEnd), unless its receipt callback still runs a held end.
@@ -218,7 +248,7 @@ JointDone(j) ==
     /\ UNCHANGED <<st, rcvd, acked, told, inRcv, syncing, g2r, r2g, early, heldEver, closedEarly>>
 
 Next ==
-    \/ \E d \in Dirs : AppFin(d) \/ ExitEnd(d) \/ Release(d) \/ AppRead(d) \/ Tell(d)
+    \/ \E d \in Dirs : AppFin(d) \/ HoldFin(d) \/ ExitEnd(d) \/ Release(d) \/ AppRead(d) \/ Tell(d)
     \/ \E j \in Joints : Recv(j) \/ JointDone(j)
 
 \* The joints and the Muxes take their steps; the apps' FINs are theirs.
@@ -229,7 +259,7 @@ Fairness ==
 Spec == Init /\ [][Next]_vars /\ Fairness
 
 TypeOK ==
-    /\ st \in [Dirs -> {"open", "sent", "at", "held", "passing", "passed"}]
+    /\ st \in [Dirs -> {"open", "fheld", "sent", "at", "held", "passing", "passed"}]
     /\ rcvd \in [Dirs -> BOOLEAN] /\ acked \in [Dirs -> BOOLEAN]
     /\ told \in [Dirs -> BOOLEAN] /\ inRcv \in [Joints -> BOOLEAN]
     /\ syncing \in [Joints -> BOOLEAN]
@@ -268,4 +298,6 @@ WitnessCrossing == ~(st["up"] = "sent" /\ st["down"] = "sent")
 WitnessClosed == ~(appClosed["G"] /\ appClosed["R"])
 \* a SeqApp's read waited for its CloseWriteSync (HopHoldSeq.cfg)
 WitnessReadAfterTell == ~(\E d \in Dirs : st[d] = "passed" /\ Exit(d) \in SeqApp /\ told[Other(d)] /\ heldEver)
+\* a ConcApp's app read a held end while its own CloseWriteSync waited (HopHoldConc.cfg)
+WitnessConcRead == ~(\E d \in Dirs : st[d] = "passed" /\ Exit(d) \in ConcApp /\ st[Other(d)] # "open" /\ ~told[Other(d)] /\ heldEver)
 =============================================================================
