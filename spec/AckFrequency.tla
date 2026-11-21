@@ -40,7 +40,7 @@ CONSTANTS
               \* "sender-threshold": the sender keeps packet threshold
               \*   Reorder (upstream's 3 under a deeper reordering).
 
-ASSUME R > 0 /\ T >= 0 /\ MAD > 0 /\ Lossy \subseteq 1..N /\ Imm \subseteq 1..N
+ASSUME R > 0 /\ T >= 0 /\ T < R /\ MAD > 0 /\ Lossy \subseteq 1..N /\ Imm \subseteq 1..N
 
 VARIABLES
     sent,     \* packets sent so far (1..sent)
@@ -93,8 +93,11 @@ Send ==
 Deliverable(p) == \A q \in net : q >= p - Reorder
 
 \* Holes the receiver has not reported R deep yet (draft 6.2 "Unreported
-\* Missing") that are now R below the largest received.
-DeepHoles(r, lu) == {h \in 1..lu : h \notin r /\ lu - h >= R /\ h + R > la}
+\* Missing") that are now R below the largest received. Before its first
+\* ACK the receiver reports none (quic-go: the 1-RTT packet numbers follow
+\* the handshake's in one space, so the numbers below the first 1-RTT
+\* packet look missing); the count bound (T < R) sends that ACK in time.
+DeepHoles(r, lu) == {h \in 1..lu : la > 0 /\ h \notin r /\ lu - h >= R /\ h + R > la}
 
 Receive(p) ==
     /\ p \in net /\ Deliverable(p)

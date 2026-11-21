@@ -69,5 +69,8 @@ func TraceMuteForTest(s *Session) {
 // StreamID is s's QUIC stream id (its datagram tag).
 func StreamID(s *Session) int64 { return int64(s.stream.StreamID()) }
 
+// AckFrequency is the ACK policy n's connections ask their peers for.
+func AckFrequency(n *Node) *quic.AckFrequency { return n.qc.AckFrequency }
+
 // CongestionControl is the congestion controller n's connections use.
 func CongestionControl(n *Node) quic.CongestionControl { return n.qc.CongestionControl }
