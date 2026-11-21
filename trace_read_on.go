@@ -36,6 +36,9 @@ import (
 //	Begin         r, n: len(s.rest)
 //	Refuse        r: a Read once Pump was called (errPumped)
 //	Pump          r: -1, Pump called
+//	PumpRefuse    r: -1, Pump refused (errCopied: a WriteTo runs, or a Pump did)
+//	WRefuse       r: a WriteTo once Pump was called (errPumped)
+//	WEnd          r: WriteTo returned, its claim let go
 //	Pop           r, res (data, timeout, eof), k: slices, n: bytes
 //	Copy          r, n: bytes copied, rel: 1 when s.cur went back to the pool
 //	End           r, res: what Read returned (data, timeout, eof)
@@ -135,16 +138,56 @@ func (s *Session) pumpedRead() (pumped bool) {
 	return pumped
 }
 
-// setPump is Pump's: s.pump set under the queue's lock, so the trace
-// orders it with the Reads that look at it.
-func (s *Session) setPump(p *pump) {
+// setPump is Pump's: the copy claim taken alone, then s.pump set, under
+// the queue's lock, so the trace orders it with the Reads that look at it
+// and the WriteTos that claim.
+func (s *Session) setPump(p *pump) (ok bool) {
+	set := func() {
+		if ok = s.copiers.CompareAndSwap(0, -1); ok {
+			s.pump.Store(p)
+		}
+	}
 	if s.rt.path == "" {
-		s.pump.Store(p)
+		set()
+		return ok
+	}
+	s.q.Locked(func() {
+		set()
+		ev := "Pump"
+		if !ok {
+			ev = "PumpRefuse"
+		}
+		s.readEv(map[string]any{"ev": ev, "r": pumpR})
+	})
+	return ok
+}
+
+// claimWriteTo is WriteTo's share of the copy claim, under rmu: logged
+// with its takeRest (WTake), or WRefuse, under the queue's lock, so the
+// trace orders it with Pump's.
+func (s *Session) claimWriteTo() (ok bool) {
+	if s.rt.path == "" {
+		return s.tryClaimWriteTo()
+	}
+	s.q.Locked(func() {
+		if ok = s.tryClaimWriteTo(); ok {
+			s.traceRead("WTake", true, len(s.rest), false)
+		} else {
+			s.readEv(map[string]any{"ev": "WRefuse", "r": s.traceR(true)})
+		}
+	})
+	return ok
+}
+
+// unclaimCopy is WriteTo's release of the claim (WEnd).
+func (s *Session) unclaimCopy() {
+	if s.rt.path == "" {
+		s.copiers.Add(-1)
 		return
 	}
 	s.q.Locked(func() {
-		s.pump.Store(p)
-		s.readEv(map[string]any{"ev": "Pump", "r": pumpR})
+		s.copiers.Add(-1)
+		s.readEv(map[string]any{"ev": "WEnd", "r": s.traceR(true)})
 	})
 }
 

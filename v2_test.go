@@ -55,7 +55,7 @@ func (o *countObserver) GoAway(Identity)       { o.goaway.Add(1) }
 
 // v2pair binds a dialer and a listener over a TCP loopback connection
 // (Conn writes block on an unbuffered net.Pipe until the peer reads).
-func v2pair(t *testing.T, dialer, listener Config) (*Conn, *Conn) {
+func v2pair(t testing.TB, dialer, listener Config) (*Conn, *Conn) {
 	t.Helper()
 	a, b := tcpPair(t)
 	type res struct {
@@ -189,7 +189,7 @@ func TestIsHello(t *testing.T) {
 
 // v2muxPair returns a dialer's and a listener's Mux, both accepting with
 // accept.
-func v2muxPair(t *testing.T, accept func([]byte, *Session), dialer, listener Config) (*Mux, *Mux) {
+func v2muxPair(t testing.TB, accept func([]byte, *Session), dialer, listener Config) (*Mux, *Mux) {
 	t.Helper()
 	c, s := v2pair(t, dialer, listener)
 	dm, lm := NewMux(c), NewMux(s)

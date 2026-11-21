@@ -656,8 +656,9 @@ func (m *Mux) closeIdle() {
 // os.ErrDeadlineExceeded. Several goroutines may Read at once (as
 // net.Conn): each byte goes to one of them. WriteTo takes the session's
 // bytes for itself; a Read beside it is safe too (each byte to one of
-// them, once), but their bytes interleave. Once peerlink.Join took the
-// session, a Read returns an error and takes nothing.
+// them, once), but their bytes interleave; so are several WriteTos. Once
+// peerlink.Join took the session, a Read or WriteTo returns an error and
+// takes nothing; a peerlink.Join of a session a WriteTo reads ends at once.
 type Session struct {
 	m      *Mux
 	dbg    debugState // linkdebug builds only (debug_on.go); zero size otherwise
@@ -681,6 +682,7 @@ type Session struct {
 	wrote      atomic.Bool             // a byte of this side was sent (emptyEnd)
 	got        atomic.Bool             // a byte of the peer's was received (a hop's Close)
 	finSent    atomic.Bool             // CloseWrite buffered its CLOSE
+	shut       atomic.Bool             // Close ran, set before it ends the ENDACK waits (closeWrite looks after its own)
 	once       sync.Once
 
 	err     atomic.Pointer[error] // why the session was cut; nil: it ends with io.EOF
@@ -701,6 +703,7 @@ type Session struct {
 
 	pump    atomic.Pointer[pump] // set by Pump
 	pumping atomic.Bool          // a pump goroutine runs, or the pump ended
+	copiers atomic.Int32         // WriteTos running, or -1 once Pump took the session (claimCopy)
 
 	// Answers (FeatureChain connections).
 	chain    Chain
@@ -728,6 +731,11 @@ var ErrReset = errors.New("link: session reset by the peer")
 // takes the session's bytes, in order. Unexported: Pump's one caller is
 // peerlink (docs/v1-api-review.md #6).
 var errPumped = errors.New("link: session read by its Pump")
+
+// errCopied is what a Pump's done gets at once when a WriteTo runs on the
+// session, or Pump was called already (the first one runs on): one copy
+// takes a session's bytes (spec/SessionRead.tla PumpRefuse).
+var errCopied = errors.New("link: session read by a WriteTo or Pump")
 
 // ErrConnClosed is what a session reads once its connection closed:
 // the error wraps it and why (ErrDeadPeer, the network's error; the
@@ -872,11 +880,16 @@ func (s *Session) WriteTo(w io.Writer) (int64, error) {
 	if debugOn {
 		defer debugEnter(s, debugRead)()
 	}
+	rest, cur, ok := s.claimCopy()
+	if !ok {
+		return 0, errPumped
+	}
+	defer s.unclaimCopy()
 	if ow, ok := w.(OwnedWriter); ok {
-		return s.writeOwned(ow)
+		return s.writeOwned(ow, rest) // owned by w from here
 	}
 	var total int64
-	if rest, cur := s.takeRest(); len(rest) > 0 {
+	if len(rest) > 0 {
 		n, err := w.Write(rest)
 		total += int64(n)
 		releaseData(cur)
@@ -923,6 +936,36 @@ func (s *Session) takeRest() (rest, cur []byte) {
 	return rest, cur
 }
 
+// claimCopy is WriteTo's start: the session's copy claim, shared by
+// WriteTos, none once Pump took it (setPump), then the unread tail of a
+// Read, as takeRest; unclaimCopy lets the claim go at WriteTo's return. A
+// WriteTo beside Pump, which the docs forbade and nothing stopped, popped
+// the queue beside it: the joined session missed bytes
+// (spec/SessionRead.tla PumpAlone, writeto-beside-pump).
+func (s *Session) claimCopy() (rest, cur []byte, ok bool) {
+	s.rmu.Lock()
+	defer s.rmu.Unlock()
+	if !s.claimWriteTo() {
+		return nil, nil, false
+	}
+	rest, cur = s.rest, s.cur
+	s.rest, s.cur = nil, nil
+	return rest, cur, true
+}
+
+// tryClaimWriteTo takes a WriteTo's share of the copy claim.
+func (s *Session) tryClaimWriteTo() bool {
+	for {
+		n := s.copiers.Load()
+		if n < 0 {
+			return false
+		}
+		if s.copiers.CompareAndSwap(n, n+1) {
+			return true
+		}
+	}
+}
+
 // batchWriter writes batches of received slices in one net.Buffers write
 // each, then releases them (a Writer keeps none of p). Its scratch is
 // reused: net.Buffers.WriteTo moves its receiver to the heap.
@@ -964,11 +1007,15 @@ func (bw *batchWriter) write(w io.Writer, bufs [][]byte) (int64, error) {
 // queued, started as they arrive (the receive loop never waits for it).
 // done gets what WriteTo would return, once, from that goroutine: the
 // session ended, or w failed (the session's further bytes stay unread:
-// close it). startPump takes over the session's reads: a Read after it
-// returns an error (the tail of a Read before it goes to w first); no
-// WriteTo or second startPump after it.
+// close it). startPump takes over the session's reads: a Read or WriteTo
+// after it returns errPumped (the tail of a Read before it goes to w
+// first); one while a WriteTo runs, or a second one, calls done at once
+// with errCopied.
 func (s *Session) startPump(w io.Writer, done func(n int64, err error)) {
-	s.setPump(&pump{w: w, done: done})
+	if !s.setPump(&pump{w: w, done: done}) {
+		go done(0, errCopied)
+		return
+	}
 	s.kick()
 }
 
@@ -1053,9 +1100,8 @@ func writeOwnedOrCopy(w io.Writer, ow OwnedWriter, owned bool, b []byte) error {
 	return err
 }
 
-func (s *Session) writeOwned(w OwnedWriter) (int64, error) {
+func (s *Session) writeOwned(w OwnedWriter, b []byte) (int64, error) {
 	var total int64
-	b, _ := s.takeRest() // owned by w from here
 	for {
 		if len(b) == 0 {
 			var ok bool
@@ -1285,6 +1331,10 @@ func (s *Session) closeWrite(sync bool) (<-chan struct{}, error) {
 			// or failed (a Reset racing this one: its ackDone ran before this
 			// wait existed): no ENDACK comes
 			s.m.ackDone(s.id, s.closedFirst())
+		} else if s.shut.Load() {
+			// a Close racing this one ended the waits before this one existed
+			// (TestCloseWriteSyncRacingCloseReturns: the 30 s idle bound before)
+			s.m.ackDone(s.id, io.ErrClosedPipe)
 		}
 	}
 	var synced <-chan struct{}
@@ -1373,6 +1423,7 @@ func (s *Session) Close() error {
 	}
 	s.autoAccept()
 	s.once.Do(func() {
+		s.shut.Store(true)     // before ackDone: closeWrite's wait, registered after it, ends too
 		if s.peerHalf.Load() { // before the close: the peer reads the ENDACK first
 			s.ackAtClose()
 		}

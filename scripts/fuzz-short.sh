@@ -20,6 +20,7 @@ TARGETS=(
 	". FuzzMuxServeV2"
 	". FuzzParseWindow"
 	". FuzzForward"
+	". FuzzSessionAPI"
 	"peerlink/quiclink FuzzPreamble"
 	"peerlink/quiclink FuzzAnswer"
 	"pathswitch FuzzReadFrame"

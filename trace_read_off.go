@@ -17,5 +17,16 @@ func (*Session) traceDrain()                       {}
 // pumpedRead is Read's look at s.pump, under rmu.
 func (s *Session) pumpedRead() bool { return s.pump.Load() != nil }
 
-// setPump is Pump's.
-func (s *Session) setPump(p *pump) { s.pump.Store(p) }
+// setPump is Pump's: the copy claim taken alone, then s.pump set.
+func (s *Session) setPump(p *pump) bool {
+	if !s.copiers.CompareAndSwap(0, -1) {
+		return false
+	}
+	s.pump.Store(p)
+	return true
+}
+
+// claimWriteTo and unclaimCopy are WriteTo's take and release of the
+// copy claim.
+func (s *Session) claimWriteTo() bool { return s.tryClaimWriteTo() }
+func (s *Session) unclaimCopy()       { s.copiers.Add(-1) }

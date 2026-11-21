@@ -214,3 +214,61 @@ func TestSessionReadAfterPumpRefused(t *testing.T) {
 		t.Fatalf("pumped %q, want %q", s, "cdefgh")
 	}
 }
+
+// A WriteTo once Pump was called returns errPumped and takes nothing; a
+// Pump while a WriteTo runs, or a second Pump, ends at once with
+// errCopied, the session's bytes all the first one's (spec/SessionRead.tla,
+// SessionReadPumpWriteTo.cfg, mutant writeto-beside-pump: the code before
+// let both pop the queue, the joined session missing bytes; lane
+// SESSIONAPI).
+func TestSessionWriteToBesidePumpRefused(t *testing.T) {
+	refused := func(t *testing.T, s *Session) {
+		t.Helper()
+		done := make(chan pumpResult, 1)
+		s.startPump(io.Discard, func(n int64, err error) { done <- pumpResult{n, err} })
+		select {
+		case r := <-done:
+			if r.n != 0 || !errors.Is(r.err, errCopied) {
+				t.Fatalf("Pump beside a copy: done(%d, %v); want (0, errCopied)", r.n, r.err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("Pump beside a copy not refused")
+		}
+	}
+	t.Run("WriteToAfterPump", func(t *testing.T) {
+		s, p := openPair(t, v2cfg, v2cfg)
+		var got lockedBuffer
+		done := make(chan pumpResult, 1)
+		s.startPump(&got, func(n int64, err error) { done <- pumpResult{n, err} })
+		var other lockedBuffer
+		if n, err := s.WriteTo(&other); n != 0 || !errors.Is(err, errPumped) {
+			t.Fatalf("WriteTo after Pump: (%d, %v); want (0, errPumped)", n, err)
+		}
+		refused(t, s) // a second Pump
+		if _, err := p.Write([]byte("abcdef")); err != nil {
+			t.Fatal(err)
+		}
+		_ = p.CloseWrite()
+		if r := <-done; r.err != nil || r.n != 6 {
+			t.Fatalf("done(%d, %v); want (6, nil)", r.n, r.err)
+		}
+	})
+	t.Run("PumpWhileWriteToRuns", func(t *testing.T) {
+		s, p := openPair(t, v2cfg, v2cfg)
+		var got lockedBuffer
+		res := make(chan pumpResult, 1)
+		go func() { n, err := s.WriteTo(&got); res <- pumpResult{n, err} }()
+		if _, err := p.Write([]byte("ab")); err != nil {
+			t.Fatal(err)
+		}
+		waitUntil(t, func() bool { got.mu.Lock(); defer got.mu.Unlock(); return got.b.Len() == 2 })
+		refused(t, s)
+		if _, err := p.Write([]byte("cdef")); err != nil {
+			t.Fatal(err)
+		}
+		_ = p.CloseWrite()
+		if r := <-res; r.err != nil || r.n != 6 {
+			t.Fatalf("WriteTo: (%d, %v); want (6, nil)", r.n, r.err)
+		}
+	})
+}

@@ -22,6 +22,7 @@ name that matches nothing).
 | `FuzzParseLiveness` | `ParseLiveness`, liveness specs |
 | `FuzzPreamble` (quiclink) | a QUIC session stream's header preamble |
 | `FuzzForward` | a `Forward` hop (`FeatureChain`) on arbitrary frames, its Route opening to an echo: no leak of onward sessions |
+| `FuzzSessionAPI` | one session's API from several goroutines at once (Read with its deadline toggled, WriteTo, Write), against the bytes the peer sent and the end it chose: each byte once, in order, all of them, one end (lane SESSIONAPI; 192 k inputs in 90 s on the Mac, clean) |
 | `FuzzAnswer` (quiclink) | an ALPNChain accepter's answer (accept or refusal) |
 | `FuzzReadFrame` (pathswitch) | a direct path's frames (`readFrame`): DATA and token bounds, and what the sender writes reads back the same |
 

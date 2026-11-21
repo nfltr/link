@@ -739,6 +739,45 @@ is, so the trace orders the two claims. Guards:
 `TestSessionWriteToBesidePumpRefused` (red before: the WriteTo took
 bytes, the Pump ran), `TestSessionWriteTosShareTheSession`.
 
+
+## Session API pairs (lane SESSIONAPI, 2026-11-21)
+
+Every public `Session` method that reads, writes or ends, and every pair
+of them that may run at once. Allowed pairs (`Session`'s doc, net.Conn)
+each have a `-race` stress test (`make test-under-load
+PKGS='-run <test> .'`); a forbidden pair is refused by the code, not only
+by the docs. Readers: `Read`, `WriteTo` (and `io.Copy`), `SetReadDeadline`;
+the unexported `Pump` (peerlink's `Join`). Writers: `Write`,
+`SetWriteDeadline`. Ends: `CloseWrite`, `CloseWriteSync`, `Close`,
+`Reset` (and `Abort`/`AbortWith`/`Refuse`, `Reset`'s kind).
+
+| pair | allowed | model | test |
+|---|---|---|---|
+| Read / Read | yes | `SessionRead.cfg` | `TestSessionConcurrentReads`, `TestSessionAPIPairs/read/read`, `FuzzSessionAPI` |
+| Read / WriteTo | yes (bytes interleave) | `SessionReadWriteTo.cfg` | `TestSessionReadBesideWriteTo`, `TestSessionAPIPairs/read/writeto` |
+| WriteTo / WriteTo | yes | `SessionReadWriteTos.cfg` | `TestSessionAPIPairs/writeto/writeto`, `FuzzSessionAPI` |
+| Read / SetReadDeadline | yes | `SessionRead.cfg` | `TestSessionReadDeadlineClearedNeverEOF`, `FuzzSessionAPI` |
+| Read after Pump | refused: `errPumped` | `SessionReadPump.cfg` | `TestSessionReadAfterPumpRefused` |
+| WriteTo after Pump | refused: `errPumped` | `SessionReadPumpWriteTo.cfg` | `TestSessionWriteToBesidePumpRefused` |
+| Pump while a WriteTo runs, second Pump | refused: done(0, `errCopied`) | `SessionReadPumpWriteTo.cfg` | `TestSessionWriteToBesidePumpRefused` |
+| Read, WriteTo / Close, Reset | yes (the read returns) | `Link.tla` | `TestSessionAPIPairs/{read,writeto}/{close,reset}` |
+| Write / Write | yes (chunks interleave) | `CreditWaiters.tla` | `TestConcurrentAcquiresShareAGrant`, `TestSessionAPIPairs/write/write`, `FuzzSessionAPI` |
+| Write / SetWriteDeadline | yes | `SessionWrite.cfg` | `TestSessionWriteWaitingForCreditSeesFirstDeadline` |
+| Write / CloseWrite | yes | `Link.tla` (`CloseWriteMark`, `SendBuffer`) | `TestWriteRacingCloseWriteSendsNothingAfterFIN`, `TestSessionAPIPairs/write/closewrite` |
+| Write / CloseWriteSync, Close, Reset | yes | `Link.tla` | `TestSessionAPIPairs/write/*` |
+| CloseWrite / CloseWrite, Close, Reset | yes | `Link.tla`, `RelayedClose.tla` | `TestSessionAPIPairs/closewrite/*`, `TestEndAckCloseWriteRacingResetEndsTheWait` |
+| CloseWriteSync / Close | yes | none (gap: `RelayedClose.tla` has no local whole Close) | `TestCloseWriteSyncRacingCloseReturns`, `TestSessionAPIPairs/closewritesync/close` |
+| CloseWriteSync / CloseWrite, Reset | yes | `RelayedClose.tla` (`AResetWaiting`) | `TestSessionAPIPairs/closewritesync/closewrite`, `TestEndAckCloseWriteRacingResetEndsTheWait` |
+| Close / Close, Reset; Reset / Reset | yes (`once`) | `Link.tla` | `TestSessionAPIPairs/{close,reset}/*` |
+
+The race `TestSessionAPIPairs` found under `-race`: `CloseWriteSync`
+beside `Close` waited out the ENDACK idle bound (30 s, then
+`ErrEndAckIdle`): `Close` ended the session's ENDACK waits before
+`closeWrite` registered its own. `Close` now sets `shut` before its
+`ackDone`, and `closeWrite` looks at it after `expectAck` (as at a Reset
+racing it, `close-after-reset-waits`): the wait ends with
+`io.ErrClosedPipe`. Code mutant (by hand): without the look the guard
+fails (round 4 of 300 with `-race`, round 58 without).
 ## Session writes (SessionWrite.tla, 2026-11-15, lane P2PLEFT)
 
 `Link.tla` takes a `Write` as one step and `CreditWaiters.tla` the wait
