@@ -201,3 +201,35 @@ func TestEndAckRelayedCloseSequentialApp(t *testing.T) {
 		_ = s.Close()
 	}
 }
+
+// TestCloseUnblocksAWrite: Close ends a Write blocked on the peer's
+// window (net.Conn: "any blocked Read or Write operations will be
+// unblocked"), as nettest's CloseTimeout needs once its echo stopped
+// reading (it hung for its 60 s bound before lane QUICLINKCLOSE: the
+// peer's STOP_SENDING ended the echo, so nothing reopened the window).
+func TestCloseUnblocksAWrite(t *testing.T) {
+	a, _, acc := endAckPair(t, 0, nil, endAckProtos...)
+	s, err := a.Open(context.Background(), "b", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := <-acc
+	defer r.Close()
+	wrote := make(chan error, 1)
+	go func() {
+		_, err := s.Write(make([]byte, 16<<20)) // 16 windows: blocks until r reads
+		wrote <- err
+	}()
+	if _, err := io.ReadFull(r, make([]byte, 1)); err != nil { // the Write is under way
+		t.Fatal(err)
+	}
+	_ = s.Close()
+	select {
+	case err := <-wrote:
+		if !errors.Is(err, net.ErrClosed) {
+			t.Fatalf("Write after Close: %v, want net.ErrClosed", err)
+		}
+	case <-time.After(10 * time.Second): // a bound against the hang only
+		t.Fatal("Close left the Write blocked")
+	}
+}
