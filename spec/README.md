@@ -1442,6 +1442,58 @@ steps the same set.
 | Two QUIC streams are not ordered with each other | RFC 9000 2.2 |
 | A ConnectTCP gRPC stream is one FIFO | gRPC over HTTP/2: one stream's DATA frames in order (RFC 9113 5.1) |
 
+## ACK frequency (AckFrequency.tla, 2026-11-21, lane SPEED-ACK)
+
+A QUIC receiver's ACK policy under the ACK Frequency extension
+(draft-ietf-quic-ack-frequency-14) against the sender's loss detection.
+quiclink's sender (the fork's `ackhandler`, Config `AckFrequency`) sends one
+ACK_FREQUENCY (sequence 0) once the handshake is confirmed: Ack-Eliciting
+Threshold T, Requested Max Ack Delay MAD, Reordering Threshold R; it sets
+its own packet threshold to R (draft section 9). The receiver ACKs after
+more than T ack-eliciting packets, MAD after the oldest one not yet
+acknowledged, at once for IMMEDIATE_ACK, and at once only for a hole R deep
+or a packet R or more below the Largest Acked (draft 6.2). Before this the
+fork's receiver decimated on its own (every 10th packet, min RTT/4) but
+acknowledged at once every packet below the last ACK's largest (Chromium's
+`wasMissing`): on a path that delivers a quarter of its packets 1-9 places
+late that was 0.15-0.36 M ACKs per GiB, a third of both ends' CPU (nfltr
+`docs/decisions/send-cpu-per-gib-2026-11-21.md`).
+
+| Invariant | Meaning | Mutant that breaks it |
+| --- | --- | --- |
+| `AckWithinDelay` | every ack-eliciting packet is acknowledged within MAD of its receipt | `alarm-latest` (the alarm moved to each new packet: upstream's timer outside decimation) |
+| `CountBound` | at most T wait for an ACK | `count-late` |
+| `ImmediateAcked` | a packet with IMMEDIATE_ACK is acknowledged on receipt | `immediate-dropped` |
+| `PromptLoss`, `LossDeclared` | a hole R deep is reported at once and the sender has declared it lost | `no-reorder-ack` |
+| `NoSpuriousLoss` | under reordering below R no delivered packet is declared lost | `sender-threshold` (the sender keeps upstream's 3) |
+| `NoReorderAck` | reordering within R forces no immediate ACK (the saving) | `threshold-ignored` (the fork's `wasMissing` rule) |
+
+Witnesses (each violated): `WitnessTimer`, `WitnessCount`, `WitnessImm`,
+`WitnessReorderReport`, `WitnessLost`, `WitnessLateQuiet`, `WitnessWait`.
+`AckFrequency.cfg` (N 6, T 2, R = S = 3, Reorder 2, MAD 2, packet 2 lossy,
+packet 5 with IMMEDIATE_ACK, 6 ticks): 5341 states, 5 s, every action
+taken (`-coverage 1`).
+
+| Environment assumption | Source |
+| --- | --- |
+| the receiver handles one packet and decides its ACK before the next (quic-go's run loop) | `connection.go` `handlePackets`, `receivedPacketHandler.ReceivedPacket` |
+| an ACK's ranges are what packet-threshold loss detection reads; a late ACK carries a superset | RFC 9002 6.1.1, RFC 9000 13.2.3 |
+| time-threshold loss (9/8 RTT) is not modelled: reordering within R places is far below an RTT at the rates measured | RFC 9002 6.1.2; REORDER's path: 1-9 places |
+| before the frame arrives the receiver is RFC 9000's (T 1, R 1, max_ack_delay): more ACKs, no guarantee above weakened | draft section 4 |
+| the frame is retransmitted when lost (a control frame); a lower sequence number is ignored | draft 4, the fork's `framer` |
+
+Code: the fork (github.com/nfltr/quic-go, branch `nfltr`)
+`internal/ackhandler/received_packet_tracker.go` (the receiver),
+`sent_packet_handler.go` (the packet threshold), `connection.go` (the
+frames, `min_ack_delay`); here `peerlink/quiclink/quiclink.go` (the policy
+quiclink asks for, the refusal of a peer without `min_ack_delay`).
+Conformance: the fork's `TestAckFrequencyPolicyInvariants`
+(`internal/ackhandler`) drives the real tracker through random reorderings
+and losses and checks this spec's invariants on each step. Trace
+recorder: none yet (named follow-up: the fork's
+`internal/ackhandler/trace_on.go`, tag `quicacktrace`, checked by a
+`TraceAckFrequency.tla`).
+
 ## Code map (lane W5-LINK)
 
 The files each model stands for (`scripts/check-spec-drift.sh`: a commit
@@ -1460,6 +1512,7 @@ holds in a `Spec-Reviewed:` trailer).
 | `RelayedClose.tla`, `TraceRelayedClose.tla` | a relayed session's Close, then the program's exit or reset: a FIN then a failure reads io.EOF, the joint passes the tail before the failure | `mux.go`, `join.go`, `endack.go`, `peerlink/chain.go`, `trace_relayed_on.go` |
 | `HopHold.tla`, `TraceHopHold.tla` | two joints on one path (the agent's, the relay's), both ends TCP apps, crossing half closes: the hold ends at the next hop's receipt, the ENDACK at the onward end | `peerlink/chain.go`, `endack.go`, `peerlink/trace_on.go` |
 | `EndAckLeg.tla`, `TraceEndAckLeg.tla` | one leg's end acknowledgement per transport: link, gRPC frames, TCP's kernel ACK, QUIC (reassembly, control stream); the idle bound's progress rule | `endack.go`, `peerlink/quiclink/quiclink.go`, `peerlink/quiclink/endack.go`, `peerlink/quiclink/trace_on.go`, `pathswitch/conn.go` |
+| `AckFrequency.tla` | a QUIC receiver's ACK policy under ACK_FREQUENCY against the sender's loss detection (the fork's `ackhandler`); the policy quiclink asks for | `peerlink/quiclink/quiclink.go` |
 | `CreditWaiters.tla`, `TraceCreditWaiters.tla` | senders waiting in `Credit.Acquire` on one session: the wait and `wakeAll` | `credit.go`, `trace_wait_on.go` |
 | `SessionRead.tla`, `TraceSessionRead.tla` | `Session.Read` from several goroutines (or ones running `WriteTo`, or `Pump` with a `WriteTo` refused), the read deadline set and cleared meanwhile | `mux.go`, `internal/bytequeue/`, `trace_read_on.go` |
 | `SessionWrite.tla`, `TraceSessionWrite.tla` | `Session.Write` waiting for credit while `SetWriteDeadline` and its timer run | `mux.go`, `credit.go`, `trace_write_on.go` |
