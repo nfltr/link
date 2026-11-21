@@ -44,6 +44,7 @@ test-race:
 # (scripts/test-under-load.sh, the same file in link, relay and relay-core):
 # a test that waits a fixed time for what a busy machine does later fails
 # here; wait for the event or state instead, with a bound only against a hang.
+# A nested module's: PKGS='-C peerlink/quiclink .'.
 LOAD_COUNT ?= 5
 .PHONY: test-under-load
 test-under-load:

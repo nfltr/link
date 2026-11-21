@@ -7,7 +7,7 @@
 # here as it does on a loaded Mac or a busy CI runner. The fix is to wait
 # for the event or state, with a bound only against a hang.
 #
-#   scripts/test-under-load.sh <count> <package>...
+#   scripts/test-under-load.sh <count> [-C <module dir>] <package>...
 #
 # The same file in link, relay and relay-core (a generic copy of nfltr's,
 # which also builds nfltr's binaries). The test binaries are built first,
@@ -22,6 +22,12 @@
 set -u
 count=${1:?usage: test-under-load.sh <count> <package>...}
 shift
+# A nested module's packages (`PKGS='-C peerlink/quiclink .'`): go test
+# takes -C only as its first flag, so the script changes there itself.
+if [ "${1:-}" = -C ]; then
+	cd "${2:?test-under-load: -C needs a directory}" || exit
+	shift 2
+fi
 [ $# -gt 0 ] || { echo "test-under-load: no packages" >&2; exit 2; }
 
 work=$(mktemp -d)
