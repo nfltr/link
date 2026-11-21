@@ -146,3 +146,21 @@ func BenchmarkPathswitchMoves(b *testing.B) {
 		})
 	}
 }
+
+// The window's cost: a sender holds W unacknowledged bytes, so its buffer
+// work per acknowledgement must not grow with W. BenchmarkWindow16M is
+// the guard: within 1.5x of BenchmarkWindow1M (the ring in ring.go; the
+// fifo before it slid every kept byte per ACK, 2.7x, lane SPEED-IO).
+func benchWindow(b *testing.B, w int) {
+	_, s, t, _ := linkPair(b)
+	c, sv := Client(linkStream{s}, "relay", Config{Window: w}), Server(linkStream{t}, "relay", Config{Window: w})
+	b.Cleanup(func() { c.Abort(); sv.Abort() })
+	b.SetBytes(benchBytes)
+	b.ResetTimer()
+	for b.Loop() {
+		pump(b, c, sv, benchBytes, nil)
+	}
+}
+
+func BenchmarkWindow1M(b *testing.B)  { benchWindow(b, 1<<20) }
+func BenchmarkWindow16M(b *testing.B) { benchWindow(b, 16<<20) }
