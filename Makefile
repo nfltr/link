@@ -93,8 +93,12 @@ check-govulncheck:
 # The exported API of each module against its latest release (apidiff,
 # pinned in the script): the changes must be the ones api/ lists. A change
 # on purpose: CHANGELOG.md, then UPDATE=1 make check-api.
-.PHONY: check-api
-check-api:
+.PHONY: check-api test-check-api
+# test-check-api: check-api fails, never passes, in a clone without the tags.
+test-check-api:
+	./scripts/check-api_test.sh
+
+check-api: test-check-api
 	./scripts/check-api.sh . '' link
 	./scripts/check-api.sh peerlink/quiclink peerlink/quiclink/ quiclink
 	./scripts/check-api.sh pathswitch pathswitch/ pathswitch
