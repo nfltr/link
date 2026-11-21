@@ -11,6 +11,8 @@ import (
 	"net"
 	"os"
 	"sync"
+
+	"github.com/nfltr/link/internal/linkhook"
 )
 
 // Trace mode (go test -tags linktrace, LINKTRACE_ENDACK=<dir>): both ends
@@ -75,4 +77,13 @@ func port(a net.Addr) int {
 		return u.Port
 	}
 	return 0
+}
+
+// traceHopRead: s read its end and sends the 'E' next; peerlink's
+// two-joint recorder logs it when a test marked s as a joint's far end app
+// (linkhook.TraceHopHold, spec/TraceHopHold.tla AppRead).
+func traceHopRead(s *Session) {
+	if f := linkhook.TraceHopRead; f != nil {
+		f(s)
+	}
 }

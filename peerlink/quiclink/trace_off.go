@@ -8,3 +8,5 @@ package quiclink
 const traceOn = false // trace_on.go: -tags linktrace
 
 func traceEA(*Session, string, ...string) {}
+
+func traceHopRead(*Session) {}

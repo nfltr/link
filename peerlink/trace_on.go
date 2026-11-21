@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/nfltr/link/internal/linkhook"
 )
 
 // Trace mode (go test -tags linktrace, LINKTRACE=<dir>) writes one JSON
@@ -36,8 +38,16 @@ import (
 // Lost, Acked (the CloseWriteSync after CloseWrite returned clean: the
 // far end's ENDACK) and Closed (the joint closed its app conn whole:
 // finish, or the Done branch's close), go to <dir>/hophold-<test>.ndjson as well, with "j"
-// the joint, under the same lock; spec/TraceHopHold.tla checks it.
+// the joint, under the same lock; spec/TraceHopHold.tla checks it. A far
+// end app of R's (traceHopHold's far: a QUIC session whose app reads its
+// end only once its own CloseWriteSync returned, HopHold.tla SeqApp) logs
+// AppRead through linkhook.TraceHopRead, before it sends the ENDACK.
 const traceOn = true
+
+func init() {
+	linkhook.TraceHopHold = traceHopHold
+	linkhook.TraceHopRead = traceHopRead
+}
 
 type traceState = *joinTrace
 
@@ -79,13 +89,14 @@ var (
 	traceFiles = map[string]*os.File{}
 	traceN     atomic.Int64
 	hopRoles   = map[net.Conn]string{} // traceMu
+	hopFar     = map[net.Conn]string{} // traceMu: far end apps, by joint
 	hopPath    string
 )
 
 // traceHopHold marks the joints whose app conn is g (G) and r (R) for
-// test, when LINKTRACE_HOPHOLD names a directory; the func it returns
-// ends it.
-func traceHopHold(test string, g, r net.Conn) func() {
+// test, and far as R's far end apps, when LINKTRACE_HOPHOLD names a
+// directory; the func it returns ends it.
+func traceHopHold(test string, g, r net.Conn, far ...net.Conn) func() {
 	dir := os.Getenv("LINKTRACE_HOPHOLD")
 	if dir == "" {
 		return func() {}
@@ -93,11 +104,25 @@ func traceHopHold(test string, g, r net.Conn) func() {
 	traceMu.Lock()
 	defer traceMu.Unlock()
 	hopRoles = map[net.Conn]string{g: "G", r: "R"}
+	hopFar = map[net.Conn]string{}
+	for _, c := range far {
+		hopFar[c] = "R"
+	}
 	hopPath = filepath.Join(dir, "hophold-"+strings.ReplaceAll(test, "/", "-")+".ndjson")
 	return func() {
 		traceMu.Lock()
-		hopRoles, hopPath = map[net.Conn]string{}, ""
+		hopRoles, hopFar, hopPath = map[net.Conn]string{}, map[net.Conn]string{}, ""
 		traceMu.Unlock()
+	}
+}
+
+// traceHopRead writes AppRead (spec/TraceHopHold.tla) when c is a marked
+// joint's far end app: it read the end and sends the ENDACK next.
+func traceHopRead(c net.Conn) {
+	traceMu.Lock()
+	defer traceMu.Unlock()
+	if j := hopFar[c]; j != "" && hopPath != "" {
+		traceLine(hopPath, map[string]any{"ev": "AppRead", "n": 0, "j": j})
 	}
 }
 

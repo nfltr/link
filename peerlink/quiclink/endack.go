@@ -128,6 +128,9 @@ func (s *Session) readEOF() {
 	s.ends.acked = true
 	if traceOn {
 		traceEA(s, "REnd", "ack", map[bool]string{true: "1", false: "0"}[sent])
+		if sent {
+			traceHopRead(s) // spec/TraceHopHold.tla AppRead: before the 'E'
+		}
 	}
 	if sent {
 		s.c.sendCtl(ctlReceipt, s.stream.StreamID(), ctlEndAck)

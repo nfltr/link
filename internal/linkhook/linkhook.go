@@ -8,7 +8,10 @@
 // *link.Session or *link.Conn as named, and any other type panics.
 package linkhook
 
-import "io"
+import (
+	"io"
+	"net"
+)
 
 var (
 	// Join is link.join(a, b *link.Session): peerlink.Join of two link
@@ -22,4 +25,14 @@ var (
 	GoingAway func(c any) bool
 	// Flush is (*link.Conn).flush.
 	Flush func(c any) error
+
+	// TraceHopHold and TraceHopRead are peerlink's two-joint trace
+	// recorder (spec/TraceHopHold.tla) for the tests of a module that
+	// cannot import peerlink's own (quiclink's): peerlink sets them under
+	// -tags linktrace, nil otherwise. TraceHopHold is peerlink's
+	// traceHopHold (g, r: the marked joints' app conns; far: R's far end
+	// apps); TraceHopRead logs AppRead when c is one of those far ends,
+	// called before c sends the ENDACK of the end it read.
+	TraceHopHold func(test string, g, r net.Conn, far ...net.Conn) func()
+	TraceHopRead func(c net.Conn)
 )

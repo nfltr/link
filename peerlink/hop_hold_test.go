@@ -145,7 +145,8 @@ func wait(t *testing.T, ch chan error, what string) error {
 }
 
 // TestHopHoldTraceEventsMapped: the events the hop recorder writes
-// (trace_on.go's list, each written by a traceJoin call of chain.go) are
+// (trace_on.go's list, each written by a traceJoin call of chain.go, and
+// traceHopRead's AppRead, a far end app's read) are
 // spec/TraceHopHold.tla's steps, and Lost, which is none (nothing fails in
 // HopHold.tla: a trace with it is rejected).
 func TestHopHoldTraceEventsMapped(t *testing.T) {
@@ -161,6 +162,10 @@ func TestHopHoldTraceEventsMapped(t *testing.T) {
 		t.Fatal("trace_on.go: the hop recorder's list of events not found")
 	}
 	var code []string
+	on := read("trace_on.go")
+	for _, m := range regexp.MustCompile(`"ev": "([A-Za-z]+)"`).FindAllStringSubmatch(on, -1) {
+		code = append(code, m[1]) // traceHopRead's
+	}
 	chain := read("chain.go")
 	for _, e := range strings.Split(list[1], ", ") {
 		e = strings.Trim(e, `"`)
