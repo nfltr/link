@@ -480,12 +480,11 @@ or `go build -tags linkdebug`), link reports on stderr:
 Each Read and Write records a stack in this mode: for tests and
 debugging, not production.
 
-We run both on ourselves: relay, nfltr-relay and nfltr have a
+We run both on ourselves: the relay's repositories and nfltr have a
 `make check-linkvet`, a CI step (fails on a finding outside tests that
-their `scripts/linkvet-allow.txt` does not list with a reason, and on a
-stale entry), and nfltr's kind relay soak and single-relay soak
-(`LINKDEBUG=1`) build the relay and its agents with `-tags linkdebug` and
-fail on any report.
+their allow-list does not list with a reason, and on a stale entry), and
+the relay's soaks build the relay and its agents with `-tags linkdebug`
+and fail on any report.
 
 ## Packages
 
@@ -523,10 +522,11 @@ and vets; `make check-linkvet`: linkvet's tests, then its checks over
 link's own packages; `make test-linkdebug` (in `check`): debug mode's
 tests. `make ci` (alias `check-all`) runs every one of them: the steps
 `.github/workflows/check.yml` runs on a push, read from that file
-(`scripts/ci.sh`). CI is `make ci`, not GitHub Actions: `make hooks`
-installs a pre-push hook that runs it on the commit pushed to main or a tag
-(bypass `NFLTR_CI_BYPASS=<reason>`, logged), and a Linux runner on the
-maintainer's machine runs it for each new sha of main and each tag. The
+(`scripts/ci.sh`). CI is `make ci`, not GitHub Actions: a Linux runner on
+the maintainer's machine runs it for each new sha of main and each tag,
+and `make hooks` installs a pre-push hook that checks each pushed commit's
+author and refuses a push to main or a tag whose commit has no green
+result there (bypass `NFLTR_CI_BYPASS=<reason>`, logged). The
 workflow still runs on GitHub as an extra signal, and every fuzz target
 for 5 minutes weekly. `make fuzz-long FUZZTIME=30m`
 is the long fuzz run ([FUZZING.md](FUZZING.md)).
@@ -582,8 +582,8 @@ Evidence that link works, provable from this repository alone:
 | standard library only | `TestModuleBoundary` | met |
 | CI green on every change, with history | GitHub Actions (`check`) | since 2026-10-14 |
 | cumulative soak hours under faults, with leak and integrity checks | SOAK.md (`make soak`), summaries in `soak/results/` | 2.89 h (macOS, Linux CI; chain-3hop since v0.10.0), clean (target: 24 h) |
-| benchmarks published in the repository | `compare/README.md` (link vs yamux), `peerlink/quiclink/README.md` | met |
-| API reviewed for v1.0 | the checklist below; `make check-api` (apidiff against the latest release, in CI); `TestExportedNamesDocumented` | open (v0.9.0: the review against yamux, smux, quic-go and libp2p applied; the peerlink contract changed in v0.9.0) |
+| benchmarks published in the repository | [docs/performance.md](docs/performance.md), `peerlink/quiclink/README.md` | met |
+| API reviewed for v1.0 | the checklist below; `make check-api` (apidiff against the latest release, in CI); `TestExportedNamesDocumented` | open (v0.9.0: the review applied; the peerlink contract changed in v0.9.0) |
 
 v1.0 API checklist: every exported name documented with an example
 where it is not obvious; errors to test with `errors.Is` listed per call;
