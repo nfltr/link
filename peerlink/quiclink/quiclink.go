@@ -101,6 +101,9 @@ const (
 	CodeDrainDeadline quic.ApplicationErrorCode = 1 // a Drain's ctx ended with sessions open
 	CodeUnnamed       quic.ApplicationErrorCode = 2 // ServedPeer refused the connection
 	CodeDeadPeer      quic.ApplicationErrorCode = 3 // nothing arrived for DeadAfter
+	// CodeNoAckFrequency: the peer did not advertise min_ack_delay
+	// (ErrNoAckFrequency).
+	CodeNoAckFrequency quic.ApplicationErrorCode = 4
 )
 
 // maxHeader is the longest session header.
@@ -158,6 +161,9 @@ type Config struct {
 	// connections: a session's SendDatagram and OnDatagram (datagram.go),
 	// where the peer offers them too.
 	Datagrams bool
+	// Acks is the ACK rate this Node asks its peers for (zero:
+	// DefaultAckPolicy).
+	Acks AckPolicy
 }
 
 // Node is a peerlink.Link over QUIC. Sessions are *Session: read and write
@@ -211,6 +217,13 @@ func New(cfg Config) (*Node, error) {
 	if err := (link.Config{Liveness: cfg.Liveness, Window: cfg.Window, MaxSessions: cfg.MaxSessions}).Validate(); err != nil {
 		return nil, fmt.Errorf("quiclink: %w", err)
 	}
+	acks := cfg.Acks
+	if acks == (AckPolicy{}) {
+		acks = DefaultAckPolicy
+	}
+	if err := acks.validate(); err != nil {
+		return nil, err
+	}
 	n := &Node{cfg: cfg, endAckIdle: endAckIdle, dialled: map[string]*peerConns{}, served: map[*conn]bool{}, live: map[*conn]bool{},
 		changed: make(chan struct{}), drained: make(chan struct{})}
 	l := n.liveness()
@@ -235,6 +248,9 @@ func New(cfg Config) (*Node, error) {
 		// Guard: TestNodeUsesBBR; the gain: quic-go's
 		// TestBulkUploadOnReorderingPath (docs/performance.md).
 		CongestionControl: quic.CongestionControlBBR,
+		// #nosec G115 -- validate: non-negative
+		AckFrequency: &quic.AckFrequency{AckElicitingThreshold: uint64(acks.AckElicitingThreshold),
+			ReorderingThreshold: uint64(acks.ReorderingThreshold), MaxAckDelay: acks.MaxAckDelay},
 	}
 	return n, nil
 }
@@ -722,6 +738,9 @@ func withALPN(tc *tls.Config) *tls.Config {
 }
 
 func (n *Node) serveConn(q *quic.Conn) {
+	if refuseWithoutAckFrequency(q) != nil {
+		return
+	}
 	peer, err := n.servedPeer(q)
 	if err != nil {
 		_ = q.CloseWithError(CodeUnnamed, err.Error())

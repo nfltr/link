@@ -556,6 +556,35 @@ alone); `TestConcurrentAcquiresShareAGrant` for the fix.
 - **Don't undo**: no stream `Write` per frame. A new frame kind the writer
   may send at once goes through `frame`, so `more` batches it too.
 
+## quiclink: QUIC ACK frequency (2026-11-21, lane SPEED-ACK, unreleased)
+
+- **Where**: the quic-go fork (`v0.63.1-nfltr.6.0.20261121191332-341157e29140`:
+  `internal/ackhandler/received_packet_tracker.go` `ackPolicy`,
+  `sent_packet_handler.go` `SetPacketThreshold`, `connection.go`
+  `sendAckFrequency`) and `peerlink/quiclink/ackfreq.go` (`AckPolicy`,
+  `DefaultAckPolicy`).
+- **Why it was slow**: the fork's receiver-only decimation (an ACK every
+  10th packet) still acknowledged at once every packet that arrived below
+  its last ACK's largest. On Helsinki -> Singapore (a quarter of the
+  packets 1-9 places late) that was 0.15-0.36 M ACKs per GiB, varying with
+  the hour's reordering, and CPU per GiB followed it (sender 33 us, receiver
+  25 us per ACK: about a third of both ends' CPU; nfltr
+  `docs/decisions/send-cpu-per-gib-2026-11-21.md`).
+- **What it does now**: draft-ietf-quic-ack-frequency-14. Each end asks
+  the other for an ACK after more than 9 packets or a quarter of the min
+  RTT, and an immediate one only for a hole 10 deep; its packet threshold
+  of loss detection is 10 (spec/AckFrequency.tla).
+- **Gain**: the fork's `TestBulkUploadOnReorderingPath` (synctest, 300
+  Mbit/s, 260 ms RTT, 30 % of packets up to 10 places late), ACK packets
+  per data packet, base fork 3516c322 against 341157e2 (one run each):
+  clean 0.099 -> 0.099; reordering 0.387 -> 0.100; reordering and 0.05 %
+  loss 0.393 -> 0.102; rates unchanged (293.2, 293.2; 191.3 -> 189.4
+  Mbit/s, within the loss case's seed-to-seed spread). CPU per GiB through send's `bench/cpu/netem.sh`:
+  owed (lane SPEED-ACK report).
+- **Guard**: `TestBulkUploadOnReorderingPath/bbr/*/ackfreq` (at most 0.12
+  and 0.15 ACK packets per data packet), the fork's
+  `TestAckFrequencyPolicyInvariants`; here `TestNodeAsksForAckFrequency`.
+
 ## quiclink: BBR, and ACK-only packets unpaced (2026-11-21, lane REORDER, unreleased)
 
 - **Where**: `peerlink/quiclink/quiclink.go` (`Node.qc`:

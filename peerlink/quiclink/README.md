@@ -248,9 +248,19 @@ of its own, v0); vectors are owed before quiclink v1.
   peer acknowledged), `A` (never acknowledged: this side failed or closed
   before). A waiting side reads only these, never the stream's
   RESET_STREAM, which may overtake an `E`.
+- ACK frequency (since v0.8.0, a hard cut): both ends advertise QUIC's
+  `min_ack_delay` transport parameter (draft-ietf-quic-ack-frequency-14,
+  1 ms) and, once the handshake is confirmed, send one ACK_FREQUENCY
+  (sequence 0) with `Config.Acks` (`DefaultAckPolicy`: Ack-Eliciting
+  Threshold 9, Reordering Threshold 10, Requested Max Ack Delay a quarter
+  of the min RTT); each end's packet threshold is the Reordering
+  Threshold it sent (spec/AckFrequency.tla). A peer that does not
+  advertise `min_ack_delay` (quiclink before v0.8.0) is refused with
+  close code 4 (`ErrNoAckFrequency`); later tuning changes the frame's
+  values, not the wire.
 - Connection close codes: 0 drained, 1 a Drain's deadline passed with
   sessions open, 2 the peer was not named (`ServedPeer`), 3 dead peer
-  (nothing arrived for `DeadAfter`).
+  (nothing arrived for `DeadAfter`), 4 the peer has no ACK frequency.
 - Datagrams (RFC 9221, both ends offering `max_datagram_frame_size`): a
   frame's payload is the session's QUIC stream id (uvarint), then the
   caller's bytes.

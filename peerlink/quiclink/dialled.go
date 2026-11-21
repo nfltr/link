@@ -108,6 +108,9 @@ func (n *Node) dial(ctx context.Context, peer string, p *peerConns, add bool) (*
 	n.dialling++
 	n.mu.Unlock()
 	q, err := n.cfg.Dial(ctx, peer, n.qc.Clone())
+	if err == nil {
+		err = refuseWithoutAckFrequency(q)
+	}
 	var c *conn
 	if err == nil {
 		c = n.newConn(q, peer)
