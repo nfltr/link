@@ -61,6 +61,23 @@ var testPKI = sync.OnceValue(func() *pki {
 	return p
 })
 
+// TestPKIOutlivesTheTestBinary: testPKI is made once per test binary, so
+// it must stay valid as long as one runs. Valid for an hour, it expired
+// in the 62nd minute of a -count=20 loop under test-under-load (90 m
+// timeout) and every later TLS test failed with "certificate has expired"
+// (lane QUICLINKLOAD).
+func TestPKIOutlivesTheTestBinary(t *testing.T) {
+	for name, c := range testPKI().certs {
+		leaf, err := x509.ParseCertificate(c.Certificate[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if left := time.Until(leaf.NotAfter); left < 24*time.Hour {
+			t.Errorf("%s's certificate expires in %v, want a day or more", name, left.Round(time.Minute))
+		}
+	}
+}
+
 // serverTLS is the listener's TLS as name: peers name themselves by
 // their certificates.
 func serverTLS(name string) *tls.Config {
