@@ -50,8 +50,9 @@ func appendOpen(b []byte, epoch, rcvd uint64, abort bool, token []byte) []byte {
 	return append(b, token...)
 }
 
-func appendData(b, p []byte) []byte {
-	return append(binary.AppendUvarint(append(b, fData), uint64(len(p))), p...)
+// appendData appends a DATA frame's header for n bytes and the first p of them.
+func appendData(b, p []byte, n int) []byte {
+	return append(binary.AppendUvarint(append(b, fData), uint64(n)), p...) // #nosec G115 -- n >= 0
 }
 
 // readFrame reads one frame; a DATA payload goes into *buf.

@@ -88,11 +88,11 @@ type Conn struct {
 	ep   uint64     // the newest epoch
 
 	// send (spec S): buf holds the positions [acked, hi); END is position hi once closed.
-	buf            fifo
+	buf            ring
 	acked, nxt, hi uint64
 	closed, sWait  bool
 	// receive (spec R)
-	rbuf       fifo
+	rbuf       ring
 	rcvd, rAck uint64
 	rEnd       bool
 	rShut      bool   // this end's application closed its reading (CloseRead, Close)
@@ -136,6 +136,8 @@ func start(first Stream, path string, cfg Config, client bool) *Conn {
 	}
 	c := &Conn{cfg: cfg, w: uint64(cfg.Window), client: client, ep: 1, done: make(chan struct{})} // #nosec G115 -- Window > 0 above
 	c.cond = sync.NewCond(&c.mu)
+	c.buf.max = cfg.Window                 // hi - acked <= W
+	c.rbuf.max = cfg.Window + cfg.Window/2 // an ACK goes out while it holds at most W/2
 	ps := &pstream{s: first, r: bufio.NewReaderSize(first, 32<<10), epoch: 1, path: path}
 	c.cur = ps
 	c.run(ps)
@@ -286,7 +288,8 @@ func (c *Conn) Read(p []byte) (int, error) {
 		return 0, net.ErrClosed
 	}
 	if c.rbuf.len() > 0 {
-		n := copy(p, c.rbuf.bytes())
+		a, b := c.rbuf.peek(0, min(len(p), c.rbuf.len()))
+		n := copy(p, a) + copy(p[len(a):], b)
 		c.rbuf.drop(n)
 		c.traceN("Read", c.end(c.client), 0, uint64(n)) // #nosec G115 -- n >= 0
 		c.cond.Broadcast()                              // an ACK may be due
@@ -944,7 +947,8 @@ func (c *Conn) frame(ps *pstream, b []byte) ([]byte, bool) {
 	}
 	k := min(c.hi-c.nxt, maxFrame)
 	off := c.nxt - c.acked
-	b = appendData(b, c.buf.bytes()[off:off+k])
+	p1, p2 := c.buf.peek(int(off), int(k)) // #nosec G115 -- off+k <= hi-acked <= W, an int
+	b = append(appendData(b, p1, len(p1)+len(p2)), p2...)
 	c.nxt += k
 	c.traceN("Send", c.end(c.client), ps.epoch, k)
 	return b, true
@@ -997,30 +1001,5 @@ func (c *Conn) writeLoop(ps *pstream) {
 		if err != nil {
 			c.streamEnded(ps, err)
 		}
-	}
-}
-
-// fifo is a byte queue that reuses its array: a drop moves its head, a
-// push moves what is left to the front before it would grow.
-type fifo struct {
-	b   []byte
-	off int
-}
-
-func (q *fifo) len() int      { return len(q.b) - q.off }
-func (q *fifo) bytes() []byte { return q.b[q.off:] }
-
-func (q *fifo) push(p []byte) {
-	if q.off > 0 && len(q.b)+len(p) > cap(q.b) {
-		q.b = q.b[:copy(q.b, q.b[q.off:])]
-		q.off = 0
-	}
-	q.b = append(q.b, p...)
-}
-
-func (q *fifo) drop(n int) {
-	q.off += n
-	if q.off == len(q.b) {
-		q.b, q.off = q.b[:0], 0
 	}
 }

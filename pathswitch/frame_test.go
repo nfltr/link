@@ -13,7 +13,7 @@ import (
 func encodeFrame(f frame) []byte {
 	switch f.t {
 	case fData:
-		return appendData(nil, f.data)
+		return appendData(nil, f.data, len(f.data))
 	case fOpen:
 		return appendOpen(nil, f.epoch, f.n, f.abort, f.token)
 	case fAbort:
