@@ -97,3 +97,75 @@ func TestRefusesPeerWithoutAckFrequency(t *testing.T) {
 		t.Fatalf("Open toward a peer without min_ack_delay: %v, want ErrNoAckFrequency", err)
 	}
 }
+
+// TestAckFrequencyOnReorderingPath: 4 MiB in order over a 20 ms path whose
+// every 20th datagram is 2 ms late, so ACKs go for the count, the alarm,
+// a deep hole (the sender's skipped packet numbers) and packets late below
+// the last ACK. make spec-traces runs it with -tags quicacktrace: the
+// fork's receivers trace each step, checked by spec/TraceAckFrequency.tla.
+func TestAckFrequencyOnReorderingPath(t *testing.T) {
+	if testing.Short() {
+		t.Skip("moves data for seconds")
+	}
+	pc := listenUDP(t)
+	addr := reorderingPath(t, pc.LocalAddr().String(), 10*time.Millisecond, 20, 2*time.Millisecond, 0)
+	b := mustNew(t, quiclink.Config{PacketConn: pc, TLS: serverTLS("b")})
+	a := mustNew(t, quiclink.Config{Dial: dialer("a", "b", addr), Connect: []string{"b"}})
+	const size = 4 << 20
+	done := make(chan error, 1)
+	go func() {
+		_ = a.Serve(func(_ string, _ []byte, s peerlink.Session) {
+			buf := make([]byte, 64<<10)
+			var n int
+			for {
+				k, err := s.Read(buf)
+				for i := range k {
+					if buf[i] != byte(n+i) {
+						done <- errors.New("a byte out of order")
+						return
+					}
+				}
+				n += k
+				if err != nil {
+					if n != size {
+						err = errors.New("short read")
+					} else {
+						err = nil
+					}
+					done <- err
+					return
+				}
+			}
+		})
+	}()
+	go func() { _ = b.Serve(func(string, []byte, peerlink.Session) {}) }()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	s, err := b.Open(ctx, "a", []byte("acks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, size)
+	for i := range buf {
+		buf[i] = byte(i)
+	}
+	if _, err := s.Write(buf); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	_ = s.Close()
+	dctx, dcancel := context.WithCancel(context.Background())
+	dcancel()
+	_ = a.Drain(dctx)
+	_ = b.Drain(dctx)
+}
