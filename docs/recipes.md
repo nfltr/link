@@ -251,6 +251,11 @@ A dialler's connections to a draining listener get GOAWAY, and its new
 sessions go to its other connections; `link.Pool.Drain` replaces a pool's
 connections make-before-break.
 
+A `Drain` that returns at its context's end leaves one goroutine waiting
+until your code closed (`Close` or `Reset`) every session it still holds,
+cut or not: close them, as `defer s.Close()` does above, and nothing of
+the Link stays behind.
+
 ## Reconnects and backoff
 
 - A Node dials a peer at its first `Open` and keeps a `link.Pool` of

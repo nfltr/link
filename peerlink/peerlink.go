@@ -70,7 +70,9 @@ type Link interface {
 	// their end, then everything is released; at ctx's end the sessions
 	// still open are cut and Drain returns ctx's error. It is the only way
 	// to release a Link (a done ctx closes at once), and the caller
-	// chooses when: until then Serve and Open run as usual.
+	// chooses when: until then Serve and Open run as usual. A Drain that
+	// returned at ctx's end leaves one goroutine of the Link waiting until
+	// the caller closed (Close or Reset) every session it still holds.
 	Drain(ctx context.Context) error
 }
 

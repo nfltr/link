@@ -883,7 +883,9 @@ func (n *Node) keep(peer string) {
 // flight end, on theirs too), and once its sessions on a connection ended
 // sends DONE there; it returns once every
 // connection closed (see the package doc). At ctx's end it closes every
-// connection (code CodeDrainDeadline) and returns ctx's error.
+// connection (code CodeDrainDeadline) and returns ctx's error; one
+// goroutine then waits until the caller closed (Close, Reset or
+// AbortWith) every session it still holds, cut or not.
 func (n *Node) Drain(ctx context.Context) error {
 	n.mu.Lock()
 	first := !n.draining

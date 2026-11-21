@@ -408,7 +408,9 @@ func (n *Node) servedPeer(nc net.Conn, id link.Identity) string {
 // (each closes once its sessions ended), resets the sessions peers open on
 // dialled connections from then on, waits for the sessions on dialled
 // connections to be closed, then closes every pool. At ctx's end it
-// closes everything at once and returns ctx's error.
+// closes everything at once and returns ctx's error; one goroutine then
+// waits until the caller closed (Close or Reset) every session it still
+// holds, cut or not.
 func (n *Node) Drain(ctx context.Context) error {
 	// ctx's end is this Drain's to act on (below); its deadline is each
 	// connection's too, which then aborts the sessions it still carries
