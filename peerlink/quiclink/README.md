@@ -120,7 +120,9 @@ What it costs, and when not to use it:
 
 - Sessions: a stream whose first bytes are the header's length (2 bytes,
   big endian) and the header (up to 65535 bytes). `CloseWrite` sends FIN;
-  `Close` sends FIN and stops reading (the peer's writes fail); `Reset`
+  `Close` sends FIN and stops reading (the peer's writes fail), and a
+  `Write` blocked meanwhile returns `net.ErrClosed` (what it queued is
+  sent); `Reset`
   cancels both directions with code 2, so the peer reads an error, never
   `io.EOF` (on an `ALPNChain` connection a `*link.Abort`, below). Read
   and write deadlines.
