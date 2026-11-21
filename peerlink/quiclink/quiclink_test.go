@@ -17,6 +17,7 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -491,4 +492,73 @@ func TestNodeDropsIdlePeers(t *testing.T) {
 			time.Sleep(10 * time.Millisecond)
 		}
 	})
+}
+
+// Config.Conns: a peer's sessions go on up to Conns connections this Node
+// dials, an idle one first, else a new one while there are fewer, else
+// the least loaded; Conns 0 keeps one connection (every session on it).
+func TestConnsPerPeer(t *testing.T) {
+	for _, tc := range []struct{ conns, opens, want int }{{0, 3, 1}, {3, 3, 3}, {2, 5, 2}} {
+		pc := listenUDP(t)
+		b := mustNew(t, quiclink.Config{PacketConn: pc, TLS: serverTLS("b")})
+		go func() {
+			_ = b.Serve(func(_ string, _ []byte, s peerlink.Session) { _, _ = io.Copy(io.Discard, s); _ = s.Close() })
+		}()
+		a := mustNew(t, quiclink.Config{Dial: dialer("a", "b", pc.LocalAddr().String()), Conns: tc.conns})
+		conns := map[string]int{}
+		var ss []peerlink.Session
+		for range tc.opens {
+			s, err := a.Open(t.Context(), "b", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ss = append(ss, s)
+			conns[s.(*quiclink.Session).LocalAddr().String()]++ // DialAddr: a socket per connection
+		}
+		if len(conns) != tc.want {
+			t.Errorf("Conns %d, %d opens: on %d connections %v, want %d", tc.conns, tc.opens, len(conns), conns, tc.want)
+		}
+		for _, n := range conns {
+			if n > (tc.opens+tc.want-1)/tc.want {
+				t.Errorf("Conns %d: sessions per connection %v, want the least loaded taken", tc.conns, conns)
+			}
+		}
+		for _, s := range ss {
+			_ = s.Close()
+		}
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		_ = a.Drain(ctx)
+		_ = b.Drain(ctx)
+		cancel()
+	}
+	if _, err := quiclink.New(quiclink.Config{Dial: dialer("a", "b", "127.0.0.1:1"), Conns: -1}); err == nil || !strings.Contains(err.Error(), "Conns") {
+		t.Fatalf("Conns -1: %v, want refused naming the field", err)
+	}
+}
+
+// Config.Conns: a further connection that fails to dial leaves the
+// session on the connection there is.
+func TestConnsDialFailureUsesTheConnectionThere(t *testing.T) {
+	pc := listenUDP(t)
+	b := mustNew(t, quiclink.Config{PacketConn: pc, TLS: serverTLS("b")})
+	go func() {
+		_ = b.Serve(func(_ string, _ []byte, s peerlink.Session) { _, _ = io.Copy(io.Discard, s); _ = s.Close() })
+	}()
+	dial, dials := dialer("a", "b", pc.LocalAddr().String()), 0
+	a := mustNew(t, quiclink.Config{Conns: 2, Dial: func(ctx context.Context, p string, qc *quic.Config) (*quic.Conn, error) {
+		if dials++; dials > 1 {
+			return nil, errors.New("no second connection")
+		}
+		return dial(ctx, p, qc)
+	}})
+	for range 2 {
+		s, err := a.Open(t.Context(), "b", nil)
+		if err != nil {
+			t.Fatalf("Open with a failing second dial: %v, want the first connection", err)
+		}
+		defer s.Close()
+	}
+	if dials != 2 {
+		t.Fatalf("%d dials, want 2", dials)
+	}
 }
