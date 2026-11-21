@@ -15,6 +15,7 @@ import (
 
 	"github.com/nfltr/link/peerlink"
 	"github.com/nfltr/link/peerlink/quiclink"
+	"github.com/nfltr/quic-go"
 )
 
 // TestThroughputReorderedPath: a session keeps its throughput on a path
@@ -128,11 +129,27 @@ func rates(warm, d time.Duration, counters ...*atomic.Int64) []float64 {
 }
 
 // TestThroughputAfterBurstTheOtherWay: once b has sent a burst through a
-// bottleneck, a's sessions toward b still get the path's rate. a's RTT
-// samples ride behind b's queue while a sends nothing but ACKs and flow
-// control; quic-go before its fork's fix (HyStart only while the window
-// is in use) took that queue for its own and left slow start at its
-// initial window, then grew one packet per round trip: ~0.4 MB/s here.
+// bottleneck, a's sessions toward b still get the path's rate: the burst
+// leaves a's sender as a fresh connection's, and its window grows from
+// there. a's RTT samples ride behind b's queue while a sends nothing but
+// ACKs and flow control; quic-go before its fork's fix (HyStart only
+// while the window is in use) took that queue for its own and left slow
+// start at its initial window, then grew one packet per round trip:
+// ~0.4 MB/s here. BBR that counted those app-limited samples toward full
+// bandwidth leaves startup at their rate: an 8 KB window, 0.13 MB/s
+// against 19.6 on a fresh path (lane QUICLINKBURST).
+//
+// The test judges a's congestion window after the burst, not a's rate
+// against a fresh path's: on a starved host the rates are the CPU each
+// flow got. Two identical fresh paths at the same time fell below half of
+// each other in 3 of 10 runs under test-under-load on the Mac and 2 of 20
+// on the box, whose loaded rates (0.2-0.9 MB/s) overlap the mutant's
+// (lane QUICLINKBURST; measured one after the other, 4 of 20, lane
+// QUICLINKLOAD). The window is what the burst's acks did, which a stall
+// delays but does not change. The window after sending is logged only:
+// on the loaded box it was 104 KB at 0.3 MB/s, the mutant's 48 KB at
+// 0.2. The HyStart bug left the window as it was; Nodes use BBR
+// (TestNodeUsesBBR), which has no HyStart.
 func TestThroughputAfterBurstTheOtherWay(t *testing.T) {
 	if testing.Short() {
 		t.Skip("moves data for seconds")
@@ -141,8 +158,16 @@ func TestThroughputAfterBurstTheOtherWay(t *testing.T) {
 	const rate = 20e6 // bytes per second each way
 	addr := reorderingPath(t, pc.LocalAddr().String(), 50*time.Millisecond, 0, 0, rate)
 	const window = 16 << 20
+	var qc atomic.Pointer[quic.Conn] // the one connection a dials (Conns 0: one)
+	dial := dialer("a", "b", addr)
 	b := mustNew(t, quiclink.Config{PacketConn: pc, TLS: serverTLS("b"), Window: window})
-	a := mustNew(t, quiclink.Config{Dial: dialer("a", "b", addr), Connect: []string{"b"}, Window: window})
+	a := mustNew(t, quiclink.Config{Dial: func(ctx context.Context, addr string, c *quic.Config) (*quic.Conn, error) {
+		q, err := dial(ctx, addr, c)
+		if err == nil {
+			qc.Store(q)
+		}
+		return q, err
+	}, Connect: []string{"b"}, Window: window})
 	var got atomic.Int64
 	burst := make(chan error, 1)
 	go func() {
@@ -175,6 +200,7 @@ func TestThroughputAfterBurstTheOtherWay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	initial := qc.Load().ConnectionStats().CongestionWindow // a has sent nothing yet
 	const burstBytes = 8 << 20
 	start := time.Now()
 	if _, err := s.Write(make([]byte, burstBytes)); err != nil {
@@ -190,24 +216,14 @@ func TestThroughputAfterBurstTheOtherWay(t *testing.T) {
 		t.Fatal("burst not received")
 	}
 	burstRate := burstBytes / time.Since(start).Seconds() / 1e6
+	after := qc.Load().ConnectionStats().CongestionWindow
 
-	// The floor: a fresh session on an identical path that carried no
-	// burst, moving data in the same window, so a loaded host slows both
-	// alike.
-	gate := make(chan struct{})
-	fresh := startPath(t, gate, 50*time.Millisecond, 0, 0, rate)
 	up, err := a.Open(ctx, "b", []byte("up"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	stop := make(chan struct{})
 	go func() {
-		select {
-		case <-gate:
-		case <-stop:
-			_ = up.Close()
-			return
-		}
 		buf := make([]byte, 32<<10)
 		for {
 			select {
@@ -222,17 +238,11 @@ func TestThroughputAfterBurstTheOtherWay(t *testing.T) {
 		}
 	}()
 	defer close(stop)
-	close(gate)
-	r := rates(time.Second, 3*time.Second, &got, fresh) // slow start: ten round trips
-	t.Logf("%.1f MB/s a to b after b's burst (%.1f MB/s), %.1f MB/s on a fresh path at the same time, 100 ms RTT, bottleneck %.0f MB/s", r[0], burstRate, r[1], rate/1e6)
-	// Idle, a gets about the fresh path's rate. Without the fork's fix a
-	// gets 0.6-0.7 MB/s against an 8 MB/s burst: it grows one packet per
-	// round trip from its initial window, where the fresh session leaves
-	// slow start near the bottleneck. Measured one after the other (half
-	// the burst's rate), a load burst during a's run alone failed 4 of 20
-	// runs under test-under-load (lane QUICLINKLOAD).
-	if want := r[1] / 2; r[0] < want {
-		t.Fatalf("%.2f MB/s, want at least %.2f (half the fresh path's %.2f)", r[0], want, r[1])
+	r := rates(time.Second, 3*time.Second, &got) // slow start: ten round trips
+	grown := qc.Load().ConnectionStats().CongestionWindow
+	t.Logf("a's window %d B fresh, %d after b's burst (%.1f MB/s), %d after sending %.1f MB/s a to b; 100 ms RTT, bottleneck %.0f MB/s", initial, after, burstRate, grown, r[0], rate/1e6)
+	if after < initial {
+		t.Fatalf("a's window %d B after b's burst, want at least a fresh connection's %d", after, initial)
 	}
 }
 
