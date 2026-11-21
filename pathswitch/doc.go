@@ -3,9 +3,8 @@
 
 // Package pathswitch moves a session's byte stream between paths, a
 // relayed one and a direct one (and back), with no byte lost, duplicated
-// or reordered: the path layer of nfltr's direct paths
-// (docs/decisions/direct-paths-2026-11-11.md in github.com/nfltr/nfltr),
-// checked as spec/DirectPath.tla (spec/README.md "Direct paths"). It sits
+// or reordered: the path layer of nfltr's direct paths, checked as
+// spec/DirectPath.tla (spec/README.md "Direct paths"). It sits
 // under the session's end-to-end TLS: the bytes it moves are TLS records,
 // so a byte the relay rewrites on the relayed path is a TLS error above
 // it (a reset), never a silent change. Standard library only; it runs

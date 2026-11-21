@@ -97,6 +97,7 @@ check-govulncheck:
 check-api:
 	./scripts/check-api.sh . '' link
 	./scripts/check-api.sh peerlink/quiclink peerlink/quiclink/ quiclink
+	./scripts/check-api.sh pathswitch pathswitch/ pathswitch
 
 # pathswitch (a module of its own, v0 until its wire is: pathswitch/WIRE.md):
 # build, vet, the suite with -race. Its check-api starts with its first tag.

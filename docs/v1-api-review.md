@@ -109,6 +109,32 @@ v1.0.0 tag. relay main's `browser/e2e/harness` module does not build
 (it pins relay-core v0.14.7 with `dataplane.Conn` and an agent
 `Config.APIKeyFile` that are gone), independent of link.
 
+## Round 3 (lane LINKGATE, 2026-11-21, link main `b23033a` = v0.13.2)
+
+`make check-api` on main: green (link: no change since v0.13.1;
+quiclink: as `api/` lists since v0.7.0). Every item of this document
+walked against main:
+
+| item | status at `b23033a` |
+|---|---|
+| ranked 1-15 | done in v0.13.0 as proposed (CHANGELOG "v0.13.0"), item 6's `CloseWriteSync` kept (above); 5: pathswitch is its own module (v0); 12: `HandshakeError` deleted; 13: grpclink deleted |
+| WIRE.md: negotiation above 2, `ErrV1` label, limits, auth_method 2, doc.go's wire section, type 1 | done: section 3 (a version above 2 is a new hello on a new connection, never an upgrade in the reply), section 10's limits table with constants, auth_method 2 `MethodName`, doc.go points to WIRE.md, type 1 reserved |
+| round 2's private paths in doc comments | done here: `pathswitch/doc.go`, `pathswitch/conn.go` (`Current`), quiclink `datagram.go`, `direct.go` cited nfltr `docs/decisions/...`; now name the public spec instead |
+| `make check-api` did not cover pathswitch (its own module since v0.13.0) | done here: a third line, `pathswitch` against `pathswitch/v*` |
+
+Left, with a recommendation (none blocks link v1.0.0: all are outside
+the root module's promise or comments):
+
+- Lane names in 12 code comments (`lane LINKWAKE`, ...): history a
+  public reader cannot follow, harmless. Leave; new comments cite the
+  spec and the test instead.
+- quiclink (outside v1, its own module): its wire (ALPNs, stream header,
+  chain preamble, datagrams, control stream 'E' 'A' 'C') is in its README
+  only; a WIRE section with vectors before quiclink v1, and the unused
+  exports of item 14 decided then.
+- pathswitch (outside v1, own module v0): no version byte in OPEN and no
+  vectors; owed before its own v1, not link's.
+
 ## What "v1 compatible" means for link
 
 | surface | v1 promise | guard |

@@ -203,8 +203,8 @@ func (c *Conn) Path() string {
 
 // Current returns the session's current stream while the session runs;
 // nil once it was reset (either end), detached or ended. A caller carrying
-// something beside the stream on its path (a direct path's datagrams:
-// nfltr docs/decisions/nf1-udp-2026-11-14.md) checks it per item, so that
+// something beside the stream on its path (a direct path's datagrams,
+// quiclink's) checks it per item, so that
 // nothing of the session is taken after a reset however late the streams'
 // cleanup comes, nor on a stream the session left.
 func (c *Conn) Current() Stream {

@@ -14,8 +14,7 @@ import (
 	"github.com/nfltr/quic-go"
 )
 
-// Direct paths (nfltr docs/decisions/direct-paths-2026-11-11.md, link
-// spec/DirectPath.tla): a session moves from the relayed path to a QUIC
+// Direct paths (link spec/DirectPath.tla, pathswitch): a session moves from the relayed path to a QUIC
 // connection straight between its two machines, hole punched through
 // their NATs. Both ends use the one quic.Transport (one UDP socket) their
 // agent link to the relay runs on, so the NAT mapping the relay saw (QAD)

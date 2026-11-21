@@ -12,9 +12,8 @@ import (
 	"github.com/nfltr/quic-go"
 )
 
-// Datagrams of a session (nfltr docs/decisions/nf1-udp-2026-11-14.md "The
-// direct path"): with Config.Datagrams at both ends a session carries QUIC
-// DATAGRAM frames (RFC 9221) beside its stream, lossy and unordered. A
+// Datagrams of a session: with Config.Datagrams at both ends a session
+// carries QUIC DATAGRAM frames (RFC 9221) beside its stream, lossy and unordered. A
 // frame's payload is the session's tag, its QUIC stream id (a uvarint:
 // unique on the connection, never reused by QUIC, known to both ends),
 // then the caller's bytes. A frame is handed only to the session of its
