@@ -137,8 +137,8 @@ BENCH_OUT ?= $(or $(TMPDIR:%/=%),/tmp)/link-bench.txt
 BENCH_SET := '^BenchmarkThroughput$$/^tr=(tcp|tls)$$/^size=(64|65536)$$/^sessions=8$$/^dir=oneway$$' '^BenchmarkLatency$$/^tr=tcp$$/^held$$'
 .PHONY: bench
 bench:
-	@: >"$(BENCH_OUT)"; for p in $(BENCH_SET); do \
-		GOWORK=off go test -run '^$$' -bench "$$p" -benchmem -count $(BENCH_COUNT) -timeout 30m . >>"$(BENCH_OUT)" || { cat "$(BENCH_OUT)"; exit 1; }; \
+	@: >"$(BENCH_OUT)"; for r in 1 2 3 4 5 6; do \
+		(cd peerlink/quiclink && GOWORK=off go test -run '^$$' -bench 'BenchmarkConnsCPU' -benchtime 5s -benchmem -count 1 -timeout 30m .) >>"$(BENCH_OUT)" || { cat "$(BENCH_OUT)"; exit 1; }; \
 	done; cat "$(BENCH_OUT)"; echo "bench: $(BENCH_OUT)"
 
 # profile-baseline: the profile baseline of this commit (scripts/perf.sh
