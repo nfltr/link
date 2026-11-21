@@ -1,7 +1,7 @@
 github.com/nfltr/link/pathswitch v0.1.3 h1:1cHI1aH3UJ3K9kg831dEHDOBpSBHEy+inji3pgI/UKc=
 github.com/nfltr/link/pathswitch v0.1.3/go.mod h1:9DrWK+oDjMYa6U46Z4x56DdSCfpLkOqhYmn8R3qR/qI=
-github.com/nfltr/quic-go v0.63.1-nfltr.4 h1:dJ7/8+khLJUs604pWox6jbWxaGa3Np2j8sj4sU7stas=
-github.com/nfltr/quic-go v0.63.1-nfltr.4/go.mod h1:aCcZDnvYqlhb79qzzyvg5+pkAVu3JCsGDEKOoYKqnTk=
+github.com/nfltr/quic-go v0.63.1-nfltr.5 h1:8mKFyNGC+zzjWb6b3vjphOfhVEADXGOK8Zk8Lpw4wcU=
+github.com/nfltr/quic-go v0.63.1-nfltr.5/go.mod h1:aCcZDnvYqlhb79qzzyvg5+pkAVu3JCsGDEKOoYKqnTk=
 github.com/quic-go/go-ossfuzz-seeds v0.1.0 h1:APacT+iIaNF6fd8AGEiN3bT/Jtkd2jz4v4TzM7MFjy0=
 github.com/quic-go/go-ossfuzz-seeds v0.1.0/go.mod h1:3IOHRbJIc+L6YKMwfDtJAM9Vj9k0YY4muhuyUYk5tbk=
 github.com/stretchr/testify v1.12.1 h1:EuwCh5fleGS7H32xRwO3wRGT7DxrDhLAT6FF8MpWDWE=
