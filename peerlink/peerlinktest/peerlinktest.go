@@ -826,33 +826,45 @@ func testDrainDeadline(t *testing.T, newPair func(*testing.T) Pair) {
 
 // Reconnect: after a cut, opens work again within the dead-peer bound
 // (the opener retrying the ones that fail; in a Reverse Pair once B dialled
-// again).
+// again), counting only the time this process ran on time (recvWithin): a
+// starved process judges a peer dead that much later (link's
+// spec/README.md "Starvation").
 func testReconnect(t *testing.T, newPair func(*testing.T) Pair) {
 	p := pair(t, newPair, echo)
 	if err := exchange(open(t, p, "echo"), 1); err != nil {
 		t.Fatal(err)
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	var last atomic.Pointer[error]
+	t.Cleanup(func() {
+		cancel()
+		if e := last.Load(); t.Failed() && e != nil {
+			t.Logf("the last open's error: %v", *e)
+		}
+	})
 	start := time.Now()
 	p.Cut()
-	var last error
-	for time.Since(start) < deadBound(p) {
-		last = func() error {
-			ctx, cancel := context.WithDeadline(context.Background(), start.Add(deadBound(p)))
-			defer cancel()
-			s, err := p.A.Open(ctx, p.BName, []byte("echo"))
-			if err != nil {
-				return err
+	worked := make(chan time.Duration, 1)
+	go func() {
+		for ctx.Err() == nil {
+			err := func() error {
+				s, err := p.A.Open(ctx, p.BName, []byte("echo"))
+				if err != nil {
+					return err
+				}
+				defer s.Close()
+				return exchange(s, 1<<10)
+			}()
+			if err == nil {
+				worked <- time.Since(start)
+				return
 			}
-			defer s.Close()
-			return exchange(s, 1<<10)
-		}()
-		if last == nil {
-			t.Logf("opens worked again %v after the cut", time.Since(start).Round(time.Millisecond))
-			return
+			last.Store(&err)
+			time.Sleep(20 * time.Millisecond)
 		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("no open worked within %v of the cut: %v", deadBound(p), last)
+	}()
+	d := recvWithin(t, worked, 1, start, deadBound(p), "an open after the cut")[0]
+	t.Logf("opens worked again %v after the cut", d.Round(time.Millisecond))
 }
 
 // Unreachable (Reverse Pairs): Open toward a peer with no connection up
