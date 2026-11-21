@@ -82,7 +82,7 @@ series() {
 # cpuname: the machine's CPU model.
 cpuname() {
 	sysctl -n machdep.cpu.brand_string 2>/dev/null && return
-	sed -n 's/^model name[[:space:]]*: //p' /proc/cpuinfo 2>/dev/null | head -1 | grep . || uname -r
+	sed -n 's/^model name[[:space:]]*: //p' /proc/cpuinfo 2>/dev/null | sed -n 1p | grep . || uname -r
 }
 
 # manifest OUT CMD BENCH SHAS...: OUT/manifest.json; the series is the last

@@ -62,6 +62,7 @@ jobs:
         with:
           go-version-file: go.mod
       - run: make check-spec-drift
+      - run: make check-grepq
       - run: make check-api
       - run: make check-soak
       - run: make check-static
