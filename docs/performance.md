@@ -579,8 +579,15 @@ alone); `TestConcurrentAcquiresShareAGrant` for the fix.
   per data packet, base fork 3516c322 against 341157e2 (one run each):
   clean 0.099 -> 0.099; reordering 0.387 -> 0.100; reordering and 0.05 %
   loss 0.393 -> 0.102; rates unchanged (293.2, 293.2; 191.3 -> 189.4
-  Mbit/s, within the loss case's seed-to-seed spread). CPU per GiB through send's `bench/cpu/netem.sh`:
-  owed (lane SPEED-ACK report).
+  Mbit/s, within the loss case's seed-to-seed spread). send's `bench/cpu/netem.sh` (130 ms each way,
+  300 us jitter, 0.025 % loss; Mac docker VM under load 50-64, old and new
+  interleaved, n=3-4; evidence `~/nfltr-evidence/profiles/2026-11-21-SPEED-ACK/`):
+  no change, UDP datagrams per GiB (both ends) 48.1 k -> 47.9 k with GSO,
+  793 k -> 793 k without, 805 k -> 804 k paced at 150 Mbit/s; CPU s/GiB
+  12.6 -> 13.7, 15.2 -> 14.0, 17.1 -> 17.1 (all p > 0.4). On loopback
+  netem a receiver reads its packets in batches and acknowledges once per
+  batch, so both builds send about 10 k ACKs per GiB: the WAN's 0.15-0.36 M
+  is not reproduced there, and the simulated path above is the evidence.
 - **Guard**: `TestBulkUploadOnReorderingPath/bbr/*/ackfreq` (at most 0.12
   and 0.15 ACK packets per data packet), the fork's
   `TestAckFrequencyPolicyInvariants`; here `TestNodeAsksForAckFrequency`.
