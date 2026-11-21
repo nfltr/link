@@ -1,7 +1,7 @@
 --------------------------- MODULE TraceSessionRead ---------------------------
 (* Trace validation of Session.Read, WriteTo and Pump (spec/README.md     *)
 (* "Session reads"; Pump's drain, a Read refused after it: lane           *)
-(* LINKTRACE2).                                                           *)
+(* LINKTRACE2; a WriteTo beside it, two WriteTos: lane SESSIONAPI).       *)
 (* Lane LINKTRACE: the steps one session's readers recorded              *)
 (* (-tags linktrace, LINKTRACE_READ; trace_read_on.go) must be steps of     *)
 (* SessionRead.tla, in order, with the trace's sizes: its slices          *)
@@ -15,10 +15,14 @@ EXTENDS TraceLog, SessionRead, TLC, FiniteSets
 Lines(evs) == {i \in DOMAIN Log : Log[i].ev \in evs}
 Grows == SelectSeq(Log, LAMBDA e : e.ev \in {"Push", "Append"})
 \* The trace's constants: its readers (WriteTo's are negative, Pump's -1),
-\* its slices, whether its copier is a Pump.
-TraceReaders == {Log[i].r : i \in Lines({"Begin", "Refuse", "WTake", "Pump"})}
-TraceCopier == IF Lines({"WTake", "Pump"}) = {} THEN 0 ELSE Log[CHOOSE i \in Lines({"WTake", "Pump"}) : TRUE].r
-TracePumps == Lines({"Pump"}) # {}
+\* its slices, whether its copier is a Pump; with a Pump, WCopier is the
+\* WriteTo beside it, without, the second of two WriteTos.
+TraceReaders == {Log[i].r : i \in Lines({"Begin", "Refuse", "WTake", "WRefuse", "WEnd", "Pump", "PumpRefuse"})}
+TracePumps == Lines({"Pump", "PumpRefuse"}) # {}
+WRs == {Log[i].r : i \in Lines({"WTake", "WRefuse"})} \ {-1}
+Largest(S) == CHOOSE r \in S : \A o \in S : r >= o
+TraceCopier == IF TracePumps THEN -1 ELSE IF WRs = {} THEN 0 ELSE Largest(WRs)
+TraceWCopier == IF WRs \ {TraceCopier} = {} THEN 0 ELSE Largest(WRs \ {TraceCopier})
 TraceSlices == Cardinality(Lines({"Push"}))
 \* byte b's slice: a Push or Append line carries the slices (s) and bytes
 \* (b) pushed so far, so no recursion over the trace (TLC's stack)
@@ -42,9 +46,12 @@ Step ==
       [] E.ev = "Begin" -> Begin(E.r) /\ Len(rest) = E.n
       [] E.ev = "Refuse" -> Refuse(E.r)
       [] E.ev = "Pump" -> PumpOn(E.r)
+      [] E.ev = "PumpRefuse" -> PumpRefuse(E.r)
+      [] E.ev = "WRefuse" -> WRefuse(E.r)
+      [] E.ev = "WEnd" -> WEnd(E.r)
       \* WriteTo's pops: PopBatch, or writeOwned's Pop (one slice); Pump's
       \* TryPopBatch
-      [] E.ev = "Pop" /\ E.r = Copier -> WPopOf(E.r, E.k) /\ Len(tail'[E.r]) = E.n /\ (E.res = "eof") = (E.k = 0)
+      [] E.ev = "Pop" /\ E.r \in Copiers -> WPopOf(E.r, E.k) /\ Len(tail'[E.r]) = E.n /\ (E.res = "eof") = (E.k = 0)
       [] E.ev = "Pop" -> Pop(E.r) /\ CASE E.res = "data" -> pc'[E.r] = "copy" /\ Len(rest') = E.n
                                        [] OTHER -> res'[E.r] = E.res
       [] E.ev = "Copy" -> CopyOf(E.r, E.n) /\ (E.rel = 1) = (rel' # rel)

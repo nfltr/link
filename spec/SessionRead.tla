@@ -31,6 +31,10 @@
      next run took that older tail and wrote it after them: Pump's writer
      got its bytes out of order (LINKTRACE's trace review;
      "read-beside-pump").
+   - WriteTo beside Pump (or a second Pump) was misuse by Pump's doc only:
+     both popped the queue, so the bytes went to two writers, the joined
+     session missing some (lane SESSIONAPI, 2026-11-21; WCopier,
+     "writeto-beside-pump").
 
    The design: Read holds the session's read lock (rmu) from its look at
    s.rest to the end of its copy; PopUnless tells why it gave up (the
@@ -40,7 +44,10 @@
    Pump was called returns errPumped (it looks under rmu, so a Read that
    began first ends before the drain's takeRest takes its tail): only
    Reads before Pump leave a tail, and the drain's first takeRest takes
-   it before its first pop.
+   it before its first pop. WriteTo and Pump claim the session's copy
+   (Session.copiers): WriteTos share it, a Pump takes it alone, so a
+   WriteTo once Pump was called returns errPumped (WRefuse) and a Pump
+   while a WriteTo runs, or a second Pump, ends at once (PumpRefuse).
 
    One session; the peer pushes Slices slices of two bytes each (slice k
    is bytes 2k-1 and 2k), then may end; each Read takes one byte. *)
@@ -50,15 +57,17 @@ CONSTANTS
     Readers, \* goroutines reading the session
     Slices,  \* slices the peer pushes, two bytes each
     Copier,  \* the reader that runs WriteTo instead of Read, or None (0)
+    WCopier, \* a second reader that runs WriteTo (beside Copier's), or None
     Pumps,   \* TRUE: Copier runs Pump instead of WriteTo
     Mutant   \* "none", "no-read-lock", "flag-outside-lock", "writeto-no-lock",
-             \* "read-beside-pump"
+             \* "read-beside-pump", "writeto-beside-pump"
 
 None == 0
 Bytes == 1..(2 * Slices)
 SliceOf(b) == (b + 1) \div 2
 Range(s) == {s[i] : i \in DOMAIN s}
 ASSUME Copier \in Readers \cup {None} /\ Pumps \in BOOLEAN /\ (Pumps => Copier # None)
+ASSUME WCopier \in Readers \cup {None} /\ (WCopier # None => WCopier # Copier /\ Copier # None)
 
 VARIABLES
     q,      \* the session's queue: slices (sequences of byte ids)
@@ -92,7 +101,13 @@ Init ==
     /\ pumped = FALSE
 
 Locked == Mutant # "no-read-lock"
-Plain == Readers \ {Copier}
+Copiers == {Copier, WCopier} \ {None}
+Plain == Readers \ Copiers
+\* The readers running WriteTo; one runs (holds the copy claim) from its
+\* takeRest to its return (WEnd).
+WriteTos == IF Pumps THEN Copiers \ {Copier} ELSE Copiers
+Claimed == \E c \in WriteTos : pc[c] \notin {"idle", "done"}
+Beside == Mutant = "writeto-beside-pump"
 
 \* r is handed the bytes of s.
 Hand(r, s) ==
@@ -202,9 +217,31 @@ End(r) ==
     /\ UNCHANGED <<q, closed, dl, next, rest, cur, res, cnt, got, ref, tail, rel, pumped>>
 
 \* Pump(w, done): s.pump set; its drain runs from here.
+\* It takes the copy claim: none while a WriteTo holds it.
 PumpOn(c) ==
-    /\ c = Copier /\ Pumps /\ ~pumped /\ pumped' = TRUE
+    /\ c = Copier /\ Pumps /\ ~pumped /\ pc[c] = "idle" /\ (~Claimed \/ Beside) /\ pumped' = TRUE
     /\ UNCHANGED <<q, closed, dl, next, rest, cur, lock, pc, res, cnt, got, ref, tail, rel>>
+
+\* Pump refused (its done called at once): a WriteTo holds the claim, or a
+\* Pump took it (a second Pump: the first runs on).
+PumpRefuse(c) ==
+    /\ c = Copier /\ Pumps /\ ~Beside /\ (Claimed \/ pumped)
+    /\ IF pumped THEN UNCHANGED <<pc, res>>
+       ELSE /\ pc[c] = "idle" /\ pc' = [pc EXCEPT ![c] = "done"] /\ res' = [res EXCEPT ![c] = "refused"]
+    /\ UNCHANGED <<q, closed, dl, next, rest, cur, lock, cnt, got, ref, tail, rel, pumped>>
+
+\* WriteTo once Pump was called: errPumped, nothing taken.
+WRefuse(c) ==
+    /\ c \in WriteTos /\ pc[c] = "idle" /\ pumped /\ ~Beside
+    /\ pc' = [pc EXCEPT ![c] = "done"] /\ res' = [res EXCEPT ![c] = "refused"]
+    /\ UNCHANGED <<q, closed, dl, next, rest, cur, lock, cnt, got, ref, tail, rel, pumped>>
+
+\* WriteTo returns (the end read, or between batches: its writer failed),
+\* the claim let go.
+WEnd(c) ==
+    /\ c \in WriteTos /\ pc[c] \in {"wend", "batch"}
+    /\ pc' = [pc EXCEPT ![c] = "done"]
+    /\ UNCHANGED <<q, closed, dl, next, rest, cur, lock, res, cnt, got, ref, tail, rel, pumped>>
 
 \* WriteTo's start, takeRest: under rmu (free: a Read holding it returns
 \* first), s.rest and s.cur become WriteTo's, both nil on the session.
@@ -212,10 +249,11 @@ PumpOn(c) ==
 \* it wrote it (WRel cut it after). Pump's drain takes it at the start of
 \* each run: after Pump, then at any batch (a run ends when nothing is
 \* queued, and the next starts here as bytes arrive; TLC takes it between
-\* any two batches, more often than the code).
+\* any two batches, more often than the code). WriteTo's takes the copy
+\* claim with it: none once Pump was called (WRefuse).
 WTake(c) ==
-    /\ c = Copier
-    /\ IF Pumps THEN pumped /\ pc[c] \in {"idle", "batch"} ELSE pc[c] = "idle"
+    /\ c \in Copiers
+    /\ IF c \notin WriteTos THEN pumped /\ pc[c] \in {"idle", "batch"} ELSE pc[c] = "idle" /\ (~pumped \/ Beside)
     /\ IF Mutant = "writeto-no-lock"
        THEN /\ UNCHANGED <<rest, cur>>
        ELSE /\ lock = None /\ rest' = <<>> /\ cur' = None
@@ -248,12 +286,12 @@ WRel(c) ==
 \* one; a trace's: its own). Pump's TryPopBatch: the same, its drain run
 \* ending (not a step) while nothing is queued.
 WPopOf(c, k) ==
-    /\ pc[c] = "batch" /\ (q # <<>> \/ closed) /\ k <= Len(q)
+    /\ c \in Copiers /\ pc[c] = "batch" /\ (q # <<>> \/ closed) /\ k <= Len(q)
     /\ IF q # <<>>
        THEN /\ tail' = [tail EXCEPT ![c] = Flat(SubSeq(q, 1, k))] /\ q' = SubSeq(q, k + 1, Len(q))
             /\ ref' = [ref EXCEPT ![c] = {SliceOf(Head(q[i])) : i \in 1..k}]
             /\ pc' = [pc EXCEPT ![c] = "write"] /\ UNCHANGED res
-       ELSE /\ res' = [res EXCEPT ![c] = "eof"] /\ pc' = [pc EXCEPT ![c] = "done"]
+       ELSE /\ res' = [res EXCEPT ![c] = "eof"] /\ pc' = [pc EXCEPT ![c] = IF c \in WriteTos THEN "wend" ELSE "done"]
             /\ UNCHANGED <<q, tail, ref>>
     /\ UNCHANGED <<closed, dl, next, rest, cur, lock, cnt, got, rel, pumped>>
 WPop(c) == WPopOf(c, IF q = <<>> THEN 0 ELSE 1)
@@ -261,7 +299,7 @@ WPop(c) == WPopOf(c, IF q = <<>> THEN 0 ELSE 1)
 Next ==
     \/ Push \/ Close \/ Fire \/ Clear
     \/ \E r \in Readers : Begin(r) \/ Refuse(r) \/ Pop(r) \/ Decide(r) \/ Copy(r) \/ Cut(r) \/ End(r)
-    \/ \E c \in Readers : PumpOn(c) \/ WTake(c) \/ WWrite(c) \/ WRel(c) \/ WPop(c)
+    \/ \E c \in Readers : PumpOn(c) \/ PumpRefuse(c) \/ WRefuse(c) \/ WTake(c) \/ WWrite(c) \/ WRel(c) \/ WPop(c) \/ WEnd(c)
 
 Spec == Init /\ [][Next]_vars
 
@@ -269,7 +307,7 @@ TypeOK ==
     /\ closed \in BOOLEAN /\ dl \in BOOLEAN /\ next \in 1..(2 * Slices + 1)
     /\ cur \in 0..Slices /\ lock \in Readers \cup {None}
     /\ pc \in [Readers -> {"idle", "pop", "decide", "copy", "cut", "end", "done",
-                           "write", "write-rest", "rel", "rel-rest", "batch"}]
+                           "write", "write-rest", "rel", "rel-rest", "batch", "wend"}]
     /\ res \in [Readers -> {"", "data", "timeout", "eof", "refused"}]
     /\ pumped \in BOOLEAN
     /\ cnt \in [Bytes -> Nat]
@@ -303,6 +341,10 @@ NoForgedEOF ==
         /\ closed
         /\ LET h == InHands IN \A b \in 1..(next - 1) : cnt[b] = 1 \/ b \in h
 
+\* Once Pump was called no WriteTo runs: the pump's writer gets every byte
+\* no Read began to take before it (SessionReadPumpWriteTo.cfg).
+PumpAlone == pumped => ~Claimed
+
 \* Witnesses (make spec-mutants: TLC must violate each).
 WitnessTimeout == ~\E r \in Readers : res[r] = "timeout"
 WitnessEOF == ~\E r \in Readers : res[r] = "eof"
@@ -315,4 +357,9 @@ WitnessBothKinds == ~(Copier # None /\ got[Copier] # <<>> /\ \E r \in Plain : go
 \* A Read once Pump was called is refused (SessionReadPump.cfg, with
 \* WitnessWriteToTail: the drain takes a tail a Read left before Pump).
 WitnessRefused == ~\E r \in Readers : res[r] = "refused"
+\* A WriteTo refused after Pump, a Pump refused beside a WriteTo; two
+\* WriteTos both handed bytes (SessionReadWriteTos.cfg).
+WitnessWriteToRefused == ~\E c \in WriteTos : res[c] = "refused"
+WitnessPumpRefused == ~(Pumps /\ res[Copier] = "refused")
+WitnessTwoWriteTos == ~(WCopier # None /\ \A c \in WriteTos : got[c] # <<>>)
 =============================================================================

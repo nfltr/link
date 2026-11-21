@@ -5,7 +5,7 @@
 # spec.sh check|mutants|traces: the TLA+ model of spec/ (spec/README.md).
 #   check    TLC on spec/Link.cfg, LinkDrain.cfg and LinkSess.cfg (no crash),
 #            LinkCrash.cfg, then spec/Pool.cfg, Liveness.cfg, Join.cfg,
-#            JoinClose.cfg and CreditWaiters.cfg, SessionRead.cfg, SessionReadWriteTo.cfg, SessionReadPump.cfg, SessionWrite.cfg, DirectPath.cfg, RelayedClose.cfg, RelayedCloseEmpty.cfg, HopHold.cfg, HopHoldSeq.cfg, HopHoldConc.cfg, EndAckLeg.cfg, EndAckLegQuic.cfg:
+#            JoinClose.cfg and CreditWaiters.cfg, SessionRead.cfg, SessionReadWriteTo.cfg, SessionReadPump.cfg, SessionReadPumpWriteTo.cfg, SessionReadWriteTos.cfg, SessionWrite.cfg, DirectPath.cfg, RelayedClose.cfg, RelayedCloseEmpty.cfg, HopHold.cfg, HopHoldSeq.cfg, HopHoldConc.cfg, EndAckLeg.cfg, EndAckLegQuic.cfg:
 #            every invariant and liveness property, and Refines.
 #   invariants  the same, Link's invariants only, Refines only on
 #            LinkCrash.cfg (CI's; Pool's liveness is checked too, seconds).
@@ -296,6 +296,7 @@ CONSTANTS
     Readers <- TraceReaders
     Slices <- TraceSlices
     Copier <- TraceCopier
+    WCopier <- TraceWCopier
     Pumps <- TracePumps
     Bytes <- TraceBytes
     SliceOf <- TraceSliceOf
@@ -310,6 +311,7 @@ INVARIANTS
     ReleaseOnce
     NoUseAfterRelease
     NoForgedEOF
+    PumpAlone
 CFG
 	META=$work/states-$(basename "$1") tlc "$cfg" TraceSessionRead.tla -deadlock
 }
@@ -426,7 +428,7 @@ check | invariants)
 	# PoolDrain (Min 2: a Drain failing halfway) and QuicWatchStops (two
 	# short stops, ~10 s) only in full: their mutants are CI's.
 	# PoolGrow: background growth (Max above Min).
-	pools="Pool PoolGrow PoolClient Liveness LivenessStarve QuicWatch QuicWatchPTO QuicWatchStarve Join JoinClose CreditWaiters SessionRead SessionReadWriteTo SessionReadPump SessionWrite DirectPath DirectPathReset DirectPathRebind DirectPathProof DirectPathClose RelayedClose RelayedCloseEmpty HopHold HopHoldSeq HopHoldConc EndAckLeg EndAckLegQuic"
+	pools="Pool PoolGrow PoolClient Liveness LivenessStarve QuicWatch QuicWatchPTO QuicWatchStarve Join JoinClose CreditWaiters SessionRead SessionReadWriteTo SessionReadPump SessionReadPumpWriteTo SessionReadWriteTos SessionWrite DirectPath DirectPathReset DirectPathRebind DirectPathProof DirectPathClose RelayedClose RelayedCloseEmpty HopHold HopHoldSeq HopHoldConc EndAckLeg EndAckLegQuic"
 	[ "$1" = invariants ] || pools="$pools PoolDrain QuicWatchStops DirectPathWide"
 	for m in $pools; do
 		echo "== $m.cfg"
@@ -845,6 +847,11 @@ mutants)
 	# run wrote after newer bytes (the code before: no errPumped).
 	job mutant SessionReadPump.cfg 'Mutant = "none"' 'Mutant = "read-beside-pump"' SessionRead.tla
 	for w in WitnessWriteToTail WitnessRefused; do job witness SessionReadPump.cfg $w SessionRead.tla; done
+	# WriteTo beside Pump, or a second Pump (lane SESSIONAPI): both popped
+	# the queue, the joined session missing bytes (the code before: no claim).
+	job mutant SessionReadPumpWriteTo.cfg 'Mutant = "none"' 'Mutant = "writeto-beside-pump"' SessionRead.tla
+	for w in WitnessWriteToRefused WitnessPumpRefused; do job witness SessionReadPumpWriteTo.cfg $w SessionRead.tla; done
+	job witness SessionReadWriteTos.cfg WitnessTwoWriteTos SessionRead.tla
 	# Session writes (SessionWrite.tla, lane P2PLEFT): a Write waiting for
 	# credit on the nil channel when the first write deadline is set.
 	job mutant SessionWrite.cfg 'Mutant = "none"' 'Mutant = "nil-channel"' SessionWrite.tla

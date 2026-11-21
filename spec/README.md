@@ -713,6 +713,32 @@ traced now, and `TestSessionReadAfterPumpRefused` and
 the guard failed and the traces were rejected at the `Begin` after
 `Pump` (fixture `read-beside-pump`); `read-ok-pump` accepted.
 
+**WriteTo beside Pump** (lane SESSIONAPI, 2026-11-21): `Pump`'s doc
+forbade a `WriteTo` (or a second `Pump`) beside it, and nothing stopped
+one: both popped the queue, so the joined session missed the bytes the
+`WriteTo` took. `WCopier` is a second reader running `WriteTo`: beside
+`Copier`'s `Pump` (`SessionReadPumpWriteTo.cfg`) or beside its `WriteTo`
+(`SessionReadWriteTos.cfg`, an allowed pair). The design: one claim
+(`Session.copiers`), taken by `WriteTo` with its `takeRest` (`WTake`)
+and let go at its return (`WEnd`, also between batches: its writer
+failed); `WriteTo`s share it, `Pump` takes it alone. A `WriteTo` once
+`Pump` was called returns `errPumped` (`WRefuse`); a `Pump` while a
+`WriteTo` runs, or a second `Pump`, calls its done at once with
+`errCopied` (`PumpRefuse`; a second one leaves the first running).
+Invariant `PumpAlone`: once `Pump` was called no `WriteTo` runs.
+`SessionReadPumpWriteTo.cfg`: 7,370 distinct states, every action taken
+but the mutants' `Decide` and `Cut`; mutant `writeto-beside-pump` (the
+code before) breaks `PumpAlone`; witnesses `WitnessWriteToRefused`,
+`WitnessPumpRefused`. `SessionReadWriteTos.cfg`: 20,828 distinct
+states, `Once`, `InOrder`, `NoLoss` with two `WriteTo`s and a `Read`;
+witness `WitnessTwoWriteTos`; `writeto-no-lock` breaks `Once` there too.
+`SessionReadWriteTo.cfg` grew to 2,256 states (`WEnd`). Traced:
+`WriteTo`'s claim and its `WTake` (or `WRefuse`), and its release
+(`WEnd`), are logged under the queue's lock, as `Pump` (or `PumpRefuse`)
+is, so the trace orders the two claims. Guards:
+`TestSessionWriteToBesidePumpRefused` (red before: the WriteTo took
+bytes, the Pump ran), `TestSessionWriteTosShareTheSession`.
+
 ## Session writes (SessionWrite.tla, 2026-11-15, lane P2PLEFT)
 
 `Link.tla` takes a `Write` as one step and `CreditWaiters.tla` the wait
@@ -1391,7 +1417,7 @@ holds in a `Spec-Reviewed:` trailer).
 | `HopHold.tla`, `TraceHopHold.tla` | two joints on one path (the agent's, the relay's), both ends TCP apps, crossing half closes: the hold ends at the next hop's receipt, the ENDACK at the onward end | `peerlink/chain.go`, `endack.go`, `peerlink/trace_on.go` |
 | `EndAckLeg.tla`, `TraceEndAckLeg.tla` | one leg's end acknowledgement per transport: link, gRPC frames, TCP's kernel ACK, QUIC (reassembly, control stream); the idle bound's progress rule | `endack.go`, `peerlink/quiclink/quiclink.go`, `peerlink/quiclink/endack.go`, `peerlink/quiclink/trace_on.go`, `pathswitch/conn.go` |
 | `CreditWaiters.tla`, `TraceCreditWaiters.tla` | senders waiting in `Credit.Acquire` on one session: the wait and `wakeAll` | `credit.go`, `trace_wait_on.go` |
-| `SessionRead.tla`, `TraceSessionRead.tla` | `Session.Read` from several goroutines (or one running `WriteTo` or `Pump`), the read deadline set and cleared meanwhile | `mux.go`, `internal/bytequeue/`, `trace_read_on.go` |
+| `SessionRead.tla`, `TraceSessionRead.tla` | `Session.Read` from several goroutines (or ones running `WriteTo`, or `Pump` with a `WriteTo` refused), the read deadline set and cleared meanwhile | `mux.go`, `internal/bytequeue/`, `trace_read_on.go` |
 | `SessionWrite.tla`, `TraceSessionWrite.tla` | `Session.Write` waiting for credit while `SetWriteDeadline` and its timer run | `mux.go`, `credit.go`, `trace_write_on.go` |
 | `DirectPath.tla`, `TraceDirectPath.tla` | the path layer: OPEN, RESUME, ACK, END, ABORT, the window, `Move` and `Attach` | `pathswitch/conn.go`, `pathswitch/frame.go`, `pathswitch/trace_on.go` |
 
