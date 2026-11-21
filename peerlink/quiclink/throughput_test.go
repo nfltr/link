@@ -26,32 +26,42 @@ func TestThroughputReorderedPath(t *testing.T) {
 	if testing.Short() {
 		t.Skip("moves data for seconds")
 	}
-	// The floor follows the same path without the reordering, measured in
-	// this run, so a loaded host slows both: a starved macOS host moved
-	// 0.5-0.9 MB/s on either, against an absolute 4. quic-go v0.63.0 moves
+	// The floor is the same path without the reordering, moving data in
+	// the same window, so a loaded host slows both alike. Measured one
+	// after the other, a load burst during the reordered run alone failed
+	// 4 of 20 runs under test-under-load (lane QUICLINKLOAD: 0.7-0.9 MB/s
+	// against 5-21 MB/s clean seconds before). quic-go v0.63.0 moves
 	// 1.2-1.4 MB/s here and falling, v0.63.1-0.20261014084224 23-25 under
 	// -race on 2 CPUs, as on the clean path. The path is 20 ms, not the
 	// 200 ms of an agent's: a shared CI runner sometimes stalls the relay
 	// goroutines long enough for a real loss, and at 200 ms Reno regrows
 	// one packet per 200 ms (CI, 2026-10-15). The reordering bug cuts the
 	// window at any RTT.
-	clean := pathRate(t, 0)
-	rate := pathRate(t, 100)
-	t.Logf("%.1f MB/s at 20 ms RTT, every 100th datagram 2 ms late; %.1f MB/s without", rate, clean)
-	if rate < clean/4 {
-		t.Fatalf("%.2f MB/s, want at least a quarter of the clean path's %.2f", rate, clean)
+	gate := make(chan struct{})
+	clean := startPath(t, gate, 10*time.Millisecond, 0, 0, 0)
+	reordered := startPath(t, gate, 10*time.Millisecond, 100, 2*time.Millisecond, 0)
+	close(gate)
+	r := rates(2*time.Second, 4*time.Second, reordered, clean) // slow start: a few round trips, more on a loaded CI runner
+	t.Logf("%.1f MB/s at 20 ms RTT, every 100th datagram 2 ms late; %.1f MB/s without, at the same time", r[0], r[1])
+	if r[0] < r[1]/4 {
+		t.Fatalf("%.2f MB/s, want at least a quarter of the clean path's %.2f", r[0], r[1])
 	}
 }
 
-// pathRate is the rate (MB/s) a session moves for 4 s after a 2 s slow
-// start on a 20 ms path whose every nth datagram (none: 0) is 2 ms late.
-func pathRate(t *testing.T, nth int) float64 {
+// startPath opens a session that b opens on the connection a dialled and
+// sends on once gate closes, as a relay does toward its agent, over a
+// reorderingPath (delay each way, every nth datagram late, rate); it
+// returns the bytes a has read so far. Sessions whose rates a test
+// compares share a gate, so none starts its slow start before another.
+// It runs until the test ends.
+func startPath(t *testing.T, gate <-chan struct{}, delay time.Duration, nth int, late time.Duration, rate float64) *atomic.Int64 {
+	t.Helper()
 	pc := listenUDP(t)
-	addr := reorderingPath(t, pc.LocalAddr().String(), 10*time.Millisecond, nth, 2*time.Millisecond, 0)
+	addr := reorderingPath(t, pc.LocalAddr().String(), delay, nth, late, rate)
 	const window = 16 << 20
 	b := mustNew(t, quiclink.Config{PacketConn: pc, TLS: serverTLS("b"), Window: window})
 	a := mustNew(t, quiclink.Config{Dial: dialer("a", "b", addr), Connect: []string{"b"}, Window: window})
-	var got atomic.Int64
+	got := new(atomic.Int64)
 	go func() {
 		_ = a.Serve(func(_ string, _ []byte, s peerlink.Session) {
 			buf := make([]byte, 64<<10)
@@ -65,22 +75,27 @@ func pathRate(t *testing.T, nth int) float64 {
 		})
 	}()
 	go func() { _ = b.Serve(func(string, []byte, peerlink.Session) {}) }()
-	defer func() {
+	t.Cleanup(func() {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		_ = a.Drain(ctx)
 		_ = b.Drain(ctx)
-	}()
-	// b opens on the connection a dialled and sends, as a relay does
-	// toward its agent.
+	})
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 	s, err := b.Open(ctx, "a", []byte("tput"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	stop := make(chan struct{})
+	t.Cleanup(func() { close(stop) })
 	go func() {
+		select {
+		case <-gate:
+		case <-stop:
+			_ = s.Close()
+			return
+		}
 		buf := make([]byte, 32<<10)
 		for {
 			select {
@@ -94,12 +109,22 @@ func pathRate(t *testing.T, nth int) float64 {
 			}
 		}
 	}()
-	defer close(stop)
-	time.Sleep(2 * time.Second) // slow start: a few round trips here, more on a loaded CI runner
-	from := got.Load()
-	const secs = 4
-	time.Sleep(secs * time.Second)
-	return float64(got.Load()-from) / secs / 1e6
+	return got
+}
+
+// rates is each counter's rate (MB/s) over the same d, after warm.
+func rates(warm, d time.Duration, counters ...*atomic.Int64) []float64 {
+	time.Sleep(warm)
+	from := make([]int64, len(counters))
+	for i, c := range counters {
+		from[i] = c.Load()
+	}
+	time.Sleep(d)
+	r := make([]float64, len(counters))
+	for i, c := range counters {
+		r[i] = float64(c.Load()-from[i]) / d.Seconds() / 1e6
+	}
+	return r
 }
 
 // TestThroughputAfterBurstTheOtherWay: once b has sent a burst through a
@@ -166,12 +191,23 @@ func TestThroughputAfterBurstTheOtherWay(t *testing.T) {
 	}
 	burstRate := burstBytes / time.Since(start).Seconds() / 1e6
 
+	// The floor: a fresh session on an identical path that carried no
+	// burst, moving data in the same window, so a loaded host slows both
+	// alike.
+	gate := make(chan struct{})
+	fresh := startPath(t, gate, 50*time.Millisecond, 0, 0, rate)
 	up, err := a.Open(ctx, "b", []byte("up"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	stop := make(chan struct{})
 	go func() {
+		select {
+		case <-gate:
+		case <-stop:
+			_ = up.Close()
+			return
+		}
 		buf := make([]byte, 32<<10)
 		for {
 			select {
@@ -186,22 +222,17 @@ func TestThroughputAfterBurstTheOtherWay(t *testing.T) {
 		}
 	}()
 	defer close(stop)
-	time.Sleep(time.Second) // slow start: ten round trips
-	from := got.Load()
-	const secs = 3
-	time.Sleep(secs * time.Second)
-	r := float64(got.Load()-from) / secs / 1e6
-	t.Logf("%.1f MB/s a to b after b's burst (%.1f MB/s), 100 ms RTT, bottleneck %.0f MB/s", r, burstRate, rate/1e6)
-	// The floor follows the burst, measured on this path in this run, so a
-	// loaded host slows both: idle, a gets about twice the burst's rate
-	// (the burst includes slow start), on a starved macOS host (load 25,
-	// GOMAXPROCS=2, background priority) 0.9-1.5 times it at 0.6-0.9 MB/s,
-	// where an absolute floor of 1 MB/s failed. Without the fork's fix a
-	// gets 0.6-0.7 MB/s against an 8 MB/s burst (0.08 of it): it grows one
-	// packet per round trip, so it fails half the burst's rate wherever the
-	// burst itself moves 1.4 MB/s or more.
-	if want := burstRate / 2; r < want {
-		t.Fatalf("%.2f MB/s, want at least %.2f (half the burst's %.2f)", r, want, burstRate)
+	close(gate)
+	r := rates(time.Second, 3*time.Second, &got, fresh) // slow start: ten round trips
+	t.Logf("%.1f MB/s a to b after b's burst (%.1f MB/s), %.1f MB/s on a fresh path at the same time, 100 ms RTT, bottleneck %.0f MB/s", r[0], burstRate, r[1], rate/1e6)
+	// Idle, a gets about the fresh path's rate. Without the fork's fix a
+	// gets 0.6-0.7 MB/s against an 8 MB/s burst: it grows one packet per
+	// round trip from its initial window, where the fresh session leaves
+	// slow start near the bottleneck. Measured one after the other (half
+	// the burst's rate), a load burst during a's run alone failed 4 of 20
+	// runs under test-under-load (lane QUICLINKLOAD).
+	if want := r[1] / 2; r[0] < want {
+		t.Fatalf("%.2f MB/s, want at least %.2f (half the fresh path's %.2f)", r[0], want, r[1])
 	}
 }
 
