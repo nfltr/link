@@ -146,6 +146,29 @@ func TestEndAckCloseBeforeReadFails(t *testing.T) {
 	}
 }
 
+// TestEndAckCloseAfterPeerStopFails: the far end's Close (its
+// STOP_SENDING) reached this side before CloseWriteSync: the FIN cannot go
+// out, and the wait's answer is link.ErrReset, not quic-go's "close called
+// for canceled stream" (the order TestEndAckCloseBeforeReadFails races).
+func TestEndAckCloseAfterPeerStopFails(t *testing.T) {
+	a, _, acc := endAckPair(t, 0, nil, endAckProtos...)
+	s, r := openSent(t, a, acc, "tail")
+	_ = r.Close()
+	deadline := time.Now().Add(10 * time.Second)
+	for { // the peer's STOP_SENDING processed: writes fail
+		if _, err := s.Write([]byte("x")); err != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("writes still work 10 s after the far end closed")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := s.CloseWriteSync(); !errors.Is(err, link.ErrReset) {
+		t.Fatalf("CloseWriteSync: %v, want link.ErrReset", err)
+	}
+}
+
 // TestEndAckFarEndResetFails (spec/EndAckLeg.tla RFail): a far end that
 // resets the session before it read the end says 'A' on the control
 // stream: the wait fails with link.ErrReset, not at the idle bound.

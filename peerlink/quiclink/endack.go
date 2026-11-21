@@ -199,6 +199,13 @@ func (s *Session) peerClosed() bool {
 	return errors.As(context.Cause(s.stream.Context()), &se) && se.Remote && se.ErrorCode == CodeClosed
 }
 
+// peerStopped reports whether the peer stopped this side's writes (its
+// STOP_SENDING: a Close, a Reset or an abort).
+func (s *Session) peerStopped() bool {
+	var se *quic.StreamError
+	return errors.As(context.Cause(s.stream.Context()), &se) && se.Remote
+}
+
 // HoldEndAck makes the caller acknowledge the peer's end (AckEnd) once it
 // passed it on: a join (peerlink.Join) acknowledges only what its onward
 // peer acknowledged. Without ALPNEndAck it does nothing.
@@ -238,6 +245,9 @@ func (s *Session) CloseWriteSyncReceived(received func()) error {
 	if err := s.CloseWrite(); err != nil || !s.c.endack {
 		if err == nil && received != nil {
 			received()
+		}
+		if err != nil && s.c.endack && s.peerStopped() {
+			return link.ErrReset // the far end closed or failed first: no FIN went out (TestEndAckCloseAfterPeerStopFails)
 		}
 		return err
 	}
