@@ -218,6 +218,12 @@ func New(cfg Config) (*Node, error) {
 		// where both ends support it: an Abort after bytes, as link's.
 		EnableStreamResetPartialDelivery: true,
 		EnableDatagrams:                  cfg.Datagrams,
+		// BBR, not NewReno: on a long path with random loss (0.05 % at
+		// 260 ms RTT, Helsinki -> Singapore) NewReno's window falls to a
+		// few packets and grows one per RTT: 3 Mbit/s of 300 (BBR: 190).
+		// Guard: TestNodeUsesBBR; the gain: quic-go's
+		// TestBulkUploadOnReorderingPath (docs/performance.md).
+		CongestionControl: quic.CongestionControlBBR,
 	}
 	return n, nil
 }

@@ -100,6 +100,19 @@ What it costs, and when not to use it:
   peer's STOP_SENDING, and a congestion window that stayed cut after a
   path reordered a burst of more than 64 packets. It exposes the idle
   timer's start (`ConnectionStats.IdleTimeoutStart`) for the watch below.
+  It paces only ack-eliciting packets: a receiver that ACKs every packet
+  of a reordering path no longer spends its pacing budget on ACKs and
+  holds back its MAX_STREAM_DATA (300 Mbit/s, 260 ms RTT, 30 % of packets
+  up to 10 places late: 204 -> 293 Mbit/s).
+- **BBR.** A Node's connections use BBR (the fork's
+  `Config.CongestionControl`), not quic-go's NewReno: on a long path that
+  loses packets at random NewReno's window falls to a few packets and
+  grows one per round trip (lane CROSSCLOUD's Helsinki -> Singapore, 260
+  ms, 0.04 % loss: 3-35 Mbit/s; simulated, 300 Mbit/s and 0.05 % loss:
+  3 Mbit/s, BBR 190). The window still bounds a lossy long path: a lost
+  packet's hole holds its stream for a round trip, so a session wants
+  `Config.Window` of twice the path's bandwidth-delay product
+  (docs/performance.md "quiclink: BBR").
 - **No 0-RTT.** 0-RTT data can be replayed by an attacker; quiclink turns
   it off and every connection pays the 1-RTT handshake.
 

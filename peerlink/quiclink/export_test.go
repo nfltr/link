@@ -3,7 +3,11 @@
 
 package quiclink
 
-import "time"
+import (
+	"time"
+
+	"github.com/nfltr/quic-go"
+)
 
 // PeerGone reports whether peer sent GOAWAY on a connection it dialled
 // in to n.
@@ -64,3 +68,6 @@ func TraceMuteForTest(s *Session) {
 
 // StreamID is s's QUIC stream id (its datagram tag).
 func StreamID(s *Session) int64 { return int64(s.stream.StreamID()) }
+
+// CongestionControl is the congestion controller n's connections use.
+func CongestionControl(n *Node) quic.CongestionControl { return n.qc.CongestionControl }

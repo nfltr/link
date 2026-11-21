@@ -5,7 +5,7 @@ go 1.27.0
 require (
 	github.com/nfltr/link v0.13.2
 	github.com/nfltr/link/peerlink/quiclink v0.4.0
-	github.com/nfltr/quic-go v0.63.1-nfltr.3
+	github.com/nfltr/quic-go v0.63.1-nfltr.3.0.20261121073520-3fae9562c1d8
 )
 
 require (

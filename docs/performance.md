@@ -556,6 +556,53 @@ alone); `TestConcurrentAcquiresShareAGrant` for the fix.
 - **Don't undo**: no stream `Write` per frame. A new frame kind the writer
   may send at once goes through `frame`, so `more` batches it too.
 
+## quiclink: BBR, and ACK-only packets unpaced (2026-11-21, lane REORDER, unreleased)
+
+- **Where**: `peerlink/quiclink/quiclink.go` (`Node.qc`:
+  `CongestionControl: quic.CongestionControlBBR`) and the quic-go fork
+  (`v0.63.1-nfltr.3.0.20261121073520-3fae9562c1d8`: `internal/congestion/bbr`,
+  `internal/congestion/cubic_sender.go` `OnPacketSent`).
+- **Why it was slow**: lane CROSSCLOUD's 10 GiB direct transfer Helsinki
+  -> Singapore (260 ms RTT) fell from 272 to 3-35 Mbit/s and never
+  recovered; TCP through a relay held 86. Packets matched at both ends'
+  captures: 0.04-0.06 % lost, one at a time, and 29 % late by up to 10
+  places. quic-go's NewReno cuts its window at each loss and grows it one
+  packet per round trip, so random loss at 260 ms holds it near 130
+  packets. The reordering itself was already handled (the fork disables
+  the packet threshold at the first spurious loss and restores the window;
+  0-4 packets of 215,000 declared lost in simulation), but it cost 30 %
+  another way: the receiver ACKs every out-of-order packet at once, those
+  ACKs were charged to its pacer, the connection stayed pacing-limited
+  (ACK-only packets only) and its MAX_STREAM_DATA waited (6-7 sent per
+  5 s against 44 on a clean path).
+- **What it does now**: the fork paces only ack-eliciting packets (RFC
+  9002 7.7; QUICHE's PacingSender does the same), and quiclink selects
+  BBR v1 (Chromium QUICHE's BbrSender as ported by Hysteria, MIT; the
+  conservative profile), which paces at the measured bottleneck rate and
+  takes no window cut per loss.
+- **Gain**: the fork's `TestBulkUploadOnReorderingPath` (synctest: 300
+  Mbit/s bottleneck, 200 ms tail-drop queue, 260 ms RTT, 16 MiB stream
+  window; second half of 256 MiB; 6 seeds; virtual time, so load does not
+  move it), base fork afa1e64a against 3fae9562:
+  clean 293.2 -> 293.2 Mbit/s (NewReno and BBR); reordering 204.4 ->
+  293.2 (+43 %, p=0.002); 0.05 % loss 2.9 -> 191.4 (BBR, +6500 %,
+  p=0.002); both 3.1 -> 189.3 (+6000 %, p=0.002). NewReno with the pacing
+  fix alone: loss 2.95, both 3.1 (no change). Evidence:
+  `~/nfltr-evidence/reorder-2026-11-21/` (benchstat.txt, before.txt,
+  after.txt, manifest.json; the real Helsinki -> Singapore rerun in
+  `real/`).
+- **Left**: with loss the 16 MiB window bounds it (a hole holds the stream
+  for a round trip; 32 MiB reaches about 95 %): the relay client's
+  `tcpDataWindow` is the knob, a memory trade not made here.
+- **Guarantee at risk**: none of link's: bytes, order and ends are QUIC's
+  stream semantics, unchanged; every quiclink test passes.
+- **Guard**: quiclink `TestNodeUsesBBR`; the fork's
+  `TestBulkUploadOnReorderingPath` (reordering at least 85 %, BBR with
+  loss at least half), `TestCubicSenderAckOnlyPacketsNotPaced`,
+  `TestSentPacketHandlerBBR`.
+- **Don't undo**: no NewReno on quiclink's connections, and no pacer
+  charge for a packet that is not in flight.
+
 ## What was looked at and left
 
 - **TLS writes**: link writes a coalesced batch with one `Write` on the
