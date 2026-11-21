@@ -311,8 +311,10 @@ for the acknowledgement knows the far end has every byte, across joins
 - **Joins.** A side that joins the session to another (section 12's hop)
   sends the endack only once the end it passed on was acknowledged there
   (the onward endack, or on a connection without the bit the onward pong
-  of a ping sent after the close), or, onto a conn that acknowledges
-  nothing (TCP), once it was passed on. A join whose onward peer closed
+  of a ping sent after the close), or, onto a plain TCP conn, once its
+  kernel acknowledged the FIN (TCP_INFO: Linux tcpi_bytes_acked covers
+  the FIN; macOS state FIN_WAIT_2 or TIME_WAIT); where the kernel cannot
+  tell, the hop sends no ENDACK and aborts the session. A join whose onward peer closed
   the session (code 0) before acknowledging the end, or whose onward
   side failed, resets the session instead (code 2, also once both half
   closes passed): the end was never taken there.
