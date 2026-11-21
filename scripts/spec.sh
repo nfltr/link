@@ -23,7 +23,7 @@
 #   trace F  one recorded trace (rtrace F: a session's reads; wtrace F: a
 #            session credit's waiters; swtrace F: a session's writes; jctrace F:
 #            a joint's side closed whole; rctrace F: a relayed path's Close;
-#            hhtrace F: two joints' holds).
+#            hhtrace F: two joints' holds; aftrace F: a QUIC receiver's ACKs).
 #   behaviours  TLC -simulate walks for the model-based tests (testdata/mbt).
 # TLC_WORKERS (default 4) caps TLC's threads. Java and tla2tools.jar come
 # from scripts/fetch-tla.sh.
@@ -191,6 +191,29 @@ CFG
 	META=$work/states-$(basename "$1") tlc "$cfg" TraceEndAckLeg.tla -deadlock >"$cfg.out" 2>&1 || east=$?
 	cat "$cfg.out"
 	[ $east != 0 ] && grep -q '^Error: Invariant TraceUnfinished is violated' "$cfg.out"
+}
+
+# aftrace FILE: TLC on one QUIC receiver's recorded ACK decisions
+# (spec/TraceAckFrequency.tla, lane LINKSPEED2; the quic-go fork's
+# -tags quicacktrace); it fails unless TLC reaches the trace's end
+# (TraceUnfinished violated).
+aftrace() {
+	cfg=$work/$(basename "$1").cfg
+	cat >"$cfg" <<CFG
+CONSTANTS
+    TraceFile = "$1"
+INIT TraceInit
+NEXT TraceNext
+INVARIANTS
+    CountBound
+    AlarmOnTime
+    ImmediateAcked
+    TraceUnfinished
+CFG
+	afst=0
+	META=$work/states-$(basename "$1") tlc "$cfg" TraceAckFrequency.tla -deadlock >"$cfg.out" 2>&1 || afst=$?
+	cat "$cfg.out"
+	[ $afst != 0 ] && grep -q '^Error: Invariant TraceUnfinished is violated' "$cfg.out"
 }
 
 # hhtrace FILE [SEQAPP]: TLC on two joints' recorded holds
@@ -879,6 +902,7 @@ mutants)
 	for f in spec/traces/hophold-*.ndjson; do job endfixture hhtrace "$f"; done
 	for f in spec/traces/hopholdseq-*.ndjson; do job endfixture hhtraceseq "$f"; done
 	for f in spec/traces/hopholdconc-*.ndjson; do job endfixture hhtraceconc "$f"; done
+	for f in spec/traces/ackfreq-*.ndjson; do job endfixture aftrace "$f"; done
 	wait
 	fail=0
 	i=0
@@ -1090,9 +1114,9 @@ traces)
 	# (TraceSessionWrite.tla) and a joint's side closed whole
 	# (TraceJoinClose.tla), lane LINKTRACE2: each session's (joint's) file, its
 	# events counted; an event no trace took is a test gap.
-	for k in read wait write joinclose peerjoinclose relayed hophold hopholdquic hopholdconc; do
+	for k in read wait write joinclose peerjoinclose relayed hophold hopholdquic hopholdconc ackfreq; do
 		mkdir -p "$work/$k"
-		pkg= mdir=.
+		pkg= mdir=. tags=linktrace
 		case $k in
 		read) env=LINKTRACE_READ check=rtrace tests=${TRACE_READ_TESTS:-'^(TestSessionConcurrentReads|TestSessionReadDeadlineClearedNeverEOF|TestSessionReadBesideWriteTo|TestSessionReadAfterPumpRefused|TestSessionPumpErrors|TestSessionWriteToBesidePumpRefused|TestSessionAPIPairs)$'} model=TraceSessionRead ;;
 		wait) env=LINKTRACE_WAIT check=wtrace tests=${TRACE_WAIT_TESTS:-'^(TestConcurrentAcquiresShareAGrant|TestSessionWriteWaitingForCreditSeesFirstDeadline|TestMuxSlowSessionIsolated)$'} model=TraceCreditWaiters ;;
@@ -1104,9 +1128,12 @@ traces)
 		hopholdquic) env=LINKTRACE_HOPHOLD check=hhtraceseq mdir=peerlink/quiclink tests=${TRACE_HOPHOLD_QUIC_TESTS:-'^TestJoinsHoldOntoASequentialQuicApp$'} model=TraceHopHold ;;
 		# R's app a QUIC far end reading beside its CloseWriteSync (ConcApp, lane LINKHOLD2)
 		hopholdconc) env=LINKTRACE_HOPHOLD check=hhtraceconc mdir=peerlink/quiclink tests=${TRACE_HOPHOLD_CONC_TESTS:-'^TestJoinHoldsOntoAConcurrentQuicApp$'} model=TraceHopHold ;;
+		# The quic-go fork's 1-RTT receivers (ACK frequency, lane LINKSPEED2):
+		# its own build tag; IMMEDIATE_ACK no sender of the fork's sends.
+		ackfreq) env=QUICACKTRACE check=aftrace mdir=peerlink/quiclink tags=quicacktrace tests=${TRACE_ACKFREQ_TESTS:-'^(TestAckFrequencyOnReorderingPath|TestRefusesPeerWithoutAckFrequency)$'} model=TraceAckFrequency ;;
 		write) env=LINKTRACE_WRITE check=swtrace tests=${TRACE_WRITE_TESTS:-'^(TestSessionWriteWaitingForCreditSeesFirstDeadline|TestWriteDeadline|TestWriteDeadlineStuckNetwork)$'} model=TraceSessionWrite ;;
 		esac
-		(cd "$mdir" && env "$env=$work/$k" GOWORK=off go test -tags linktrace -count=1 -run "$tests" "${pkg:-.}") >"$work/test.out" 2>&1 || {
+		(cd "$mdir" && env "$env=$work/$k" GOWORK=off go test -tags "$tags" -count=1 -run "$tests" "${pkg:-.}") >"$work/test.out" 2>&1 || {
 			cat "$work/test.out"
 			exit 1
 		}
@@ -1208,6 +1235,9 @@ rctrace)
 	;;
 hhtrace)
 	hhtrace "$2"
+	;;
+aftrace)
+	aftrace "$2"
 	;;
 *)
 	echo "usage: spec.sh check|invariants|nightly|mutants|traces|trace FILE" >&2

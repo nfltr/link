@@ -1,0 +1,8 @@
+{"MAD":25000,"R":1,"T":1,"alarm":-1,"ev":"Policy","lo":-1,"q":0}
+{"alarm":48514,"ce":0,"el":1,"ev":"Recv","lo":2,"pn":2,"q":0,"t":23514}
+{"alarm":-1,"ev":"Ack","la":2,"lo":2,"oq":0,"q":0,"t":24009}
+{"alarm":-1,"ev":"Ignore","lo":-1,"pn":3,"q":0}
+{"MAD":6189,"R":10,"T":9,"alarm":-1,"ev":"Policy","lo":-1,"q":0}
+{"alarm":53864,"ce":0,"el":1,"ev":"Recv","lo":3,"pn":3,"q":0,"t":47675}
+{"alarm":-1,"ev":"Imm","lo":3,"q":1}
+{"alarm":53864,"ce":0,"el":1,"ev":"Recv","lo":3,"pn":4,"q":0,"t":47691}

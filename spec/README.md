@@ -1490,10 +1490,25 @@ frames, `min_ack_delay`); here `peerlink/quiclink/quiclink.go` (the policy
 quiclink asks for, the refusal of a peer without `min_ack_delay`).
 Conformance: the fork's `TestAckFrequencyPolicyInvariants`
 (`internal/ackhandler`) drives the real tracker through random reorderings
-and losses and checks this spec's invariants on each step. Trace
-recorder: none yet (named follow-up: the fork's
-`internal/ackhandler/trace_on.go`, tag `quicacktrace`, checked by a
-`TraceAckFrequency.tla`).
+and losses and checks this spec's invariants on each step. Trace recorder (lane
+LINKSPEED2): the fork's `internal/ackhandler/trace_on.go` (tag
+`quicacktrace`, `QUICACKTRACE=<dir>`): each 1-RTT receiver writes its
+policy, every packet received, IMMEDIATE_ACK, IgnoreBelow and every ACK
+built, with the ACK queued, the alarm and the lowest packet held after the
+step. `TraceAckFrequency.tla` checks each file: an ack-eliciting packet with
+no ACK queued queues one exactly when `Receive`'s `now_` holds (count, late
+below the last ACK, a deep hole, or ECN-CE, which the model leaves out),
+else the alarm is MAD after the oldest waiting (`AlarmOnTime`); an ACK sent
+only if queued is queued or due; one riding another frame may go at any
+time (a superset). `make spec-traces` runs `TestAckFrequencyOnReorderingPath`
+(4 MiB over a 20 ms path, every 20th datagram 2 ms late) and
+`TestRefusesPeerWithoutAckFrequency` with the tag. Rejected fixtures
+(`spec/traces/ackfreq-*`, cut from a real run, one line put wrong):
+`count-late`, `alarm-latest`, `threshold-ignored`, `no-reorder-ack`,
+`late-ignored`, `immediate-dropped`, `timer-early`. Not traced: the
+sender's packet threshold (S = R: the fork's
+`TestSentPacketHandlerSetPacketThreshold`); IMMEDIATE_ACK is never taken (no
+sender of the fork's sends it; the fork's unit tests cover the receiver).
 
 ## Code map (lane W5-LINK)
 
@@ -1513,7 +1528,7 @@ holds in a `Spec-Reviewed:` trailer).
 | `RelayedClose.tla`, `TraceRelayedClose.tla` | a relayed session's Close, then the program's exit or reset: a FIN then a failure reads io.EOF, the joint passes the tail before the failure | `mux.go`, `join.go`, `endack.go`, `peerlink/chain.go`, `trace_relayed_on.go` |
 | `HopHold.tla`, `TraceHopHold.tla` | two joints on one path (the agent's, the relay's), both ends TCP apps, crossing half closes: the hold ends at the next hop's receipt, the ENDACK at the onward end | `peerlink/chain.go`, `endack.go`, `peerlink/trace_on.go` |
 | `EndAckLeg.tla`, `TraceEndAckLeg.tla` | one leg's end acknowledgement per transport: link, gRPC frames, TCP's kernel ACK, QUIC (reassembly, control stream); the idle bound's progress rule | `endack.go`, `peerlink/quiclink/quiclink.go`, `peerlink/quiclink/endack.go`, `peerlink/quiclink/trace_on.go`, `pathswitch/conn.go` |
-| `AckFrequency.tla` | a QUIC receiver's ACK policy under ACK_FREQUENCY against the sender's loss detection (the fork's `ackhandler`); the policy quiclink asks for | `peerlink/quiclink/quiclink.go` |
+| `AckFrequency.tla`, `TraceAckFrequency.tla` | a QUIC receiver's ACK policy under ACK_FREQUENCY against the sender's loss detection (the fork's `ackhandler` and its `trace_on.go`); the policy quiclink asks for | `peerlink/quiclink/quiclink.go`, `peerlink/quiclink/ackfreq.go` |
 | `CreditWaiters.tla`, `TraceCreditWaiters.tla` | senders waiting in `Credit.Acquire` on one session: the wait and `wakeAll` | `credit.go`, `trace_wait_on.go` |
 | `SessionRead.tla`, `TraceSessionRead.tla` | `Session.Read` from several goroutines (or ones running `WriteTo`, or `Pump` with a `WriteTo` refused), the read deadline set and cleared meanwhile | `mux.go`, `internal/bytequeue/`, `trace_read_on.go` |
 | `SessionWrite.tla`, `TraceSessionWrite.tla` | `Session.Write` waiting for credit while `SetWriteDeadline` and its timer run | `mux.go`, `credit.go`, `trace_write_on.go` |
