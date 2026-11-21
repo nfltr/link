@@ -64,6 +64,15 @@ var (
 // with an EndDelivered method is then told (EndNotifier), else aborted
 // when that failed: a relay SDK's accepted conn returns from Close only
 // once its tail is safe (spec/RelayedClose.tla CloseTruth).
+//
+// A conn wrapping another (one that counts or budgets its bytes) with an
+// Unwrap() net.Conn method returning it is, for these rules, the link
+// session it wraps (followed through every Unwrap): its end onto a conn
+// that syncs it is held while the other direction syncs, and its
+// connection's end is watched; its bytes still go through the wrapper,
+// and its end through the wrapper's own methods (CloseWrite,
+// CloseWriteSync, EndAcker, ...), which a wrapper passes on. Without
+// Unwrap a wrapped session is a plain conn (lane LINKWRAP).
 func Join(a, b net.Conn) error {
 	if la, lb := native(a), native(b); la != nil && lb != nil {
 		err := linkhook.Join(la, lb)
@@ -151,6 +160,22 @@ func holdEnds(cs ...net.Conn) {
 func ackEnd(c net.Conn) {
 	if a, ok := c.(EndAcker); ok {
 		a.AckEnd()
+	}
+}
+
+// linkOf is the *link.Session c is (native) or wraps, following Unwrap
+// (Join's doc): whether c is a link session, its Done and Err. Its bytes
+// and its end go through c itself (native: a wrapper's bytes are its own).
+func linkOf(c net.Conn) *link.Session {
+	for {
+		if s := native(c); s != nil {
+			return s
+		}
+		u, ok := c.(interface{ Unwrap() net.Conn })
+		if !ok {
+			return nil
+		}
+		c = u.Unwrap()
 	}
 }
 
@@ -453,7 +478,7 @@ func (j *joint) dir(i int) {
 		linkhook.Pump(s, w, end)
 		return
 	}
-	if ds := native(w.c); ds != nil {
+	if ds := linkOf(w.c); ds != nil {
 		go j.watch(i, src, ds)
 	}
 	go func() {
@@ -560,7 +585,7 @@ func (j *joint) ended(i int, n int64, err, werr error) {
 			a := &link.Abort{Code: link.CodeTimeout, Msg: "write deadline"}
 			j.abort(src, a)
 			j.abort(dst, a)
-		case native(dst) != nil && !j.otherOver(i):
+		case linkOf(dst) != nil && !j.otherOver(i):
 			// the session dst was cut while the direction from it still
 			// runs (its Pump ends): that one ends src after the bytes dst
 			// read (spec/RelayedClose.tla TailDelivered, mutant
@@ -573,11 +598,11 @@ func (j *joint) ended(i int, n int64, err, werr error) {
 	case j.failed():
 	default:
 		if traceOn && traceToClient(j, i) { // spec/TraceJoinClose.tla D1End
-			traceJC(j, "D1End", "kind", map[bool]string{true: "close", false: "fin"}[native(src) != nil && isClosed(native(src).Done())])
+			traceJC(j, "D1End", "kind", map[bool]string{true: "close", false: "fin"}[linkOf(src) != nil && isClosed(linkOf(src).Done())])
 		}
-		s, ds := native(src), syncerOf(dst)
+		s, ds := linkOf(src), syncerOf(dst)
 		whole := s != nil && isClosed(s.Done())
-		if whole || s != nil && ds != nil && native(dst) == nil {
+		if whole || s != nil && ds != nil && linkOf(dst) == nil {
 			// the peer closed it whole, or its FIN ended it after our
 			// CloseWrite: held while that one syncs (review r2 finding 1).
 			// Its end is still acknowledged only once dst's far end took

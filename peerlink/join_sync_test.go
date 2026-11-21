@@ -228,6 +228,12 @@ func TestJoinPeerFinDuringSyncIsHeld(t *testing.T) {
 // session's end and reset the client (spec/Join.tla Lost, LostEnds), not
 // wait for the client's next write.
 func TestJoinLostWhileTheClientIsIdle(t *testing.T) {
+	for _, w := range sessionWrappers {
+		t.Run(w.name, func(t *testing.T) { testJoinLostWhileTheClientIsIdle(t, w.wrap) })
+	}
+}
+
+func testJoinLostWhileTheClientIsIdle(t *testing.T, wrap func(*link.Session) net.Conn) {
 	ln, rn := tcpPair(t)
 	ctx := context.Background()
 	srv := make(chan *link.Conn, 1)
@@ -259,7 +265,7 @@ func TestJoinLostWhileTheClientIsIdle(t *testing.T) {
 	}
 	client, relay := tcpPair(t)
 	joinErr := make(chan error, 1)
-	go func() { joinErr <- peerlink.Join(relay, s) }()
+	go func() { joinErr <- peerlink.Join(relay, wrap(s)) }()
 	_ = client.SetReadDeadline(time.Now().Add(10 * time.Second))
 	if b, err := io.ReadAll(client); err != nil || len(b) != 0 {
 		t.Fatalf("client read %q, %v; want EOF", b, err)

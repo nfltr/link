@@ -166,6 +166,26 @@ func TestJoinsHoldOntoASequentialQuicApp(t *testing.T) {
 // its own, and the app read the peer's EOF with its own FIN still at R
 // (lane LINKGATE's trace hophold-branch2-sync-onto-app, 1 run in 4).
 func TestJoinHoldsOntoAConcurrentQuicApp(t *testing.T) {
+	for _, w := range []struct {
+		name string
+		wrap func(*link.Session) net.Conn
+	}{
+		{"session", func(s *link.Session) net.Conn { return s }},
+		{"wrapped", func(s *link.Session) net.Conn { return wrappedSession{s} }},
+	} {
+		t.Run(w.name, func(t *testing.T) { testJoinHoldsOntoAConcurrentQuicApp(t, w.wrap) })
+	}
+}
+
+// wrappedSession is a link session behind another type (relay-core's
+// metered conn): every method passed on, and Unwrap (peerlink.Join's doc;
+// lane LINKWRAP). Without Unwrap R took it for a plain conn and passed
+// its end onto the QUIC session unheld.
+type wrappedSession struct{ *link.Session }
+
+func (w wrappedSession) Unwrap() net.Conn { return w.Session }
+
+func testJoinHoldsOntoAConcurrentQuicApp(t *testing.T, wrap func(*link.Session) net.Conn) {
 	a, _, acc := endAckPair(t, 0, nil, endAckProtos...)
 	ctx := context.Background()
 	ln, rn := tcpConns(t)
@@ -179,7 +199,7 @@ func TestJoinHoldsOntoAConcurrentQuicApp(t *testing.T) {
 			rJoin <- err
 			return
 		}
-		_ = link.NewMux(c).Serve(func(_ []byte, s *link.Session) { rJoin <- peerlink.Join(in, s) })
+		_ = link.NewMux(c).Serve(func(_ []byte, s *link.Session) { rJoin <- peerlink.Join(in, wrap(s)) })
 	}()
 	gc, err := link.Client(ctx, rn, link.Config{Hop: true})
 	if err != nil {

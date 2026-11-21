@@ -1269,9 +1269,15 @@ too (a whole close's `dst.Close` only when the session ended whole).
 `make spec-traces` checks the quiclink run as `hopholdconc`
 (`hhtraceconc`, `ConcApp = {"R"}`); fixtures `hopholdconc-ok-held`
 (accepted) and `hopholdconc-sync-no-hold` (the code before, the lines
-before the test's failure) rejected. Open: an end from a link session
-behind another type (relay-core's metered conn) is no `native` session:
-onto a quiclink session it still takes `joint.sync`, unheld.
+before the test's failure) rejected. A link session behind another type
+(relay-core's metered conn, a budgeted nf1 leg) is a link session to
+these rules when the wrapper has `Unwrap() net.Conn` (`peerlink.Join`'s
+doc, `linkOf`; lane LINKWRAP): hidden, its end onto a quiclink session
+took `joint.sync`, unheld, and its connection went unwatched (Join.tla
+`Lost`). The spec is unchanged (the bug was the classification); guards
+the `wrapped` cases of `TestJoinHoldsAnEndOntoASyncingApp`,
+`TestJoinLostWhileTheClientIsIdle` and quiclink
+`TestJoinHoldsOntoAConcurrentQuicApp`.
 
 ## One leg's end acknowledgement (EndAckLeg.tla, 2026-11-20, lane ENDACK2D)
 

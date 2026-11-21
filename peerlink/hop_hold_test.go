@@ -279,6 +279,25 @@ type wrapped struct{ *link.Session }
 // CloseWriteSync, not CloseWrite.
 type syncTCP struct{ *net.TCPConn }
 
+// wrappedSession is a link session behind another type (relay-core's
+// metered conn, a budgeted leg): every method passed on, and Unwrap
+// (Join's doc; lane LINKWRAP). Without Unwrap Join took it for a plain
+// conn: its end onto a syncing conn passed unheld, its connection's end
+// unwatched.
+type wrappedSession struct{ *link.Session }
+
+func (w wrappedSession) Unwrap() net.Conn { return w.Session }
+
+// sessionWrappers are the ways a joint sees a link session: itself, and
+// behind a wrapper that unwraps to it.
+var sessionWrappers = []struct {
+	name string
+	wrap func(*link.Session) net.Conn
+}{
+	{"session", func(s *link.Session) net.Conn { return s }},
+	{"wrapped", func(s *link.Session) net.Conn { return wrappedSession{s} }},
+}
+
 func (s syncTCP) CloseWriteSync() error { return s.CloseWrite() }
 
 // jointGate sees the joints' steps (internal/linkhook.Joint): the first
@@ -322,6 +341,12 @@ func gateJoints(t *testing.T, app, via net.Conn) *jointGate {
 // syncs the app's: the code before passed it with a sync of its own, and
 // the app read the peer's EOF with its own FIN still at R.
 func TestJoinHoldsAnEndOntoASyncingApp(t *testing.T) {
+	for _, w := range sessionWrappers {
+		t.Run(w.name, func(t *testing.T) { testJoinHoldsAnEndOntoASyncingApp(t, w.wrap) })
+	}
+}
+
+func testJoinHoldsAnEndOntoASyncingApp(t *testing.T, wrap func(*link.Session) net.Conn) {
 	ctx := context.Background()
 	gl, rl := tcpPair(t)
 	target, tAgent := tcpPair(t)
@@ -334,7 +359,7 @@ func TestJoinHoldsAnEndOntoASyncingApp(t *testing.T) {
 			rJoin <- err
 			return
 		}
-		_ = link.NewMux(c).Serve(func(_ []byte, s *link.Session) { rJoin <- peerlink.Join(appSide, s) })
+		_ = link.NewMux(c).Serve(func(_ []byte, s *link.Session) { rJoin <- peerlink.Join(appSide, wrap(s)) })
 	}()
 	gc, err := link.Client(ctx, gl, link.Config{Hop: true})
 	if err != nil {

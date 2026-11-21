@@ -130,7 +130,7 @@ func traceHopRead(c net.Conn) {
 // exactly one link session to a plain conn.
 func traceStart(j *joint) {
 	dir := os.Getenv("LINKTRACE")
-	a, b := native(j.c[0]) != nil, native(j.c[1]) != nil
+	a, b := linkOf(j.c[0]) != nil, linkOf(j.c[1]) != nil
 	if a == b {
 		return
 	}
