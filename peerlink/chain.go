@@ -575,14 +575,23 @@ func (j *joint) ended(i int, n int64, err, werr error) {
 		if traceOn && traceToClient(j, i) { // spec/TraceJoinClose.tla D1End
 			traceJC(j, "D1End", "kind", map[bool]string{true: "close", false: "fin"}[native(src) != nil && isClosed(native(src).Done())])
 		}
-		if s := native(src); s != nil && isClosed(s.Done()) {
+		s, ds := native(src), syncerOf(dst)
+		whole := s != nil && isClosed(s.Done())
+		if whole || s != nil && ds != nil && native(dst) == nil {
 			// the peer closed it whole, or its FIN ended it after our
 			// CloseWrite: held while that one syncs (review r2 finding 1).
 			// Its end is still acknowledged only once dst's far end took
 			// it (FeatureEndAck; relay-core TestConnIsANetConn/BasicIO hung
 			// on the agent's Close when this closed dst without).
+			// The session's FIN onto a conn that syncs it too (a quiclink
+			// session: a QUIC far end) is such an end before the session
+			// ended whole as well (our CloseWrite still to come): passed
+			// with a sync of its own and no hold, the app read it while its
+			// own FIN was on the wire (spec/HopHold.tla HopHoldConc.cfg,
+			// mutant sync-no-hold; TestJoinHoldsAnEndOntoASyncingApp, lane
+			// LINKHOLD2). The other way never holds: the app's end waits
+			// for no end onto the app (mutant hold-app-fin).
 			end := func() {
-				ds := syncerOf(dst)
 				if ds != nil {
 					if err := ds.CloseWriteSync(); err != nil {
 						j.abort(src, abortOf(err))
@@ -591,7 +600,7 @@ func (j *joint) ended(i int, n int64, err, werr error) {
 					}
 				}
 				switch {
-				case !j.otherOver(i):
+				case whole && !j.otherOver(i):
 					if traceOn && traceClient(j, dst) {
 						traceJoin(j, "Closed", 0) // spec/TraceHopHold.tla JointDone: a close before the app's end was acknowledged is rejected
 					}
@@ -612,7 +621,7 @@ func (j *joint) ended(i int, n int64, err, werr error) {
 				return
 			}
 			end()
-		} else if ds := syncerOf(dst); ds != nil {
+		} else if ds != nil {
 			j.sync(src, ds)
 			return
 		} else if j.hold(func() { j.closeWrite(dst); ackEnd(src) }) {
@@ -677,6 +686,9 @@ func (j *joint) sync(src net.Conn, ds endSyncer) {
 		// The hold ends at the next hop's receipt, never at the far end's
 		// ENDACK: with FINs crossing, two joins each held the end the
 		// other's ENDACK waits for (spec/HopHold.tla, mutant hold-until-ack).
+		if h := linkhook.Joint.Load(); h != nil {
+			(*h)("sync", src)
+		}
 		var err error
 		if r, ok := ds.(receiptSyncer); ok { // a link session, a quiclink one (ALPNEndAck)
 			err = r.CloseWriteSyncReceived(func() { j.unhold(true, true) })
@@ -751,6 +763,9 @@ func (j *joint) hold(end func()) bool {
 		return false
 	}
 	j.fin = end
+	if h := linkhook.Joint.Load(); h != nil {
+		(*h)("held", nil)
+	}
 	return true
 }
 

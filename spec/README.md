@@ -1257,15 +1257,21 @@ Mutants `sync-no-hold` (the code before: `HoldTruth`, in
 `HopHoldConc.cfg` and `HopHoldSeq.cfg`), `hold-app-fin` (a hold in that
 branch for any sync, the app's FIN held until its own read:
 `NoStuck` in `HopHoldSeq.cfg`; `HoldFin`, the action only it takes);
-`hold-in-receipt` still caught; witness `WitnessConcRead`. Guards: a
-read gate is not enough, so R's link conn holds its first write (R's
-CLOSE, its `finSent` not yet set: the session cannot end whole) while
-G's FIN reaches R; the joint's hold is seen through
-`internal/linkhook.Held`: `TestJoinHoldsAnEndOntoASyncingApp` (peerlink,
-a TCP app behind a conn that syncs) and
-`TestJoinHoldsOntoAConcurrentQuicApp` (quiclink, the QUIC far end): the
-code before let the app read the peer's EOF with R's CLOSE held, every
-run.
+`hold-in-receipt` still caught; witness `WitnessConcRead`. Guards
+(no timing: R's sync of the app's end waits before its CloseWrite on a
+test's `internal/linkhook.Joint`, so R's session cannot end whole when
+G's FIN reaches R; the hook also reports the hold):
+`TestJoinHoldsAnEndOntoASyncingApp` (peerlink, a TCP app behind a conn
+that syncs) and `TestJoinHoldsOntoAConcurrentQuicApp` (quiclink, the QUIC
+far end): with the code before, R passed G's end with a sync of its own
+on every run. The fix: `joint.ended` takes the `Done` branch for that end
+too (a whole close's `dst.Close` only when the session ended whole).
+`make spec-traces` checks the quiclink run as `hopholdconc`
+(`hhtraceconc`, `ConcApp = {"R"}`); fixtures `hopholdconc-ok-held`
+(accepted) and `hopholdconc-sync-no-hold` (the code before, the lines
+before the test's failure) rejected. Open: an end from a link session
+behind another type (relay-core's metered conn) is no `native` session:
+onto a quiclink session it still takes `joint.sync`, unheld.
 
 ## One leg's end acknowledgement (EndAckLeg.tla, 2026-11-20, lane ENDACK2D)
 

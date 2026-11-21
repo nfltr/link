@@ -196,17 +196,19 @@ CFG
 # hhtrace FILE [SEQAPP]: TLC on two joints' recorded holds
 # (spec/TraceHopHold.tla, lane LINKTRACE2); it passes when TLC reaches the
 # trace's end with every end acknowledged (TraceUnfinished violated).
-# SEQAPP: HopHold.tla's SeqApp (default {}: both apps TCP; quiclink's
-# runs, R's app a sequential QUIC far end: {"R"}, hhtraceseq).
+# SEQAPP, CONCAPP: HopHold.tla's SeqApp and ConcApp (default {}: both
+# apps TCP; quiclink's runs, R's app a QUIC far end: a sequential one
+# {"R"}, hhtraceseq; one reading beside its CloseWriteSync, hhtraceconc).
 hhtrace() {
 	cfg=$work/$(basename "$1").cfg
 	seq=${2:-}; [ -n "$seq" ] || seq={}
+	conc=${3:-}; [ -n "$conc" ] || conc={}
 	cat >"$cfg" <<CFG
 CONSTANTS
     TraceFile = "$1"
     Mutant = "none"
     SeqApp = $seq
-    ConcApp = {}
+    ConcApp = $conc
 INIT TraceInit
 NEXT TraceNext
 INVARIANTS
@@ -222,6 +224,7 @@ CFG
 	[ $hhst != 0 ] && grep -q '^Error: Invariant TraceUnfinished is violated' "$cfg.out"
 }
 hhtraceseq() { hhtrace "$1" '{"R"}'; }
+hhtraceconc() { hhtrace "$1" '{}' '{"R"}'; }
 
 # ptrace FILE: TLC on one Pool's recorded trace (spec/TracePool.tla); it
 # fails unless TLC reaches the trace's end (TraceUnfinished violated).
@@ -859,6 +862,7 @@ mutants)
 	for f in spec/traces/endackleg-*.ndjson; do job endfixture eatrace "$f"; done
 	for f in spec/traces/hophold-*.ndjson; do job endfixture hhtrace "$f"; done
 	for f in spec/traces/hopholdseq-*.ndjson; do job endfixture hhtraceseq "$f"; done
+	for f in spec/traces/hopholdconc-*.ndjson; do job endfixture hhtraceconc "$f"; done
 	wait
 	fail=0
 	i=0
@@ -1070,7 +1074,7 @@ traces)
 	# (TraceSessionWrite.tla) and a joint's side closed whole
 	# (TraceJoinClose.tla), lane LINKTRACE2: each session's (joint's) file, its
 	# events counted; an event no trace took is a test gap.
-	for k in read wait write joinclose peerjoinclose relayed hophold hopholdquic; do
+	for k in read wait write joinclose peerjoinclose relayed hophold hopholdquic hopholdconc; do
 		mkdir -p "$work/$k"
 		pkg= mdir=.
 		case $k in
@@ -1082,6 +1086,8 @@ traces)
 		hophold) env=LINKTRACE_HOPHOLD check=hhtrace pkg=./peerlink/ tests=${TRACE_HOPHOLD_TESTS:-'^TestJoinCrossingHalfClosesEnd$'} model=TraceHopHold ;;
 		# R's app a sequential QUIC far end (HopHold.tla SeqApp, lane LINKGATE): quiclink's module
 		hopholdquic) env=LINKTRACE_HOPHOLD check=hhtraceseq mdir=peerlink/quiclink tests=${TRACE_HOPHOLD_QUIC_TESTS:-'^TestJoinsHoldOntoASequentialQuicApp$'} model=TraceHopHold ;;
+		# R's app a QUIC far end reading beside its CloseWriteSync (ConcApp, lane LINKHOLD2)
+		hopholdconc) env=LINKTRACE_HOPHOLD check=hhtraceconc mdir=peerlink/quiclink tests=${TRACE_HOPHOLD_CONC_TESTS:-'^TestJoinHoldsOntoAConcurrentQuicApp$'} model=TraceHopHold ;;
 		write) env=LINKTRACE_WRITE check=swtrace tests=${TRACE_WRITE_TESTS:-'^(TestSessionWriteWaitingForCreditSeesFirstDeadline|TestWriteDeadline|TestWriteDeadlineStuckNetwork)$'} model=TraceSessionWrite ;;
 		esac
 		(cd "$mdir" && env "$env=$work/$k" GOWORK=off go test -tags linktrace -count=1 -run "$tests" "${pkg:-.}") >"$work/test.out" 2>&1 || {

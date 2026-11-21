@@ -11,6 +11,7 @@ package linkhook
 import (
 	"io"
 	"net"
+	"sync/atomic"
 )
 
 var (
@@ -35,4 +36,12 @@ var (
 	// called before c sends the ENDACK of the end it read.
 	TraceHopHold func(test string, g, r net.Conn, far ...net.Conn) func()
 	TraceHopRead func(c net.Conn)
+
+	// Joint, set by a test, sees a peerlink joint's steps
+	// (spec/HopHold.tla sync-no-hold's guards): "sync" (src: the conn
+	// whose end it passes on) in joint.sync's goroutine before its
+	// CloseWrite, which waits while it blocks; "held" (src nil) when the
+	// joint holds an end while its other direction syncs, under the
+	// joint's lock: it must not block then.
+	Joint atomic.Pointer[func(ev string, src net.Conn)]
 )

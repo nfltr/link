@@ -155,6 +155,106 @@ func TestJoinsHoldOntoASequentialQuicApp(t *testing.T) {
 	}
 }
 
+// TestJoinHoldsOntoAConcurrentQuicApp (spec/HopHold.tla HopHoldConc.cfg,
+// mutant sync-no-hold; lane LINKHOLD2): two joints, G (a TCP target and
+// a link session) and R (the link session's peer and a QUIC session whose
+// app reads while its own CloseWriteSync waits). The app half-closes
+// first; R's sync of that end waits before its CloseWrite
+// (internal/linkhook.Joint), so R's session has not ended whole when the
+// target's FIN reaches R. R must hold that end until G's Mux has the
+// app's: the code before passed it onto the QUIC session with a sync of
+// its own, and the app read the peer's EOF with its own FIN still at R
+// (lane LINKGATE's trace hophold-branch2-sync-onto-app, 1 run in 4).
+func TestJoinHoldsOntoAConcurrentQuicApp(t *testing.T) {
+	a, _, acc := endAckPair(t, 0, nil, endAckProtos...)
+	ctx := context.Background()
+	ln, rn := tcpConns(t)
+	target, tAgent := tcpConns(t)
+	app, in := openSent(t, a, acc, "down")
+	t.Cleanup(traceHopHold(t.Name(), tAgent, in, app)) // -tags linktrace: spec/TraceHopHold.tla, ConcApp {"R"}
+	rJoin := make(chan error, 1)
+	go func() {
+		c, _, err := link.Server(ctx, ln, link.Config{Auth: link.NoAuth, Hop: true})
+		if err != nil {
+			rJoin <- err
+			return
+		}
+		_ = link.NewMux(c).Serve(func(_ []byte, s *link.Session) { rJoin <- peerlink.Join(in, s) })
+	}()
+	gc, err := link.Client(ctx, rn, link.Config{Hop: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gm := link.NewMux(gc)
+	go func() { _ = gm.Serve(nil) }()
+	t.Cleanup(func() { _ = gc.Close() })
+	gs, err := gm.Open(ctx, []byte("h"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gJoin := make(chan error, 1)
+	go func() { gJoin <- peerlink.Join(tAgent, gs) }()
+	roundTrip(t, target, app, "up")
+	b := make([]byte, 4)
+	if _, err := io.ReadFull(target, b); err != nil || string(b) != "down" {
+		t.Fatalf("the target read %q, %v, want \"down\"", b, err)
+	}
+	appEnd, tEnd := readEnd(app), readEnd(target)
+
+	synced, open, held, unheld := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var first, h, u, rel sync.Once
+	release := func() { rel.Do(func() { close(open) }) }
+	f := func(ev string, src net.Conn) {
+		switch {
+		case ev == "held":
+			h.Do(func() { close(held) })
+		case src == net.Conn(in):
+			first.Do(func() { close(synced); <-open })
+		case src != net.Conn(tAgent):
+			u.Do(func() { close(unheld) })
+		}
+	}
+	linkhook.Joint.Store(&f)
+	t.Cleanup(func() {
+		linkhook.Joint.Store(nil)
+		release()
+	})
+	appSync := closeSync(app) // the app reads on meanwhile (appEnd)
+	<-synced                  // R syncs the app's end: its CloseWrite waits
+	if err := target.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-appEnd:
+		t.Fatalf("the app's reads ended (%v) while its own FIN was still at R: R passed the target's end unheld", err)
+	case <-unheld:
+		t.Fatal("R passed the target's end onto the QUIC session with a sync of its own, unheld, while the app's end syncs")
+	case <-held:
+	case <-time.After(10 * time.Second):
+		t.Fatal("R neither held nor passed the target's end")
+	}
+	release()
+	for name, ch := range map[string]chan error{"the app's CloseWriteSync": appSync, "the app's read": appEnd, "the target's read": tEnd, "G's join": gJoin, "R's join": rJoin} {
+		if err := wait(t, ch, name); err != nil {
+			t.Fatalf("%s: %v, want nil", name, err)
+		}
+	}
+	_ = app.Close()
+}
+
+// readEnd reads c to its end: nil at a clean end with nothing more read.
+func readEnd(c net.Conn) chan error {
+	ch := make(chan error, 1)
+	go func() {
+		b, err := io.ReadAll(c)
+		if err == nil && len(b) != 0 {
+			err = io.ErrUnexpectedEOF
+		}
+		ch <- err
+	}()
+	return ch
+}
+
 // traceHopHold is peerlink's two-joint recorder (-tags linktrace) for
 // this module's tests: g, r the joints' app conns, far R's far end apps.
 func traceHopHold(test string, g, r net.Conn, far ...net.Conn) func() {

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/nfltr/link"
+	"github.com/nfltr/link/internal/linkhook"
 	"github.com/nfltr/link/peerlink"
 )
 
@@ -272,3 +273,120 @@ func TestHopClosesASessionOnlyOnceItsEndIsAcknowledged(t *testing.T) {
 // wrapped is a link session behind another type, as relay-core's
 // metered conn: peerlink's own joint, not link's.
 type wrapped struct{ *link.Session }
+
+// syncTCP is a TCP app conn that syncs its end (a conn passing
+// CloseWriteSync on, as tlsend's): Join passes an end onto it with
+// CloseWriteSync, not CloseWrite.
+type syncTCP struct{ *net.TCPConn }
+
+func (s syncTCP) CloseWriteSync() error { return s.CloseWrite() }
+
+// jointGate sees the joints' steps (internal/linkhook.Joint): the first
+// sync of app's end waits in synced until open closes; held closes at a
+// joint's hold, unheld at a sync of any other conn's end but via's
+// (G's: the target's).
+type jointGate struct {
+	synced, open, held, unheld chan struct{}
+	once                       sync.Once
+}
+
+func (g *jointGate) release() { g.once.Do(func() { close(g.open) }) }
+
+func gateJoints(t *testing.T, app, via net.Conn) *jointGate {
+	g := &jointGate{synced: make(chan struct{}), open: make(chan struct{}), held: make(chan struct{}), unheld: make(chan struct{})}
+	var first, h, u sync.Once
+	f := func(ev string, src net.Conn) {
+		switch {
+		case ev == "held":
+			h.Do(func() { close(g.held) })
+		case src == app:
+			first.Do(func() { close(g.synced); <-g.open })
+		case src != via:
+			u.Do(func() { close(g.unheld) })
+		}
+	}
+	linkhook.Joint.Store(&f)
+	t.Cleanup(func() {
+		linkhook.Joint.Store(nil)
+		g.release()
+	})
+	return g
+}
+
+// TestJoinHoldsAnEndOntoASyncingApp (spec/HopHold.tla HopHoldConc.cfg,
+// mutant sync-no-hold; lane LINKHOLD2): two joints, G (a TCP target and a
+// link session) and R (that session's peer and an app conn that syncs its
+// end too). The app half-closes first and reads on; R's sync of that end
+// waits before its CloseWrite (jointGate), so R's session has not ended
+// whole when the target's FIN reaches R. R must hold that end while it
+// syncs the app's: the code before passed it with a sync of its own, and
+// the app read the peer's EOF with its own FIN still at R.
+func TestJoinHoldsAnEndOntoASyncingApp(t *testing.T) {
+	ctx := context.Background()
+	gl, rl := tcpPair(t)
+	target, tAgent := tcpPair(t)
+	app, rApp := tcpPair(t)
+	appSide := syncTCP{rApp}
+	rJoin := make(chan error, 1)
+	go func() {
+		c, _, err := link.Server(ctx, rl, link.Config{Auth: link.NoAuth, Hop: true})
+		if err != nil {
+			rJoin <- err
+			return
+		}
+		_ = link.NewMux(c).Serve(func(_ []byte, s *link.Session) { rJoin <- peerlink.Join(appSide, s) })
+	}()
+	gc, err := link.Client(ctx, gl, link.Config{Hop: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gm := link.NewMux(gc)
+	go func() { _ = gm.Serve(nil) }()
+	t.Cleanup(func() { _ = gc.Close() })
+	gs, err := gm.Open(ctx, []byte("h"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gJoin := make(chan error, 1)
+	go func() { gJoin <- peerlink.Join(tAgent, gs) }()
+	roundTrip(t, target, app, "up")
+	roundTrip(t, app, target, "down")
+	appEnd, tEnd := readEnd(app), readEnd(target)
+
+	g := gateJoints(t, appSide, tAgent)
+	if err := app.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	<-g.synced // R syncs the app's end: its CloseWrite waits
+	if err := target.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-appEnd:
+		t.Fatalf("the app's reads ended (%v) while its own FIN was still at R: R passed the target's end unheld", err)
+	case <-g.unheld:
+		t.Fatal("R passed the target's end onto the app with a sync of its own, unheld, while the app's end syncs")
+	case <-g.held:
+	case <-time.After(10 * time.Second):
+		t.Fatal("R neither held nor passed the target's end")
+	}
+	g.release()
+	for name, ch := range map[string]chan error{"the app's read": appEnd, "the target's read": tEnd, "G's join": gJoin, "R's join": rJoin} {
+		if err := wait(t, ch, name); err != nil {
+			t.Fatalf("%s: %v, want nil", name, err)
+		}
+	}
+}
+
+// readEnd reads c to its end: nil at a clean end with nothing more read.
+func readEnd(c net.Conn) chan error {
+	ch := make(chan error, 1)
+	go func() {
+		b, err := io.ReadAll(c)
+		if err == nil && len(b) != 0 {
+			err = io.ErrUnexpectedEOF
+		}
+		ch <- err
+	}()
+	return ch
+}
