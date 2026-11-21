@@ -136,7 +136,10 @@ What it costs, and when not to use it:
   several connections. Each connection keeps its own windows and its
   own handshake (`Dial`, so the caller chooses a socket each or one
   shared `quic.Transport`: connections on one socket are told apart by
-  connection ID); `BenchmarkConnsCPU` measures both. `Serve`'s `Connect`
+  connection ID); `BenchmarkConnsCPU` measures both: 4 sessions on one
+  loopback connection 616 MB/s, on 4 connections 851 MB/s from one
+  socket and 822 from a socket each (Linux, both ends in one process on
+  3 cores, medians of 6), so one socket's read loop does not cap them. `Serve`'s `Connect`
   keeps one connection to each peer it names.
 - Peers: a dialled connection's peer is the name `Open` was given; an
   accepted one's is `Config.ServedPeer`, else the verified client
