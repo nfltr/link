@@ -558,7 +558,7 @@ alone); `TestConcurrentAcquiresShareAGrant` for the fix.
 
 ## quiclink: QUIC ACK frequency (2026-11-21, lane SPEED-ACK, unreleased)
 
-- **Where**: the quic-go fork (`v0.63.1-nfltr.6.0.20261121191332-341157e29140`:
+- **Where**: the quic-go fork (`v0.63.1-nfltr.7`:
   `internal/ackhandler/received_packet_tracker.go` `ackPolicy`,
   `sent_packet_handler.go` `SetPacketThreshold`, `connection.go`
   `sendAckFrequency`) and `peerlink/quiclink/ackfreq.go` (`AckPolicy`,

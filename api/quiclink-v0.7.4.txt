@@ -2,5 +2,6 @@ Compatible changes:
 - AckPolicy: added
 - CodeNoAckFrequency: added
 - Config.Acks: added
+- Config.Conns: added
 - DefaultAckPolicy: added
 - ErrNoAckFrequency: added

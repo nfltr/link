@@ -1,7 +1,5 @@
-github.com/nfltr/quic-go v0.63.1-nfltr.6 h1:d8QxUtP94hNCImYfqDCNH7CA8644Z0wXVyYwUVKFMwM=
-github.com/nfltr/quic-go v0.63.1-nfltr.6/go.mod h1:aCcZDnvYqlhb79qzzyvg5+pkAVu3JCsGDEKOoYKqnTk=
-github.com/nfltr/quic-go v0.63.1-nfltr.6.0.20261121191332-341157e29140 h1:VJTMuoJCVLeFGV5UnQ15uIohAaDzUm01tws29q52ik4=
-github.com/nfltr/quic-go v0.63.1-nfltr.6.0.20261121191332-341157e29140/go.mod h1:aCcZDnvYqlhb79qzzyvg5+pkAVu3JCsGDEKOoYKqnTk=
+github.com/nfltr/quic-go v0.63.1-nfltr.7 h1:GXpFHpFXr1m4uiJYO48yOyBBO0edBdLYs0+kf4kC0o0=
+github.com/nfltr/quic-go v0.63.1-nfltr.7/go.mod h1:aCcZDnvYqlhb79qzzyvg5+pkAVu3JCsGDEKOoYKqnTk=
 github.com/quic-go/go-ossfuzz-seeds v0.1.0 h1:APacT+iIaNF6fd8AGEiN3bT/Jtkd2jz4v4TzM7MFjy0=
 github.com/quic-go/go-ossfuzz-seeds v0.1.0/go.mod h1:3IOHRbJIc+L6YKMwfDtJAM9Vj9k0YY4muhuyUYk5tbk=
 github.com/stretchr/testify v1.12.1 h1:EuwCh5fleGS7H32xRwO3wRGT7DxrDhLAT6FF8MpWDWE=
