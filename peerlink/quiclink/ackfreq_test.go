@@ -6,6 +6,7 @@ package quiclink_test
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -42,10 +43,14 @@ func TestNodeAsksForAckFrequency(t *testing.T) {
 
 // TestRefusesPeerWithoutAckFrequency: a peer that does not advertise
 // min_ack_delay (quiclink before lane SPEED-ACK) is refused both ways:
-// a hard cut, the peer reads CodeNoAckFrequency.
+// a hard cut, the peer reads CodeNoAckFrequency. ServedPeer still sees
+// the connection first: it may answer another protocol on the socket
+// (relay-core's QAD, whose dialler has no ACK frequency).
 func TestRefusesPeerWithoutAckFrequency(t *testing.T) {
 	pc := listenUDP(t)
-	b := mustNew(t, quiclink.Config{PacketConn: pc, TLS: serverTLS("b"), Liveness: link.LivenessFast})
+	var served atomic.Int32
+	b := mustNew(t, quiclink.Config{PacketConn: pc, TLS: serverTLS("b"), Liveness: link.LivenessFast,
+		ServedPeer: func(*quic.Conn) (string, error) { served.Add(1); return "a", nil }})
 	go func() { _ = b.Serve(func(_ string, _ []byte, s peerlink.Session) { _ = s.Close() }) }()
 	t.Cleanup(func() { _ = b.Drain(context.Background()) })
 	old := func(ctx context.Context, _ string, qc *quic.Config) (*quic.Conn, error) {
@@ -64,6 +69,9 @@ func TestRefusesPeerWithoutAckFrequency(t *testing.T) {
 	var ae *quic.ApplicationError
 	if err := context.Cause(q.Context()); !errors.As(err, &ae) || ae.ErrorCode != quiclink.CodeNoAckFrequency {
 		t.Fatalf("listener's close: %v, want CodeNoAckFrequency", err)
+	}
+	if served.Load() != 1 {
+		t.Fatalf("ServedPeer ran %d times before the refusal, want 1", served.Load())
 	}
 	// A Node dialling a peer without it refuses the connection itself.
 	pc2 := listenUDP(t)

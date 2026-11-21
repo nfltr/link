@@ -738,12 +738,14 @@ func withALPN(tc *tls.Config) *tls.Config {
 }
 
 func (n *Node) serveConn(q *quic.Conn) {
-	if refuseWithoutAckFrequency(q) != nil {
-		return
-	}
 	peer, err := n.servedPeer(q)
 	if err != nil {
 		_ = q.CloseWithError(CodeUnnamed, err.Error())
+		return
+	}
+	// After ServedPeer: it may answer a connection of another protocol on
+	// the socket (relay-core's QAD) and refuse it.
+	if refuseWithoutAckFrequency(q) != nil {
 		return
 	}
 	c := n.newConn(q, peer)
