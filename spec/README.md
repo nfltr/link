@@ -1481,6 +1481,7 @@ taken (`-coverage 1`).
 | time-threshold loss (9/8 RTT) is not modelled: reordering within R places is far below an RTT at the rates measured | RFC 9002 6.1.2; REORDER's path: 1-9 places |
 | before the frame arrives the receiver is RFC 9000's (T 1, R 1, max_ack_delay): more ACKs, no guarantee above weakened | draft section 4 |
 | the frame is retransmitted when lost (a control frame); a lower sequence number is ignored | draft 4, the fork's `framer` |
+| before its first ACK the receiver reports no hole (quic-go numbers 1-RTT packets after the handshake's in one space, so the numbers below the first look missing); T < R, so the count sends that first ACK before a hole is R deep (ASSUME) | the fork's `hasNewMissingPackets`, `AckFrequency.validate` |
 
 Code: the fork (github.com/nfltr/quic-go, branch `nfltr`)
 `internal/ackhandler/received_packet_tracker.go` (the receiver),
