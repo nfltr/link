@@ -25,6 +25,6 @@ Repro (Linux container, golang:1.27.2):
 No seed (not a seeded test).
 
 ## Not run
-Soak, compare (LIBS=link,yamux), fuzz targets 6-11 (FuzzRecvV2, FuzzMuxServeV2, FuzzParseWindow, FuzzForward, quiclink FuzzPreamble and FuzzAnswer), root race count=200, semgrep, stress-ng (not installed).
+Soak, fuzz targets 6-11 (FuzzRecvV2, FuzzMuxServeV2, FuzzParseWindow, FuzzForward, quiclink FuzzPreamble and FuzzAnswer), root race count=200, semgrep, stress-ng (not installed).
 
 Test executions that completed: quiclink chain 50, peerlink 200 (1 failed batch), baseline suites 1x. Fuzz ~0.25 h, soak 0 h.

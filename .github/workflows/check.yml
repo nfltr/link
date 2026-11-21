@@ -64,7 +64,6 @@ jobs:
       - run: make check-spec-drift
       - run: make check-api
       - run: make check-soak
-      - run: make check-compare
       - run: make check-static
   fuzz-short:
     if: github.event_name != 'schedule'

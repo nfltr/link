@@ -414,8 +414,8 @@ visible to hops.
   Handing received slices to the writer by reference (writev without the
   copy) was considered and deferred: it loses cross-session coalescing
   into one TLS record, and memcpy is not the bottleneck next to TLS.
-- **Benchmarks** (root, in process, TCP loopback; results in
-  `compare/README.md`):
+- **Benchmarks** (root, in process, TCP loopback; results in the
+  README, "Chaining"):
   - `BenchmarkChainThroughput/hops={0,1,2,4}`: MB/s, 8 MiB per session,
     1 and 32 sessions;
   - `BenchmarkChainLatency/hops={0,1,2,4}`: 64 B echo round trip;
@@ -572,8 +572,7 @@ it, none a change of direction):
   at most the links' windows plus one 256 KiB batch per hop
   (`TestChainStalledFarReader`, 1-4 links; the chain soak, 3 links, 3.3-3.5
   MiB of a 3.5 MiB bound).
-- **Benchmarks** are recorded in the README ("Chaining") rather than
-  compare/README.md, which compares link with yamux.
+- **Benchmarks** are recorded in the README ("Chaining").
 - **Soak**: the `chain-3hop` config and `soak/cmd/linkhop` (the same
   roles as processes, for a run across pods) are in the soak module
   (SOAK.md, "Chains").

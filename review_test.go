@@ -313,7 +313,7 @@ func TestReceiveLoopReadsWhileARefusalWaits(t *testing.T) {
 	}
 }
 
-// F9 (lane LINKF7, the yamux comparison): CloseWrite reports a FIN it
+// F9 (lane LINKF7): CloseWrite reports a FIN it
 // could not write, as Write reports its bytes: the connection's writes
 // failed, so the peer never reads this side's io.EOF. The code before
 // returned nil (Mux.sendClose dropped the error).

@@ -738,8 +738,8 @@ migration:
   `github.com/quic-go/quic-go`: nfltr's fork, upstream 4b404ee15e68 plus
   four fixes. The API names the fork's types (`*quic.Config`,
   `*quic.Conn` in `Config.Dial`), an incompatible change, first tagged in v0.4.17;
-  importers switch their quic-go import to the fork's path. The soak and
-  compare modules do.
+  importers switch their quic-go import to the fork's path. The soak
+  module does.
 - Bug fix (quic-go): after a burst one way, the other way ran at a
   fraction of the path's rate for the connection's life. HyStart now
   leaves slow start only while the sender uses its window
@@ -1222,8 +1222,7 @@ Chaining ([docs/design/chaining.md](docs/design/chaining.md), README
 
 ## v0.9.0 (2026-10-15)
 
-The API cleanup ahead of v1.0, from a review against yamux, smux,
-quic-go, libp2p, x/net/http2 and net. No wire change: the test vectors
+The API cleanup ahead of v1.0. No wire change: the test vectors
 and the golden recording are byte for byte those of v0.8.1.
 
 Breaking changes:

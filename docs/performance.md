@@ -54,10 +54,6 @@ machine:
   the goroutine-leak profile);
 - `link@<commit>/ab-P<n>/`: each optimization against its parent.
 
-Against yamux and muxado, each with its defaults (bulk, 64 streams,
-latency, open rate, idle memory, a slow reader, 40 ms RTT):
-`compare/defaults/README.md`.
-
 The machine was shared with other work throughout (load average 2-20),
 so the A/B runs alternate binaries and benchstat reports medians with
 their spread; read deltas below 10 % as noise unless benchstat marks them.
@@ -365,8 +361,7 @@ user-space copies 1 %.
   at the base commit), 45 % of the CPU in `frameLocked`'s waits and 70 %
   of the mutex profile's contention (`sync.(*Cond).Wait` re-taking the
   write lock); the write syscalls were 15 % of the CPU. link moved 2.4
-  GiB/s there, against 6.2 for yamux and 4.5 for muxado
-  (`compare/defaults`). Profiles at the base: `~/nfltr-evidence/profiles/2026-10-29-LINK64/link@7812759/base-profile/`.
+  GiB/s there. Profiles at the base: `~/nfltr-evidence/profiles/2026-10-29-LINK64/link@7812759/base-profile/`.
 - **What it does now**: each parked goroutine has a waiter of its own
   (a channel of capacity 1, reused: no allocation per wait). A served
   ticket wakes its holder only; the end of a write wakes the holder of
@@ -375,10 +370,8 @@ user-space copies 1 %.
   write or a write deadline wakes all. The order of turns and tickets is
   unchanged.
 - **Gain**: goroutines woken per 64 KiB message, 64 sessions: 66 -> 3.
-  Against yamux and muxado with their defaults (`compare/defaults`, all
-  three after the change): 64 streams link 6.6, yamux 5.3, muxado 3.8
-  GiB/s (before: link 2.4).
-  `compare/defaults`, link alone, 8 passes alternating base and new (the
+  The defaults benchmarks (a harness since removed from this repository),
+  8 passes alternating base and new (the
   first 6 at load average 5-8, the last two at 15-70; benchstat of the
   first 6): 64 sessions 2.35 -> 8.06 GiB/s (+242 %, p=0.002); one stream,
   40 ms RTT, held and fresh echo, open rate and idle heap per stream: no

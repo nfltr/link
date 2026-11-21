@@ -1657,10 +1657,10 @@ counterexample of the code before its fix (`make spec-mutants`):
 | F6 no invariant said why the receive loop never waits | low | `release-early` | `QueueWithinHeld`, 9 | the invariant |
 | F7 the receive loop wrote refusals inline | low | `reader-writes` (`Liveness.tla`, lane LINKPOOL) | `NoFalseDead`, 9 | `Mux.refuse`: a goroutine sends them, the queue bounded by max_sessions (`TestReceiveLoopReadsWhileARefusalWaits`); `Liveness.tla`'s assumption now holds |
 | F8 a grant was bounded loosely | low | (a faulty peer: not modelled) | | `Grant` counts a Write's credit not yet sent (`TestGrantCountsCreditInAWrite`) |
-| F9 `CloseWrite` returned nil when its CLOSE could not be written (lane LINKF7, the yamux comparison) | low | (a return value: no state changes, so no mutant; `CloseWriteSend` is the same step either way) | | **decided: returned**, as `Write` returns its bytes' failure and `grpclink`/`quiclink` return theirs: `io.ErrClosedPipe` wrapping the connection's end, so a caller knows the peer will never read its `io.EOF`; nil still means buffered, not delivered (`Sync`) (`TestCloseWriteReportsAFailedFIN`) |
+| F9 `CloseWrite` returned nil when its CLOSE could not be written (lane LINKF7) | low | (a return value: no state changes, so no mutant; `CloseWriteSend` is the same step either way) | | **decided: returned**, as `Write` returns its bytes' failure and `grpclink`/`quiclink` return theirs: `io.ErrClosedPipe` wrapping the connection's end, so a caller knows the peer will never read its `io.EOF`; nil still means buffered, not delivered (`Sync`) (`TestCloseWriteReportsAFailedFIN`) |
 
 Each test failed on the code before its fix. F7 re-checked (lane LINKF7,
-after the yamux comparison read "the code today" in the mutant's note as
+after a review read "the code today" in the mutant's note as
 the code now): no step of `Mux.Serve`'s loop (`Conn.recv`, `Mux.data`,
 `Mux.serve`) waits on the network: a pong goes through `keepAlive`, a
 refusal through `Mux.refuse`, `Mux.leave`'s close through `closeFlushed`'s
@@ -2212,16 +2212,12 @@ reachable only with `Sleep`). Trace fixtures: `live-dead-starved` (dead at
 a late first fire) rejected, `live-ok-starved` (the look, then the read)
 accepted. Test: `TestStarvedProcessKeepsALivePeer` (failed before).
 
-**The 15 s detection with busy sessions** (yamux comparison, `part`,
-`netchange`): link's bound is Interval + Timeout from the last frame read
-(15 s at `default`, 4.5 s at `fast`), and a busy connection's last frame
-is the moment the path broke, so it is reached in full. yamux pings every
-Interval whatever the traffic and fails the ping's write after its 10 s
-timeout: dead 10-15 s after the break, uniform over where in the ping
-period it fell (12.5 s on average, 12.7-13 s measured); idle link
-connections measured 13 s for the same reason (their last frame is a ping
-or pong before the break). Both worst cases are 15 s; link's is its
-documented bound and this lane does not change it.
+**The 15 s detection with busy sessions** (`part`, `netchange`): link's
+bound is Interval + Timeout from the last frame read (15 s at `default`,
+4.5 s at `fast`), and a busy connection's last frame is the moment the
+path broke, so it is reached in full. Idle connections measured 13 s
+(their last frame is a ping or pong before the break). The worst case is
+15 s, link's documented bound; this lane does not change it.
 
 **Superseded** by "quiclink's watch" below (QW3): the hypothesis that
 follows is refuted. The two RCFOLLOW failures with at most 1.7 s of stall (A's 10 s

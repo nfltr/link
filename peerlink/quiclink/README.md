@@ -235,7 +235,7 @@ dialler, both directions) and `TestListenerSettings`.
 
 ## Results
 
-`compare/` (its README) with `lib quic` beside link (window 1 MiB per
+Measured with the benchmark harness link carried until 845f85f (`compare/`, since removed) with quiclink beside link (window 1 MiB per
 session, mutual TLS 1.3, one connection, liveness `default`). Docker:
 each side in an OrbStack Linux container of its own on an arm64 Mac
 (cpusets 0-3 and 4-7), tc netem on both sides (one-way delay: the RTT is

@@ -124,30 +124,6 @@ check-linkvet:
 	t="$$(mktemp -d)" && (cd linkvet && GOWORK=off go build -o "$$t/linkvet" ./cmd/linkvet) && \
 	GOWORK=off "$$t/linkvet" -test=false $$(GOWORK=off go list ./... | grep -v /peerlinktest); s=$$?; rm -rf "$$t"; exit $$s
 
-# link vs yamux (compare/, a module of its own; its README). OUT holds the
-# JSON lines; compare-docker needs docker with NET_ADMIN (about an hour).
-OUT ?= $(CURDIR)/compare/out
-.PHONY: compare compare-docker compare-summary
-compare:
-	cd compare && GOWORK=off python3 rig.py host $(OUT)
-
-compare-docker:
-	cd compare && GOWORK=off python3 rig.py docker $(OUT)
-
-compare-summary:
-	cd compare && python3 rig.py summarize $(OUT)
-
-# link, yamux and muxado with their defaults, as Go benchmarks
-# (compare/defaults/README.md): check-compare vets the compare module (CI);
-# compare-defaults runs the measured passes into COMPARE_OUT.
-COMPARE_OUT ?= $(CURDIR)/compare/out/defaults
-.PHONY: check-compare compare-defaults
-check-compare:
-	cd compare && GOWORK=off go vet ./...
-
-compare-defaults:
-	compare/defaults/run.sh $(COMPARE_OUT)
-
 # bench: the benchmarks nfltr's perf series measures (its
 # deploy/linux-node/perf-series.sh link; keep the two sets the same),
 # -benchmem -count BENCH_COUNT (6, for benchstat), into BENCH_OUT (TMPDIR's:
