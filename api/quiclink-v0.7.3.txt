@@ -1,0 +1,6 @@
+Compatible changes:
+- AckPolicy: added
+- CodeNoAckFrequency: added
+- Config.Acks: added
+- DefaultAckPolicy: added
+- ErrNoAckFrequency: added
