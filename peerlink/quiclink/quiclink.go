@@ -991,6 +991,7 @@ type Session struct {
 	reset  atomic.Bool
 	over   atomic.Bool // ended: no datagram receiver from now on
 	wrote  atomic.Bool // a byte of this side's was written (emptyEnd)
+	closed atomic.Bool // Close ran: a Write's error is net.ErrClosed
 
 	// Answers (ALPNChain).
 	accepter bool
@@ -1030,6 +1031,11 @@ func (s *Session) CloseWrite() error {
 // its writes fail.
 func (s *Session) Close() error {
 	s.autoAccept()
+	// a Write blocked on the peer's window returns now (net.Conn; quic-go's
+	// SendStream.Close wakes no Write): what it queued is sent, the rest
+	// not (TestCloseUnblocksAWrite, nettest CloseTimeout)
+	s.closed.Store(true)
+	_ = s.stream.SetWriteDeadline(time.Now())
 	var err error
 	if !s.reset.Load() {
 		// after the peer's clean Close nil, as link's Close: Close says

@@ -170,6 +170,9 @@ func (s *Session) Write(b []byte) (int, error) {
 	if n > 0 && !s.wrote.Load() {
 		s.wrote.Store(true)
 	}
+	if err != nil && s.closed.Load() {
+		return n, net.ErrClosed
+	}
 	return n, s.mapErr(err)
 }
 
