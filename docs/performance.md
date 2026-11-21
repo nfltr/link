@@ -603,6 +603,40 @@ alone); `TestConcurrentAcquiresShareAGrant` for the fix.
 - **Don't undo**: no NewReno on quiclink's connections, and no pacer
   charge for a packet that is not in flight.
 
+## pathswitch: the send and receive buffers are rings (2026-11-21, lane SPEED-IO, unreleased)
+
+- **Where**: `pathswitch/ring.go` (`ring`, replacing `fifo` in `conn.go`):
+  `Conn.buf` (the bytes not yet acknowledged) and `Conn.rbuf` (the bytes
+  not yet read).
+- **Why it was slow**: `fifo.push` moved every byte it kept to the array's
+  front whenever an append passed its capacity, under the mutex the write
+  loop and ACK handling need. With W = 16 MiB (lane SENDWINDOW) that is
+  up to 16 MiB moved per acknowledgement: 34 % of nfltr-send's CPU
+  (0.45 CPUs) at 1.8 Gbit/s, 10-20x the bytes sent (lane SPEED profiles,
+  `~/nfltr-evidence/profiles/2026-11-21-SPEED/pathswitch@v0.1.3/`).
+- **What it does now**: the bytes stay where they were pushed; a drop
+  moves the head; a DATA frame and a `Read` take a view of at most two
+  segments (`peek`), so a byte is copied in once and out once whatever W.
+  The ring grows by doubling, to at most W for the send buffer
+  (`hi - acked <= W`) and 1.5 W for the receive buffer (an ACK goes out
+  while it holds at most W/2); a receiver holding more (bytes a RESUME
+  acknowledged, unread) still doubles. Bytes and positions are those of
+  the fifo (`TestRingMatchesASlice`, random push and drop against a plain
+  slice); not wire, `spec/DirectPath.tla` unchanged.
+- **Gain**: base (`2993180`, with the new benchmarks) and new test
+  binaries interleaved, 6 rounds, Apple M5, load average 4-6:
+  `BenchmarkWindow16M` 433 MiB/s -> 1.51 GiB/s (+257 %, p=0.002),
+  B/op 14.5 MiB -> 1.7 MiB; `BenchmarkWindow1M` 1.16 -> 1.60 GiB/s
+  (+38 %); `BenchmarkPathswitchRelayed` 1.27 -> 1.67 GiB/s (+31 %).
+  W = 16 MiB now costs 1.06x of W = 1 MiB (2.7x before). memmove fell
+  from 41 % to 20 % of the 16 MiB benchmark's CPU. Evidence:
+  `~/nfltr-evidence/profiles/2026-11-21-SPEED-IO/link@756b2df/`
+  (benchstat.txt, old/new cpu, heap, mutex and block profiles, manifest).
+- **Guard**: `BenchmarkWindow16M` within 1.5x of `BenchmarkWindow1M`;
+  `TestRingMatchesASlice` (capacity within W).
+- **Don't undo**: no slide of kept bytes in either buffer; a new reader of
+  `buf` or `rbuf` takes `peek`'s two segments.
+
 ## What was looked at and left
 
 - **TLS writes**: link writes a coalesced batch with one `Write` on the
