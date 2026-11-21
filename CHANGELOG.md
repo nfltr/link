@@ -8,6 +8,7 @@ version 2 unless an entry says otherwise.
 
 ## Unreleased
 
+- quiclink: `Config.Conns`, connections per peer (default 1, unchanged): `Open` puts a session on an idle dialled connection, else dials another while there are fewer, else the least loaded; a further dial that fails leaves the session on the one there is. quic-go's loop is per connection, so a bulk transfer over several sessions gets a core per connection at both ends; `BenchmarkConnsCPU` compares one shared socket with a socket each (`TestConnsPerPeer`; link 1.0 gate item 8a, lane SPEED-MULTI).
 - Tests only: quiclink `TestThroughputReorderedPath` and `TestThroughputAfterBurstTheOtherWay` measure their floor (the same path without reordering; a fresh session on an identical path) in the same window as the rate it bounds, both sessions moving data at once: measured seconds apart, a load burst during one measurement alone failed 4 of 20 runs each under `make test-under-load` (`PKGS='-C <module dir> .'` now runs a nested module's packages; lane QUICLINKLOAD).
 - Tests only: quiclink's test PKI (made once per test binary) is valid for 30 days, as soak's: valid for an hour, it expired in the 62nd minute of a `-count=20` loop under load and every later TLS test failed (`TestPKIOutlivesTheTestBinary`; lane QUICLINKLOAD).
 - quiclink: quic-go fork `v0.63.1-nfltr.5`: on Linux receive uses UDP GRO (split back into packets in order; `QUIC_GO_DISABLE_GRO` turns it off) and a GSO batch holds up to 44 full-size packets (was 14); `SocketBuffers` reports the socket buffers the host gave (lane SPEED-IO).

@@ -20,6 +20,7 @@ import (
 	"github.com/nfltr/link"
 	"github.com/nfltr/link/peerlink"
 	"github.com/nfltr/link/peerlink/quiclink"
+	"github.com/nfltr/quic-go"
 )
 
 // BenchmarkBulkCPU: one-way bulk transfer, 64 KiB writes, over one
@@ -46,13 +47,60 @@ func BenchmarkBulkCPU(b *testing.B) {
 	}
 }
 
-func benchBulkCPU(b *testing.B, tr string, sessions int, rate float64) {
-	var l pathLink
-	if tr == "quic" {
-		l = quicBenchPair(b)
-	} else {
-		l = tlsBenchPair(b)
+// BenchmarkConnsCPU: 4 sessions of bulk, as fast as the ends go, on
+// conns QUIC connections (Config.Conns) from the dialler's one UDP socket
+// (sock=one: Transport.Dial; the listener has one socket either way) or a
+// socket each (sock=own: quic.DialAddr): whether one socket's read loop
+// caps a peer's connections (nfltr docs/decisions/send-line-rate-2026-11-21.md
+// "Step 3").
+func BenchmarkConnsCPU(b *testing.B) {
+	for _, conns := range []int{1, 4} {
+		for _, sock := range []string{"one", "own"} {
+			if conns == 1 && sock == "own" {
+				continue
+			}
+			b.Run(fmt.Sprintf("conns=%d/sock=%s", conns, sock), func(b *testing.B) {
+				runBulkCPU(b, quicConnsPair(b, conns, sock == "one"), 4, 0)
+			})
+		}
 	}
+}
+
+// quicConnsPair is quicBenchPair with conns connections per peer, dialled
+// from one socket of the dialler's when shared.
+func quicConnsPair(tb testing.TB, conns int, shared bool) pathLink {
+	pc, err := net.ListenPacket("udp", net.JoinHostPort(benchHost(), "0"))
+	if err != nil {
+		tb.Fatal(err)
+	}
+	tb.Cleanup(func() { _ = pc.Close() })
+	bn := mustNew(tb, quiclink.Config{PacketConn: pc, TLS: serverTLS("b")})
+	dial := dialer("a", "b", pc.LocalAddr().String())
+	if shared {
+		cpc, err := net.ListenPacket("udp", net.JoinHostPort(benchHost(), "0"))
+		if err != nil {
+			tb.Fatal(err)
+		}
+		tr := &quic.Transport{Conn: cpc}
+		tb.Cleanup(func() { _ = tr.Close() })
+		addr := pc.LocalAddr()
+		dial = func(ctx context.Context, _ string, qc *quic.Config) (*quic.Conn, error) {
+			return tr.Dial(ctx, addr, clientTLS("a", "b"), qc)
+		}
+	}
+	an := mustNew(tb, quiclink.Config{Dial: dial, Conns: conns})
+	return pathLink{a: an, b: bn}
+}
+
+func benchBulkCPU(b *testing.B, tr string, sessions int, rate float64) {
+	if tr == "quic" {
+		runBulkCPU(b, quicBenchPair(b), sessions, rate)
+	} else {
+		runBulkCPU(b, tlsBenchPair(b), sessions, rate)
+	}
+}
+
+func runBulkCPU(b *testing.B, l pathLink, sessions int, rate float64) {
 	var got atomic.Int64
 	var done sync.WaitGroup
 	done.Add(sessions)

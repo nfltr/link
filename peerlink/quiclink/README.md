@@ -126,6 +126,18 @@ What it costs, and when not to use it:
   cancels both directions with code 2, so the peer reads an error, never
   `io.EOF` (on an `ALPNChain` connection a `*link.Abort`, below). Read
   and write deadlines.
+- Connections per peer (`Config.Conns`, default 1): `Open` puts a
+  session on an idle connection this Node dialled to the peer, else dials
+  another while it has fewer than `Conns`, else takes the least loaded;
+  picks toward one peer are one at a time, so concurrent `Open`s spread.
+  quic-go runs one goroutine per connection for every packet on it (the
+  connection's loop: packing, AEAD, ACKs), so one bulk transfer over
+  several sessions uses a core per connection at both ends only on
+  several connections. Each connection keeps its own windows and its
+  own handshake (`Dial`, so the caller chooses a socket each or one
+  shared `quic.Transport`: connections on one socket are told apart by
+  connection ID); `BenchmarkConnsCPU` measures both. `Serve`'s `Connect`
+  keeps one connection to each peer it names.
 - Peers: a dialled connection's peer is the name `Open` was given; an
   accepted one's is `Config.ServedPeer`, else the verified client
   certificate's Subject CommonName (none: the connection is closed).

@@ -145,6 +145,15 @@ type Config struct {
 	// MaxSessions is how many sessions the peer may have open toward this
 	// side on one connection (0: link.DefaultMaxSessions, 1024).
 	MaxSessions int
+	// Conns is how many connections this Node dials to one peer (0: 1):
+	// Open puts a session on an idle one, else dials another while there
+	// are fewer, else takes the least loaded. quic-go runs one goroutine
+	// per connection for every packet on it, so a peer's sessions on
+	// several connections use several cores at both ends (one bulk
+	// transfer over several sessions: nfltr-send). Each connection has
+	// its own windows (16 sessions' Window) and its own handshake through
+	// Dial. Serve's Connect keeps one connection to each peer it names.
+	Conns int
 	// Datagrams offers QUIC DATAGRAM frames (RFC 9221) on this Node's
 	// connections: a session's SendDatagram and OnDatagram (datagram.go),
 	// where the peer offers them too.
@@ -182,8 +191,8 @@ var (
 
 // New returns a Node; it dials nothing until Open or Serve. It refuses a
 // Config that cannot work, naming the field: neither Dial nor PacketConn;
-// a PacketConn without TLS; Connect without Dial; an invalid Liveness,
-// Window or MaxSessions (as link.Config.Validate).
+// a PacketConn without TLS; Connect without Dial; a negative Conns; an
+// invalid Liveness, Window or MaxSessions (as link.Config.Validate).
 func New(cfg Config) (*Node, error) {
 	switch {
 	case cfg.PacketConn != nil && cfg.Transport != nil:
@@ -196,6 +205,8 @@ func New(cfg Config) (*Node, error) {
 		return nil, errors.New("quiclink: Config.PacketConn is set but Config.TLS is nil: set the listener's certificate (and ClientCAs with ClientAuth tls.RequireAndVerifyClientCert, to name peers by their certificates)")
 	case len(cfg.Connect) > 0 && cfg.Dial == nil:
 		return nil, errors.New("quiclink: Config.Connect needs Config.Dial: set Dial to reach the peers it names")
+	case cfg.Conns < 0:
+		return nil, fmt.Errorf("quiclink: Config.Conns %d: want 0 (one) or more connections per peer", cfg.Conns)
 	}
 	if err := (link.Config{Liveness: cfg.Liveness, Window: cfg.Window, MaxSessions: cfg.MaxSessions}).Validate(); err != nil {
 		return nil, fmt.Errorf("quiclink: %w", err)
@@ -483,22 +494,6 @@ func (n *Node) changedNow() {
 	n.mu.Unlock()
 }
 
-// peerConns is the connection this Node dialled to one peer.
-type peerConns struct {
-	sem   chan struct{} // held while dialling
-	c     *conn
-	picks int // pick calls using it (n.mu)
-}
-
-// forgetLocked drops peer's p once nothing uses it (no connection, no
-// pick) unless Serve keeps peer connected: a peer named by an address
-// that changes leaves nothing behind. n.mu is held.
-func (n *Node) forgetLocked(peer string, p *peerConns) {
-	if p.picks == 0 && p.c == nil && n.dialled[peer] == p && !slices.Contains(n.cfg.Connect, peer) {
-		delete(n.dialled, peer)
-	}
-}
-
 // Open opens a session to peer: a stream on the connection this Node
 // dialled to it (dialled at the first Open, again once it closed or the
 // peer sent GOAWAY). Without Config.Dial it opens on one of the
@@ -512,15 +507,9 @@ func (n *Node) Open(ctx context.Context, peer string, header []byte) (peerlink.S
 		return nil, fmt.Errorf("quiclink: header of %d bytes, at most %d", len(header), maxHeader)
 	}
 	for {
-		c, err := n.pick(ctx, peer)
+		c, err := n.pick(ctx, peer, true)
 		if err != nil {
 			return nil, err
-		}
-		n.mu.Lock()
-		ok := c.addLocked()
-		n.mu.Unlock()
-		if !ok {
-			return nil, peerlink.ErrDraining
 		}
 		st, err := c.q.OpenStreamSync(ctx)
 		if err == nil {
@@ -550,96 +539,10 @@ func (n *Node) Open(ctx context.Context, peer string, header []byte) (peerlink.S
 	}
 }
 
-// pick returns a usable connection to peer.
-func (n *Node) pick(ctx context.Context, peer string) (*conn, error) {
-	if n.cfg.Dial == nil {
-		return n.pickServed(ctx, peer)
-	}
-	n.mu.Lock()
-	if n.draining {
-		n.mu.Unlock()
-		return nil, peerlink.ErrDraining
-	}
-	p := n.dialled[peer]
-	if p == nil {
-		p = &peerConns{sem: make(chan struct{}, 1)}
-		n.dialled[peer] = p
-	}
-	p.picks++
-	n.mu.Unlock()
-	defer func() {
-		n.mu.Lock()
-		p.picks--
-		n.forgetLocked(peer, p)
-		n.mu.Unlock()
-	}()
-	select {
-	case p.sem <- struct{}{}:
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-	defer func() { <-p.sem }()
-	n.mu.Lock()
-	c := p.c
-	n.mu.Unlock()
-	if c != nil && c.usable() {
-		return c, nil
-	}
-	return n.dial(ctx, peer, p)
-}
-
-// dial dials peer for p and starts serving the connection.
-// A Drain that starts meanwhile waits for it, then drains its connection
-// with the others: the peer may have opened sessions on it already, so it
-// gets GOAWAY, never a bare close.
-func (n *Node) dial(ctx context.Context, peer string, p *peerConns) (*conn, error) {
-	n.mu.Lock()
-	if n.draining {
-		n.mu.Unlock()
-		return nil, peerlink.ErrDraining
-	}
-	n.dialling++
-	n.mu.Unlock()
-	q, err := n.cfg.Dial(ctx, peer, n.qc.Clone())
-	var c *conn
-	if err == nil {
-		c = n.newConn(q, peer)
-	}
-	n.mu.Lock()
-	n.dialling--
-	close(n.changed) // wakes a Drain waiting for this dial
-	n.changed = make(chan struct{})
-	draining, cut := n.draining, n.cut
-	if c != nil && !cut {
-		p.c = c
-	}
-	n.mu.Unlock()
-	if err != nil {
-		return nil, err
-	}
-	if cut {
-		_ = q.CloseWithError(CodeDrainDeadline, "drain deadline")
-		return nil, peerlink.ErrDraining
-	}
-	go func() { // #nosec G118 -- the connection outlives the Open that dialled it
-		c.run()
-		n.mu.Lock()
-		if p.c == c {
-			p.c = nil
-		}
-		n.forgetLocked(peer, p)
-		n.mu.Unlock()
-	}()
-	if draining {
-		return nil, peerlink.ErrDraining // Drain sends GOAWAY on c
-	}
-	return c, nil
-}
-
 // pickServed returns the least-loaded usable connection peer dialled in,
-// waiting for one until ctx ends; it refuses at once while peer's every
-// connection is going away.
-func (n *Node) pickServed(ctx context.Context, peer string) (*conn, error) {
+// a session counted on it when add, waiting for one until ctx ends; it
+// refuses at once while peer's every connection is going away.
+func (n *Node) pickServed(ctx context.Context, peer string, add bool) (*conn, error) {
 	for {
 		n.mu.Lock()
 		if n.draining {
@@ -658,7 +561,11 @@ func (n *Node) pickServed(ctx context.Context, peer string) (*conn, error) {
 			}
 		}
 		changed := n.changed
+		ok := best == nil || !add || best.addLocked()
 		n.mu.Unlock()
+		if !ok {
+			return nil, peerlink.ErrDraining
+		}
 		if best != nil {
 			return best, nil
 		}
@@ -857,7 +764,7 @@ func (n *Node) keep(peer string) {
 	go func() { <-n.drained; cancel() }()
 	backoff := 100 * time.Millisecond
 	for ctx.Err() == nil {
-		c, err := n.pick(ctx, peer)
+		c, err := n.pick(ctx, peer, false)
 		if err != nil {
 			select {
 			case <-time.After(backoff):
@@ -972,9 +879,7 @@ func (n *Node) Stats() link.ConnStats {
 func (n *Node) connsLocked() []*conn {
 	conns := slices.Collect(maps.Keys(n.served))
 	for _, p := range n.dialled {
-		if p.c != nil {
-			conns = append(conns, p.c)
-		}
+		conns = append(conns, p.cs...)
 	}
 	return conns
 }
