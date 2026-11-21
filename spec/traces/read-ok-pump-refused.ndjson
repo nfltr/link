@@ -1,0 +1,11 @@
+{"ev":"Pump","r":-1}
+{"ev":"WRefuse","r":-21}
+{"ev":"PumpRefuse","r":-1}
+{"ev":"WTake","n":0,"r":-1}
+{"b":6,"ev":"Push","n":6,"s":1}
+{"ev":"Close","n":0}
+{"ev":"WTake","n":0,"r":-1}
+{"ev":"Pop","k":1,"n":6,"r":-1,"res":"data"}
+{"ev":"WWrite","n":6,"r":-1}
+{"ev":"WRel","n":0,"r":-1}
+{"ev":"Pop","k":0,"n":0,"r":-1,"res":"eof"}

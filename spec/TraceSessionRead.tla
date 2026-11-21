@@ -19,9 +19,10 @@ Grows == SelectSeq(Log, LAMBDA e : e.ev \in {"Push", "Append"})
 \* WriteTo beside it, without, the second of two WriteTos.
 TraceReaders == {Log[i].r : i \in Lines({"Begin", "Refuse", "WTake", "WRefuse", "WEnd", "Pump", "PumpRefuse"})}
 TracePumps == Lines({"Pump", "PumpRefuse"}) # {}
-WRs == {Log[i].r : i \in Lines({"WTake", "WRefuse"})} \ {-1}
+PumpRs == {Log[i].r : i \in Lines({"Pump", "PumpRefuse"})}  \* Pump's: -1
+WRs == {Log[i].r : i \in Lines({"WTake", "WRefuse"})} \ PumpRs
 Largest(S) == CHOOSE r \in S : \A o \in S : r >= o
-TraceCopier == IF TracePumps THEN -1 ELSE IF WRs = {} THEN 0 ELSE Largest(WRs)
+TraceCopier == IF TracePumps THEN CHOOSE r \in PumpRs : TRUE ELSE IF WRs = {} THEN 0 ELSE Largest(WRs)
 TraceWCopier == IF WRs \ {TraceCopier} = {} THEN 0 ELSE Largest(WRs \ {TraceCopier})
 TraceSlices == Cardinality(Lines({"Push"}))
 \* byte b's slice: a Push or Append line carries the slices (s) and bytes

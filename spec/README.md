@@ -735,7 +735,12 @@ witness `WitnessTwoWriteTos`; `writeto-no-lock` breaks `Once` there too.
 `SessionReadWriteTo.cfg` grew to 2,256 states (`WEnd`). Traced:
 `WriteTo`'s claim and its `WTake` (or `WRefuse`), and its release
 (`WEnd`), are logged under the queue's lock, as `Pump` (or `PumpRefuse`)
-is, so the trace orders the two claims. Guards:
+is, so the trace orders the two claims; `TestSessionWriteToBesidePumpRefused`
+and `TestSessionAPIPairs` run in `spec-traces` (every new event taken).
+Fixtures: `read-ok-pump-refused` (a WriteTo, then a second Pump,
+refused) and `read-ok-writeto-refuses-pump` accepted;
+`read-writeto-beside-pump` (a WriteTo's take after Pump) and
+`read-pump-beside-writeto` (a Pump while a WriteTo runs) rejected. Guards:
 `TestSessionWriteToBesidePumpRefused` (red before: the WriteTo took
 bytes, the Pump ran), `TestSessionWriteTosShareTheSession`.
 

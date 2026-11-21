@@ -1,0 +1,9 @@
+{"ev":"Pump","r":-1}
+{"ev":"WTake","n":0,"r":-21}
+{"b":6,"ev":"Push","n":6,"s":1}
+{"ev":"Close","n":0}
+{"ev":"Pop","k":1,"n":6,"r":-21,"res":"data"}
+{"ev":"WWrite","n":6,"r":-21}
+{"ev":"WRel","n":0,"r":-21}
+{"ev":"Pop","k":0,"n":0,"r":-21,"res":"eof"}
+{"ev":"WEnd","r":-21}

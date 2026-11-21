@@ -1,0 +1,14 @@
+{"ev":"WTake","n":0,"r":-54}
+{"b":2,"ev":"Push","n":2,"s":1}
+{"ev":"Pop","k":1,"n":2,"r":-54,"res":"data"}
+{"ev":"WWrite","n":2,"r":-54}
+{"ev":"WRel","n":0,"r":-54}
+{"ev":"Pump","r":-1}
+{"ev":"WTake","n":0,"r":-1}
+{"b":6,"ev":"Push","n":4,"s":2}
+{"ev":"Close","n":0}
+{"ev":"Pop","k":1,"n":4,"r":-1,"res":"data"}
+{"ev":"WWrite","n":4,"r":-1}
+{"ev":"WRel","n":0,"r":-1}
+{"ev":"Pop","k":0,"n":0,"r":-54,"res":"eof"}
+{"ev":"WEnd","r":-54}

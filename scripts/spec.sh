@@ -1085,7 +1085,7 @@ traces)
 		mkdir -p "$work/$k"
 		pkg= mdir=.
 		case $k in
-		read) env=LINKTRACE_READ check=rtrace tests=${TRACE_READ_TESTS:-'^(TestSessionConcurrentReads|TestSessionReadDeadlineClearedNeverEOF|TestSessionReadBesideWriteTo|TestSessionReadAfterPumpRefused|TestSessionPumpErrors)$'} model=TraceSessionRead ;;
+		read) env=LINKTRACE_READ check=rtrace tests=${TRACE_READ_TESTS:-'^(TestSessionConcurrentReads|TestSessionReadDeadlineClearedNeverEOF|TestSessionReadBesideWriteTo|TestSessionReadAfterPumpRefused|TestSessionPumpErrors|TestSessionWriteToBesidePumpRefused|TestSessionAPIPairs)$'} model=TraceSessionRead ;;
 		wait) env=LINKTRACE_WAIT check=wtrace tests=${TRACE_WAIT_TESTS:-'^(TestConcurrentAcquiresShareAGrant|TestSessionWriteWaitingForCreditSeesFirstDeadline|TestMuxSlowSessionIsolated)$'} model=TraceCreditWaiters ;;
 		joinclose) env=LINKTRACE_JOIN check=jctrace tests=${TRACE_JOINCLOSE_TESTS:-'^(TestJoinWholeCloseDeliversTheTail|TestChainHalfClose)$'} model=TraceJoinClose ;;
 		relayed) env=LINKTRACE_RELAYED check=rctrace tests=${TRACE_RELAYED_TESTS:-'^TestEndAck(WaitsForTheFarEnd|FailsWhenTheFarEndIsCut|FailsWhenItsConnectionIsCut|GivesUpWithoutProgress|ResetEndsTheWait|ExitThenTheFarEndWrites|CutThenTheFarEndWrites|CutWhileTheTailCopiesHoldsTheAbort|FailsWhenTheRelayIsGone|FarEndCloseBeforeFinFails)$'} model=TraceRelayedClose ;;
