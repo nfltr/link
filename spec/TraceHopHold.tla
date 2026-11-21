@@ -7,9 +7,11 @@
 (* n = 1 held), Synced (its Mux read the receipt), Acked (its sync        *)
 (* returned with the ENDACK: Tell, the ENDACK passed to its app) and       *)
 (* Closed (JointDone: the joint closed its app conn whole; a close before  *)
-(* the app's own end was acknowledged is no step, lane ENDTRACE).          *)
+(* the app's own end was acknowledged is no step, lane ENDTRACE), and a    *)
+(* far end app's AppRead (a SeqApp's read of R's end, logged by quiclink   *)
+(* before its ENDACK, lane LINKGATE).                                      *)
 (* Not logged: a Mux reading a FIN (it answers the receipt) and a held     *)
-(* end's Release, a Mux reading an ENDACK, a SeqApp's read (AppRead):     *)
+(* end's Release, a Mux reading an ENDACK:                                 *)
 (* TLC takes them between two logged steps. Lost (a joint                  *)
 (* aborted its app) is no step: nothing fails in HopHold. The trace is     *)
 (* accepted when TLC reaches its end with every end sent acknowledged      *)
@@ -28,7 +30,7 @@ In(j) == IF j = "G" THEN r2g ELSE g2r
 \* Joint j's Mux reads a frame of kind k.
 RecvKind(j, k) == In(j) # <<>> /\ Head(In(j))[1] = k /\ Recv(j)
 
-Env == \E d \in Dirs : Release(d) \/ AppRead(d) \/ \E j \in Joints : RecvKind(j, "fin") \/ RecvKind(j, "eack")
+Env == \E d \in Dirs : Release(d) \/ \E j \in Joints : RecvKind(j, "fin") \/ RecvKind(j, "eack")
 
 Step ==
     CASE E.ev = "CloseWrite" -> AppFin(EntryDir(E.j))
@@ -36,6 +38,7 @@ Step ==
       [] E.ev = "Synced" -> RecvKind(E.j, "rcv")
       [] E.ev = "Acked" -> Tell(EntryDir(E.j))
       [] E.ev = "Closed" -> JointDone(E.j)
+      [] E.ev = "AppRead" -> AppRead(Other(EntryDir(E.j)))
       [] OTHER -> Print(<<"unknown event", E>>, FALSE)
 
 TraceInit == Init /\ l = 1

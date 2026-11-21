@@ -1209,9 +1209,39 @@ Mutant `hold-in-receipt` (the code before: `NoStuck`, and `BothEnd`,
 ends the hold (`syncing`, `Synced`) in the callback and starts the held
 end on its own goroutine (`unhold(ok, async)`); after
 `CloseWriteSyncReceived` returned the held end still runs inline. 10 runs
-in 0.5 s. The trace recorder's runs are TCP apps (`SeqApp = {}`); no
-two-joint test has a QUIC far end app (quiclink's module requires link,
-so peerlink's tests cannot use it): `AppRead` is taken by no trace.
+in 0.5 s.
+
+Traced with a QUIC far end (lane LINKGATE, 2026-11-21): quiclink's
+`TestJoinsHoldOntoASequentialQuicApp` builds the two joints in quiclink's
+module (peerlink's tests cannot: quiclink's module requires link), G a
+TCP target and a link session, R that session's peer and a quiclink
+session whose app reads its end only once its own `CloseWriteSync`
+returned; a read gate on G's link conn holds R's CLOSE until R's Mux
+answered the target's, so R holds that end (14 of 15 Mac runs; the
+others' interleavings are steps of the model too). The test marks the
+joints through `internal/linkhook` (`TraceHopHold`, `TraceHopRead`,
+which peerlink's recorder sets under `-tags linktrace`); quiclink's
+`readEOF` logs `AppRead` (the app's read of R's end, `j` "R") before it
+sends the 'E', under peerlink's trace lock. `make spec-traces` checks its
+three runs as `hopholdquic` with `SeqApp = {"R"}` (`hhtraceseq`): every
+module step is taken by a trace now. With the mutant put back
+(`unhold(true, false)` in the receipt callback) the test fails at 30.0 s
+(`ErrEndAckIdle`); fixtures `hopholdseq-ok-held` (accepted) and
+`hopholdseq-hold-in-receipt` (the lines before the idle bound's `Lost`:
+rejected) in `make spec-mutants`.
+
+Open (lane LINKGATE): a joint whose two conns both sync their ends
+(a quiclink session and a link session) passes an end onto the
+quiclink session with `joint.sync` when the session it came from has
+not ended yet (`joint.ended`'s `syncerOf(dst)` branch): no hold while
+the other direction syncs, and the recorder logs that pass as a second
+`CloseWrite` (rejected: `AppFin` of a direction already sent). Recorded
+once in 4 runs without the read gate (nfltr evidence
+`~/nfltr-evidence/LINKGATE/hophold-branch2-sync-onto-app.ndjson`). An
+app reading concurrently can then read the peer's EOF while its own FIN
+is still on the wire (`HoldTruth`); a hold there must not be released at
+the QUIC receipt (the app's read: the `hold-in-receipt` cycle again).
+Design first: which of a joint's two syncing directions holds the other.
 
 ## One leg's end acknowledgement (EndAckLeg.tla, 2026-11-20, lane ENDACK2D)
 
@@ -1708,7 +1738,7 @@ Recorders per spec (lane LINKTRACE2, 2026-11-20):
 | `JoinClose.tla` | `TraceJoinClose.tla`, `trace_join_on.go`; peerlink's joint `peerlink/trace_on.go` | yes |
 | `SessionRead.tla`, `SessionWrite.tla`, `CreditWaiters.tla` | `TraceSessionRead.tla`, `TraceSessionWrite.tla`, `TraceCreditWaiters.tla` | yes |
 | `RelayedClose.tla` | `TraceRelayedClose.tla`, `trace_relayed_on.go`: every step but `AWrite`, `D1Copy`, `CWrite`, `CRead`, `CEnd` (TLC's, unlogged) | yes |
-| `HopHold.tla` | `TraceHopHold.tla`, `peerlink/trace_on.go` (`LINKTRACE_HOPHOLD`) | yes |
+| `HopHold.tla` | `TraceHopHold.tla`, `peerlink/trace_on.go` (`LINKTRACE_HOPHOLD`); `AppRead` by `peerlink/quiclink/trace_on.go` through `internal/linkhook` (`SeqApp = {"R"}`, lane LINKGATE) | yes |
 | `DirectPath.tla` | `TraceDirectPath.tla`, `pathswitch/trace_on.go` | yes |
 | `QuicWatch.tla` | none: `MBTWatch.tla` drives quiclink's watch from TLC's behaviours (`watch_mbt_test.go`) | MBT |
 | `LinkSession.tla` | none: an interface; `Link.tla` refines it (`Refines`) | refinement |
