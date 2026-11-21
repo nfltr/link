@@ -12,8 +12,8 @@ import (
 )
 
 // AckPolicy is the ACK rate a Node asks each peer for with QUIC's ACK
-// Frequency extension (draft-ietf-quic-ack-frequency-14, the fork's
-// Config.AckFrequency): the peer acknowledges after more than
+// Frequency extension (draft-ietf-quic-ack-frequency-14, the AckFrequency field of
+// the fork's quic.Config): the peer acknowledges after more than
 // AckElicitingThreshold ack-eliciting packets, or MaxAckDelay after the
 // oldest one not yet acknowledged, and at once only for a hole
 // ReorderingThreshold packets deep, which is also this side's packet
