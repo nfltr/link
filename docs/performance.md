@@ -511,6 +511,31 @@ does not show in the window-bound throughput runs. Evidence:
 Guard: `TestCreditOpenMakesNoWakeChannel` (an Open allocates its credit
 alone); `TestConcurrentAcquiresShareAGrant` for the fix.
 
+## A session's window grows with the path (2026-11-22, lane RELAYWIN, unreleased)
+
+A session's window was the hello's for its whole life, so one session
+moved a window per round trip. With `FeatureGrow` (WIRE.md section 7,
+`spec/CreditGrow.tla`) a waiting sender sends BLOCKED and the receiver
+doubles a window it reads with less than half unread, a whole window
+after the last growth, up to `Config.WindowMax` (16 MiB) within
+`Config.WindowBudget` (64 MiB a connection). `BenchmarkRTTThroughput`
+(one session, 64 MiB, a 20 ms userspace delay on the first link, Mac):
+1 MiB window 44 -> 278 MB/s, 4 MiB 156 -> 386 MB/s, joined (hops=1)
+43 -> 243 and 157 -> 402. relay-core `BenchmarkTCPTunnelThroughputRTT`
+(40 ms, box, n = 12, the old and new run side by side): download (the
+relay's 4 MiB window) 71.4 -> 136.1 MiB/s (+91 %, p = 0.000); upload (the
+agent's 16 MiB, already the cap) unchanged; the loopback rows within
+noise except upload with 8 sessions -5.8 % (p = 0.045, to rerun at low
+load). `BenchmarkThroughput` (tcp, 64 KiB, 1 and 8 sessions, old and new
+interleaved, Mac): unchanged; window updates per message 0.25 -> 0.03
+(one session's grown window returns credit in larger steps). Evidence:
+`~/nfltr-evidence/relaywin-2026-11-22/` (benchstat-bps.txt). Guard:
+`TestWindowGrowsOverALongPath` (the window grows over a 20 ms link, and
+the growth comes back when the session ends), `TestWindowGrowthRule`;
+`BenchmarkRTTThroughput` for the rate. A later edit must not make the
+receive loop send the growth (it waits on no write) or drop the epoch
+rule (a peer's BLOCKED before any data would grow an empty window).
+
 ## pathswitch: a writer sends what it may in one Write (2026-11-11, lane PATHPERF, unreleased)
 
 - **Where**: `pathswitch/conn.go`: `more`, `frame`, `batches`, `writeLoop`.

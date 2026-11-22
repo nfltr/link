@@ -435,6 +435,8 @@ func (c *Credit) Consumed(sid string, n int) {
 // (less than half of it unread) and a whole window arrived since it last
 // grew, at most to winMax and within the budget; the bytes go out with
 // the next update (Consumed). The receive loop calls it: it sends nothing.
+// Guard: TestWindowGrowsOverALongPath, BenchmarkRTTThroughput
+// (docs/performance.md "A session's window grows with the path").
 func (c *Credit) peerBlocked(sid string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
