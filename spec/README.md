@@ -934,7 +934,28 @@ Mutants (`make spec-mutants`): `no-keepup` (NeverReadNoGrowth), `no-epoch`
 `fixed-cap-sender` (NoErr: growth toward a peer without FeatureGrow).
 Witnesses (each violated): `WitnessGrew`, `WitnessCapped`,
 `WitnessBudgetFull`, `WitnessStoppedFull`, `WitnessBlockedNoGrowth`,
-`WitnessGrownDelivered`.
+`WitnessGrownDelivered`, `WitnessAheadPastFirst`.
+
+### A wait for a turn (TurnBound, lane FAIRNESS)
+
+What is on the path ahead of a session's next byte is the other sessions'
+data, at most their windows (`TurnBound`): with fixed windows `(n-1) x W`,
+with growth `(n-1) x W` plus the connection's growth, and a session's data
+on the path does pass its first window (`WitnessAheadPastFirst`). On a
+path that buffers more than the windows in front of its bottleneck (a
+loaded host's autotuned socket buffers), every session is held at its
+credit, and a session waits while the others' credit passes: the bound
+peerlinktest's Fairness verdict rests on. A window's growth leaves with one
+update, so the round in which the sessions grow puts a growth-sized run of
+each on the path: `TestFairnessOnADeepPath` (16 MiB deep, 8 sessions at
+4 MiB/s, `-race`) waited 7.2-9.2 MiB with growth, past the 7 MiB of fixed
+windows in every run and past half the run in 10 of 50 (lane FAIRNESS);
+with fixed windows 2.0-3.9 MiB, none of 49 past it. That case runs with
+fixed windows (`WindowMax` = `Window`) and holds the verdict's wait bound;
+with growth it holds the share (every session at least a quarter of a fair
+share), as a wait there is bounded by the grown windows, not the run.
+Mutant `send-uncharged` (a data frame that takes no credit) fails
+`TurnBound` alone (`CreditGrowTurn.cfg`).
 
 ## Credit's waiters (CreditWaiters.tla, 2026-11-05, lane LINKWAKE)
 

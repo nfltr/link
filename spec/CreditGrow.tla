@@ -84,7 +84,7 @@ Init ==
 \* Credit.acquire takes a byte and the frame goes out.
 Send(s) ==
     /\ live[s] /\ sent[s] < Total /\ cred[s] >= 1
-    /\ cred' = [cred EXCEPT ![s] = @ - 1]
+    /\ cred' = [cred EXCEPT ![s] = IF Mutant = "send-uncharged" THEN @ ELSE @ - 1]
     /\ sent' = [sent EXCEPT ![s] = @ + 1]
     /\ ab' = Append(ab, [t |-> "data", s |-> s])
     /\ UNCHANGED <<bsent, ba, win, held, cons, owed, rcvd, rd, epoch, grown, stopped, stopWin, live, err>>
@@ -226,6 +226,17 @@ StoppedGrowsOnce == \A s \in Sids : stopped[s] => win[s] <= 2 * stopWin[s]
 \* (epoch: the bytes received when it last grew).
 NoGrowthAhead == \A s \in Sids : win[s] = W \/ (win[s] <= 2 * epoch[s] /\ epoch[s] <= rcvd[s])
 
+\* A session's wait for its turn (lane FAIRNESS, spec/README.md "A wait
+\* for a turn"): what is on the path ahead of a session's next byte is the
+\* other sessions' data, at most their windows, which with growth are their
+\* first windows plus the connection's growth, not the first windows alone
+\* (WitnessAheadPastFirst). On a path that buffers more than that (a deep
+\* path, peerlinktest TestFairnessOnADeepPath) a session waits that long.
+Others(s, f(_)) == Sum(LAMBDA t : IF t # s /\ live[t] THEN f(t) ELSE 0)
+TurnBound == \A s \in Sids :
+    Others(s, InFlightData) <= Others(s, LAMBDA t : win[t])
+    /\ Others(s, LAMBDA t : win[t]) <= (Cardinality(Sids) - 1) * W + grown
+
 \* Liveness: a session whose reader keeps reading gets every byte.
 AllDelivered == \A s \in Sids : <>(~live[s] \/ stopped[s] \/ rd[s] = Total)
 
@@ -235,5 +246,6 @@ WitnessCapped == \A s \in Sids : win[s] < Max
 WitnessBudgetFull == grown < G
 WitnessStoppedFull == \A s \in Sids : ~(stopped[s] /\ held[s] = win[s])
 WitnessBlockedNoGrowth == \A s \in Sids : ~(bsent[s] /\ ab = <<>> /\ win[s] = W /\ rcvd[s] >= W /\ 2 * Unread(s) >= W)
+WitnessAheadPastFirst == \A s \in Sids : InFlightData(s) <= W
 WitnessGrownDelivered == \A s \in Sids : ~(win[s] > W /\ rd[s] = Total)
 =============================================================================

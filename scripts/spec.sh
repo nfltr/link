@@ -942,6 +942,10 @@ mutants)
 		job mutant CreditGrowOne.cfg 'Mutant = "none"' "Mutant = \"$m\"" CreditGrow.tla
 	done
 	job mutant CreditGrow.cfg 'Mutant = "none"' 'Mutant = "no-budget"' CreditGrow.tla
+	# A wait for a turn (TurnBound, lane FAIRNESS): a session's data on the
+	# path past its window; growth puts more of it there than its first.
+	job mutant CreditGrowTurn.cfg 'Mutant = "none"' 'Mutant = "send-uncharged"' CreditGrow.tla
+	job witness CreditGrowOne.cfg WitnessAheadPastFirst CreditGrow.tla
 	for w in WitnessGrew WitnessCapped WitnessBudgetFull WitnessStoppedFull WitnessBlockedNoGrowth WitnessGrownDelivered; do job witness CreditGrow.cfg $w CreditGrow.tla; done
 	# A stream window auto-tuned up to MaxW (AutoWindow.tla, lane LONGFAT):
 	# a window doubled past MaxW, an update counting bytes not yet read, a
