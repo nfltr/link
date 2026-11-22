@@ -145,6 +145,13 @@ type Config struct {
 	// Window is how many bytes of one session this side buffers (0:
 	// link.DefaultWindow, 1 MiB); a connection buffers 16 windows.
 	Window int
+	// MaxWindow is the most one session's window grows to (0: Window,
+	// fixed). It starts at Window and doubles while the reader takes a
+	// window within a few RTTs (quic-go's auto-tuning, as Chromium's): a
+	// window must cover the path's bandwidth-delay product, 16 MiB held
+	// one session on a 260 ms path to 0.45 Gbit/s, and a slow reader's
+	// stays small. A connection still buffers at most 16 Windows.
+	MaxWindow int
 	// MaxSessions is how many sessions the peer may have open toward this
 	// side on one connection (0: link.DefaultMaxSessions, 1024).
 	MaxSessions int
@@ -227,6 +234,8 @@ func New(cfg Config) (*Node, error) {
 		return nil, errors.New("quiclink: Config.PacketConn is set but Config.TLS is nil: set the listener's certificate (and ClientCAs with ClientAuth tls.RequireAndVerifyClientCert, to name peers by their certificates)")
 	case len(cfg.Connect) > 0 && cfg.Dial == nil:
 		return nil, errors.New("quiclink: Config.Connect needs Config.Dial: set Dial to reach the peers it names")
+	case cfg.MaxWindow != 0 && cfg.MaxWindow < max(cmpOr(cfg.Window, link.DefaultWindow), 1):
+		return nil, fmt.Errorf("quiclink: Config.MaxWindow %d: want 0 (Window) or at least Window (%d)", cfg.MaxWindow, cmpOr(cfg.Window, link.DefaultWindow))
 	case cfg.Conns < 0:
 		return nil, fmt.Errorf("quiclink: Config.Conns %d: want 0 (one) or more connections per peer", cfg.Conns)
 	}

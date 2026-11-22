@@ -87,7 +87,7 @@ func quicConfig(cfg Config, l link.Liveness, acks AckPolicy) *quic.Config {
 		MaxIdleTimeout:                 idleBackstop * (l.Interval + l.Timeout), // watch judges; this is its backstop
 		KeepAlivePeriod:                l.Interval,
 		InitialStreamReceiveWindow:     window,
-		MaxStreamReceiveWindow:         window,
+		MaxStreamReceiveWindow:         max(window, uint64(max(cfg.MaxWindow, 0))), // #nosec G115 -- non-negative; New: 0 or at least Window
 		InitialConnectionReceiveWindow: 16 * window,
 		MaxConnectionReceiveWindow:     16 * window,
 		MaxIncomingStreams:             int64(cmpOr(cfg.MaxSessions, link.DefaultMaxSessions)),

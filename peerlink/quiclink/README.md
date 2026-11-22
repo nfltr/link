@@ -112,7 +112,9 @@ What it costs, and when not to use it:
   3 Mbit/s, BBR 190). The window still bounds a lossy long path: a lost
   packet's hole holds its stream for a round trip, so a session wants
   `Config.Window` of twice the path's bandwidth-delay product
-  (docs/performance.md "quiclink: BBR").
+  (docs/performance.md "quiclink: BBR"); `Config.MaxWindow` lets it
+  grow there from `Window` (docs/performance.md "quiclink: one
+  connection on a long fat path").
 - **No 0-RTT.** 0-RTT data can be replayed by an attacker; quiclink turns
   it off and every connection pays the 1-RTT handshake.
 
@@ -174,7 +176,8 @@ What it costs, and when not to use it:
   opens its sessions on the connections peers dialled in; a Node listing a
   peer in `Config.Connect` keeps a connection to it up.
 - Settings: window per session `Config.Window` (default 1 MiB, link's),
-  16 windows per connection, `Config.MaxSessions` streams per connection
+  auto-tuned up to `Config.MaxWindow` (default `Window`: fixed) while the
+  reader keeps up, 16 windows per connection, `Config.MaxSessions` streams per connection
   (default 1024, link's). TLS 1.3 only; a listener without NextProtos
   offers ALPN `peerlink-chain-endack` (`ALPNEndAck`), `peerlink-chain`
   (`ALPNChain`), then `peerlink` (`ALPN`).
