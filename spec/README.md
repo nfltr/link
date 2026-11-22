@@ -2976,7 +2976,7 @@ direction clean keeps that direction readable to its END
 (`TestResetKeepsACleanDirection`, not traced: the trace of the clean
 direction would show the reset the model excludes).
 `DirectPathClose.cfg` (2 bytes, window 2, the relay dies once, no direct
-path, a reset, a vanish): 124,504 distinct states, depth 28, about 1 min
+path, a reset, a vanish): 124,504 distinct states, depth 28 (117,766 with the ACK gate, lane LINKLEFT), about 1 min
 with the liveness properties; `-coverage 1` takes every action but the
 direct path's, the rebind's and the mutant-only ones.
 
@@ -3042,6 +3042,64 @@ direct again on the new address, every byte delivered: 13 states) and
 The time bound, direct again within one exchange of the fallback, is the
 relay client SDK's test (`TestDirectAgentRebindDirectAgain`). Traced:
 `TestDirectAgainAfterRebind` (`Rebind`, `RePunch` events).
+
+The window auto-tuned (lane LINKLEFT, 2026-11-22; the design before
+any code). pathswitch's window was fixed (`Config.Window`; relay
+`client/agent` `directMaxWindow`, 64 MiB): a sender keeps up to W bytes
+its peer did not acknowledge, and a receiver acknowledges what it took
+while its application holds at most W/2 unread (`ackDue`), so a slow
+reader's session held up to W at its sender and 1.5 W at its receiver (64
+and 96 MiB), plus W per switch while the reader lagged (below). The
+design, with no wire change: S alone grows its window w from W to
+`MaxW` (`Config.MaxWindow`), doubling it at an ACK that frees bytes while
+S was window-limited (its application waiting on w) and the ACK came
+fast (a window's bytes acknowledged within a few round trips; the
+environment's choice here, as `AutoWindow.tla`'s, the code's clock
+there); w never falls. R's gate stays its own `Config.Window` / 2, not
+the sender's grown window (`AckGate`): R acknowledges only while its
+reader keeps up, so a slow reader's sender neither frees nor grows, and
+the growth signal (ACKs arriving fast) is the reader's pace, not the
+path's. A Close drops what the application did not read (`Held` 0), so a
+closed end acknowledges at once. Prior art: quic-go's receive-window
+auto-tuning (`flow_controller_base.go` `maybeAdjustWindowSize`, the design
+doc linked there: double when a window is consumed within 4 RTT x its
+fraction, cap, never shrink; `AutoWindow.tla`), Linux's receive-buffer
+auto-tuning (DRS, `tcp_rcv_space_adjust`), RFC 9000 section 4.1 (a limit
+advertised is never lowered), RFC 7323 section 2 (window scaling: a
+window grown past its initial size).
+
+Invariants: `BufferBound` (S keeps at most w: `hi - acked <= w`, across
+every switch: w is not restarted by a RESUME), `WindowBound` (`W <= w <=
+MaxW`), `WindowMonotone` (an action property: w never falls), `HeldBound`
+(R's application holds at most `W \div 2 + w * Len(st)` unread: the gate
+plus a window, plus a window per stream after the first); `InOrder`,
+`NoLoss`, `EndOnce` and the liveness properties unchanged. `HeldBound`'s
+per-stream term is the code's today too (W per switch before): a RESUME
+tells S every byte R took (S resends from there and frees below it),
+gate or not, so a switch while the reader lags lets S send another
+window. Withholding it would need a RESUME that does not free (a wire
+change: an old receiver would never acknowledge those bytes again) or a
+receiver that answers an OPEN only once its reader caught up (both
+directions share the OPEN: a reader blocked in its own Write would
+deadlock); left as it is, named. `DirectPathGrow.cfg` (4 bytes, W 1
+growing to 2, AppSteps, no path death, one candidate, one move): 44,072
+distinct states, depth 39, 12-28 s with the liveness properties (`make
+spec`); with each path dying once 869,372 states, 6.5 min (not in a
+gate). The other configurations have `MaxW = W` (w fixed: their state
+counts unchanged), the gate active where `AppSteps` is (`DirectPathClose.cfg`,
+the trace check: the code's `ackDue` gate, now modelled). Mutants
+(`DirectPathGrow.cfg`), each caught:
+
+| mutant | the bug | caught by |
+|---|---|---|
+| `grow-past-cap` | w doubles past `MaxW` | `WindowBound` (13 states deep) |
+| `shrink` | a slow ACK halves w | `WindowMonotone` (13) |
+| `resume-resets` | a RESUME restarts w at W (auto-tuning per path): below what S keeps | `WindowMonotone` (11); `BufferBound` without it |
+| `gate-at-cap` | R's gate at `MaxW` / 2 (the receiver taking the sender's cap for its window): a slow reader holds more | `HeldBound` (9) |
+| `close-keeps-held` | a closed end still counts what it dropped: it never acknowledges again, the session stalls | `AllDelivered`, `CloseEnds` (8) |
+
+Witnesses: `WitnessGrown` (w grew to `MaxW` and S kept that much: 9
+states), `WitnessGated` (R's ACK waited on its reader: 4).
 
 Not modelled: the peer vanishing while both ends' applications are open
 (link's and quiclink's liveness end the session: `Liveness.tla`,

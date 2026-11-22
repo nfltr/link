@@ -86,7 +86,8 @@ EXTENDS Integers, Sequences
 
 CONSTANTS
     Total,    \* bytes S writes, then it ends its direction (END)
-    W,        \* the resume window: bytes S keeps until R acknowledges them
+    W,        \* the resume window S starts with (bytes it keeps until R acknowledges them), and R's ack gate (W \div 2 held)
+    MaxW,     \* the most S's window grows to (lane LINKLEFT; W: fixed)
     MaxDie,   \* how often each path may die
     MaxPunch, \* candidates the relay may offer (hole punches)
     MaxMoves, \* voluntary moves (relayed to direct, direct to relayed)
@@ -110,6 +111,7 @@ VARIABLES
     hi,      \* bytes the application handed S so far
     nxt,     \* the next position S sends on sEp (Total: the END)
     acked,   \* S freed every position below acked (Total + 1: the END too)
+    w,       \* S's window now: it keeps at most w bytes R may lack (W up to MaxW)
     rEp,     \* R's stream: the only one it reads
     rcvd,    \* bytes R delivered (out's length)
     rEnds,   \* how often R took an END (its direction's end)
@@ -138,11 +140,11 @@ VARIABLES
     rShut,    \* R's application closed its end: "no", "idle", "woke" (a Read was waiting)
     vanished  \* the end whose process vanished: "none", "S", "R"
 
-vars == <<decider, st, d, k, sEp, sWait, hi, nxt, acked, rEp, rcvd, rEnds, rAck, out,
+vars == <<decider, st, d, k, sEp, sWait, hi, nxt, acked, w, rEp, rcvd, rEnds, rAck, out,
           ab, sGone, rGone, relayUp, dir, dies, punches, moves, sends, endSends, abSends,
           sFin, rFin, sGot, rGot, sLeft, rLeft, answers, addr, rebinds, repunched, blocked, tok,
           got, rBlocked, rShut, vanished>>
-sVars == <<sEp, sWait, hi, nxt, acked>>
+sVars == <<sEp, sWait, hi, nxt, acked, w>>
 rVars == <<rEp, rcvd, rEnds, rAck, out>>
 endVars == <<ab, sGone, rGone, endSends, abSends>>
 rbVars == <<addr, rebinds, repunched, blocked, tok>>
@@ -156,7 +158,7 @@ Init ==
     \* a session starts relayed: epoch 1, on the relay, attached at both ends
     /\ st = <<[path |-> "relay", h |-> "peer", dead |-> FALSE, c |-> 0, a |-> 0]>>
     /\ d = <<<<>>>> /\ k = <<<<>>>>
-    /\ sEp = 1 /\ sWait = FALSE /\ hi = 0 /\ nxt = 0 /\ acked = 0
+    /\ sEp = 1 /\ sWait = FALSE /\ hi = 0 /\ nxt = 0 /\ acked = 0 /\ w = W
     /\ rEp = 1 /\ rcvd = 0 /\ rEnds = 0 /\ rAck = 0 /\ out = <<>>
     /\ ab = "none" /\ sGone = FALSE /\ rGone = FALSE
     /\ relayUp = TRUE /\ dir = [s |-> "none", h |-> "peer", a |-> 0]
@@ -288,7 +290,7 @@ Fallback(p) ==
     /\ st[Cur].dead /\ Usable(p) /\ DeciderActs
     /\ (Mutant = "keep-dead-path" => st[Cur].path # "direct")
     /\ Open(p)
-    /\ UNCHANGED <<decider, hi, nxt, acked, rcvd, rEnds, out, ab, sGone, rGone, endSends>>
+    /\ UNCHANGED <<decider, hi, nxt, acked, w, rcvd, rEnds, out, ab, sGone, rGone, endSends>>
     /\ UNCHANGED <<pathVars, moves, sends>>
     /\ UNCHANGED closeVars
 \* A move on a live stream: to the direct path once it is verified, or back
@@ -300,7 +302,7 @@ Move(p) ==
     /\ ((decider = "S" /\ Mutant # "move-before-proof") => acked >= Proof)
     /\ SLive /\ RLive
     /\ Open(p) /\ moves' = moves + 1
-    /\ UNCHANGED <<decider, hi, nxt, acked, rcvd, rEnds, out, ab, sGone, rGone, endSends>>
+    /\ UNCHANGED <<decider, hi, nxt, acked, w, rcvd, rEnds, out, ab, sGone, rGone, endSends>>
     /\ UNCHANGED <<pathVars, sends>>
     /\ UNCHANGED closeVars
 
@@ -319,10 +321,10 @@ AbortBy(x) ==
     /\ UNCHANGED closeVars
 
 \* --- S --------------------------------------------------------------------
-\* The application hands S a byte; S blocks while it keeps W bytes.
+\* The application hands S a byte; S blocks while it keeps w bytes.
 Write ==
-    /\ SLive /\ hi < Total /\ hi - acked < W /\ hi' = hi + 1
-    /\ UNCHANGED <<decider, st, d, k, sEp, sWait, nxt, acked, moves, sends>> /\ UNCHANGED <<rVars, endVars, pathVars>>
+    /\ SLive /\ hi < Total /\ hi - acked < w /\ hi' = hi + 1
+    /\ UNCHANGED <<decider, st, d, k, sEp, sWait, nxt, acked, w, moves, sends>> /\ UNCHANGED <<rVars, endVars, pathVars>>
     /\ UNCHANGED closeVars
 \* S sends position nxt on its stream: byte nxt, or the END after the last.
 \* Mutant "free-on-send": S frees it at once (it trusts the path's transport
@@ -334,7 +336,7 @@ Send ==
     /\ nxt' = nxt + 1 /\ sends' = sends + 1
     /\ endSends' = endSends + (IF nxt = Total THEN 1 ELSE 0)
     /\ acked' = IF Mutant = "free-on-send" THEN nxt + 1 ELSE acked
-    /\ UNCHANGED <<decider, st, k, sEp, sWait, hi, ab, sGone, rGone, abSends, moves>> /\ UNCHANGED <<rVars, pathVars>>
+    /\ UNCHANGED <<decider, st, k, sEp, sWait, hi, w, ab, sGone, rGone, abSends, moves>> /\ UNCHANGED <<rVars, pathVars>>
     /\ UNCHANGED closeVars
 \* Mutant "end-early": S ends its direction once the application closed,
 \* before every byte was sent (the END overtakes data).
@@ -342,7 +344,7 @@ SendEndEarly ==
     /\ Mutant = "end-early" /\ SLive /\ hi = Total /\ nxt < Total /\ ~st[sEp].dead /\ ~sWait
     /\ d' = [d EXCEPT ![sEp] = Append(@, [t |-> "end"])]
     /\ nxt' = Total + 1 /\ sends' = sends + 1 /\ endSends' = endSends + 1
-    /\ UNCHANGED <<decider, st, k, sEp, sWait, hi, acked, ab, sGone, rGone, abSends, moves>> /\ UNCHANGED <<rVars, pathVars>>
+    /\ UNCHANGED <<decider, st, k, sEp, sWait, hi, acked, w, ab, sGone, rGone, abSends, moves>> /\ UNCHANGED <<rVars, pathVars>>
     /\ UNCHANGED closeVars
 \* Mutant "write-stale": S still sends on a stream it left.
 SendStale ==
@@ -351,7 +353,7 @@ SendStale ==
         /\ nxt < hi /\ ~st[e].dead
         /\ d' = [d EXCEPT ![e] = Append(@, [t |-> "data", b |-> nxt])]
         /\ nxt' = nxt + 1 /\ sends' = sends + 1
-    /\ UNCHANGED <<decider, st, k, sEp, sWait, hi, acked, moves>> /\ UNCHANGED <<rVars, endVars, pathVars>>
+    /\ UNCHANGED <<decider, st, k, sEp, sWait, hi, acked, w, moves>> /\ UNCHANGED <<rVars, endVars, pathVars>>
     /\ UNCHANGED closeVars
 \* S takes R's RESUME(n): on the stream it waits on (decider S), or on a
 \* newer one R opened (decider R). It sends from n and frees what is below.
@@ -365,12 +367,29 @@ Resume ==
            /\ nxt' = IF Mutant = "resume-from-acked" THEN acked ELSE n
            /\ acked' = Max(acked, n)
         /\ k' = [k EXCEPT ![e] = Tail(@)] /\ sEp' = e /\ sWait' = FALSE
+        /\ w' = IF Mutant = "resume-resets" THEN W ELSE w
         /\ UNCHANGED <<decider, st, d, hi, moves, sends>> /\ UNCHANGED <<rVars, endVars, pathVars>>
         /\ UNCHANGED closeVars
+\* The window (lane LINKLEFT): S's application waits on it (S keeps w
+\* bytes R may lack, more to write). An ACK that frees bytes while S was
+\* window-limited doubles w, up to MaxW, when it came fast (a window's
+\* bytes acknowledged within a few round trips: the environment's choice
+\* here, the code's clock there); R acknowledges only while its reader
+\* keeps up (AckGate), so a slow reader's session keeps its window.
+\* w never falls: it never goes below what S keeps. Mutants:
+\* "grow-past-cap" (no MaxW), "shrink" (a slow ACK halves w),
+\* "resume-resets" (a RESUME restarts w at W: below what S keeps).
+Limited == hi < Total /\ hi - acked >= w
+NewW(fast, n) ==
+    CASE n <= acked -> w
+      [] fast /\ Limited -> IF Mutant = "grow-past-cap" \/ 2 * w <= MaxW THEN 2 * w ELSE MaxW
+      [] ~fast /\ Mutant = "shrink" /\ w > W -> w \div 2
+      [] OTHER -> w
 \* S takes an ACK on its stream: R holds every position below n.
 TakeAck ==
     /\ SLive /\ k[sEp] # <<>> /\ Head(k[sEp]).t = "ack" /\ ~sWait
     /\ acked' = Max(acked, Head(k[sEp]).n) /\ k' = [k EXCEPT ![sEp] = Tail(@)]
+    /\ \E fast \in BOOLEAN : w' = NewW(fast, Head(k[sEp]).n)
     /\ UNCHANGED <<decider, st, d, sEp, sWait, hi, nxt, moves, sends>> /\ UNCHANGED <<rVars, endVars, pathVars>>
     /\ UNCHANGED closeVars
 \* S takes R's ABORT: on its stream, or (decider R) on a newer one R opened.
@@ -380,7 +399,7 @@ STakeAbort ==
         /\ (IF decider = "S" THEN e = sEp ELSE e >= sEp)
         /\ k[e] # <<>> /\ Head(k[e]).t = "abort"
         /\ sGone' = TRUE /\ sEp' = e /\ k' = [k EXCEPT ![e] = Tail(@)]
-        /\ UNCHANGED <<decider, st, d, sWait, hi, nxt, acked, ab, rGone, endSends, abSends, moves, sends>>
+        /\ UNCHANGED <<decider, st, d, sWait, hi, nxt, acked, w, ab, rGone, endSends, abSends, moves, sends>>
         /\ UNCHANGED <<rVars, pathVars>>
         /\ UNCHANGED closeVars
 \* S reset the session and R (the decider) opened a newer stream: S answers
@@ -392,7 +411,7 @@ SAnswerAbort ==
         /\ k' = [k EXCEPT ![e] = Tail(@)] /\ sEp' = e
         /\ d' = IF st[e].dead THEN d ELSE [d EXCEPT ![e] = Append(@, Abort)]
         /\ abSends' = abSends + 1
-        /\ UNCHANGED <<decider, st, sWait, hi, nxt, acked, ab, sGone, rGone, endSends, moves, sends>>
+        /\ UNCHANGED <<decider, st, sWait, hi, nxt, acked, w, ab, sGone, rGone, endSends, moves, sends>>
         /\ UNCHANGED <<rVars, pathVars>>
         /\ UNCHANGED closeVars
 
@@ -428,9 +447,19 @@ RecvOn(e) ==
     /\ UNCHANGED closeVars
 Recv == RecvOn(rEp)
 RecvStale == Mutant = "read-stale" /\ \E e \in 1..(rEp - 1) : RecvOn(e)
-\* R acknowledges what it took, on its stream.
+\* R acknowledges what it took, on its stream, while its application holds
+\* at most W \div 2 bytes unread (AckGate, lane LINKLEFT: pathswitch
+\* ackDue, its own Config.Window, not the sender's grown one): a slow
+\* reader's ACKs wait, so its sender neither frees nor grows. A Close drops
+\* what the application did not read (Held 0). Mutants: "gate-at-cap" (the
+\* gate at MaxW \div 2: a slow reader holds more), "close-keeps-held" (a
+\* closed end still counts what it dropped: no ACK ever again). Once R
+\* took the END it acknowledges at once (S has nothing more to send).
+Held == IF rShut # "no" /\ Mutant # "close-keeps-held" THEN 0 ELSE rcvd - got
+Gate == IF Mutant = "gate-at-cap" THEN MaxW \div 2 ELSE W \div 2
+AckGate == ~AppSteps \/ rEnds > 0 \/ Held <= Gate
 Ack ==
-    /\ RLive /\ RPos > rAck /\ ~st[rEp].dead
+    /\ RLive /\ RPos > rAck /\ ~st[rEp].dead /\ AckGate
     /\ k' = [k EXCEPT ![rEp] = Append(@, [t |-> "ack", n |-> RPos])] /\ rAck' = RPos
     /\ UNCHANGED <<decider, st, d, rEp, rcvd, rEnds, out, moves, sends>> /\ UNCHANGED <<sVars, endVars, pathVars>>
     /\ UNCHANGED closeVars
@@ -477,7 +506,7 @@ SLeftAnswer ==
         /\ sLeft /\ ~sGone /\ SUp /\ e > sEp /\ k[e] # <<>> /\ Head(k[e]).t = "resume"
         /\ k' = [k EXCEPT ![e] = Tail(@)] /\ d' = [d EXCEPT ![e] = Append(@, Fin)]
         /\ sEp' = e /\ sFin' = e /\ answers' = answers + 1
-        /\ UNCHANGED <<decider, st, sWait, hi, nxt, acked, rFin, sGot, rGot, sLeft, rLeft, moves, sends>>
+        /\ UNCHANGED <<decider, st, sWait, hi, nxt, acked, w, rFin, sGot, rGot, sLeft, rLeft, moves, sends>>
         /\ UNCHANGED <<rVars, endVars, pathVars>> /\ UNCHANGED appVars
 
 \* --- the applications (lane DIRECTCLOSE) ---------------------------------
@@ -595,8 +624,18 @@ TypeOK ==
 InOrder == \A i \in 1..Len(out) : out[i] = i - 1
 \* S never frees a position R lacks: a switch can always resend what R misses.
 NoLoss == acked <= RPos
-\* S keeps at most W bytes per direction of a session.
-BufferBound == hi - acked <= W
+\* S keeps at most w bytes per direction of a session; w starts at W and
+\* grows to MaxW at most (lane LINKLEFT).
+BufferBound == hi - acked <= w
+WindowBound == W <= w /\ w <= MaxW
+\* w never falls (an action property).
+WindowMonotone == [][w' >= w]_vars
+\* R's application holds at most the gate plus a window unread, plus a
+\* window per stream after the first: a RESUME tells S every byte R took
+\* (S resends from there and frees below it), the gate or not, so a
+\* switch while the reader lags lets S send a window more (lane LINKLEFT;
+\* the bound before it: 1.5 W, plus W per switch).
+HeldBound == Held <= W \div 2 + w * Len(st)
 \* A stream goes only to the peer: never to whoever the relay pointed at.
 OnlyPeer == \A e \in DOMAIN st : st[e].h = "peer"
 \* A direct stream's tokens are made for the connection it runs on (a
@@ -648,6 +687,10 @@ WitnessResent == ~(rcvd = Total /\ sends > Total + endSends)
 WitnessRogue == ~(dir.h = "rogue" /\ dir.s = "down")
 \* the window full: S keeps W bytes
 WitnessFull == hi - acked < W
+\* the window grew to its cap, and S kept that much (lane LINKLEFT)
+WitnessGrown == ~(w = MaxW /\ MaxW > W /\ hi - acked = MaxW)
+\* R's ACK waited on its reader (the gate closed with bytes to acknowledge)
+WitnessGated == ~(AppSteps /\ RLive /\ RPos > rAck /\ ~AckGate)
 \* the relay withheld every candidate: all delivered, relayed throughout
 WitnessWithheld == ~(rcvd = Total /\ punches = 0 /\ dies["relay"] > 0)
 \* the END sent on two streams, taken once, the direction clean

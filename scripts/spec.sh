@@ -5,7 +5,7 @@
 # spec.sh check|mutants|traces: the TLA+ model of spec/ (spec/README.md).
 #   check    TLC on spec/Link.cfg, LinkDrain.cfg and LinkSess.cfg (no crash),
 #            LinkCrash.cfg, then spec/Pool.cfg, Liveness.cfg, Join.cfg,
-#            JoinClose.cfg and CreditWaiters.cfg, CreditGrow.cfg, CreditGrowOne.cfg, SessionRead.cfg, SessionReadWriteTo.cfg, SessionReadPump.cfg, SessionReadPumpWriteTo.cfg, SessionReadWriteTos.cfg, SessionWrite.cfg, DirectPath.cfg, RelayedClose.cfg, RelayedCloseEmpty.cfg, HopHold.cfg, HopHoldSeq.cfg, HopHoldConc.cfg, EndAckLeg.cfg, EndAckLegQuic.cfg, AutoWindow.cfg:
+#            JoinClose.cfg and CreditWaiters.cfg, CreditGrow.cfg, CreditGrowOne.cfg, SessionRead.cfg, SessionReadWriteTo.cfg, SessionReadPump.cfg, SessionReadPumpWriteTo.cfg, SessionReadWriteTos.cfg, SessionWrite.cfg, DirectPath.cfg, DirectPathGrow.cfg, RelayedClose.cfg, RelayedCloseEmpty.cfg, HopHold.cfg, HopHoldSeq.cfg, HopHoldConc.cfg, EndAckLeg.cfg, EndAckLegQuic.cfg, AutoWindow.cfg:
 #            every invariant and liveness property, and Refines.
 #   invariants  the same, Link's invariants only, Refines only on
 #            LinkCrash.cfg (CI's; Pool's liveness is checked too, seconds).
@@ -333,12 +333,14 @@ dtrace() {
 	tot=$(grep -c "\"ev\":\"Write\",\"by\":\"$s\"" "$1" || true)
 	grep -q "\"ev\":\"SendEnd\",\"by\":\"$s\"" "$1" || tot=$((tot + 1))
 	big=$(($(wc -l <"$1") + 1))
+	mw=$(head -1 "$1" | sed -n 's/.*"x":"\([0-9][0-9]*\)".*/\1/p') # Config.MaxWindow (lane LINKLEFT)
 	cat >"$cfg" <<CFG
 CONSTANTS
     TraceFile = "$1"
     Dir = "$2"
     Total = $tot
     W = $(head -1 "$1" | sed 's/.*"n":\([0-9]*\).*/\1/')
+    MaxW = ${mw:-$(head -1 "$1" | sed 's/.*"n":\([0-9]*\).*/\1/')}
     MaxDie = $big
     MaxPunch = $big
     MaxMoves = $big
@@ -533,7 +535,7 @@ check | invariants)
 	# PoolDrain (Min 2: a Drain failing halfway) and QuicWatchStops (two
 	# short stops, ~10 s) only in full: their mutants are CI's.
 	# PoolGrow: background growth (Max above Min).
-	pools="Pool PoolGrow PoolClient Liveness LivenessStarve QuicWatch QuicWatchPTO QuicWatchStarve Join JoinClose CreditWaiters SessionRead SessionReadWriteTo SessionReadPump SessionReadPumpWriteTo SessionReadWriteTos SessionWrite DirectPath DirectPathReset DirectPathRebind DirectPathProof DirectPathClose RelayedClose RelayedCloseEmpty HopHold HopHoldSeq HopHoldConc EndAckLeg EndAckLegQuic AckFrequency AckFrequencyDeep CreditGrow CreditGrowOne AutoWindow AckRanges"
+	pools="Pool PoolGrow PoolClient Liveness LivenessStarve QuicWatch QuicWatchPTO QuicWatchStarve Join JoinClose CreditWaiters SessionRead SessionReadWriteTo SessionReadPump SessionReadPumpWriteTo SessionReadWriteTos SessionWrite DirectPath DirectPathReset DirectPathRebind DirectPathProof DirectPathClose DirectPathGrow RelayedClose RelayedCloseEmpty HopHold HopHoldSeq HopHoldConc EndAckLeg EndAckLegQuic AckFrequency AckFrequencyDeep CreditGrow CreditGrowOne AutoWindow AckRanges"
 	[ "$1" = invariants ] || pools="$pools PoolDrain QuicWatchStops DirectPathWide CreditGrowWide"
 	for m in $pools; do
 		echo "== $m.cfg"
@@ -802,6 +804,14 @@ mutants)
 		job mutant DirectPathRebind.cfg 'Mutant = "none"' "Mutant = \"$m\"" DirectPath.tla
 	done
 	for w in WitnessRedirect WitnessRebindRelayed; do job witness DirectPathRebind.cfg $w DirectPath.tla; done
+	# Lane LINKLEFT: S's window auto-tuned, R's ACKs gated on its reader:
+	# growth past the cap, a window that shrinks, one restarted at a
+	# RESUME (below what S keeps), the gate at the cap (a slow reader
+	# holds more), a closed end that still counts what it dropped.
+	for m in grow-past-cap shrink resume-resets gate-at-cap close-keeps-held; do
+		job mutant DirectPathGrow.cfg 'Mutant = "none"' "Mutant = \"$m\"" DirectPath.tla
+	done
+	for w in WitnessGrown WitnessGated; do job witness DirectPathGrow.cfg $w DirectPath.tla; done
 	for w in WitnessDirect WitnessFallback WitnessResent WitnessRogue WitnessFull WitnessWithheld WitnessEndResent WitnessLeftAnswer; do job witness DirectPath.cfg $w DirectPath.tla; done
 	for w in WitnessResetAcross WitnessResetDirect; do job witness DirectPathReset.cfg $w DirectPath.tla; done
 	job witness DirectPathProof.cfg WitnessDirect DirectPath.tla
