@@ -625,6 +625,41 @@ rule (a peer's BLOCKED before any data would grow an empty window).
   of the rate; burst-loss delivers every byte), quiclink
   `TestMaxWindowAutoTunes`, relay client
   `TestDirectSessionWindowCoversALongFatPath`; spec/AutoWindow.tla.
+## quiclink: ACK ranges on a path with more holes than 64 (2026-11-22, lane SPURIOUS, unreleased)
+
+- **Where**: the quic-go fork (branch `land/SPURIOUS`, untagged:
+  `internal/ackhandler/received_packet_tracker.go` `appendAckRanges`).
+- **Why it was slow**: the receiver's history keeps 64 ACK ranges and drops
+  its lowest past that; Helsinki -> Singapore delivers 44-50 % of some
+  connections' packets tens to hundreds of places late (100-300 holes open
+  at once), so a late packet below the lowest range kept was dropped from
+  the history at once and never acknowledged. The sender declared it lost
+  by its time threshold and resent it: 0.86-4.6 % of a 4-connection
+  10 GiB run's packets on a path losing 0.01-0.03 %, the 0.6-2.4 %
+  "resent" lanes REORDERWAN and FINALWAN estimated
+  (`~/nfltr-evidence/spurious-2026-11-22/`).
+- **What it does now**: an ACK reports first the ranges holding a packet
+  received since the last ACK (one the history dropped: its own range), then
+  the highest others, 64 in all (RFC 2018 section 4; spec/AckRanges.tla
+  `ReportedOnce`). The history's bound and the frame's size are unchanged;
+  the common case (every new packet in the history) builds the ACK as
+  before.
+- **Gain**: sim (`TestBulkUploadOnReorderingPath/bbr/many-holes/ackfreq`,
+  300 Mbit/s, 260 ms, half the packets up to 400 places late): 9,977 ->
+  3 of 215k packets declared lost, 261 -> 293 Mbit/s. Real path, 10 GiB,
+  4 connections, both ends the same build, interleaved: declared lost
+  (traced, 2 runs each) 1.61 / 0.86 % -> 0.01 / 0.12 % (almost all
+  time threshold, not later acknowledged); data packets on the wire 7.73-7.88 M ->
+  7.63-7.64 M (the file's own 7.63 M); send CPU 8.35 -> 7.83 s/GiB
+  (median, -6 %), receive 8.42 -> 8.18 (-3 %); Gbit/s 1.195 -> 1.151
+  (medians, n = 3, inside the path's run-to-run spread 1.06-1.21).
+- **Guard**: the fork's `TestReceivedPacketTrackerReportedOnce`,
+  `TestReceivedPacketTrackerReportsLatePacketsBelowTheRanges`,
+  `TestBulkUploadOnReorderingPath/bbr/many-holes/ackfreq` (at most 0.1 %
+  lost); spec/AckRanges.tla mutant `top-k`, spec/TraceAckRanges.tla's
+  rejected fixtures.
+- **Don't undo**: do not build an ACK from the history's top ranges alone,
+  nor raise the history's bound instead (a deeper hole is still dropped).
 
 ## quiclink: ACK frequency on a path reordering past its threshold (2026-11-22, lane ACKFIX, unreleased)
 
