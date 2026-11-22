@@ -1,5 +1,5 @@
-github.com/nfltr/link/pathswitch v0.1.4 h1:8bqDCoKYLb6OpwW1Eyoh/AOU6tt1gA3JPl7jyi/uHTo=
-github.com/nfltr/link/pathswitch v0.1.4/go.mod h1:9DrWK+oDjMYa6U46Z4x56DdSCfpLkOqhYmn8R3qR/qI=
+github.com/nfltr/link/pathswitch v0.1.5 h1:d2urmQa8EK77NnY3YxDc/a2a/5OQmzGwimi2jMiCHnc=
+github.com/nfltr/link/pathswitch v0.1.5/go.mod h1:UZJ3/DMEa9QrP3vQq7wTRn1vPc0fgRQLV1hz2tqllcc=
 github.com/nfltr/quic-go v0.63.1-nfltr.10 h1:aVI+aMiCBKke1pfbdNDXGzi/j/6aZVhcR+/g5ifz49A=
 github.com/nfltr/quic-go v0.63.1-nfltr.10/go.mod h1:aCcZDnvYqlhb79qzzyvg5+pkAVu3JCsGDEKOoYKqnTk=
 github.com/quic-go/go-ossfuzz-seeds v0.1.0 h1:APacT+iIaNF6fd8AGEiN3bT/Jtkd2jz4v4TzM7MFjy0=
