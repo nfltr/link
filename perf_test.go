@@ -77,21 +77,27 @@ func TestFramesAndReadsPerMessage(t *testing.T) {
 				t.Fatal(err)
 			}
 			const n = 200
-			tx0, rx0 := r.la.snap(), r.lb.snap()
+			tx0, rx0, w0 := r.la.snap(), r.lb.snap(), r.a.c.Stats().CreditWaits
 			send(t, s, make([]byte, tc.size), n)
 			tx, rx := r.la.snap().sub(tx0), r.lb.snap().sub(rx0)
+			waits := int64(r.a.c.Stats().CreditWaits - w0) // #nosec G115 -- a test's count
 			if tx.dataFrames != n*tc.frames {
 				t.Errorf("%d data frames for %d messages of %d bytes, want %d", tx.dataFrames, n, tc.size, n*tc.frames)
 			}
 			// The sender's own frames beyond its data: its CLOSE, its window
 			// updates for the sink's (none) and liveness (none this soon),
-			// and its BLOCKEDs while the sink's window grows (one a wait:
-			// 1 MiB to 16 MiB is four doublings).
+			// and its BLOCKEDs: at most one a wait for credit (once until the
+			// sink's next update, spec/CreditGrow.tla Block; a wait here ends
+			// with one update, at least a quarter window, enough for a chunk).
+			// Not a count of the window's doublings (1 MiB to 16 MiB is
+			// four): a sender that outruns the sink waits at the cap too, as
+			// often as scheduling has it (a fixed bound of 8 failed under
+			// load, lane RELAYWIN2).
 			if extra := tx.frames - tx.dataFrames - tx.winFrames; extra > 2 {
 				t.Errorf("%d frames besides the data frames and BLOCKEDs", extra)
 			}
-			if tx.winFrames > 8 {
-				t.Errorf("%d BLOCKEDs, want at most 8", tx.winFrames)
+			if tx.winFrames > waits {
+				t.Errorf("%d BLOCKEDs for %d credit waits, want at most one a wait", tx.winFrames, waits)
 			}
 			if w := float64(tx.writes-2-tx.winFrames) / n; w > tc.writes { // -2: the CLOSE frames' own; a BLOCKED's wait flushes
 				t.Errorf("%.2f writes of the connection per message, want at most %v", w, tc.writes)
