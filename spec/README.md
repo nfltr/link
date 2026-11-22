@@ -1662,8 +1662,41 @@ Code: the fork's `flow_controller_base.go`, `flow_controller_stream.go`;
 here `peerlink/quiclink/knobs.go` (`MaxStreamReceiveWindow` from
 `Config.MaxWindow`). Guards: quiclink `TestMaxWindowAutoTunes`, the fork's
 `TestBulkUploadOnLongFatPath` (one stream reaches 98 % of a 1 Gbit/s, 260
-ms path). Open: no trace recorder yet (the fork's flow controller logs no
-steps; the next lane adds one behind a tag, as `quicacktrace`).
+ms path), quiclink `TestMaxWindowOnALongPath` (4 MiB over a 10 ms path, a
+window of 128 KiB that grows to 1 MiB).
+
+Trace recorder (lane LINKLEFT, 2026-11-22): `-tags linktrace`,
+`LINKTRACE_AUTOWIN=<dir>` (`peerlink/quiclink/trace_autowin_on.go`). The
+fork's flow controller has no hook, so quiclink records it from outside:
+a `quic.Config.Tracer` on both ends turns their qlog events into one file
+per stream direction (`<odcid>-<stream>-<receiver c|s>.ndjson`: `Send`,
+`Data` a STREAM frame's end, `Update`, `Hear` a MAX_STREAM_DATA) and the
+receiver's reads (`Session.Read`, the opener's answer, the accepter's
+preamble) add `Read`; the first line `Up` carries the receiver's `W0` and
+`MaxW`. `TraceAutoWindow.tla` checks each file against AutoWindow's steps
+and invariants (`TypeOK`, `Credit`, `MemoryBound`, `WindowBound`) to its
+end (`make spec-traces`: `TestMaxWindowOnALongPath`, every event taken).
+What a line cannot show is hidden and bounded: the fork computes an
+update's limit (reads + window) when it packs the packet and the recorder
+logs a read after the stream counted it, so the reads `r` behind an update
+lie between the last update's and min(what arrived, the reads logged plus
+the next `Read`'s: with one reader per stream at most one read is under
+way); the update is accepted when a window AutoWindow allows (kept, or
+doubled up to `MaxW`) gives its limit from such an `r` at which an update
+was due. A MAX_STREAM_DATA of a value sent before is a lost frame's resend
+(the fork re-sends a frame as it was), one of 0 the fork's queued update
+that was no longer due when packed (`ReceiveStream.getControlFrame`):
+neither changes the state. Rejected fixtures (`make spec-mutants`,
+`spec/traces/autowin-*`): `no-clamp` (a window past `MaxW`: `WindowBound`),
+`grant-unread` (a limit from bytes received, not read: `MemoryBound`'s
+mutant), `shrink` (a new limit below the last: `Monotone`),
+`send-past-limit` (`Credit`), `phantom` (a limit the sender heard that the
+receiver never sent: `Credit`), `early` (an update before a quarter window
+was read: `UpdateDue`); `autowin-ok` (a resend, a 0 update, a read under
+way at an update) is accepted. Not checkable from a trace: `stale-update`
+(a resent old limit is a legitimate resend; `AllRead` is the model's), and
+"fast" (the fork's RTT-timed epoch). The recorded run: 7,090 lines,
+18 updates, the window 128 KiB -> 256 KiB -> 512 KiB -> 1 MiB, accepted.
 ## ACK ranges (AckRanges.tla, 2026-11-22, lane SPURIOUS)
 
 Finding (lane SPURIOUS; Helsinki ccx23 -> GCP asia-southeast1-b, 260 ms,
@@ -1764,7 +1797,7 @@ holds in a `Spec-Reviewed:` trailer).
 | `SessionRead.tla`, `TraceSessionRead.tla` | `Session.Read` from several goroutines (or ones running `WriteTo`, or `Pump` with a `WriteTo` refused), the read deadline set and cleared meanwhile | `mux.go`, `internal/bytequeue/`, `trace_read_on.go` |
 | `SessionWrite.tla`, `TraceSessionWrite.tla` | `Session.Write` waiting for credit while `SetWriteDeadline` and its timer run | `mux.go`, `credit.go`, `trace_write_on.go` |
 | `DirectPath.tla`, `TraceDirectPath.tla` | the path layer: OPEN, RESUME, ACK, END, ABORT, the window, `Move` and `Attach` | `pathswitch/conn.go`, `pathswitch/frame.go`, `pathswitch/trace_on.go` |
-| `AutoWindow.tla` | a stream's receive window auto-tuned up to `MaxWindow` (the fork's flow controller); the windows quiclink asks for | `peerlink/quiclink/knobs.go` |
+| `AutoWindow.tla`, `TraceAutoWindow.tla` | a stream's receive window auto-tuned up to `MaxWindow` (the fork's flow controller); the windows quiclink asks for | `peerlink/quiclink/knobs.go`, `peerlink/quiclink/trace_autowin_on.go` |
 
 ## Action map (lane CONFORM-link)
 
@@ -2150,6 +2183,7 @@ Recorders per spec (lane LINKTRACE2, 2026-11-20):
 | `RelayedClose.tla` | `TraceRelayedClose.tla`, `trace_relayed_on.go`: every step but `AWrite`, `D1Copy`, `CWrite`, `CRead`, `CEnd` (TLC's, unlogged) | yes |
 | `HopHold.tla` | `TraceHopHold.tla`, `peerlink/trace_on.go` (`LINKTRACE_HOPHOLD`); `AppRead` by `peerlink/quiclink/trace_on.go` through `internal/linkhook` (`SeqApp = {"R"}`, lane LINKGATE) | yes |
 | `DirectPath.tla` | `TraceDirectPath.tla`, `pathswitch/trace_on.go` | yes |
+| `AutoWindow.tla` | `TraceAutoWindow.tla`, `peerlink/quiclink/trace_autowin_on.go` (`LINKTRACE_AUTOWIN`, both ends' qlog events; lane LINKLEFT) | yes |
 | `QuicWatch.tla` | none: `MBTWatch.tla` drives quiclink's watch from TLC's behaviours (`watch_mbt_test.go`) | MBT |
 | `LinkSession.tla` | none: an interface; `Link.tla` refines it (`Refines`) | refinement |
 | `EndAckLeg.tla` | `TraceEndAckLeg.tla`, `peerlink/quiclink/trace_on.go` (`LINKTRACE_ENDACK`, Kind quic, lane ENDACKQUIC); its link leg is `RelayedClose.tla`'s A-J and J-C legs (recorded); gRPC and TCP legs are relay-core's and the relay SDK's | yes (quic) |

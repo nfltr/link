@@ -25,7 +25,7 @@
 #            a side's growing windows; jctrace F:
 #            a joint's side closed whole; rctrace F: a relayed path's Close;
 #            hhtrace F: two joints' holds; aftrace F: a QUIC receiver's ACKs;
-#            artrace F: its ACK ranges).
+#            artrace F: its ACK ranges; awtrace F: a QUIC stream's auto-tuned window).
 #   behaviours  TLC -simulate walks for the model-based tests (testdata/mbt).
 # TLC_WORKERS (default 4) caps TLC's threads. Java and tla2tools.jar come
 # from scripts/fetch-tla.sh.
@@ -236,6 +236,33 @@ CFG
 	META=$work/states-ar-$(basename "$1") tlc "$cfg" TraceAckRanges.tla -deadlock >"$cfg.out" 2>&1 || arst=$?
 	cat "$cfg.out"
 	[ $arst != 0 ] && grep -q '^Error: Invariant TraceUnfinished is violated' "$cfg.out"
+}
+
+# awtrace FILE: TLC on one QUIC stream direction's recorded window steps
+# (spec/TraceAutoWindow.tla, lane LINKLEFT; quiclink's -tags linktrace,
+# LINKTRACE_AUTOWIN); it fails unless TLC reaches the trace's end.
+awtrace() {
+	cfg=$work/$(basename "$1").aw.cfg
+	cat >"$cfg" <<CFG
+CONSTANTS
+    TraceFile = "$1"
+    W0 <- TraceW0
+    MaxW <- TraceMaxW
+    Total <- TraceTotal
+    Mutant = "none"
+INIT TraceInit
+NEXT TraceNext
+INVARIANTS
+    TypeOK
+    Credit
+    MemoryBound
+    WindowBound
+    TraceUnfinished
+CFG
+	awst=0
+	META=$work/states-aw-$(basename "$1") tlc "$cfg" TraceAutoWindow.tla -deadlock >"$cfg.out" 2>&1 || awst=$?
+	cat "$cfg.out"
+	[ $awst != 0 ] && grep -q '^Error: Invariant TraceUnfinished is violated' "$cfg.out"
 }
 
 # hhtrace FILE [SEQAPP]: TLC on two joints' recorded holds
@@ -990,6 +1017,7 @@ mutants)
 	for f in spec/traces/hopholdconc-*.ndjson; do job endfixture hhtraceconc "$f"; done
 	for f in spec/traces/ackfreq-*.ndjson; do job endfixture aftrace "$f"; done
 	for f in spec/traces/ackranges-*.ndjson; do job endfixture artrace "$f"; done
+	for f in spec/traces/autowin-*.ndjson; do job endfixture awtrace "$f"; done
 	wait
 	fail=0
 	i=0
@@ -1201,7 +1229,7 @@ traces)
 	# (TraceSessionWrite.tla) and a joint's side closed whole
 	# (TraceJoinClose.tla), lane LINKTRACE2: each session's (joint's) file, its
 	# events counted; an event no trace took is a test gap.
-	for k in read wait write grow joinclose peerjoinclose relayed hophold hopholdquic hopholdconc ackfreq ackranges; do
+	for k in read wait write grow joinclose peerjoinclose relayed hophold hopholdquic hopholdconc ackfreq ackranges autowin; do
 		mkdir -p "$work/$k"
 		pkg= mdir=. tags=linktrace
 		case $k in
@@ -1222,6 +1250,8 @@ traces)
 		grow) env=LINKTRACE_GROW check=gtrace tests=${TRACE_GROW_TESTS:-'^(TestWindowGrowsOverALongPath|TestGrantPastTheHelloWindow|TestMuxSlowSessionIsolated|TestMuxSessions|TestSessionCleanEnd|TestSessionReset)$'} model=TraceCreditGrow ;;
 		# The same receivers' ACK ranges (Ack lines' rs, lane SPURIOUS; fork v0.63.1-nfltr.10).
 		ackranges) env=QUICACKTRACE check=artrace mdir=peerlink/quiclink tags=quicacktrace tests=${TRACE_ACKRANGES_TESTS:-'^(TestAckFrequencyOnReorderingPath|TestRefusesPeerWithoutAckFrequency)$'} model=TraceAckRanges ;;
+		# quiclink's auto-tuned stream windows (Config.MaxWindow, lane LINKLEFT): both ends' qlog events and the receiver's reads.
+		autowin) env=LINKTRACE_AUTOWIN check=awtrace mdir=peerlink/quiclink tests=${TRACE_AUTOWIN_TESTS:-'^TestMaxWindowOnALongPath$'} model=TraceAutoWindow ;;
 		write) env=LINKTRACE_WRITE check=swtrace tests=${TRACE_WRITE_TESTS:-'^(TestSessionWriteWaitingForCreditSeesFirstDeadline|TestWriteDeadline|TestWriteDeadlineStuckNetwork)$'} model=TraceSessionWrite ;;
 		esac
 		(cd "$mdir" && env "$env=$work/$k" GOWORK=off go test -tags "$tags" -count=1 -run "$tests" "${pkg:-.}") >"$work/test.out" 2>&1 || {
@@ -1335,6 +1365,9 @@ aftrace)
 	;;
 artrace)
 	artrace "$2"
+	;;
+awtrace)
+	awtrace "$2"
 	;;
 *)
 	echo "usage: spec.sh check|invariants|nightly|mutants|traces|trace FILE" >&2
