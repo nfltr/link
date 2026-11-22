@@ -160,9 +160,12 @@ self_test() {
 	# writes; the read-all forms pass.
 	set -o pipefail
 	rc=0; { echo up; sleep 0.2; echo more; } | grep -q up || rc=$?
-	[ "$rc" = 141 ] || fail "producer | grep -q under pipefail: want 141 (SIGPIPE), got $rc"
+	# 141 when SIGPIPE kills the producer; where the runner starts us with
+	# SIGPIPE ignored (GitHub Actions), the write fails with EPIPE instead
+	# and the builtin exits 1: the pipeline fails either way.
+	[ "$rc" != 0 ] || fail "producer | grep -q under pipefail: want a failure (141, or 1 with SIGPIPE ignored), got 0"
 	rc=0; { echo up; sleep 0.2; echo more; } | head -n 1 >/dev/null || rc=$?
-	[ "$rc" = 141 ] || fail "producer | head under pipefail: want 141, got $rc"
+	[ "$rc" != 0 ] || fail "producer | head under pipefail: want a failure (141, or 1 with SIGPIPE ignored), got 0"
 	{ echo up; sleep 0.2; echo more; } | grep up >/dev/null || fail "producer | grep >/dev/null: want 0"
 	[ "$({ echo up; sleep 0.2; echo more; } | sed -n 1p)" = up ] || fail "producer | sed -n 1p"
 	# The same race without the sleep, many times (load decides how often it
