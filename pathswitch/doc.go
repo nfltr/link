@@ -4,12 +4,15 @@
 // Package pathswitch moves a session's byte stream between paths, a
 // relayed one and a direct one (and back), with no byte lost, duplicated
 // or reordered: the path layer of nfltr's direct paths, checked as
-// spec/DirectPath.tla (spec/README.md "Direct paths"). It sits
-// under the session's end-to-end TLS: the bytes it moves are TLS records,
-// so a byte the relay rewrites on the relayed path is a TLS error above
-// it (a reset), never a silent change. Standard library only; it runs
-// over any Stream: a link session through the relay, a QUIC stream on a
-// direct connection.
+// spec/DirectPath.tla (spec/README.md "Direct paths"). It runs over
+// per-epoch channels, each Stream an authenticated one that delivers in
+// order or is cut: a byte the relay rewrites is that channel's error (the
+// epoch's end, resumed on the next), never a silent change (relay
+// spec/proverif/direct_once.pv: an nf1 session's TLS, a direct QUIC
+// connection, a fresh TLS per relayed re-attach; an organisation session
+// keeps it under its end-to-end TLS, which is that channel there).
+// Standard library only; it runs over any such Stream: a TLS or link
+// session through the relay, a QUIC stream on a direct connection.
 //
 // Each attach opens a fresh stream, an epoch. The client (the side that
 // dials) is the only side that opens them (Move): OPEN carries the epoch,
