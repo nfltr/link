@@ -556,6 +556,41 @@ alone); `TestConcurrentAcquiresShareAGrant` for the fix.
 - **Don't undo**: no stream `Write` per frame. A new frame kind the writer
   may send at once goes through `frame`, so `more` batches it too.
 
+## quiclink: ACK frequency on a path reordering past its threshold (2026-11-22, lane ACKFIX, unreleased)
+
+- **Where**: the quic-go fork (`v0.63.1-nfltr.8`: `connection.go`
+  `sendAckFrequency`, `maybeUpdateAckFrequency`;
+  `internal/ackhandler/sent_packet_handler.go` `PacketThresholdDisabled`).
+- **Why it was slow**: quiclink v0.8.0 sent one ACK_FREQUENCY at the
+  handshake (Reordering Threshold 10). On a path whose reordering went past
+  10 places the receiver acknowledged at once each packet arriving 10 or
+  more below its last ACK and each hole 10 deep, nearly one ACK per late
+  packet, although the sender had turned its packet threshold off at the
+  first spurious loss (upstream's adaptive reordering), so those ACKs sped
+  no loss detection. Helsinki -> Singapore, 10 GiB, one connection (lane
+  REORDERWAN, `~/nfltr-evidence/reorderwan-2026-11-22/`): 2 of 3 runs at
+  0.305 and 0.348 ACK packets per data packet (one at 0.116), their ACKs
+  carrying more ranges (mean 48-103 bytes against 37-41), and 11.5-13.8 /
+  14.0-14.3 CPU s per GiB against v0.1.11's 7.2-9.4 / 10.0-11.9.
+- **What it does now**: when an ACK turns the packet threshold off (or a
+  path migration on), the sender asks again (sequence 1) for Reordering
+  Threshold 0, draft-ietf-quic-ack-frequency-14 section 6.2's "no
+  immediate ACK for reordering"; the count (10) and the delay still bound
+  every ACK, and time-threshold loss detection is what the sender uses
+  (spec/AckFrequency.tla `AckFrequencyDeep.cfg`).
+- **Gain**: the fork's `TestBulkUploadOnReorderingPath` (synctest, 300
+  Mbit/s, 260 ms, 30 % of packets late): up to 40 places 0.355 -> 0.096
+  ACK packets per data packet, 293.2 -> 293.2 Mbit/s; up to 10 places
+  0.100 -> 0.096; with 0.05 % loss 0.102 -> 0.098 (198.6 -> 210.3 Mbit/s,
+  within the seed spread). send's BenchmarkDirectCPU behind netem (Mac
+  docker, 130 ms each way, 3 ms jitter, the fork's `quicacktrace` with
+  each ACK's cause): ACKs queued by reordering (late + hole) 2678 -> 6 per
+  96 k data packets (the update applied at packet 49-558); total ACKs
+  unchanged there (0.036 per data packet: the in-process receiver reads in
+  batches and acks once per batch, as SPEED-ACK found).
+- **Guard**: `TestBulkUploadOnReorderingPath/bbr/deep-reorder/ackfreq` (at
+  most 0.12); spec mutant `no-update`.
+
 ## quiclink: QUIC ACK frequency (2026-11-21, lane SPEED-ACK, unreleased)
 
 - **Where**: the quic-go fork (`v0.63.1-nfltr.7`:

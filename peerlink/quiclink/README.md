@@ -254,7 +254,10 @@ of its own, v0); vectors are owed before quiclink v1.
   (sequence 0) with `Config.Acks` (`DefaultAckPolicy`: Ack-Eliciting
   Threshold 9, Reordering Threshold 10, Requested Max Ack Delay a quarter
   of the min RTT); each end's packet threshold is the Reordering
-  Threshold it sent (spec/AckFrequency.tla). A peer that does not
+  Threshold it sent (spec/AckFrequency.tla). Once a spurious loss turns
+  an end's packet threshold off (the path reorders past it), it sends
+  ACK_FREQUENCY again (sequence 1) with Reordering Threshold 0: its peer
+  no longer acknowledges reordering at once (AckFrequencyDeep.cfg). A peer that does not
   advertise `min_ack_delay` (quiclink before v0.8.0) is refused with
   close code 4 (`ErrNoAckFrequency`); later tuning changes the frame's
   values, not the wire.

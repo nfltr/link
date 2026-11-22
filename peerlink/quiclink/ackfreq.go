@@ -17,7 +17,11 @@ import (
 // AckElicitingThreshold ack-eliciting packets, or MaxAckDelay after the
 // oldest one not yet acknowledged, and at once only for a hole
 // ReorderingThreshold packets deep, which is also this side's packet
-// threshold of loss detection. Every ACK costs a packet at both ends:
+// threshold of loss detection; once a spurious loss turns that threshold
+// off (the path reorders past it), the fork asks again for Reordering
+// Threshold 0, so deep reordering costs no immediate ACKs (lane ACKFIX:
+// 0.3 ACK packets per data packet on Helsinki -> Singapore with one request
+// at the handshake). Every ACK costs a packet at both ends:
 // on a path that reorders a quarter of its packets the RFC 9000 rule (an
 // immediate ACK for each) was a third of both ends' CPU per GiB. Model:
 // spec/AckFrequency.tla. A peer without the extension is refused
