@@ -1721,10 +1721,22 @@ Code: the fork `internal/ackhandler/received_packet_tracker.go`
 `TestReceivedPacketTrackerReportedOnce` (random late deliveries, every ACK
 checked against `ReportedOnce` and `FrameBound`) and
 `TestBulkUploadOnReorderingPath/bbr/many-holes/ackfreq`. Trace recorder:
-the fork's `loss_trace_on.go` (tag `quicacktrace`, `QUICLOSSTRACE=<dir>`)
-records each loss the sender declares and each one acknowledged later, and
-each range the receiver's history drops; a TLC check of those files
-against this model is open (spec/README.md "ACK ranges" follow-up).
+the fork's `internal/ackhandler/trace_on.go` (tag `quicacktrace`,
+`QUICACKTRACE=<dir>`, the files `TraceAckFrequency.tla` reads): each `Ack`
+line carries its ranges (`rs`). `TraceAckRanges.tla` checks each file:
+every `Ack` covers the packets received since the last one, only received
+ones, in 1..K valid ranges (descending, a gap between two). Fixtures
+(`spec/traces/ackranges-*`, run by `make spec-mutants`): `ok`, the 1-RTT
+tracker driven through 1,425 packets up to 250 places late (64-range ACKs,
+the history full), accepted; `unreported` (a new packet's range left out),
+`phantom` (a range reaching a packet never received), `wide` (65 ranges),
+each rejected; the same drive on the code before this lane is rejected at
+its first ACK leaving a dropped packet out. Follow-up: `make spec-traces`
+gets an `ackranges` kind over quiclink's `TestAckFrequencyOnReorderingPath`
+files once quiclink requires a fork tag with `rs` (the lead's fork tag,
+then quiclink's bump). The fork's `loss_trace_on.go` (`QUICLOSSTRACE`)
+records the sender's losses by cause, each acknowledged later, and each
+range the receiver's history drops: the measurements above.
 
 ## Code map (lane W5-LINK)
 
@@ -1745,7 +1757,7 @@ holds in a `Spec-Reviewed:` trailer).
 | `HopHold.tla`, `TraceHopHold.tla` | two joints on one path (the agent's, the relay's), both ends TCP apps, crossing half closes: the hold ends at the next hop's receipt, the ENDACK at the onward end | `peerlink/chain.go`, `endack.go`, `peerlink/trace_on.go` |
 | `EndAckLeg.tla`, `TraceEndAckLeg.tla` | one leg's end acknowledgement per transport: link, gRPC frames, TCP's kernel ACK, QUIC (reassembly, control stream); the idle bound's progress rule | `endack.go`, `peerlink/quiclink/quiclink.go`, `peerlink/quiclink/endack.go`, `peerlink/quiclink/trace_on.go`, `pathswitch/conn.go` |
 | `AckFrequency.tla`, `TraceAckFrequency.tla` | a QUIC receiver's ACK policy under ACK_FREQUENCY against the sender's loss detection (the fork's `ackhandler` and its `trace_on.go`); the policy quiclink asks for | `peerlink/quiclink/quiclink.go`, `peerlink/quiclink/knobs.go`, `peerlink/quiclink/ackfreq.go` |
-| `AckRanges.tla` | a QUIC receiver's bounded ACK ranges against what its ACKs report (the fork's `ackhandler`); the ACK policy quiclink asks for bounds the packets between ACKs | `peerlink/quiclink/knobs.go` |
+| `AckRanges.tla`, `TraceAckRanges.tla` | a QUIC receiver's bounded ACK ranges against what its ACKs report (the fork's `ackhandler`); the ACK policy quiclink asks for bounds the packets between ACKs | `peerlink/quiclink/knobs.go` |
 | `CreditWaiters.tla`, `TraceCreditWaiters.tla` | senders waiting in `Credit.Acquire` on one session: the wait and `wakeAll` | `credit.go`, `trace_wait_on.go` |
 | `CreditGrow.tla` | a session's window grown with the path (FeatureGrow): BLOCKED, the growth rule, the cap and the connection budget, the growth sent with the next update | `credit.go`, `conn.go`, `config.go`, `trace_grow_on.go` |
 | `SessionRead.tla`, `TraceSessionRead.tla` | `Session.Read` from several goroutines (or ones running `WriteTo`, or `Pump` with a `WriteTo` refused), the read deadline set and cleared meanwhile | `mux.go`, `internal/bytequeue/`, `trace_read_on.go` |

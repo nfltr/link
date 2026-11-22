@@ -24,7 +24,8 @@
 #            session credit's waiters; swtrace F: a session's writes; gtrace F:
 #            a side's growing windows; jctrace F:
 #            a joint's side closed whole; rctrace F: a relayed path's Close;
-#            hhtrace F: two joints' holds; aftrace F: a QUIC receiver's ACKs).
+#            hhtrace F: two joints' holds; aftrace F: a QUIC receiver's ACKs;
+#            artrace F: its ACK ranges).
 #   behaviours  TLC -simulate walks for the model-based tests (testdata/mbt).
 # TLC_WORKERS (default 4) caps TLC's threads. Java and tla2tools.jar come
 # from scripts/fetch-tla.sh.
@@ -215,6 +216,26 @@ CFG
 	META=$work/states-$(basename "$1") tlc "$cfg" TraceAckFrequency.tla -deadlock >"$cfg.out" 2>&1 || afst=$?
 	cat "$cfg.out"
 	[ $afst != 0 ] && grep -q '^Error: Invariant TraceUnfinished is violated' "$cfg.out"
+}
+
+# artrace FILE: TLC on one QUIC receiver's recorded ACK ranges
+# (spec/TraceAckRanges.tla, lane SPURIOUS; the fork's -tags quicacktrace,
+# its Ack lines' rs); it fails unless TLC reaches the trace's end.
+artrace() {
+	cfg=$work/$(basename "$1").ar.cfg
+	cat >"$cfg" <<CFG
+CONSTANTS
+    TraceFile = "$1"
+    K = 64
+INIT TraceInit
+NEXT TraceNext
+INVARIANTS
+    TraceUnfinished
+CFG
+	arst=0
+	META=$work/states-ar-$(basename "$1") tlc "$cfg" TraceAckRanges.tla -deadlock >"$cfg.out" 2>&1 || arst=$?
+	cat "$cfg.out"
+	[ $arst != 0 ] && grep -q '^Error: Invariant TraceUnfinished is violated' "$cfg.out"
 }
 
 # hhtrace FILE [SEQAPP]: TLC on two joints' recorded holds
@@ -968,6 +989,7 @@ mutants)
 	for f in spec/traces/hopholdseq-*.ndjson; do job endfixture hhtraceseq "$f"; done
 	for f in spec/traces/hopholdconc-*.ndjson; do job endfixture hhtraceconc "$f"; done
 	for f in spec/traces/ackfreq-*.ndjson; do job endfixture aftrace "$f"; done
+	for f in spec/traces/ackranges-*.ndjson; do job endfixture artrace "$f"; done
 	wait
 	fail=0
 	i=0
@@ -1308,6 +1330,9 @@ hhtrace)
 	;;
 aftrace)
 	aftrace "$2"
+	;;
+artrace)
+	artrace "$2"
 	;;
 *)
 	echo "usage: spec.sh check|invariants|nightly|mutants|traces|trace FILE" >&2
