@@ -898,6 +898,10 @@ connection's at most `sessions x W + G`), `NeverReadNoGrowth` (a reader that
 never read leaves its window as it was: a stopped reader grows no one's
 memory), `StoppedGrowsOnce` (one that stopped lets it grow at most once
 more), `NoGrowthAhead` (at most a doubling per window received).
+No trace recorder yet: `-tags linktrace` builds announce no FeatureGrow
+(`Trace.tla` checks `Link.tla`'s fixed windows), and `TestWindowGrowthRule`
+takes the rule's steps one by one, a row per mutant.
+
 Liveness: `AllDelivered`. `CreditGrow.cfg` (two sessions, the budget
 binding; ~30 s), `CreditGrowOne.cfg` (one session to its cap; seconds),
 `CreditGrowWide.cfg` (4 bytes each, full only, ~3 min); `-coverage 1`
@@ -2004,6 +2008,7 @@ Recorders per spec (lane LINKTRACE2, 2026-11-20):
 | `Join.tla` | `TraceJoin.tla`, `peerlink/trace_on.go` | yes |
 | `JoinClose.tla` | `TraceJoinClose.tla`, `trace_join_on.go`; peerlink's joint `peerlink/trace_on.go` | yes |
 | `SessionRead.tla`, `SessionWrite.tla`, `CreditWaiters.tla` | `TraceSessionRead.tla`, `TraceSessionWrite.tla`, `TraceCreditWaiters.tla` | yes |
+| `CreditGrow.tla` | none yet (lane RELAYWIN's follow-up): linktrace builds announce no FeatureGrow, so `Trace.tla`'s recorded connections keep fixed windows; the growth rule's steps are `TestWindowGrowthRule`'s, one per mutant | no |
 | `RelayedClose.tla` | `TraceRelayedClose.tla`, `trace_relayed_on.go`: every step but `AWrite`, `D1Copy`, `CWrite`, `CRead`, `CEnd` (TLC's, unlogged) | yes |
 | `HopHold.tla` | `TraceHopHold.tla`, `peerlink/trace_on.go` (`LINKTRACE_HOPHOLD`); `AppRead` by `peerlink/quiclink/trace_on.go` through `internal/linkhook` (`SeqApp = {"R"}`, lane LINKGATE) | yes |
 | `DirectPath.tla` | `TraceDirectPath.tla`, `pathswitch/trace_on.go` | yes |

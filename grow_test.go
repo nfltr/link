@@ -106,6 +106,9 @@ func TestGrantPastTheHelloWindow(t *testing.T) {
 // ends; toward a peer without FeatureGrow (v0.13) it stays and the sender
 // sends no BLOCKED.
 func TestWindowGrowsOverALongPath(t *testing.T) {
+	if traceOn {
+		t.Skip("linktrace builds announce no FeatureGrow (Trace.tla checks fixed windows)")
+	}
 	for _, old := range []bool{false, true} {
 		r := newChainRig(t, rigOpts{n: 1, window: DefaultWindow, noGrow: old, wrap: func(_ int, nc net.Conn) net.Conn {
 			return newDelayConn(nc, 10*time.Millisecond)

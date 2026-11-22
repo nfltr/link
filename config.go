@@ -68,7 +68,10 @@ func (cfg Config) announce() uint32 {
 	if cfg.noEndAck {
 		f &^= featureEndAck
 	}
-	if cfg.noGrow {
+	if cfg.noGrow || traceOn {
+		// linktrace builds: Trace.tla checks against Link.tla, whose
+		// windows are fixed; CreditGrow.tla has no recorder yet (spec/README.md
+		// "Growing windows").
 		f &^= featureGrow
 	}
 	return f
