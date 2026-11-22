@@ -1467,9 +1467,26 @@ late that was 0.15-0.36 M ACKs per GiB, a third of both ends' CPU (nfltr
 | `PromptLoss`, `LossDeclared` | a hole R deep is reported at once and the sender has declared it lost | `no-reorder-ack` |
 | `NoSpuriousLoss` | under reordering below R no delivered packet is declared lost | `sender-threshold` (the sender keeps upstream's 3) |
 | `NoReorderAck` | reordering within R forces no immediate ACK (the saving) | `threshold-ignored` (the fork's `wasMissing` rule) |
+| `UpdateAsked`, `NoWastedReorderAck` (`AckFrequencyDeep.cfg`) | once the sender's packet threshold is off (its first spurious loss) it has asked again for Reordering Threshold 0, so no ACK is forced by reordering it did not ask for | `no-update` (one ACK_FREQUENCY at the handshake: quiclink v0.8.0) |
+| `UpdateAfterOff` | the receiver drops its reordering ACKs only after the sender stopped relying on them | |
 
 Witnesses (each violated): `WitnessTimer`, `WitnessCount`, `WitnessImm`,
 `WitnessReorderReport`, `WitnessLost`, `WitnessLateQuiet`, `WitnessWait`.
+`AckFrequencyDeep.cfg` (lane ACKFIX; Reorder = R = S = 3, no IMMEDIATE_ACK,
+15718 states, every action taken): a path reordering past R. On Helsinki ->
+Singapore (lane REORDERWAN) quiclink v0.8.0's single request left 2 of 3
+one-connection runs at 0.30-0.35 ACK packets per data packet: the receiver
+acked at once each packet arriving R or more late or past a hole R deep,
+although the sender had turned its packet threshold off at the first
+spurious loss (upstream quic-go's adaptive reordering), so those ACKs sped
+no loss detection. The sender now asks again (ACK_FREQUENCY sequence 1,
+Reordering Threshold 0: draft section 4's update, 6.2's 0) when its packet
+threshold goes off (`Update`: the receiver applies it some time later).
+Witnesses `WitnessSpurious`, `WitnessApplied`; `PromptLoss`,
+`LossDeclared` hold only while the packet threshold is on (time-threshold
+detection is not modelled), and are left out of this config with
+`NoSpuriousLoss` and `NoReorderAck`, which a reordering past R breaks by
+design.
 `AckFrequency.cfg` (N 6, T 2, R = S = 3, Reorder 2, MAD 2, packet 2 lossy,
 packet 5 with IMMEDIATE_ACK, 6 ticks): 5341 states, 5 s, every action
 taken (`-coverage 1`).
@@ -1481,6 +1498,7 @@ taken (`-coverage 1`).
 | time-threshold loss (9/8 RTT) is not modelled: reordering within R places is far below an RTT at the rates measured | RFC 9002 6.1.2; REORDER's path: 1-9 places |
 | before the frame arrives the receiver is RFC 9000's (T 1, R 1, max_ack_delay): more ACKs, no guarantee above weakened | draft section 4 |
 | the frame is retransmitted when lost (a control frame); a lower sequence number is ignored | draft 4, the fork's `framer` |
+| the sender's packet threshold goes off at its first spurious loss and stays off on the connection (no path migration: quiclink opens a connection per path) | upstream quic-go #5905 `detectSpuriousLosses`; `MigratedPath` turns it on again, and the fork then asks for R again |
 | before its first ACK the receiver reports no hole (quic-go numbers 1-RTT packets after the handshake's in one space, so the numbers below the first look missing); T < R, so the count sends that first ACK before a hole is R deep (ASSUME) | the fork's `hasNewMissingPackets`, `AckFrequency.validate` |
 
 Code: the fork (github.com/nfltr/quic-go, branch `nfltr`)

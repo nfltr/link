@@ -451,7 +451,7 @@ check | invariants)
 	# PoolDrain (Min 2: a Drain failing halfway) and QuicWatchStops (two
 	# short stops, ~10 s) only in full: their mutants are CI's.
 	# PoolGrow: background growth (Max above Min).
-	pools="Pool PoolGrow PoolClient Liveness LivenessStarve QuicWatch QuicWatchPTO QuicWatchStarve Join JoinClose CreditWaiters SessionRead SessionReadWriteTo SessionReadPump SessionReadPumpWriteTo SessionReadWriteTos SessionWrite DirectPath DirectPathReset DirectPathRebind DirectPathProof DirectPathClose RelayedClose RelayedCloseEmpty HopHold HopHoldSeq HopHoldConc EndAckLeg EndAckLegQuic AckFrequency"
+	pools="Pool PoolGrow PoolClient Liveness LivenessStarve QuicWatch QuicWatchPTO QuicWatchStarve Join JoinClose CreditWaiters SessionRead SessionReadWriteTo SessionReadPump SessionReadPumpWriteTo SessionReadWriteTos SessionWrite DirectPath DirectPathReset DirectPathRebind DirectPathProof DirectPathClose RelayedClose RelayedCloseEmpty HopHold HopHoldSeq HopHoldConc EndAckLeg EndAckLegQuic AckFrequency AckFrequencyDeep"
 	[ "$1" = invariants ] || pools="$pools PoolDrain QuicWatchStops DirectPathWide"
 	for m in $pools; do
 		echo "== $m.cfg"
@@ -459,7 +459,7 @@ check | invariants)
 		# Liveness explores a horizon of ticks, Join one session,
 		# CreditWaiters a fixed number of Acquires, SessionRead a fixed number of bytes, SessionWrite a fixed number of SetWriteDeadlines: their last states end there; PoolDrain has no Open to keep it going.
 		dl=; [ $m = Pool ] || [ $m = PoolGrow ] || [ $m = PoolClient ] || dl=-deadlock
-		mod=$m.tla; case $m in Pool*) mod=Pool.tla ;; Liveness*) mod=Liveness.tla ;; QuicWatch*) mod=QuicWatch.tla ;; CreditWaiters*) mod=CreditWaiters.tla ;; SessionRead*) mod=SessionRead.tla ;; DirectPath*) mod=DirectPath.tla ;; RelayedClose*) mod=RelayedClose.tla ;; HopHold*) mod=HopHold.tla ;; EndAckLeg*) mod=EndAckLeg.tla ;; esac
+		mod=$m.tla; case $m in Pool*) mod=Pool.tla ;; Liveness*) mod=Liveness.tla ;; QuicWatch*) mod=QuicWatch.tla ;; CreditWaiters*) mod=CreditWaiters.tla ;; SessionRead*) mod=SessionRead.tla ;; DirectPath*) mod=DirectPath.tla ;; RelayedClose*) mod=RelayedClose.tla ;; HopHold*) mod=HopHold.tla ;; EndAckLeg*) mod=EndAckLeg.tla ;; AckFrequency*) mod=AckFrequency.tla ;; esac
 		cfg=$m.cfg
 		# DirectPath's liveness (AllDelivered, ResetReaches: minutes) only in
 		# full; spec-mutants catches keep-dead-path and abort-not-resent by it.
@@ -837,6 +837,10 @@ mutants)
 		job mutant AckFrequency.cfg 'Mutant = "none"' "Mutant = \"$m\"" AckFrequency.tla
 	done
 	for w in WitnessTimer WitnessCount WitnessImm WitnessReorderReport WitnessLost WitnessLateQuiet WitnessWait; do job witness AckFrequency.cfg $w AckFrequency.tla; done
+	# A path reordering past R (AckFrequencyDeep.cfg, lane ACKFIX): the
+	# sender that never asks again once its packet threshold is off.
+	job mutant AckFrequencyDeep.cfg 'Mutant = "none"' 'Mutant = "no-update"' AckFrequency.tla
+	for w in WitnessSpurious WitnessApplied; do job witness AckFrequencyDeep.cfg $w AckFrequency.tla; done
 	# Credit's waiters (CreditWaiters.tla, lane LINKWAKE): the one-slot
 	# wake (the code before) strands a waiter and leaves its Acquire for
 	# good; passing the token on strands one that needs less (a stall
