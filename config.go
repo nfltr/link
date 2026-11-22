@@ -16,6 +16,17 @@ type Config struct {
 	// Window is how many bytes of one session this side buffers: 0 is
 	// DefaultWindow.
 	Window int
+	// WindowMax is the most one session's window grows to on a connection
+	// whose peer grows windows too (FeatureGrow, spec/CreditGrow.tla): a
+	// session starts at Window and doubles while its reader keeps up and
+	// its sender waits for credit, so one session moves about WindowMax
+	// per round trip. 0 is DefaultWindowMax; at most Window, windows stay
+	// at Window.
+	WindowMax int
+	// WindowBudget bounds a connection's growth: the bytes its sessions'
+	// windows grew past Window, summed. 0 is DefaultWindowBudget. A
+	// connection buffers at most its sessions times Window plus this.
+	WindowBudget int
 	// MaxSessions is how many sessions the peer may have open toward this
 	// side at once: 0 is MaxSessions.
 	MaxSessions int
@@ -43,6 +54,7 @@ type Config struct {
 
 	noChain    bool          // tests: announce what v0.9.4 did (no FeatureChain)
 	noEndAck   bool          // tests: announce what v0.12 did (no FeatureEndAck: the recorded goldens)
+	noGrow     bool          // tests: announce what v0.13 did (no FeatureGrow: fixed windows, the recorded goldens)
 	muteEndAck bool          // tests: announce FeatureEndAck, never acknowledge (a mute far end)
 	endAckIdle time.Duration // tests: CloseWriteSync's idle bound; 0: 30 s
 }
@@ -56,6 +68,9 @@ func (cfg Config) announce() uint32 {
 	if cfg.noEndAck {
 		f &^= featureEndAck
 	}
+	if cfg.noGrow {
+		f &^= featureGrow
+	}
 	return f
 }
 
@@ -64,6 +79,14 @@ const MaxVersion = 2
 
 // DefaultWindow is a Config's window when it names none.
 const DefaultWindow = 1 << 20
+
+// DefaultWindowMax and DefaultWindowBudget are a Config's WindowMax and
+// WindowBudget when it names none: one session at 16 MiB a round trip
+// (1.3 Gbit/s at 100 ms), a connection's growth at most 64 MiB.
+const (
+	DefaultWindowMax    = 16 << 20
+	DefaultWindowBudget = 64 << 20
+)
 
 // Auth methods with a meaning in this package; the others are the
 // Authenticator's to define (128 and up are never assigned here).
@@ -276,6 +299,12 @@ func (cfg Config) withDefaults() Config {
 	if cfg.MaxSessions == 0 {
 		cfg.MaxSessions = DefaultMaxSessions
 	}
+	if cfg.WindowMax == 0 {
+		cfg.WindowMax = DefaultWindowMax
+	}
+	if cfg.WindowBudget == 0 {
+		cfg.WindowBudget = DefaultWindowBudget
+	}
 	return cfg
 }
 
@@ -286,6 +315,12 @@ func (cfg Config) Validate() error {
 	cfg = cfg.withDefaults()
 	if cfg.Window < MinWindow || cfg.Window > MaxWindow {
 		return fmt.Errorf("link: Config.Window %d: set 0 (DefaultWindow) or a value in [MinWindow %d, MaxWindow %d]", cfg.Window, MinWindow, MaxWindow)
+	}
+	if cfg.WindowMax < MinWindow || cfg.WindowMax > MaxWindow {
+		return fmt.Errorf("link: Config.WindowMax %d: set 0 (DefaultWindowMax) or a value in [MinWindow %d, MaxWindow %d]", cfg.WindowMax, MinWindow, MaxWindow)
+	}
+	if cfg.WindowBudget < 0 || cfg.WindowBudget > MaxWindow {
+		return fmt.Errorf("link: Config.WindowBudget %d: set 0 (DefaultWindowBudget) or a value in [1, MaxWindow %d]", cfg.WindowBudget, MaxWindow)
 	}
 	if cfg.MaxSessions < 1 || cfg.MaxSessions > MaxSessionsWire {
 		return fmt.Errorf("link: Config.MaxSessions %d: set 0 (MaxSessions) or a value in [1, %d]", cfg.MaxSessions, MaxSessionsWire)

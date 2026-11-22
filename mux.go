@@ -161,7 +161,7 @@ func (m *Mux) add(sid string, header []byte, c Chain, accepter bool) (*Session, 
 	if accepter && m.cutting {
 		return nil, errCut
 	}
-	s := &Session{m: m, id: sid, q: bytequeue.New(m.c.credit.window), header: header, done: make(chan struct{}),
+	s := &Session{m: m, id: sid, q: bytequeue.New(m.c.credit.queueLimit()), header: header, done: make(chan struct{}),
 		chain: c, answers: m.c.chain(), accepter: accepter}
 	if s.answers && !accepter {
 		s.answered = make(chan struct{})

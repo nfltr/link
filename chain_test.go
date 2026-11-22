@@ -49,6 +49,7 @@ type rigOpts struct {
 	live      Liveness
 	cfg       ForwardConfig
 	wrap      func(i int, nc net.Conn) net.Conn // the dialer's side of link i
+	noGrow    bool                              // the dialers announce no FeatureGrow (v0.13's)
 }
 
 func newChainRig(t testing.TB, o rigOpts, far func([]byte, *Session)) *chainRig {
@@ -70,7 +71,7 @@ func newChainRig(t testing.TB, o rigOpts, far func([]byte, *Session)) *chainRig 
 			}
 			a, b = tls.Client(a, ctls), tls.Server(b, stls)
 		}
-		dcfg := Config{Window: o.window, Auth: testToken, Liveness: o.live, noChain: !l.chain}
+		dcfg := Config{Window: o.window, Auth: testToken, Liveness: o.live, noChain: !l.chain, noGrow: o.noGrow}
 		lcfg := Config{Window: o.window, Auth: testToken, noChain: !l.chain}
 		if i < o.n-1 { // hop i+1 forwards what link i brings
 			obs := &hopObserver{}
@@ -519,7 +520,13 @@ func TestChainStalledFarReader(t *testing.T) {
 				last = sent.Load()
 				time.Sleep(300 * time.Millisecond)
 			}
-			bound := int64(n*testWindow + (n-1)*writeBuf)
+			// Every window, as grown: a hop whose reader (its join) kept up
+			// while its sender waited grew it before the stall reached it.
+			grown := 0
+			for _, l := range r.links {
+				grown += l.lm.c.Stats().WindowGrown
+			}
+			bound := int64(n*testWindow + grown + (n-1)*writeBuf)
 			t.Logf("in flight: %d bytes (bound %d)", last, bound)
 			if last > bound || last < int64(n*testWindow)/2 {
 				t.Fatalf("in flight %d, bound %d", last, bound)

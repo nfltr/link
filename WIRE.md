@@ -162,8 +162,9 @@ announced it.
 | 0 | `FeatureReset` | v0.3.0 | the side reads close code 2 |
 | 1 | `FeatureChain` | v0.10.0 | the side reads accept, abort and chain-open frames, answers every open, and opens with chain-open (section 12) |
 | 2 | `FeatureEndAck` | v0.13.0 | the side reads endack frames and acknowledges the peer's half close once its reader took it (section 13) |
+| 3 | `FeatureGrow` | v0.14.0 | the side reads a window frame of increment 0 as BLOCKED, may grow its sessions' windows past its hello window, and takes window frames up to `MaxWindow` (section 7) |
 
-Bits 3-31 are reserved. A connection where either side lacks a bit is
+Bits 4-31 are reserved. A connection where either side lacks a bit is
 byte for byte a connection without it.
 
 ## 7. Credit (per-session flow control)
@@ -184,6 +185,29 @@ not yet returned:
 
 A connection's buffered bytes are therefore at most max_sessions x window
 per direction. A session whose reader is slow stalls only itself.
+
+Where both sides announced bit 3 (`FeatureGrow`), a session's window
+starts at the hello's window and may grow (spec/CreditGrow.tla):
+
+- A sender that must wait for credit sends a window frame of increment 0
+  for the session (BLOCKED, as RFC 9000's STREAM_DATA_BLOCKED), at most
+  once until its next window frame for it. It follows every data frame
+  the sender sent.
+- A receiver may raise a session's window at any time by returning more
+  than its application read; it never lowers one. This implementation
+  doubles a window on a BLOCKED read with less than half of the window
+  unread and a whole window received since the window last grew, up to
+  `Config.WindowMax` (default 16 MiB) and within `Config.WindowBudget`
+  (default 64 MiB, the growth past the hello window summed over the
+  connection's sessions; a session's end gives its growth back), and
+  returns the growth with the session's next window frame. It ignores a
+  BLOCKED that earns nothing.
+- A window frame is then a protocol error only past `MaxWindow` (2^30)
+  of credit; data past the receiver's current window of the session still
+  is (`ErrCredit`).
+
+A connection's buffered bytes are then at most max_sessions x window +
+the budget per direction.
 
 ## 8. Liveness
 

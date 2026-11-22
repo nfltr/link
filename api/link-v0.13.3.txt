@@ -1,0 +1,7 @@
+Compatible changes:
+- Config.WindowBudget: added
+- Config.WindowMax: added
+- ConnStats.WindowGrown: added
+- ConnStats.WindowGrowths: added
+- DefaultWindowBudget: added
+- DefaultWindowMax: added

@@ -862,13 +862,13 @@ It travels behind every data frame the sender sent, so when the receiver
 reads it every byte the sender could send has arrived: little unread
 means the path, not the reader, held the sender back.
 
-The receiver's rule (`Credit.blocked`): the window doubles when
+The receiver's rule (`Credit.peerBlocked`): the window doubles when
 - the reader keeps up: less than half the window is unread;
 - a whole window arrived since it last grew (`epoch`), so a window grows at
   most once per window of bytes, a peer's early or repeated BLOCKED earns
   nothing;
-- within `Config.MaxWindow` (default 16 MiB) and the connection's budget
-  `Config.MaxGrowth` (default 64 MiB: the growth past `window`, summed over
+- within `Config.WindowMax` (default 16 MiB) and the connection's budget
+  `Config.WindowBudget` (default 64 MiB: the growth past `window`, summed over
   the connection's sessions); a session's end gives its growth back.
 
 The receive loop sends nothing (it never writes: a frame it waited on
@@ -881,9 +881,9 @@ update is then the protocol's `MaxWindow` (1 GiB), not the peer's hello.
 | action | the Go it models |
 |---|---|
 | `Send(s)` | `Credit.acquire` takes a byte, the data frame goes out |
-| `Block(s)` | `Credit.acquire` must wait: `Credit.blockedFrame` buffers the BLOCKED once until the next update; or any peer's BLOCKED at any time |
+| `Block(s)` | `Credit.acquire` must wait: `Conn.sendBlocked` buffers the BLOCKED once until the next update; or any peer's BLOCKED at any time |
 | `RecvWin` | `Credit.Grant` (the sender's cap: `MaxWindow`) |
-| `RecvAB` | `Credit.receivedSID` (data charged against the session's window) and `Credit.blocked` (the growth, or nothing) |
+| `RecvAB` | `Credit.receivedSID` (data charged against the session's window) and `Credit.peerBlocked` (the growth, or nothing) |
 | `Read(s)` | `Credit.Consumed`: the update once a quarter window was read (`Q`), with `owed` |
 | `Stop(s)` | a reader that reads no more |
 | `Drop(s)` | `Credit.dropLocked`: the session's growth back to the budget |

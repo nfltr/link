@@ -29,8 +29,8 @@ EXTENDS Naturals, Sequences, FiniteSets
 CONSTANTS
     Sids,   \* the sessions
     W,      \* the hello's window: every session's first
-    Max,    \* Config.MaxWindow: a session's window at most
-    G,      \* Config.MaxGrowth: the connection's growth, summed, at most
+    Max,    \* Config.WindowMax: a session's window at most
+    G,      \* Config.WindowBudget: the connection's growth, summed, at most
     Total,  \* bytes each session sends
     Q,      \* an update per 1/Q window read: 4 in the code, 1 here keeps both branches of Read reachable at small windows
     Mutant
@@ -122,7 +122,7 @@ Room(s) == LET a == IF Mutant = "no-cap" THEN win[s] ELSE Max - win[s]
            IN IF win[s] < a THEN (IF win[s] < b THEN win[s] ELSE b) ELSE (IF a < b THEN a ELSE b)
 
 \* The listener's receive loop: a data frame charged (Credit.receivedSID),
-\* a BLOCKED (Credit.blocked) grows the window or does nothing.
+\* a BLOCKED (Credit.peerBlocked) grows the window or does nothing.
 RecvAB ==
     /\ ab # <<>>
     /\ LET f == Head(ab) IN

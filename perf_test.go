@@ -84,11 +84,16 @@ func TestFramesAndReadsPerMessage(t *testing.T) {
 				t.Errorf("%d data frames for %d messages of %d bytes, want %d", tx.dataFrames, n, tc.size, n*tc.frames)
 			}
 			// The sender's own frames beyond its data: its CLOSE, its window
-			// updates for the sink's (none) and liveness (none this soon).
-			if extra := tx.frames - tx.dataFrames; extra > 2 {
-				t.Errorf("%d frames besides the data frames", extra)
+			// updates for the sink's (none) and liveness (none this soon),
+			// and its BLOCKEDs while the sink's window grows (one a wait:
+			// 1 MiB to 16 MiB is four doublings).
+			if extra := tx.frames - tx.dataFrames - tx.winFrames; extra > 2 {
+				t.Errorf("%d frames besides the data frames and BLOCKEDs", extra)
 			}
-			if w := float64(tx.writes-2) / n; w > tc.writes { // -2: the CLOSE frames' own
+			if tx.winFrames > 8 {
+				t.Errorf("%d BLOCKEDs, want at most 8", tx.winFrames)
+			}
+			if w := float64(tx.writes-2-tx.winFrames) / n; w > tc.writes { // -2: the CLOSE frames' own; a BLOCKED's wait flushes
 				t.Errorf("%.2f writes of the connection per message, want at most %v", w, tc.writes)
 			}
 			if rd := float64(rx.reads) / n; rd > tc.reads {

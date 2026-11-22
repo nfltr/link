@@ -70,7 +70,13 @@ const (
 	// code 2 only to a peer that announced it, else code 0.
 	featureReset uint32 = 1 << 0
 
-	features = featureReset | featureChain | featureEndAck // what this package announces
+	// featureGrow: the side grows its sessions' windows with the path and
+	// accepts window updates past the peer's hello window, up to MaxWindow;
+	// a window update of 0 bytes is a BLOCKED (WIRE.md section 7,
+	// spec/CreditGrow.tla). Both announced it, or windows stay fixed.
+	featureGrow uint32 = 1 << 3
+
+	features = featureReset | featureChain | featureEndAck | featureGrow // what this package announces
 )
 
 // traceLen is a CHAIN-OPEN's trace.
@@ -239,6 +245,8 @@ func newConnV2(nc net.Conn, cfg Config, peerWindow, peerMaxSessions int, dialer 
 	c := &Conn{nc: nc}
 	c.credit = NewCredit(cfg.Window, peerWindow, c.sendWindow)
 	c.credit.flush = c.flush
+	c.credit.blocked = c.sendBlocked
+	c.credit.winMax, c.credit.budget = cfg.WindowMax, cfg.WindowBudget
 	c.dialer, c.peerMaxSessions, c.live = dialer, peerMaxSessions, cfg.Liveness
 	c.maxSessions = cfg.MaxSessions
 	c.hop = cfg.Hop
@@ -258,6 +266,7 @@ func (c *Conn) up(obs Observer, id Identity) {
 		traceUp(c)
 	}
 	c.id, c.credit.obs = id, obs
+	c.credit.grows = c.features&c.peerFeatures&featureGrow != 0 // this side grows its windows only past Window (WindowMax)
 	if obs != nil {
 		obs.ConnUp(id)
 	}
@@ -534,6 +543,11 @@ type ConnStats struct {
 	// QueuedBytes is a gauge: the bytes received and not yet read by
 	// their sessions.
 	QueuedBytes int
+	// WindowGrowths counts the sessions' windows grown (FeatureGrow);
+	// WindowGrown is a gauge: the growth past Config.Window the open
+	// sessions hold, summed (at most Config.WindowBudget).
+	WindowGrowths uint64
+	WindowGrown   int
 }
 
 // Stats returns the connection's counters (ConnStats). Safe from any
@@ -541,13 +555,13 @@ type ConnStats struct {
 func (c *Conn) Stats() ConnStats {
 	cr := c.credit
 	cr.mu.Lock()
-	opened, queued := cr.openedN, cr.queued
+	opened, queued, growths, grown := cr.openedN, cr.queued, cr.growths, cr.grown
 	cr.mu.Unlock()
 	return ConnStats{
 		BytesIn: c.rx.Load(), BytesOut: c.tx.Load(),
 		SessionsOpened: opened, SessionsAborted: c.aborted.Load(),
 		CreditWaits: cr.waits.Load(), CreditWait: time.Duration(cr.waitNanos.Load()),
-		QueuedBytes: queued,
+		QueuedBytes: queued, WindowGrowths: growths, WindowGrown: grown,
 	}
 }
 
@@ -559,6 +573,7 @@ func (s *ConnStats) add(o ConnStats) {
 	s.SessionsAborted += o.SessionsAborted
 	s.CreditWaits += o.CreditWaits
 	s.CreditWait += o.CreditWait
+	s.WindowGrowths += o.WindowGrowths
 }
 
 // sendCloseFrame buffers a CLOSE frame for sid: half, the side
@@ -729,6 +744,14 @@ func (c *Conn) endErr() error {
 	c.errMu.Lock()
 	defer c.errMu.Unlock()
 	return c.err
+}
+
+// sendBlocked is the Credit's BLOCKED: a window frame of 0 bytes for sid,
+// buffered behind the session's data; the sender's wait flushes it.
+func (c *Conn) sendBlocked(sid string) {
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
+	_ = c.frameLocked(typeWindow, "", AppendWindow(make([]byte, 0, 1+len(sid)+4), sid, 0), nil)
 }
 
 // sendWindow is the Credit's grant: a window frame, written at once.
@@ -1222,6 +1245,10 @@ func (c *Conn) recv() (rframe, bool, error) {
 		sid, inc, err := ParseWindow(b)
 		if err != nil {
 			return rframe{}, false, err
+		}
+		if inc == 0 && c.credit.grows {
+			c.credit.peerBlocked(sid) // a BLOCKED (spec/CreditGrow.tla RecvAB)
+			return rframe{}, false, nil
 		}
 		return rframe{}, false, c.credit.Grant(sid, inc)
 	case typeOpen, typeChainOpen:

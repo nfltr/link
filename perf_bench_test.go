@@ -46,6 +46,7 @@ type perfConn struct {
 	hdr                [5]byte
 	nh, rest           int
 	frames, dataFrames int64
+	winFrames          int64 // window frames: a sender's are its BLOCKEDs
 }
 
 func (c *perfConn) Read(b []byte) (int, error) {
@@ -90,8 +91,11 @@ func (c *perfConn) feed(p []byte) {
 		if c.nh == len(c.hdr) {
 			c.rest = int(binary.BigEndian.Uint32(c.hdr[:4]))
 			c.frames++
-			if c.hdr[4] == typeData {
+			switch c.hdr[4] {
+			case typeData:
 				c.dataFrames++
+			case typeWindow:
+				c.winFrames++
 			}
 			c.nh = 0
 		}
@@ -99,16 +103,16 @@ func (c *perfConn) feed(p []byte) {
 }
 
 // counts is a snapshot of a perfConn.
-type counts struct{ writes, reads, frames, dataFrames int64 }
+type counts struct{ writes, reads, frames, dataFrames, winFrames int64 }
 
 func (c *perfConn) snap() counts {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return counts{c.writes.Load(), c.reads.Load(), c.frames, c.dataFrames}
+	return counts{c.writes.Load(), c.reads.Load(), c.frames, c.dataFrames, c.winFrames}
 }
 
 func (a counts) sub(b counts) counts {
-	return counts{a.writes - b.writes, a.reads - b.reads, a.frames - b.frames, a.dataFrames - b.dataFrames}
+	return counts{a.writes - b.writes, a.reads - b.reads, a.frames - b.frames, a.dataFrames - b.dataFrames, a.winFrames - b.winFrames}
 }
 
 // perfRig is two Muxes on one connection: a dialed, b listened; la and lb

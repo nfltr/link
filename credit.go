@@ -25,6 +25,19 @@ import (
 // update that would raise a session's credit past the peer's own window, is
 // ErrCredit and ends the connection. A connection's memory is then at most
 // its sessions times the window.
+//
+// On a connection where both sides announced FeatureGrow a session's window
+// grows with the path (spec/CreditGrow.tla, WIRE.md section 7): a sender
+// that must wait for credit sends a window update of 0 bytes (BLOCKED,
+// RFC 9000's STREAM_DATA_BLOCKED) once until its next update; it arrives
+// behind every byte the sender could send, so when the receiver reads it
+// with less than half the window unread and a whole window received since
+// the window last grew, the path held the sender back, and the window
+// doubles, at most to Config.WindowMax and within the connection's
+// Config.WindowBudget (growth past Window, summed over its sessions; a
+// session's end gives its growth back). The growth goes out with the
+// session's next update. A connection's memory is then at most its
+// sessions times the window plus the budget.
 
 // ErrCredit is the receive error of a peer that broke the credit rules:
 // it sent a session more data than this side's window, or granted more
@@ -39,9 +52,17 @@ var ErrCredit = errors.New("link: peer exceeded the session window")
 type Credit struct {
 	window, peerWindow int
 	grant              func(sid string, n int) // sends a window update
-	flush              func() error            // before Acquire waits; nil: none
-	obs                Observer                // nil: none
-	tr                 traceState              // linktrace builds only (trace_on.go)
+	// FeatureGrow (both sides announced it): blocked sends a BLOCKED (a
+	// window update of 0) and the peer's window may grow; this side's
+	// grow to winMax (none when it is at most window) within budget.
+	grows          bool
+	blocked        func(sid string)
+	winMax, budget int
+	grown          int          // the sessions' growth past window, summed (under mu)
+	growths        uint64       // windows grown (Stats; under mu)
+	flush          func() error // before Acquire waits; nil: none
+	obs            Observer     // nil: none
+	tr             traceState   // linktrace builds only (trace_on.go)
 
 	waits     atomic.Uint64 // senders' waits for credit (Stats)
 	waitNanos atomic.Int64  // and how long, in all
@@ -68,8 +89,13 @@ type sessionCredit struct {
 	n        int           // bytes this side may still send
 	pend     int           // taken by a Session's Write, not yet buffered (Grant's bound)
 	wake     chan struct{} // the waiting senders': closed when n grows or the credit is forgotten (wakeAll); nil while none waits
-	held     int           // received and not yet acknowledged: at most the window
+	held     int           // received and not yet acknowledged: at most win
 	consumed int           // left the buffer, not yet acknowledged
+	win      int           // this side's window of the session: Credit.window, more once grown
+	owed     int           // growth not yet sent: goes with the next window update
+	rcvd     int           // bytes received in all
+	epoch    int           // rcvd when the window last grew
+	bsent    bool          // a BLOCKED sent since the peer's last update (FeatureGrow)
 	by       int           // byCaller, byUs or byPeer
 	answered bool          // FeatureChain connections: byUs, the peer's ACCEPT or refusal came; byPeer, this side's went
 	onGrant  func(int)     // Session.OnGrant's; nil: none
@@ -152,7 +178,7 @@ func (c *Credit) open(sid string, by int) {
 	if c.cut {
 		by = byCaller // the connection ended: SessionClose was reported for its sessions
 	}
-	c.sessions[sid] = &sessionCredit{n: c.peerWindow, by: by} // no wake channel until a sender waits (TestCreditOpenMakesNoWakeChannel)
+	c.sessions[sid] = &sessionCredit{n: c.peerWindow, by: by, win: c.window} // no wake channel until a sender waits (TestCreditOpenMakesNoWakeChannel)
 	if traceOn {
 		traceWaitUp(c.sessions[sid], c.peerWindow)
 	}
@@ -236,6 +262,7 @@ func (c *Credit) dropLocked(sid string) *sessionCredit {
 		s.wakeAll()
 		delete(c.sessions, sid)
 		c.queued -= s.held - s.consumed
+		c.grown -= s.win - c.window // its growth back to the budget (spec/CreditGrow.tla Drop)
 		if s.by != byCaller {
 			c.opened[s.by-1]--
 		}
@@ -315,7 +342,12 @@ func (c *Credit) acquire(sid string, n int, flush func() error, stop <-chan stru
 			s.traceWait("Check", tw, n, false)
 			s.traceCheck(ws, n, false)
 		}
+		block := c.grows && !s.bsent // once until the peer's next update (spec/CreditGrow.tla Block)
+		s.bsent = s.bsent || block
 		c.mu.Unlock()
+		if block {
+			c.blocked(sid) // buffered: the flush below sends it
+		}
 		if waited.IsZero() {
 			waited = time.Now()
 		}
@@ -380,7 +412,7 @@ func (c *Credit) Consumed(sid string, n int) {
 	s.consumed += n
 	c.queued -= n
 	r := s.consumed
-	if r < c.window/4 {
+	if r+s.owed < s.win/4 {
 		if traceOn {
 			traceEv(c.tr, traceEvent{ev: "Read", sid: sid, n: n, held: s.held})
 		}
@@ -389,11 +421,45 @@ func (c *Credit) Consumed(sid string, n int) {
 	}
 	s.consumed = 0
 	s.held = max(s.held-r, 0) // the peer may send r more from now on
+	g := r + s.owed           // and what the window grew by (Credit.blocked)
+	s.owed = 0
 	if traceOn {
-		traceEv(c.tr, traceEvent{ev: "Read", sid: sid, n: n, held: s.held, grant: r})
+		traceEv(c.tr, traceEvent{ev: "Read", sid: sid, n: n, held: s.held, grant: g})
 	}
 	c.mu.Unlock()
-	c.grant(sid, r)
+	c.grant(sid, g)
+}
+
+// peerBlocked is the peer's BLOCKED for sid (a window update of 0 bytes on a
+// FeatureGrow connection): the window doubles when the reader keeps up
+// (less than half of it unread) and a whole window arrived since it last
+// grew, at most to winMax and within the budget; the bytes go out with
+// the next update (Consumed). The receive loop calls it: it sends nothing.
+func (c *Credit) peerBlocked(sid string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	s := c.sessions[sid]
+	if s == nil || 2*(s.held-s.consumed) >= s.win || s.rcvd-s.epoch < s.win {
+		return
+	}
+	g := min(s.win, c.winMax-s.win, c.budget-c.grown)
+	if g <= 0 {
+		return
+	}
+	s.win += g
+	s.owed += g
+	s.epoch = s.rcvd
+	c.grown += g
+	c.growths++
+}
+
+// queueLimit is the most a session's receive queue holds: its window, as
+// it may grow.
+func (c *Credit) queueLimit() int {
+	if c.grows {
+		return max(c.winMax, c.window)
+	}
+	return c.window
 }
 
 // Received charges n bytes of data for sid against this side's window:
@@ -460,10 +526,11 @@ func (c *Credit) chargeLocked(s *sessionCredit, n int, answers bool) error {
 	if answers && s.by == byUs && !s.answered {
 		return ErrFrame
 	}
-	if n > c.window-s.held {
+	if n > s.win-s.held {
 		return ErrCredit
 	}
 	s.held += n
+	s.rcvd += n
 	c.queued += n
 	return nil
 }
@@ -511,11 +578,16 @@ func (c *Credit) Grant(sid string, n int) error {
 		c.mu.Unlock()
 		return nil
 	}
-	if n < 0 || n > c.peerWindow-s.n-s.pend {
+	limit := c.peerWindow
+	if c.grows {
+		limit = MaxWindow // the peer's window grows: the protocol's bound
+	}
+	if n < 0 || n > limit-s.n-s.pend {
 		c.mu.Unlock()
 		return ErrCredit
 	}
 	s.n += n
+	s.bsent = false
 	s.granted += uint64(n) // #nosec G115 -- n >= 0
 	if traceOn {
 		traceEv(c.tr, traceEvent{ev: "Recv", t: "win", sid: sid, n: n, credit: s.n})
