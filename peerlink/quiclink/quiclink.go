@@ -164,6 +164,41 @@ type Config struct {
 	// Acks is the ACK rate this Node asks its peers for (zero:
 	// DefaultAckPolicy).
 	Acks AckPolicy
+	// Congestion is the congestion controller of this Node's connections
+	// (zero: CongestionBBR).
+	Congestion Congestion
+	// NoPacing sends the packets the congestion window allows at once
+	// instead of spacing them at the controller's rate (zero: paced).
+	NoPacing bool
+	// MaxPacketSize is the largest UDP payload this Node sends: path MTU
+	// discovery stops there and at the peer's limit (0: 1452, the fork's
+	// packet buffers; otherwise 1200 to 1452).
+	MaxPacketSize int
+	// Socket is the UDP socket settings of PacketConn's (zero: today's,
+	// see Socket); SocketBuffers reports what the host gave. A Transport's
+	// or Dial's socket is the caller's: set them on its quic.Transport.
+	Socket Socket
+}
+
+// Congestion is a congestion controller.
+type Congestion uint8
+
+const (
+	// CongestionBBR: BBR v1 (quic.CongestionControlBBR), the default.
+	CongestionBBR Congestion = iota
+	// CongestionReno: NewReno (RFC 9002 section 7).
+	CongestionReno
+)
+
+// Socket is a UDP socket's settings (the fork's quic.Transport fields).
+type Socket struct {
+	// ReceiveBuffer and SendBuffer are the SO_RCVBUF and SO_SNDBUF sizes
+	// asked for, at least (0: quic.SocketBufferWanted, 7 MiB). The host
+	// may give less (Linux net.core.rmem_max, wmem_max): Node.SocketBuffers.
+	ReceiveBuffer, SendBuffer int
+	// NoGSO and NoGRO turn off UDP segmentation offload on send and
+	// receive coalescing (Linux 5.0+, on where the kernel has them).
+	NoGSO, NoGRO bool
 }
 
 // Node is a peerlink.Link over QUIC. Sessions are *Session: read and write
@@ -198,7 +233,9 @@ var (
 // New returns a Node; it dials nothing until Open or Serve. It refuses a
 // Config that cannot work, naming the field: neither Dial nor PacketConn;
 // a PacketConn without TLS; Connect without Dial; a negative Conns; an
-// invalid Liveness, Window or MaxSessions (as link.Config.Validate).
+// invalid Liveness, Window or MaxSessions (as link.Config.Validate), Acks,
+// Congestion or MaxPacketSize; a negative Socket buffer; Socket without
+// PacketConn.
 func New(cfg Config) (*Node, error) {
 	switch {
 	case cfg.PacketConn != nil && cfg.Transport != nil:
@@ -213,6 +250,14 @@ func New(cfg Config) (*Node, error) {
 		return nil, errors.New("quiclink: Config.Connect needs Config.Dial: set Dial to reach the peers it names")
 	case cfg.Conns < 0:
 		return nil, fmt.Errorf("quiclink: Config.Conns %d: want 0 (one) or more connections per peer", cfg.Conns)
+	case cfg.Congestion > CongestionReno:
+		return nil, fmt.Errorf("quiclink: Config.Congestion %d: want CongestionBBR or CongestionReno", cfg.Congestion)
+	case cfg.MaxPacketSize != 0 && (cfg.MaxPacketSize < minPacketSize || cfg.MaxPacketSize > maxPacketSize):
+		return nil, fmt.Errorf("quiclink: Config.MaxPacketSize %d: want 0 (%d) or %d to %d", cfg.MaxPacketSize, maxPacketSize, minPacketSize, maxPacketSize)
+	case cfg.Socket.ReceiveBuffer < 0 || cfg.Socket.SendBuffer < 0:
+		return nil, fmt.Errorf("quiclink: Config.Socket %+v: want buffer sizes of 0 (quic.SocketBufferWanted) or more", cfg.Socket)
+	case cfg.Socket != (Socket{}) && cfg.PacketConn == nil:
+		return nil, errors.New("quiclink: Config.Socket needs Config.PacketConn: a Transport's or Dial's socket is the caller's (set the quic.Transport's fields)")
 	}
 	if err := (link.Config{Liveness: cfg.Liveness, Window: cfg.Window, MaxSessions: cfg.MaxSessions}).Validate(); err != nil {
 		return nil, fmt.Errorf("quiclink: %w", err)
@@ -223,6 +268,10 @@ func New(cfg Config) (*Node, error) {
 	}
 	if err := acks.validate(); err != nil {
 		return nil, err
+	}
+	cc := quic.CongestionControlBBR
+	if cfg.Congestion == CongestionReno {
+		cc = quic.CongestionControlReno
 	}
 	n := &Node{cfg: cfg, endAckIdle: endAckIdle, dialled: map[string]*peerConns{}, served: map[*conn]bool{}, live: map[*conn]bool{},
 		changed: make(chan struct{}), drained: make(chan struct{})}
@@ -247,12 +296,28 @@ func New(cfg Config) (*Node, error) {
 		// few packets and grows one per RTT: 3 Mbit/s of 300 (BBR: 190).
 		// Guard: TestNodeUsesBBR; the gain: quic-go's
 		// TestBulkUploadOnReorderingPath (docs/performance.md).
-		CongestionControl: quic.CongestionControlBBR,
+		CongestionControl: cc,
+		DisablePacing:     cfg.NoPacing,
+		MaxPacketSize:     uint16(cfg.MaxPacketSize), // #nosec G115 -- validated: at most maxPacketSize
 		// #nosec G115 -- validate: non-negative
 		AckFrequency: &quic.AckFrequency{AckElicitingThreshold: uint64(acks.AckElicitingThreshold),
 			ReorderingThreshold: uint64(acks.ReorderingThreshold), MaxAckDelay: acks.MaxAckDelay},
 	}
 	return n, nil
+}
+
+// minPacketSize and maxPacketSize bound Config.MaxPacketSize: QUIC's
+// smallest datagram (RFC 9000 section 14) and the fork's packet buffers.
+const minPacketSize, maxPacketSize = 1200, 1452
+
+// SocketBuffers is the receive and send buffer sizes the host gave the
+// socket of Config.PacketConn (quic.SocketBuffers): less than
+// Config.Socket asked for where the host's limit is lower.
+func (n *Node) SocketBuffers() (read, write int, err error) {
+	if n.cfg.PacketConn == nil {
+		return 0, 0, errors.New("quiclink: SocketBuffers: no Config.PacketConn (a Transport's or Dial's socket is the caller's: quic.SocketBuffers)")
+	}
+	return quic.SocketBuffers(n.cfg.PacketConn)
 }
 
 // idleBackstop times Interval + Timeout is QUIC's idle timeout: past any
@@ -690,7 +755,9 @@ func (n *Node) Serve(accept func(peer string, header []byte, s peerlink.Session)
 	}
 	tr := n.cfg.Transport
 	if tr == nil {
-		tr = &quic.Transport{Conn: n.cfg.PacketConn}
+		s := n.cfg.Socket
+		tr = &quic.Transport{Conn: n.cfg.PacketConn, ReceiveBufferSize: s.ReceiveBuffer, SendBufferSize: s.SendBuffer,
+			DisableGSO: s.NoGSO, DisableGRO: s.NoGRO}
 	}
 	ln, err := tr.Listen(withALPN(n.cfg.TLS), qc)
 	if err != nil {

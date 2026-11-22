@@ -216,6 +216,37 @@ What it costs, and when not to use it:
   `*quic.DatagramTooLargeError` (the caller's maximum) when the bytes do
   not fit in a packet. `TestSessionDatagrams*`; the rate: `BenchmarkSessionDatagrams` (1200-byte datagrams one way; delivered% the share that arrived).
 
+## Speed knobs
+
+Every QUIC setting that moves a transfer's speed or CPU is a typed field
+of `Config` (link 1.0 gate item 8c), none an environment variable or a
+constant. Each zero value is the behaviour before the field existed; New
+refuses an invalid one, naming the field. No knob changes the wire.
+
+| Field | Zero value | Valid | Reported back |
+|---|---|---|---|
+| `Conns` | 1 connection per peer | >= 0 | `Stats` |
+| `Acks` (`AckPolicy`) | `DefaultAckPolicy` (9, 10, a quarter of the min RTT) | 0 <= AckEliciting < Reordering, MaxAckDelay <= 25 ms | the ACK_FREQUENCY frame |
+| `Congestion` | `CongestionBBR` | `CongestionBBR`, `CongestionReno` | `QUICConfig().CongestionControl` |
+| `NoPacing` | paced at the controller's rate | any | `QUICConfig().DisablePacing` |
+| `MaxPacketSize` | 1452 (the fork's packet buffers) | 0 or 1200..1452 | `QUICConfig().MaxPacketSize` |
+| `Socket.ReceiveBuffer`, `SendBuffer` | `quic.SocketBufferWanted` (7 MiB), asked at least | >= 0; needs `PacketConn` | `Node.SocketBuffers()`: what the host gave, less where `net.core.rmem_max`/`wmem_max` (Linux) or `kern.ipc.maxsockbuf` (macOS) is lower |
+| `Socket.NoGSO`, `NoGRO` | GSO and GRO on where Linux 5.0+ has them | any; needs `PacketConn` | the fork's `TestGRODisabled` (one datagram per read) |
+
+`Socket` applies to the socket the Node owns (`PacketConn`). A shared
+`Transport`, or the sockets a `Dial` func uses, are the caller's: set the
+same fields on its `quic.Transport` (`ReceiveBufferSize`,
+`SendBufferSize`, `DisableGSO`, `DisableGRO`) and read
+`quic.SocketBuffers`. The fork's `QUIC_GO_DISABLE_GSO` and
+`QUIC_GO_DISABLE_GRO` environment variables are deleted: those fields
+replace them. A larger `MaxPacketSize` (jumbo-frame paths) needs the
+fork's packet buffers sized per Transport; the field and its validation
+are in place, so raising the bound is no API change. Guards:
+`TestSpeedKnobsValidation`, `TestSpeedKnobsReachQUIC`,
+`TestSocketBuffersReported`; in the fork `TestConfigValidationSpeedKnobs`,
+`TestSentPacketHandlerNoPacing`, `TestConnectionMaxPacketSize`,
+`TestTransportSocketOptions`, `TestGRODisabled`.
+
 ## Wire
 
 quiclink's wire is QUIC (RFC 9000) with TLS 1.3, plus the bytes below;
