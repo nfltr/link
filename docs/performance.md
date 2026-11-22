@@ -583,7 +583,7 @@ rule (a peer's BLOCKED before any data would grow an empty window).
 
 ## quiclink: one connection on a long fat path (2026-11-22, lane LONGFAT, unreleased)
 
-- **Where**: the quic-go fork land/LONGFAT (`internal/protocol/params.go`
+- **Where**: the quic-go fork `v0.63.1-nfltr.10` (`internal/protocol/params.go`
   `MaxCongestionWindowPackets`, `MaxStreamFrameSorterGaps`),
   `peerlink/quiclink/knobs.go` (`Config.MaxWindow` ->
   `MaxStreamReceiveWindow`), relay client `agent/direct.go`
@@ -627,7 +627,7 @@ rule (a peer's BLOCKED before any data would grow an empty window).
   `TestDirectSessionWindowCoversALongFatPath`; spec/AutoWindow.tla.
 ## quiclink: ACK ranges on a path with more holes than 64 (2026-11-22, lane SPURIOUS, unreleased)
 
-- **Where**: the quic-go fork (branch `land/SPURIOUS`, untagged:
+- **Where**: the quic-go fork (`v0.63.1-nfltr.10`:
   `internal/ackhandler/received_packet_tracker.go` `appendAckRanges`).
 - **Why it was slow**: the receiver's history keeps 64 ACK ranges and drops
   its lowest past that; Helsinki -> Singapore delivers 44-50 % of some

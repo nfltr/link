@@ -1201,7 +1201,7 @@ traces)
 	# (TraceSessionWrite.tla) and a joint's side closed whole
 	# (TraceJoinClose.tla), lane LINKTRACE2: each session's (joint's) file, its
 	# events counted; an event no trace took is a test gap.
-	for k in read wait write grow joinclose peerjoinclose relayed hophold hopholdquic hopholdconc ackfreq; do
+	for k in read wait write grow joinclose peerjoinclose relayed hophold hopholdquic hopholdconc ackfreq ackranges; do
 		mkdir -p "$work/$k"
 		pkg= mdir=. tags=linktrace
 		case $k in
@@ -1220,6 +1220,8 @@ traces)
 		ackfreq) env=QUICACKTRACE check=aftrace mdir=peerlink/quiclink tags=quicacktrace tests=${TRACE_ACKFREQ_TESTS:-'^(TestAckFrequencyOnReorderingPath|TestRefusesPeerWithoutAckFrequency)$'} model=TraceAckFrequency ;;
 		# FeatureGrow on (the only recorder that keeps it: trace_grow_on.go traceFixedWindows)
 		grow) env=LINKTRACE_GROW check=gtrace tests=${TRACE_GROW_TESTS:-'^(TestWindowGrowsOverALongPath|TestGrantPastTheHelloWindow|TestMuxSlowSessionIsolated|TestMuxSessions|TestSessionCleanEnd|TestSessionReset)$'} model=TraceCreditGrow ;;
+		# The same receivers' ACK ranges (Ack lines' rs, lane SPURIOUS; fork v0.63.1-nfltr.10).
+		ackranges) env=QUICACKTRACE check=artrace mdir=peerlink/quiclink tags=quicacktrace tests=${TRACE_ACKRANGES_TESTS:-'^(TestAckFrequencyOnReorderingPath|TestRefusesPeerWithoutAckFrequency)$'} model=TraceAckRanges ;;
 		write) env=LINKTRACE_WRITE check=swtrace tests=${TRACE_WRITE_TESTS:-'^(TestSessionWriteWaitingForCreditSeesFirstDeadline|TestWriteDeadline|TestWriteDeadlineStuckNetwork)$'} model=TraceSessionWrite ;;
 		esac
 		(cd "$mdir" && env "$env=$work/$k" GOWORK=off go test -tags "$tags" -count=1 -run "$tests" "${pkg:-.}") >"$work/test.out" 2>&1 || {

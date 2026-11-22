@@ -1731,10 +1731,11 @@ tracker driven through 1,425 packets up to 250 places late (64-range ACKs,
 the history full), accepted; `unreported` (a new packet's range left out),
 `phantom` (a range reaching a packet never received), `wide` (65 ranges),
 each rejected; the same drive on the code before this lane is rejected at
-its first ACK leaving a dropped packet out. Follow-up: `make spec-traces`
-gets an `ackranges` kind over quiclink's `TestAckFrequencyOnReorderingPath`
-files once quiclink requires a fork tag with `rs` (the lead's fork tag,
-then quiclink's bump). The fork's `loss_trace_on.go` (`QUICLOSSTRACE`)
+its first ACK leaving a dropped packet out. `make spec-traces`'s
+`ackranges` kind checks the files quiclink's
+`TestAckFrequencyOnReorderingPath` and `TestRefusesPeerWithoutAckFrequency`
+write (quiclink requires fork `v0.63.1-nfltr.10`, whose Ack lines carry
+`rs`; lane INTEG39). The fork's `loss_trace_on.go` (`QUICLOSSTRACE`)
 records the sender's losses by cause, each acknowledged later, and each
 range the receiver's history drops: the measurements above.
 

@@ -1,5 +1,5 @@
-github.com/nfltr/quic-go v0.63.1-nfltr.9.0.20261122103207-1cf4f9d99f60 h1:xgVpifvMIuL0xlh3V8IxX3nltIJsVkWA9o8L3sAxNDo=
-github.com/nfltr/quic-go v0.63.1-nfltr.9.0.20261122103207-1cf4f9d99f60/go.mod h1:aCcZDnvYqlhb79qzzyvg5+pkAVu3JCsGDEKOoYKqnTk=
+github.com/nfltr/quic-go v0.63.1-nfltr.10 h1:aVI+aMiCBKke1pfbdNDXGzi/j/6aZVhcR+/g5ifz49A=
+github.com/nfltr/quic-go v0.63.1-nfltr.10/go.mod h1:aCcZDnvYqlhb79qzzyvg5+pkAVu3JCsGDEKOoYKqnTk=
 github.com/quic-go/go-ossfuzz-seeds v0.1.0 h1:APacT+iIaNF6fd8AGEiN3bT/Jtkd2jz4v4TzM7MFjy0=
 github.com/quic-go/go-ossfuzz-seeds v0.1.0/go.mod h1:3IOHRbJIc+L6YKMwfDtJAM9Vj9k0YY4muhuyUYk5tbk=
 github.com/stretchr/testify v1.12.1 h1:EuwCh5fleGS7H32xRwO3wRGT7DxrDhLAT6FF8MpWDWE=
