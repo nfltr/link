@@ -6,6 +6,7 @@ package pathswitch
 import (
 	"bufio"
 	"bytes"
+	"io"
 	"testing"
 )
 
@@ -55,4 +56,29 @@ func FuzzReadFrame(f *testing.F) {
 			}
 		}
 	})
+}
+
+// TestReadFrameDataInPlace: a DATA payload that fits the reader's buffer
+// is returned in place (nothing copied into buf; lane RECVCPU), and a cut
+// payload ends with the errors io.ReadFull gives: io.EOF right after the
+// header, io.ErrUnexpectedEOF inside it, whatever the buffer's size.
+func TestReadFrameDataInPlace(t *testing.T) {
+	whole := encodeFrame(frame{t: fData, data: bytes.Repeat([]byte{5}, maxFrame)})
+	var buf []byte
+	f, err := readFrame(bufio.NewReaderSize(bytes.NewReader(whole), 32<<10), &buf)
+	if err != nil || len(f.data) != maxFrame || f.data[maxFrame-1] != 5 {
+		t.Fatalf("%d bytes %v", len(f.data), err)
+	}
+	if buf != nil {
+		t.Fatal("the payload was copied into buf")
+	}
+	hdr := len(whole) - maxFrame
+	for _, size := range []int{32 << 10, 4096} {
+		for cut, want := range map[int]error{hdr: io.EOF, hdr + 1: io.ErrUnexpectedEOF, len(whole) - 1: io.ErrUnexpectedEOF} {
+			var b []byte
+			if _, err := readFrame(bufio.NewReaderSize(bytes.NewReader(whole[:cut]), size), &b); err != want {
+				t.Errorf("buffer %d, cut at %d: %v, want %v", size, cut, err, want)
+			}
+		}
+	}
 }

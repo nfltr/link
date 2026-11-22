@@ -813,6 +813,23 @@ rule (a peer's BLOCKED before any data would grow an empty window).
 - **Don't undo**: no slide of kept bytes in either buffer; a new reader of
   `buf` or `rbuf` takes `peek`'s two segments.
 
+## pathswitch: a DATA payload is read in place (2026-11-22, lane RECVCPU, unreleased)
+
+`readFrame` copied each DATA payload out of the stream's 32 KiB
+`bufio.Reader` into a frame buffer, and `take` then copied it into the
+receive ring: two copies of every received byte inside pathswitch. A
+payload that fits the reader's buffer (every one: `maxFrame` is 16 KiB)
+is now `Peek`ed and `Discard`ed in place, valid until the next read of
+the reader, as the frame's data always was (the frame is taken before
+the next `readFrame`). On nfltr-send's receiver (GCP n2-standard-8,
+10 GiB at 8 connections, perf at 499 Hz), samples in the payload copy
+under `readFrame` fell from 97 to 63 (what is left is `bufio`'s slide
+of a partial frame to the buffer's front on a fill). It could have
+changed a cut stream's error (io.EOF right after a header,
+io.ErrUnexpectedEOF inside a payload): `TestReadFrameDataInPlace`
+checks both against a reader too small to hold the frame, which takes
+the old copy, and that nothing is copied into the frame buffer.
+
 ## What was looked at and left
 
 - **TLS writes**: link writes a coalesced batch with one `Write` on the

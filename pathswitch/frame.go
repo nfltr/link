@@ -55,7 +55,8 @@ func appendData(b, p []byte, n int) []byte {
 	return append(binary.AppendUvarint(append(b, fData), uint64(n)), p...) // #nosec G115 -- n >= 0
 }
 
-// readFrame reads one frame; a DATA payload goes into *buf.
+// readFrame reads one frame. A DATA payload is r's buffer when it fits
+// there (no copy), else *buf: valid until the next read of r.
 func readFrame(r *bufio.Reader, buf *[]byte) (frame, error) {
 	t, err := r.ReadByte()
 	if err != nil {
@@ -77,6 +78,18 @@ func readFrame(r *bufio.Reader, buf *[]byte) (frame, error) {
 		}
 		if n == 0 || n > maxFrame {
 			return f, fmt.Errorf("%w: DATA of %d bytes", ErrProtocol, n)
+		}
+		if int(n) <= r.Size() { // in r's buffer, not copied out (lane RECVCPU; TestReadFrameDataInPlace)
+			p, err := r.Peek(int(n))
+			if err != nil {
+				if err == io.EOF && len(p) > 0 {
+					err = io.ErrUnexpectedEOF // as io.ReadFull
+				}
+				return f, err
+			}
+			_, _ = r.Discard(len(p))
+			f.data = p
+			break
 		}
 		if cap(*buf) < int(n) {
 			*buf = make([]byte, maxFrame)
