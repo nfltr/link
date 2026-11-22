@@ -581,6 +581,48 @@ rule (a peer's BLOCKED before any data would grow an empty window).
 - **Don't undo**: no stream `Write` per frame. A new frame kind the writer
   may send at once goes through `frame`, so `more` batches it too.
 
+## quiclink: one connection on a long fat path (2026-11-22, lane LONGFAT, unreleased)
+
+- **Where**: the quic-go fork land/LONGFAT (`internal/protocol/params.go`
+  `MaxCongestionWindowPackets`, `MaxStreamFrameSorterGaps`),
+  `peerlink/quiclink/knobs.go` (`Config.MaxWindow` ->
+  `MaxStreamReceiveWindow`), relay client `agent/direct.go`
+  (`directMaxWindow`, 64 MiB: pathswitch's window and the direct QUIC
+  stream's maximum).
+- **Why it was slow**: two limits of about the same size, each enough to
+  hold one connection at 11-14 MB in flight: the fork's congestion window
+  cap (upstream's 10,000 packets, 12.8-14.5 MB) and the 16 MiB stream and
+  pathswitch windows. Helsinki -> Singapore (260 ms, nfltr-send 10 GiB,
+  `--connections 1`): 0.355-0.362 Gbit/s; the cap alone lifted 0.345, the
+  windows alone 0.398 (`~/nfltr-evidence/longfat-2026-11-22/`). The fork's
+  simulated path (synctest, 1-2 Gbit/s, 260 ms) the same: 349-367 Mbit/s,
+  11.3-11.9 MB in flight, the congestion window at its cap.
+- **What it does now**: the cap is 65,536 packets (95 MB at 1452 bytes:
+  2.5 Gbit/s at 300 ms); a direct session's stream window starts at 16 MiB
+  and doubles while the reader keeps up, to 64 MiB; pathswitch keeps up
+  to 64 MiB unacknowledged. A stream allows one frame-sorter gap per packet
+  in flight (was 1000: at the larger cap BBR's startup overflowed a short
+  queue and the receiver closed the connection, "too many gaps in received
+  data", the direct path lost in both first one-connection runs).
+- **Gain**: Helsinki -> Singapore, 10 GiB, interleaved: `--connections 1`
+  0.355/0.362 -> 0.889/0.926 Gbit/s (x2.5), `--connections 4` 1.084/1.198
+  -> 1.939/1.722 Gbit/s (+59 %); CPU s per 10 GiB at 1 connection 61.6/75.0
+  -> 44.1/39.2 sending, 79.8/98.3 -> 65.9/63.5 receiving. Fork
+  `TestBulkUploadOnLongFatPath/clean` 349 -> 977 Mbit/s of 1000. Box
+  `BenchmarkDirectCPU` (loopback, send bench-ab, n=6): median 5.39 -> 4.99
+  CPU-s/GiB, relayed 3.56 -> 3.42 (no regression at a short RTT).
+- **Cost (memory)**: a direct session buffers at most 64 MiB
+  unacknowledged at its sender (pathswitch) beside what QUIC keeps in
+  flight (at most the peer's 64 MiB), and at most 64 MiB (QUIC) + 96 MiB
+  (pathswitch's receive ring) at its receiver; a connection's QUIC buffers
+  are 16 Windows (256 MiB) as before. Measured peak RSS: one connection
+  108 -> 330-340 MB sending, 93-137 -> 260-400 MB receiving; four 323-401
+  -> 925-1521 MB sending, 213-304 -> 650-717 MB receiving.
+- **Guard**: the fork's `TestBulkUploadOnLongFatPath` (clean at least 70 %
+  of the rate; burst-loss delivers every byte), quiclink
+  `TestMaxWindowAutoTunes`, relay client
+  `TestDirectSessionWindowCoversALongFatPath`; spec/AutoWindow.tla.
+
 ## quiclink: ACK frequency on a path reordering past its threshold (2026-11-22, lane ACKFIX, unreleased)
 
 - **Where**: the quic-go fork (`v0.63.1-nfltr.8`: `connection.go`
