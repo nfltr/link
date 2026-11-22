@@ -7,7 +7,7 @@ replace github.com/nfltr/link => ../../
 require (
 	github.com/nfltr/link v0.13.3
 	github.com/nfltr/link/pathswitch v0.1.4
-	github.com/nfltr/quic-go v0.63.1-nfltr.9
+	github.com/nfltr/quic-go v0.63.1-nfltr.9.0.20261122103207-1cf4f9d99f60
 	golang.org/x/net v0.62.0
 )
 

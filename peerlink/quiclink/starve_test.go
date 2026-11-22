@@ -43,7 +43,6 @@ func (c *heldConn) ReadFrom(b []byte) (int, net.Addr, error) {
 // before quic-go read them. The connection must live on. Before the fix
 // the late check closed it (CodeDeadPeer).
 func TestStarvedProcessKeepsALivePeer(t *testing.T) {
-	t.Setenv("QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING", "true") // heldConn is not a *net.UDPConn
 	l := link.LivenessFast
 	pc := listenUDP(t)
 	hc := &heldConn{PacketConn: listenUDP(t)}

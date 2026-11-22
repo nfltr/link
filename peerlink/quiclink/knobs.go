@@ -33,6 +33,9 @@ type Socket struct {
 	// NoGSO and NoGRO turn off UDP segmentation offload on send and
 	// receive coalescing (Linux 5.0+, on where the kernel has them).
 	NoGSO, NoGRO bool
+	// NoECN neither marks sent packets ECT(0) nor reads received ones'
+	// ECN bits (on by default: Linux 5.0+, darwin, FreeBSD).
+	NoECN bool
 }
 
 func (c Congestion) quic() quic.CongestionControl {
@@ -43,12 +46,16 @@ func (c Congestion) quic() quic.CongestionControl {
 }
 
 // minPacketSize and maxPacketSize bound Config.MaxPacketSize: QUIC's
-// smallest datagram (RFC 9000 section 14) and the fork's packet buffers.
-const minPacketSize, maxPacketSize = 1200, 1452
+// smallest datagram (RFC 9000 section 14) and the fork's jumbo packet
+// buffers (a 9000-byte MTU less the IPv6 and UDP headers);
+// defaultPacketSize is 0's (an Ethernet MTU's).
+const minPacketSize, defaultPacketSize, maxPacketSize = 1200, 1452, 8952
 
 // SocketBuffers is the receive and send buffer sizes the host gave the
 // socket of Config.PacketConn (quic.SocketBuffers): less than
-// Config.Socket asked for where the host's limit is lower.
+// Config.Socket asked for (0: quic.SocketBufferWanted) where the host's
+// limit is lower. Nothing logs a shortfall: a program compares and tells
+// its user (Linux net.core.rmem_max, wmem_max).
 func (n *Node) SocketBuffers() (read, write int, err error) {
 	if n.cfg.PacketConn == nil {
 		return 0, 0, errors.New("quiclink: SocketBuffers: no Config.PacketConn (a Transport's or Dial's socket is the caller's: quic.SocketBuffers)")
@@ -62,7 +69,7 @@ func (cfg Config) validateKnobs() error {
 	case cfg.Congestion > CongestionReno:
 		return fmt.Errorf("quiclink: Config.Congestion %d: want CongestionBBR or CongestionReno", cfg.Congestion)
 	case cfg.MaxPacketSize != 0 && (cfg.MaxPacketSize < minPacketSize || cfg.MaxPacketSize > maxPacketSize):
-		return fmt.Errorf("quiclink: Config.MaxPacketSize %d: want 0 (%d) or %d to %d", cfg.MaxPacketSize, maxPacketSize, minPacketSize, maxPacketSize)
+		return fmt.Errorf("quiclink: Config.MaxPacketSize %d: want 0 (%d) or %d to %d", cfg.MaxPacketSize, defaultPacketSize, minPacketSize, maxPacketSize)
 	case cfg.Socket.ReceiveBuffer < 0 || cfg.Socket.SendBuffer < 0:
 		return fmt.Errorf("quiclink: Config.Socket %+v: want buffer sizes of 0 (quic.SocketBufferWanted) or more", cfg.Socket)
 	case cfg.Socket != (Socket{}) && cfg.PacketConn == nil:

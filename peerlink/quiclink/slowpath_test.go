@@ -36,7 +36,6 @@ func (c *delayConn) WriteTo(b []byte, addr net.Addr) (int, error) {
 // watch must wait for the answer. Before the fix it closed the live peer
 // (CodeDeadPeer) 3 s in.
 func TestSlowPathKeepsALiveIdlePeer(t *testing.T) {
-	t.Setenv("QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING", "true") // delayConn is not a *net.UDPConn
 	l := link.LivenessFast
 	pc := listenUDP(t)
 	tr := &quic.Transport{Conn: &delayConn{PacketConn: listenUDP(t), d: 800 * time.Millisecond}}

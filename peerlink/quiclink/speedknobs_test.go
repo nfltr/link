@@ -4,7 +4,9 @@
 package quiclink_test
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"io"
 	"math"
 	"strings"
@@ -33,9 +35,12 @@ func TestSpeedKnobsValidation(t *testing.T) {
 		{"packet 1200", quiclink.Config{Dial: dial, MaxPacketSize: 1200}, ""},
 		{"packet 1452", quiclink.Config{Dial: dial, MaxPacketSize: 1452}, ""},
 		{"packet 1199", quiclink.Config{Dial: dial, MaxPacketSize: 1199}, "Config.MaxPacketSize"},
+		{"packet 1453", quiclink.Config{Dial: dial, MaxPacketSize: 1453}, ""},
+		{"packet 8952", quiclink.Config{Dial: dial, MaxPacketSize: 8952}, ""},
+		{"packet 8953", quiclink.Config{Dial: dial, MaxPacketSize: 8953}, "Config.MaxPacketSize"},
 		{"packet 9000", quiclink.Config{Dial: dial, MaxPacketSize: 9000}, "Config.MaxPacketSize"},
 		{"packet negative", quiclink.Config{Dial: dial, MaxPacketSize: -1}, "Config.MaxPacketSize"},
-		{"socket", quiclink.Config{PacketConn: pc, TLS: serverTLS("b"), Socket: quiclink.Socket{ReceiveBuffer: 1 << 20, SendBuffer: 1 << 20, NoGSO: true, NoGRO: true}}, ""},
+		{"socket", quiclink.Config{PacketConn: pc, TLS: serverTLS("b"), Socket: quiclink.Socket{ReceiveBuffer: 1 << 20, SendBuffer: 1 << 20, NoGSO: true, NoGRO: true, NoECN: true}}, ""},
 		{"socket negative receive", quiclink.Config{PacketConn: pc, TLS: serverTLS("b"), Socket: quiclink.Socket{ReceiveBuffer: -1}}, "Config.Socket"},
 		{"socket negative send", quiclink.Config{PacketConn: pc, TLS: serverTLS("b"), Socket: quiclink.Socket{SendBuffer: -1}}, "Config.Socket"},
 		{"socket without PacketConn", quiclink.Config{Dial: dial, Socket: quiclink.Socket{NoGRO: true}}, "Config.Socket needs Config.PacketConn"},
@@ -107,5 +112,75 @@ func TestSocketBuffersReported(t *testing.T) {
 	}
 	if _, _, err := a.SocketBuffers(); err == nil {
 		t.Fatal("SocketBuffers of a Node without PacketConn: no error")
+	}
+}
+
+// TestJumboPackets: on loopback (a large MTU) a Node pair with
+// MaxPacketSize 8952 reaches jumbo packets (the datagram room grows past
+// 1452) and carries a session's bytes intact; against a peer at the zero
+// value the room stays under 1452.
+func TestJumboPackets(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		serve         int
+		wantAtLeast   int64
+		wantBelowSize int64
+	}{
+		{"both 8952", 8952, 8000, 8952},
+		{"server default", 0, 1300, 1452},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pc := listenUDP(t)
+			b := mustNew(t, quiclink.Config{PacketConn: pc, TLS: serverTLS("b"), Datagrams: true, MaxPacketSize: tc.serve})
+			// quic.DialAddr's Transport reads its Config's MaxPacketSize.
+			a := mustNew(t, quiclink.Config{Dial: dialer("a", "b", pc.LocalAddr().String()), Datagrams: true, MaxPacketSize: 8952})
+			got := make(chan []byte, 1)
+			go func() {
+				_ = b.Serve(func(_ string, _ []byte, s peerlink.Session) { p, _ := io.ReadAll(s); got <- p; _ = s.Close() })
+			}()
+			t.Cleanup(func() {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				_ = a.Drain(ctx)
+				_ = b.Drain(ctx)
+			})
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			ps, err := a.Open(ctx, "b", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s := ps.(*quiclink.Session)
+			room := func() int64 {
+				var e *quic.DatagramTooLargeError
+				if err := s.SendDatagram(make([]byte, 16<<10)); !errors.As(err, &e) {
+					t.Fatalf("SendDatagram 16 KiB: %v, want DatagramTooLargeError", err)
+				}
+				return e.MaxDatagramPayloadSize
+			}
+			// Path MTU discovery probes every 5 RTTs: write until the room
+			// reaches what the ends allow, or the deadline.
+			chunk := bytes.Repeat([]byte("jumbo..."), 128<<10)
+			var sent []byte
+			for room() < tc.wantAtLeast && ctx.Err() == nil {
+				if _, err := s.Write(chunk); err != nil {
+					t.Fatal(err)
+				}
+				sent = append(sent, chunk...)
+			}
+			if _, err := s.Write(chunk); err != nil {
+				t.Fatal(err)
+			}
+			sent = append(sent, chunk...)
+			if err := s.CloseWrite(); err != nil {
+				t.Fatal(err)
+			}
+			if r := room(); r < tc.wantAtLeast || r >= tc.wantBelowSize {
+				t.Fatalf("datagram room %d: want [%d, %d)", r, tc.wantAtLeast, tc.wantBelowSize)
+			}
+			if p := <-got; !bytes.Equal(p, sent) {
+				t.Fatalf("got %d bytes, sent %d: differ", len(p), len(sent))
+			}
+		})
 	}
 }

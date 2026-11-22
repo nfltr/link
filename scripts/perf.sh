@@ -11,7 +11,8 @@
 #     (default 6), old and new alternating so that the machine's load hits
 #     both alike; OUT gets old.txt, new.txt, benchstat.txt (benchstat of
 #     the two), load.txt (the load average before each run) and
-#     manifest.json. PERF_CPU (e.g. 1,10) runs each at those GOMAXPROCS.
+#     manifest.json. PERF_CPU (e.g. 1,10) runs each at those GOMAXPROCS;
+#     PERF_PKG (default .) is the package directory (make bench-ab-quiclink).
 #   scripts/perf.sh profile REF OUT [BENCH] [BENCHTIME]
 #     runs each benchmark BENCH names (default: the profiled set below) at
 #     REF alone with cpu, heap (alloc and inuse), mutex and block profiles,
@@ -54,7 +55,7 @@ trap cleanup EXIT
 build() {
 	local w="$tmp/wt-$2"
 	git worktree add --detach "$w" "$1" >/dev/null 2>&1
-	(cd "$w" && GOWORK=off go test -c -o "$tmp/$2.test" .) || return 1
+	(cd "$w/${PERF_PKG:-.}" && GOWORK=off go test -c -o "$tmp/$2.test" .) || return 1
 	git -C "$w" rev-parse HEAD
 }
 

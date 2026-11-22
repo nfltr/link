@@ -142,6 +142,18 @@ bench:
 		GOWORK=off go test -run '^$$' -bench "$$p" -benchmem -count $(BENCH_COUNT) -timeout 30m . >>"$(BENCH_OUT)" || { cat "$(BENCH_OUT)"; exit 1; }; \
 	done; cat "$(BENCH_OUT)"; echo "bench: $(BENCH_OUT)"
 
+# bench-ab-quiclink: quiclink's benchmarks AB_BENCH at AB_OLD against
+# AB_NEW (HEAD^ and HEAD: a change of one commit, e.g. a quic-go fork
+# bump), 6 runs each, old and new alternating (scripts/perf.sh ab), into
+# AB_OUT (a CI runner's `ci-request TARGET=bench-ab-quiclink` keeps it).
+AB_OLD ?= HEAD^
+AB_NEW ?= HEAD
+AB_BENCH ?= BulkCPU|ConnsCPU|SessionDatagrams
+AB_OUT ?= $(or $(TMPDIR:%/=%),/tmp)/quiclink-bench-ab
+.PHONY: bench-ab-quiclink
+bench-ab-quiclink:
+	PERF_PKG=peerlink/quiclink ./scripts/perf.sh ab $(AB_OLD) $(AB_NEW) "$(AB_OUT)" 6 '$(AB_BENCH)'
+
 # profile-baseline: the profile baseline of this commit (scripts/perf.sh
 # baseline: every benchmark of link, pathswitch and quiclink, -benchmem
 # -count 6, then cpu, heap, mutex, block, goroutine and goroutine leak

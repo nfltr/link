@@ -229,23 +229,36 @@ refuses an invalid one, naming the field. No knob changes the wire.
 | `Acks` (`AckPolicy`) | `DefaultAckPolicy` (9, 10, a quarter of the min RTT) | 0 <= AckEliciting < Reordering, MaxAckDelay <= 25 ms | the ACK_FREQUENCY frame |
 | `Congestion` | `CongestionBBR` | `CongestionBBR`, `CongestionReno` | `QUICConfig().CongestionControl` |
 | `NoPacing` | paced at the controller's rate | any | `QUICConfig().DisablePacing` |
-| `MaxPacketSize` | 1452 (the fork's packet buffers) | 0 or 1200..1452 | `QUICConfig().MaxPacketSize` |
+| `MaxPacketSize` | 1452 (an Ethernet MTU less IPv6 and UDP) | 0 or 1200..8952 (above 1452: jumbo, a 9000-byte MTU's); the largest packet sent and read | `QUICConfig().MaxPacketSize`; the peer's: `SendDatagram`'s `*quic.DatagramTooLargeError` |
 | `Socket.ReceiveBuffer`, `SendBuffer` | `quic.SocketBufferWanted` (7 MiB), asked at least | >= 0; needs `PacketConn` | `Node.SocketBuffers()`: what the host gave, less where `net.core.rmem_max`/`wmem_max` (Linux) or `kern.ipc.maxsockbuf` (macOS) is lower |
 | `Socket.NoGSO`, `NoGRO` | GSO and GRO on where Linux 5.0+ has them | any; needs `PacketConn` | the fork's `TestGRODisabled` (one datagram per read) |
+| `Socket.NoECN` | ECN on (ECT(0) sent, ECN bits read) on Linux 5.0+, macOS, FreeBSD | any; needs `PacketConn` | the fork's `TestTransportSocketOptions/ecn_off` |
 
 `Socket` applies to the socket the Node owns (`PacketConn`). A shared
 `Transport`, or the sockets a `Dial` func uses, are the caller's: set the
 same fields on its `quic.Transport` (`ReceiveBufferSize`,
-`SendBufferSize`, `DisableGSO`, `DisableGRO`) and read
-`quic.SocketBuffers`. The fork's `QUIC_GO_DISABLE_GSO` and
-`QUIC_GO_DISABLE_GRO` environment variables are deleted: those fields
-replace them. A larger `MaxPacketSize` (jumbo-frame paths) needs the
-fork's packet buffers sized per Transport; the field and its validation
-are in place, so raising the bound is no API change. Guards:
-`TestSpeedKnobsValidation`, `TestSpeedKnobsReachQUIC`,
-`TestSocketBuffersReported`; in the fork `TestConfigValidationSpeedKnobs`,
+`SendBufferSize`, `DisableGSO`, `DisableGRO`, `DisableECN`, and
+`MaxPacketSize` for a jumbo `MaxPacketSize`: Listen and Dial refuse a
+Config sending more than its Transport reads; `quic.DialAddr`'s Transport
+reads its Config's) and read `quic.SocketBuffers`. The fork's
+`QUIC_GO_DISABLE_GSO`, `QUIC_GO_DISABLE_GRO`, `QUIC_GO_DISABLE_ECN` and
+`QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING` environment variables are
+deleted: those fields replace them, and a host giving less buffer than
+asked is no log line but `SocketBuffers`' value, for the program to
+report. Above 1452 a Transport's read buffers and a connection's packets
+and STREAM frames are jumbo buffers (8952 bytes) of their own pools, so
+the zero value's 1452-byte buffers, and their memory per queued packet,
+are unchanged; a jumbo Node advertises its `MaxPacketSize` as its
+max_udp_payload_size, and path MTU discovery finds what the path carries
+(a hop with a smaller MTU drops the probes: the size stays below it).
+Guards: `TestSpeedKnobsValidation`, `TestSpeedKnobsReachQUIC`,
+`TestSocketBuffersReported`, `TestJumboPackets` (loopback: the datagram
+room passes 8000 with both ends at 8952, stays under 1452 against a zero
+value, bytes intact); in the fork `TestConfigValidationSpeedKnobs`,
 `TestSentPacketHandlerNoPacing`, `TestConnectionMaxPacketSize`,
-`TestTransportSocketOptions`, `TestGRODisabled`.
+`TestTransportSocketOptions`, `TestTransportMaxPacketSize`,
+`TestGRODisabled`, `TestJumboPackets`, `TestSendStreamJumboFrames`,
+`TestParseStreamJumboFrame`.
 
 ## Wire
 

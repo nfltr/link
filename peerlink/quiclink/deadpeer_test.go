@@ -59,7 +59,6 @@ func (c *stallConn) WriteTo(b []byte, addr net.Addr) (int, error) {
 // (spec/QuicWatch.tla DetectBound: silence counts only while the process
 // runs, link's spec/README.md "Starvation"; stopProbe).
 func TestDeadPeerSendStalled(t *testing.T) {
-	t.Setenv("QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING", "true") // stallConn is not a *net.UDPConn
 	pc := listenUDP(t)
 	px := peerlinktest.NewUDPProxy(t, pc.LocalAddr().String())
 	stall := &stallConn{PacketConn: listenUDP(t)}

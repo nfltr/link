@@ -170,9 +170,9 @@ type Config struct {
 	// NoPacing sends the packets the congestion window allows at once
 	// instead of spacing them at the controller's rate (zero: paced).
 	NoPacing bool
-	// MaxPacketSize is the largest UDP payload this Node sends: path MTU
-	// discovery stops there and at the peer's limit (0: 1452, the fork's
-	// packet buffers; otherwise 1200 to 1452).
+	// MaxPacketSize is the largest UDP payload this Node sends and reads:
+	// path MTU discovery stops there and at the peer's (0: 1452; 1200 to
+	// 8952, jumbo above 1452: a Dial's quic.Transport sets its own too).
 	MaxPacketSize int
 	// Socket is the UDP socket settings of PacketConn's (zero: today's,
 	// see Socket); SocketBuffers reports what the host gave. A Transport's
@@ -686,7 +686,7 @@ func (n *Node) Serve(accept func(peer string, header []byte, s peerlink.Session)
 	if tr == nil {
 		s := n.cfg.Socket
 		tr = &quic.Transport{Conn: n.cfg.PacketConn, ReceiveBufferSize: s.ReceiveBuffer, SendBufferSize: s.SendBuffer,
-			DisableGSO: s.NoGSO, DisableGRO: s.NoGRO}
+			DisableGSO: s.NoGSO, DisableGRO: s.NoGRO, DisableECN: s.NoECN, MaxPacketSize: uint16(n.cfg.MaxPacketSize)} // #nosec G115 -- validated
 	}
 	ln, err := tr.Listen(withALPN(n.cfg.TLS), qc)
 	if err != nil {
