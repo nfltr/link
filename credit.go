@@ -63,6 +63,7 @@ type Credit struct {
 	flush          func() error // before Acquire waits; nil: none
 	obs            Observer     // nil: none
 	tr             traceState   // linktrace builds only (trace_on.go)
+	gt             growTrace    // linktrace builds only (trace_grow_on.go); zero size otherwise
 
 	waits     atomic.Uint64 // senders' waits for credit (Stats)
 	waitNanos atomic.Int64  // and how long, in all
@@ -102,6 +103,7 @@ type sessionCredit struct {
 	fins     uint8         // the half CLOSEs: finSent (this side's buffered), finRecv (the peer's read)
 	wt       waitTrace     // linktrace builds only (trace_wait_on.go); zero size otherwise
 	wtr      creditTrace   // linktrace builds only (trace_write_on.go); zero size otherwise
+	gs       growSess      // linktrace builds only (trace_grow_on.go); zero size otherwise
 	granted  uint64        // bytes the peer acknowledged, in all (Grant): an ENDACK wait's progress
 }
 
@@ -167,7 +169,11 @@ func (c *Credit) open(sid string, by int) {
 		return
 	}
 	if old != nil {
-		old.wakeAll() // a reused id: the old session's sender gives up
+		old.wakeAll()                 // a reused id: the old session's sender gives up
+		c.grown -= old.win - c.window // and its growth goes back (TestReopenedSessionGivesItsGrowthBack)
+		if traceOn {
+			c.traceGrowDrop(sid) // the old credit's end, then the new one's Open
+		}
 		if by == byCaller {
 			by = old.by // the caller's own Open of a link-opened session
 		}
@@ -181,6 +187,7 @@ func (c *Credit) open(sid string, by int) {
 	c.sessions[sid] = &sessionCredit{n: c.peerWindow, by: by, win: c.window} // no wake channel until a sender waits (TestCreditOpenMakesNoWakeChannel)
 	if traceOn {
 		traceWaitUp(c.sessions[sid], c.peerWindow)
+		c.traceGrowOpen(sid, c.sessions[sid])
 	}
 	if by != byCaller {
 		c.opened[by-1]++
@@ -263,6 +270,9 @@ func (c *Credit) dropLocked(sid string) *sessionCredit {
 		delete(c.sessions, sid)
 		c.queued -= s.held - s.consumed
 		c.grown -= s.win - c.window // its growth back to the budget (spec/CreditGrow.tla Drop)
+		if traceOn {
+			c.traceGrowDrop(sid)
+		}
 		if s.by != byCaller {
 			c.opened[s.by-1]--
 		}
@@ -344,6 +354,9 @@ func (c *Credit) acquire(sid string, n int, flush func() error, stop <-chan stru
 		}
 		block := c.grows && !s.bsent // once until the peer's next update (spec/CreditGrow.tla Block)
 		s.bsent = s.bsent || block
+		if traceOn && block {
+			c.traceGrowBlock(sid, s)
+		}
 		c.mu.Unlock()
 		if block {
 			c.blocked(sid) // buffered: the flush below sends it
@@ -372,6 +385,9 @@ func (c *Credit) sent(sid string, n int) {
 	c.mu.Lock()
 	if s := c.sessions[sid]; s != nil {
 		s.pend -= n
+		if traceOn {
+			s.traceGrowSent(n)
+		}
 	}
 	c.mu.Unlock()
 }
@@ -415,6 +431,7 @@ func (c *Credit) Consumed(sid string, n int) {
 	if r+s.owed < s.win/4 {
 		if traceOn {
 			traceEv(c.tr, traceEvent{ev: "Read", sid: sid, n: n, held: s.held})
+			c.traceGrowRead(sid, s, n, 0)
 		}
 		c.mu.Unlock()
 		return
@@ -425,6 +442,7 @@ func (c *Credit) Consumed(sid string, n int) {
 	s.owed = 0
 	if traceOn {
 		traceEv(c.tr, traceEvent{ev: "Read", sid: sid, n: n, held: s.held, grant: g})
+		c.traceGrowRead(sid, s, n, g)
 	}
 	c.mu.Unlock()
 	c.grant(sid, g)
@@ -441,11 +459,16 @@ func (c *Credit) peerBlocked(sid string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	s := c.sessions[sid]
+	g := 0
+	if traceOn {
+		defer func() { c.traceGrowBlocked(sid, s, g) }()
+	}
 	if s == nil || 2*(s.held-s.consumed) >= s.win || s.rcvd-s.epoch < s.win {
 		return
 	}
-	g := min(s.win, c.winMax-s.win, c.budget-c.grown)
+	g = min(s.win, c.winMax-s.win, c.budget-c.grown)
 	if g <= 0 {
+		g = 0
 		return
 	}
 	s.win += g
@@ -486,6 +509,7 @@ func (c *Credit) sendable(sid string, chain bool, n int) bool {
 	ok := s != nil && (!chain || s.by != byPeer || s.answered)
 	if traceOn && ok && n > 0 { // the frame of n bytes is buffered next, under wmu (finding C12)
 		traceEv(c.tr, traceEvent{ev: "SendData", sid: sid, n: n})
+		c.traceGrowSend(sid, s, n)
 	}
 	return ok
 }
@@ -515,6 +539,7 @@ func (c *Credit) receivedSID(sid []byte, n int, answers bool) (known bool, err e
 			e.credit, e.held = s.n, s.held
 		}
 		traceEv(c.tr, e)
+		c.traceGrowData(string(sid), s, n)
 	}
 	return s != nil, err
 }
@@ -576,6 +601,7 @@ func (c *Credit) Grant(sid string, n int) error {
 	if s == nil {
 		if traceOn {
 			traceEv(c.tr, traceEvent{ev: "Recv", t: "win", sid: sid, n: n, credit: -1})
+			c.traceGrowWin(sid, nil, n)
 		}
 		c.mu.Unlock()
 		return nil
@@ -593,6 +619,7 @@ func (c *Credit) Grant(sid string, n int) error {
 	s.granted += uint64(n) // #nosec G115 -- n >= 0
 	if traceOn {
 		traceEv(c.tr, traceEvent{ev: "Recv", t: "win", sid: sid, n: n, credit: s.n})
+		c.traceGrowWin(sid, s, n)
 		s.traceWait("Grant", 0, n, false)
 		s.traceGrant(n)
 	}

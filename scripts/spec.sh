@@ -21,7 +21,8 @@
 #            linktrace, each connection's trace checked against the model
 #            (spec/Trace.tla).
 #   trace F  one recorded trace (rtrace F: a session's reads; wtrace F: a
-#            session credit's waiters; swtrace F: a session's writes; jctrace F:
+#            session credit's waiters; swtrace F: a session's writes; gtrace F:
+#            a side's growing windows; jctrace F:
 #            a joint's side closed whole; rctrace F: a relayed path's Close;
 #            hhtrace F: two joints' holds; aftrace F: a QUIC receiver's ACKs).
 #   behaviours  TLC -simulate walks for the model-based tests (testdata/mbt).
@@ -361,6 +362,39 @@ INVARIANTS
     NoStrandedWaiter
 CFG
 	META=$work/states-$(basename "$1") tlc "$cfg" TraceCreditWaiters.tla -deadlock
+}
+
+# gtrace FILE: TLC on one receiving side's recorded growing windows
+# (spec/TraceCreditGrow.tla, lane RELAYWIN2); it fails unless TLC takes
+# every line.
+gtrace() {
+	cfg=$work/$(basename "$1").cfg
+	cat >"$cfg" <<CFG
+CONSTANTS
+    TraceFile = "$1"
+    Sids <- TraceSids
+    W <- TraceW
+    Max <- TraceMax
+    G <- TraceG
+    Total = 0
+    Q = 4
+    Mutant = "none"
+POSTCONDITION TraceAccepted
+INIT TraceInit
+NEXT TraceNext
+INVARIANTS
+    TypeOK
+    NoErr
+    TraceConservation
+    WinBounds
+    Budget
+    TraceGrownAccount
+    QueueBound
+    TraceConnBound
+    NeverReadNoGrowth
+    NoGrowthAhead
+CFG
+	META=$work/states-$(basename "$1") tlc "$cfg" TraceCreditGrow.tla -deadlock
 }
 
 # swtrace FILE: TLC on one session's recorded writes waiting for credit
@@ -910,6 +944,7 @@ mutants)
 	for f in spec/traces/read-*.ndjson; do job okfixture rtrace "$f"; done
 	for f in spec/traces/wait-*.ndjson; do job okfixture wtrace "$f"; done
 	for f in spec/traces/write-*.ndjson; do job okfixture swtrace "$f"; done
+	for f in spec/traces/grow-*.ndjson; do job okfixture gtrace "$f"; done
 	for f in spec/traces/joinclose-*.ndjson; do job endfixture jctrace "$f"; done
 	for f in spec/traces/relayedclose-*.ndjson; do job endfixture rctrace "$f"; done
 	for f in spec/traces/endackleg-*.ndjson; do job endfixture eatrace "$f"; done
@@ -1128,7 +1163,7 @@ traces)
 	# (TraceSessionWrite.tla) and a joint's side closed whole
 	# (TraceJoinClose.tla), lane LINKTRACE2: each session's (joint's) file, its
 	# events counted; an event no trace took is a test gap.
-	for k in read wait write joinclose peerjoinclose relayed hophold hopholdquic hopholdconc ackfreq; do
+	for k in read wait write grow joinclose peerjoinclose relayed hophold hopholdquic hopholdconc ackfreq; do
 		mkdir -p "$work/$k"
 		pkg= mdir=. tags=linktrace
 		case $k in
@@ -1145,6 +1180,8 @@ traces)
 		# The quic-go fork's 1-RTT receivers (ACK frequency, lane LINKSPEED2):
 		# its own build tag; IMMEDIATE_ACK no sender of the fork's sends.
 		ackfreq) env=QUICACKTRACE check=aftrace mdir=peerlink/quiclink tags=quicacktrace tests=${TRACE_ACKFREQ_TESTS:-'^(TestAckFrequencyOnReorderingPath|TestRefusesPeerWithoutAckFrequency)$'} model=TraceAckFrequency ;;
+		# FeatureGrow on (the only recorder that keeps it: trace_grow_on.go traceFixedWindows)
+		grow) env=LINKTRACE_GROW check=gtrace tests=${TRACE_GROW_TESTS:-'^(TestWindowGrowsOverALongPath|TestGrantPastTheHelloWindow|TestMuxSlowSessionIsolated|TestMuxSessions|TestSessionCleanEnd|TestSessionReset)$'} model=TraceCreditGrow ;;
 		write) env=LINKTRACE_WRITE check=swtrace tests=${TRACE_WRITE_TESTS:-'^(TestSessionWriteWaitingForCreditSeesFirstDeadline|TestWriteDeadline|TestWriteDeadlineStuckNetwork)$'} model=TraceSessionWrite ;;
 		esac
 		(cd "$mdir" && env "$env=$work/$k" GOWORK=off go test -tags "$tags" -count=1 -run "$tests" "${pkg:-.}") >"$work/test.out" 2>&1 || {
@@ -1237,6 +1274,9 @@ rtrace)
 	;;
 wtrace)
 	wtrace "$2"
+	;;
+gtrace)
+	gtrace "$2"
 	;;
 swtrace)
 	swtrace "$2"

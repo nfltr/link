@@ -898,9 +898,28 @@ connection's at most `sessions x W + G`), `NeverReadNoGrowth` (a reader that
 never read leaves its window as it was: a stopped reader grows no one's
 memory), `StoppedGrowsOnce` (one that stopped lets it grow at most once
 more), `NoGrowthAhead` (at most a doubling per window received).
-No trace recorder yet: `-tags linktrace` builds announce no FeatureGrow
-(`Trace.tla` checks `Link.tla`'s fixed windows), and `TestWindowGrowthRule`
-takes the rule's steps one by one, a row per mutant.
+Trace recorder (lane RELAYWIN2): `trace_grow_on.go` (`-tags linktrace`,
+`LINKTRACE_GROW=<dir>`) writes one file per receiving side of a connection,
+`<pair>.grow-<side>.ndjson`: its sessions' Open, Send, Block, Data,
+Blocked, Read, Win and Drop, both sides' lines under their Credit's lock
+and the process-wide trace lock. `TraceCreditGrow.tla` checks each at the
+code's grain (a frame and a read of n bytes, an update per quarter
+window): the growth a BLOCKED earns is `CreditGrow`'s rule, the values the
+code saw after each step the model's, and `NoErr`, `WinBounds`, `Budget`,
+`QueueBound`, `NeverReadNoGrowth`, `NoGrowthAhead`, Conservation,
+GrownAccount and ConnBound (the last three restated per session) hold at
+every line. The frames between the sides are counted per session, not
+queued: no receiver step depends on another session's frame order.
+`make spec-traces` runs `TRACE_GROW_TESTS` with FeatureGrow on (a linktrace
+build announces it unless a fixed-window recorder runs: any other
+`LINKTRACE*` variable, `traceFixedWindows`; `Trace.tla` checks `Link.tla`'s
+fixed windows, `TraceCreditWaiters.tla` a grant of what the waiters took).
+`spec/traces/grow-ok.ndjson` is accepted, and `make spec-mutants` rejects
+`grow-no-keepup`, `-no-epoch`, `-no-cap`, `-no-budget`,
+`-drop-keeps-growth`, `-grant-not-counted`, `-blocked-twice` and
+`-send-past-credit`; `credit.go` with `peerBlocked`'s epoch check deleted
+recorded a trace it rejects. `TestWindowGrowthRule` still takes the rule's
+steps one by one, a row per mutant.
 
 Liveness: `AllDelivered`. `CreditGrow.cfg` (two sessions, the budget
 binding; ~30 s), `CreditGrowOne.cfg` (one session to its cap; seconds),
@@ -1623,7 +1642,7 @@ holds in a `Spec-Reviewed:` trailer).
 | `EndAckLeg.tla`, `TraceEndAckLeg.tla` | one leg's end acknowledgement per transport: link, gRPC frames, TCP's kernel ACK, QUIC (reassembly, control stream); the idle bound's progress rule | `endack.go`, `peerlink/quiclink/quiclink.go`, `peerlink/quiclink/endack.go`, `peerlink/quiclink/trace_on.go`, `pathswitch/conn.go` |
 | `AckFrequency.tla`, `TraceAckFrequency.tla` | a QUIC receiver's ACK policy under ACK_FREQUENCY against the sender's loss detection (the fork's `ackhandler` and its `trace_on.go`); the policy quiclink asks for | `peerlink/quiclink/quiclink.go`, `peerlink/quiclink/knobs.go`, `peerlink/quiclink/ackfreq.go` |
 | `CreditWaiters.tla`, `TraceCreditWaiters.tla` | senders waiting in `Credit.Acquire` on one session: the wait and `wakeAll` | `credit.go`, `trace_wait_on.go` |
-| `CreditGrow.tla` | a session's window grown with the path (FeatureGrow): BLOCKED, the growth rule, the cap and the connection budget, the growth sent with the next update | `credit.go`, `conn.go`, `config.go` |
+| `CreditGrow.tla` | a session's window grown with the path (FeatureGrow): BLOCKED, the growth rule, the cap and the connection budget, the growth sent with the next update | `credit.go`, `conn.go`, `config.go`, `trace_grow_on.go` |
 | `SessionRead.tla`, `TraceSessionRead.tla` | `Session.Read` from several goroutines (or ones running `WriteTo`, or `Pump` with a `WriteTo` refused), the read deadline set and cleared meanwhile | `mux.go`, `internal/bytequeue/`, `trace_read_on.go` |
 | `SessionWrite.tla`, `TraceSessionWrite.tla` | `Session.Write` waiting for credit while `SetWriteDeadline` and its timer run | `mux.go`, `credit.go`, `trace_write_on.go` |
 | `DirectPath.tla`, `TraceDirectPath.tla` | the path layer: OPEN, RESUME, ACK, END, ABORT, the window, `Move` and `Attach` | `pathswitch/conn.go`, `pathswitch/frame.go`, `pathswitch/trace_on.go` |
@@ -2008,7 +2027,7 @@ Recorders per spec (lane LINKTRACE2, 2026-11-20):
 | `Join.tla` | `TraceJoin.tla`, `peerlink/trace_on.go` | yes |
 | `JoinClose.tla` | `TraceJoinClose.tla`, `trace_join_on.go`; peerlink's joint `peerlink/trace_on.go` | yes |
 | `SessionRead.tla`, `SessionWrite.tla`, `CreditWaiters.tla` | `TraceSessionRead.tla`, `TraceSessionWrite.tla`, `TraceCreditWaiters.tla` | yes |
-| `CreditGrow.tla` | none yet (lane RELAYWIN's follow-up): linktrace builds announce no FeatureGrow, so `Trace.tla`'s recorded connections keep fixed windows; the growth rule's steps are `TestWindowGrowthRule`'s, one per mutant | no |
+| `CreditGrow.tla` | `TraceCreditGrow.tla`, `trace_grow_on.go` (`LINKTRACE_GROW`, FeatureGrow on; lane RELAYWIN2) | yes |
 | `RelayedClose.tla` | `TraceRelayedClose.tla`, `trace_relayed_on.go`: every step but `AWrite`, `D1Copy`, `CWrite`, `CRead`, `CEnd` (TLC's, unlogged) | yes |
 | `HopHold.tla` | `TraceHopHold.tla`, `peerlink/trace_on.go` (`LINKTRACE_HOPHOLD`); `AppRead` by `peerlink/quiclink/trace_on.go` through `internal/linkhook` (`SeqApp = {"R"}`, lane LINKGATE) | yes |
 | `DirectPath.tla` | `TraceDirectPath.tla`, `pathswitch/trace_on.go` | yes |

@@ -106,8 +106,8 @@ func TestGrantPastTheHelloWindow(t *testing.T) {
 // ends; toward a peer without FeatureGrow (v0.13) it stays and the sender
 // sends no BLOCKED.
 func TestWindowGrowsOverALongPath(t *testing.T) {
-	if traceOn {
-		t.Skip("linktrace builds announce no FeatureGrow (Trace.tla checks fixed windows)")
+	if traceFixedWindows() {
+		t.Skip("a fixed-window recorder runs: no FeatureGrow (Trace.tla checks Link.tla's windows)")
 	}
 	for _, old := range []bool{false, true} {
 		r := newChainRig(t, rigOpts{n: 1, window: DefaultWindow, noGrow: old, wrap: func(_ int, nc net.Conn) net.Conn {
@@ -163,5 +163,26 @@ func TestStoppedReaderGrowsNothing(t *testing.T) {
 	time.Sleep(50 * time.Millisecond) // BLOCKEDs on the way
 	if st := lm.Stats(); st.WindowGrowths != 0 || st.QueuedBytes != testWindow {
 		t.Fatalf("stopped reader: %d growths, %d queued, want 0 and %d", st.WindowGrowths, st.QueuedBytes, testWindow)
+	}
+}
+
+// An id opened again while its credit lives (Credit.Open of a session the
+// link or the caller opened before) starts a fresh window: the old one's
+// growth goes back to the budget, as its end would (spec/CreditGrow.tla
+// GrownAccount; the growth trace's Open of a live session, lane RELAYWIN2).
+func TestReopenedSessionGivesItsGrowthBack(t *testing.T) {
+	const w = 4 * MaxChunk
+	c := growCredit(w, 4*w, 4*w)
+	if err := c.Received("s", w); err != nil {
+		t.Fatal(err)
+	}
+	c.Consumed("s", w)
+	c.peerBlocked("s")
+	if c.win("s") != 2*w || c.grown != w {
+		t.Fatalf("window %d, grown %d, want %d and %d", c.win("s"), c.grown, 2*w, w)
+	}
+	c.Open("s")
+	if c.win("s") != w || c.grown != 0 {
+		t.Fatalf("reopened: window %d, grown %d, want %d and 0", c.win("s"), c.grown, w)
 	}
 }

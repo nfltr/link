@@ -267,6 +267,9 @@ func (c *Conn) up(obs Observer, id Identity) {
 	}
 	c.id, c.credit.obs = id, obs
 	c.credit.grows = c.features&c.peerFeatures&featureGrow != 0 // this side grows its windows only past Window (WindowMax)
+	if traceOn {
+		traceGrowUp(c)
+	}
 	if obs != nil {
 		obs.ConnUp(id)
 	}
