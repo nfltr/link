@@ -35,6 +35,9 @@ func TestNodeStats(t *testing.T) {
 	if n, err := io.Copy(io.Discard, s); err != nil || n != int64(len(msg)) {
 		t.Fatalf("echo: %d %v", n, err)
 	}
+	if rtt := s.(*quiclink.Session).MinRTT(); rtt <= 0 || rtt > time.Second {
+		t.Fatalf("MinRTT %v after an echo over loopback", rtt)
+	}
 	_ = s.Close()
 	sa, sb := a.Stats(), b.Stats()
 	if sa.BytesOut < uint64(len(msg)) || sa.BytesIn < uint64(len(msg)) || sb.BytesIn < uint64(len(msg)) {

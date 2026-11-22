@@ -26,47 +26,6 @@ type Stream interface {
 	Reset() error
 }
 
-// Config is a Conn's configuration. The zero value is usable.
-type Config struct {
-	// Window is W: the bytes a sender keeps until its peer acknowledged
-	// them, per direction (spec BufferBound). 0: 1 MiB, link's session
-	// window.
-	Window int
-	// Detach bounds how long an end waits for a new stream once its
-	// stream ended before it resets the session (ErrDetached); an
-	// aborter (Abort) waits as long for the peer, and a Close (and
-	// WaitAcked) as long with nothing acknowledged. 0: 30 s.
-	Detach time.Duration
-	// Linger bounds how long a Close (and WaitAcked) waits with nothing
-	// heard from the peer (no frame: an ACK, a byte, its END): a peer
-	// silent that long is taken as gone and a Close resets the session,
-	// as TCP's user timeout (RFC 5482; spec DirectPath.tla LingerOut,
-	// CloseBounded; guard TestCloseGonePeerWithinLinger). A peer that
-	// keeps answering is waited for while it acknowledges, Detach with
-	// nothing acknowledged. 0: 5 s.
-	Linger time.Duration
-	// OnStreamEnd, a client's only: the current stream ended (its path
-	// died); the caller opens one on a path that works and calls Move
-	// (spec Fallback). Called on its own goroutine, no lock held.
-	OnStreamEnd func(epoch uint64, err error)
-}
-
-var (
-	// ErrReset: the session was reset (Abort, the peer's ABORT, a Close
-	// of the peer's direction before its end).
-	ErrReset = errors.New("pathswitch: session reset")
-	// ErrDetached: no stream came back within Config.Detach.
-	ErrDetached = errors.New("pathswitch: no stream within the detach bound")
-	// ErrProtocol: a frame the protocol does not allow (a relay
-	// rewriting the relayed stream, a bug): the session is reset.
-	ErrProtocol = errors.New("pathswitch: protocol error")
-	// ErrStaleEpoch: Attach of an epoch not newer than the session's (a
-	// replayed OPEN): refused, the session untouched.
-	ErrStaleEpoch = errors.New("pathswitch: stale epoch")
-	// ErrNotClient: Move on a server's Conn, or Attach on a client's.
-	ErrNotClient = errors.New("pathswitch: wrong side")
-)
-
 const (
 	abNone  = iota
 	abLocal // this end reset the session; it lingers until the peer has it
@@ -78,7 +37,8 @@ const (
 // concurrent use; Move (client) and Attach (server) are the switch.
 type Conn struct {
 	cfg    Config
-	w      uint64 // the window
+	w      uint64 // the window: Config.Window, grown to Config.MaxWindow (spec w)
+	grow   growth
 	client bool
 
 	mu   sync.Mutex
@@ -128,6 +88,7 @@ func start(first Stream, path string, cfg Config, client bool) *Conn {
 	if cfg.Window <= 0 {
 		cfg.Window = 1 << 20
 	}
+	cfg.MaxWindow = max(cfg.MaxWindow, cfg.Window)
 	if cfg.Detach <= 0 {
 		cfg.Detach = 30 * time.Second
 	}
@@ -136,8 +97,8 @@ func start(first Stream, path string, cfg Config, client bool) *Conn {
 	}
 	c := &Conn{cfg: cfg, w: uint64(cfg.Window), client: client, ep: 1, done: make(chan struct{})} // #nosec G115 -- Window > 0 above
 	c.cond = sync.NewCond(&c.mu)
-	c.buf.max = cfg.Window                 // hi - acked <= W
-	c.rbuf.max = cfg.Window + cfg.Window/2 // an ACK goes out while it holds at most W/2
+	c.buf.max = cfg.MaxWindow                 // hi - acked <= w <= MaxWindow
+	c.rbuf.max = cfg.MaxWindow + cfg.Window/2 // an ACK goes out while it holds at most Window/2
 	ps := &pstream{s: first, r: bufio.NewReaderSize(first, 32<<10), epoch: 1, path: path}
 	c.cur = ps
 	c.run(ps)
@@ -226,7 +187,9 @@ func (c *Conn) Write(p []byte) (int, error) {
 	n := 0
 	for n < len(p) {
 		for c.err == nil && !c.closed && c.hi-c.acked >= c.w {
+			c.grow.waiting++
 			c.cond.Wait()
+			c.grow.waiting--
 		}
 		if c.err != nil {
 			return n, c.err
@@ -809,7 +772,10 @@ func (c *Conn) take(ps *pstream, f frame) error {
 			return fmt.Errorf("%w: ACK(%d), sent %d", ErrProtocol, f.n, c.nxt)
 		}
 		c.trace("TakeAck", c.end(c.client), ps.epoch, f.n, "")
-		c.free(f.n)
+		if f.n > c.acked { // an ACK that frees bytes may grow the window (spec NewW)
+			c.free(f.n)
+			c.growOnAck(time.Now(), c.grow.waiting > 0)
+		}
 	case fResume:
 		if !c.client || !c.sWait || f.n < c.acked || f.n > c.sendable() {
 			return fmt.Errorf("%w: RESUME(%d) outside [%d, %d]", ErrProtocol, f.n, c.acked, c.sendable())
@@ -817,6 +783,7 @@ func (c *Conn) take(ps *pstream, f frame) error {
 		c.trace("Resume", "client", ps.epoch, f.n, "")
 		c.nxt = f.n
 		c.free(f.n)
+		c.grow.path() // a new path's round trip: the window kept, its timing anew
 		c.sWait = false
 		for _, old := range c.old { // both RESUMEs are in: the old streams go
 			c.release(old)
@@ -848,8 +815,11 @@ func (c *Conn) ackDue() bool {
 	if c.rEnd {
 		return true
 	}
+	// The gate is this end's own Config.Window, not the window its sender
+	// grew to (spec AckGate, mutant gate-at-cap).
+	g := uint64(c.cfg.Window)    // #nosec G115 -- > 0
 	held := uint64(c.rbuf.len()) // #nosec G115 -- a length, >= 0
-	return held <= c.w/2 && (rp-c.rAck >= c.w/4 || held == 0)
+	return held <= g/2 && (rp-c.rAck >= g/4 || held == 0)
 }
 
 // next picks ps's next frame (under c.mu), waiting until there is one;

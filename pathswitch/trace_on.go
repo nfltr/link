@@ -8,6 +8,7 @@ package pathswitch
 import (
 	"encoding/json"
 	"os"
+	"strconv"
 	"sync"
 )
 
@@ -18,7 +19,7 @@ import (
 // spec/TraceDirectPath.tla checks it per direction (make spec-traces).
 // A step on k bytes is k lines (the model's frames are bytes).
 //
-//	Init      n: the window W (the first line)
+//	Init      n: the window W, x: Config.MaxWindow (the first line)
 //	Write     by: the writing end, per byte handed to it
 //	Send      by, e: the stream, per byte sent; SendEnd: the END
 //	Resume    the client took the server's RESUME on e; n: its count
@@ -50,7 +51,7 @@ func tracePair(name string, a, b *Conn) {
 		panic(err)
 	}
 	t := &traceFile{f: f}
-	t.write(traceLine{Ev: "Init", N: a.w})
+	t.write(traceLine{Ev: "Init", N: a.w, X: strconv.Itoa(a.cfg.MaxWindow)})
 	for _, c := range []*Conn{a, b} {
 		c.mu.Lock()
 		c.tr = t

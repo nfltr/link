@@ -1796,7 +1796,7 @@ holds in a `Spec-Reviewed:` trailer).
 | `CreditGrow.tla` | a session's window grown with the path (FeatureGrow): BLOCKED, the growth rule, the cap and the connection budget, the growth sent with the next update | `credit.go`, `conn.go`, `config.go`, `trace_grow_on.go` |
 | `SessionRead.tla`, `TraceSessionRead.tla` | `Session.Read` from several goroutines (or ones running `WriteTo`, or `Pump` with a `WriteTo` refused), the read deadline set and cleared meanwhile | `mux.go`, `internal/bytequeue/`, `trace_read_on.go` |
 | `SessionWrite.tla`, `TraceSessionWrite.tla` | `Session.Write` waiting for credit while `SetWriteDeadline` and its timer run | `mux.go`, `credit.go`, `trace_write_on.go` |
-| `DirectPath.tla`, `TraceDirectPath.tla` | the path layer: OPEN, RESUME, ACK, END, ABORT, the window, `Move` and `Attach` | `pathswitch/conn.go`, `pathswitch/frame.go`, `pathswitch/trace_on.go` |
+| `DirectPath.tla`, `TraceDirectPath.tla` | the path layer: OPEN, RESUME, ACK, END, ABORT, the window and its growth, `Move` and `Attach` | `pathswitch/conn.go`, `pathswitch/config.go`, `pathswitch/grow.go`, `pathswitch/frame.go`, `pathswitch/trace_on.go` |
 | `AutoWindow.tla`, `TraceAutoWindow.tla` | a stream's receive window auto-tuned up to `MaxWindow` (the fork's flow controller); the windows quiclink asks for | `peerlink/quiclink/knobs.go`, `peerlink/quiclink/trace_autowin_on.go` |
 
 ## Action map (lane CONFORM-link)
@@ -3054,8 +3054,12 @@ design, with no wire change: S alone grows its window w from W to
 `MaxW` (`Config.MaxWindow`), doubling it at an ACK that frees bytes while
 S was window-limited (its application waiting on w) and the ACK came
 fast (a window's bytes acknowledged within a few round trips; the
-environment's choice here, as `AutoWindow.tla`'s, the code's clock
-there); w never falls. R's gate stays its own `Config.Window` / 2, not
+environment's choice here, as `AutoWindow.tla`'s; in the code
+(`pathswitch/grow.go`) a whole window acknowledged within 4 round trips
+of the transport's: `RoundTripper`, quiclink `Session.MinRTT`, since a
+round trip timed from this layer's gated ACKs is the reader's pace and
+grew a slow reader's window; a stream with no round trip, a relayed one,
+keeps its window); w never falls. R's gate stays its own `Config.Window` / 2, not
 the sender's grown window (`AckGate`): R acknowledges only while its
 reader keeps up, so a slow reader's sender neither frees nor grows, and
 the growth signal (ACKs arriving fast) is the reader's pace, not the
@@ -3100,6 +3104,15 @@ the trace check: the code's `ackDue` gate, now modelled). Mutants
 
 Witnesses: `WitnessGrown` (w grew to `MaxW` and S kept that much: 9
 states), `WitnessGated` (R's ACK waited on its reader: 4).
+Code guards: `TestWindowGrowsWithTheReader` (64 KiB to 1 MiB over a
+20 ms path), `TestSlowReaderKeepsTheWindow` (a reader at a sixteenth of
+the path's rate: the window, the sender's bytes and the receiver's held
+bytes stay within W, W and W/2 + W; fails with the gate at `MaxWindow`
+/ 2), `TestWindowFixedWithoutRoundTrip`; traced (`make spec-traces`):
+`TestWindowGrowsTraced` (a window of 64 bytes growing to 256 over a 20 ms
+path, 2 KiB: 8,213 lines, accepted both directions; the same trace with
+`MaxW` = W is rejected at its first Write past 64 bytes). The trace check
+takes `MaxW` from the Init line (`x`, `Config.MaxWindow`).
 
 Not modelled: the peer vanishing while both ends' applications are open
 (link's and quiclink's liveness end the session: `Liveness.tla`,

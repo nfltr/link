@@ -1,3 +1,4 @@
 Compatible changes:
-- Socket.NoECN: added
+- (*Session).MinRTT: added
 - Config.MaxWindow: added
+- Socket.NoECN: added

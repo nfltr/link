@@ -1,0 +1,3 @@
+Compatible changes:
+- Config.MaxWindow: added
+- RoundTripper: added
