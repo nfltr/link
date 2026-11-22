@@ -154,6 +154,13 @@ AB_OUT ?= $(or $(TMPDIR:%/=%),/tmp)/quiclink-bench-ab
 bench-ab-quiclink:
 	PERF_PKG=peerlink/quiclink ./scripts/perf.sh ab $(AB_OLD) $(AB_NEW) "$(AB_OUT)" 6 '$(AB_BENCH)'
 
+# bench-ab-pathswitch: the same for pathswitch's benchmarks (AB_PS_BENCH),
+# into AB_OUT-pathswitch (`ci-request TARGET=bench-ab-pathswitch`).
+AB_PS_BENCH ?= PathswitchRelayed|PathswitchMoves|Window
+.PHONY: bench-ab-pathswitch
+bench-ab-pathswitch:
+	PERF_PKG=pathswitch ./scripts/perf.sh ab $(AB_OLD) $(AB_NEW) "$(AB_OUT)-pathswitch" 6 '$(AB_PS_BENCH)'
+
 # profile-baseline: the profile baseline of this commit (scripts/perf.sh
 # baseline: every benchmark of link, pathswitch and quiclink, -benchmem
 # -count 6, then cpu, heap, mutex, block, goroutine and goroutine leak
