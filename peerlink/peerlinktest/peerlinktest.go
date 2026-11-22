@@ -518,9 +518,25 @@ func (f fairness) String() string {
 // At fairRate half the run (8 MiB) is past that bound, so on any path the
 // verdict fails only a Link whose wait credit cannot explain (seen at 4
 // MiB/s: 15-27%; the mutant 81-94%). TestFairnessOnADeepPath is that path
-// and checks the constants keep it so.
+// and checks the constants keep it so. That is the bound of fixed windows:
+// grown ones put more of each session on the path (spec/CreditGrow.tla
+// TurnBound), and on a deep path a wait then reached 9.2 MiB, past half
+// the run (lane FAIRNESS), so that path with growth is held to the share
+// alone (TestFairnessOnADeepPathGrowing).
 func (f fairness) verdict() error {
-	if f.total == 0 || slices.Min(f.per) < f.total>>10/int64(4*len(f.per)) || f.worst > f.total/2 {
+	if err := f.share(); err != nil {
+		return err
+	}
+	if f.worst > f.total/2 {
+		return fmt.Errorf("a session fell behind: %v", f)
+	}
+	return nil
+}
+
+// share: every session got a quarter of a fair share (verdict without the
+// wait; TestFairnessOnADeepPathGrowing).
+func (f fairness) share() error {
+	if f.total == 0 || slices.Min(f.per) < f.total>>10/int64(4*len(f.per)) {
 		return fmt.Errorf("a session fell behind: %v", f)
 	}
 	return nil

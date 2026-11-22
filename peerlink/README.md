@@ -192,7 +192,11 @@ Fairness at 1 MiB/s, 8 sessions: link 448-544 KiB each in 4 s (longest
 wait for a turn under 0.5 s, 20 runs under load; before v0.8.0, when
 senders waiting for room raced for it, 0.8-3.2 s). The case now runs at 4 MiB/s and bounds a wait in the
 path's bytes: half the run, past the 7 MiB the other sessions' credit
-allows on a deep path (`verdict` in peerlinktest.go).
+allows on a deep path with fixed windows (`verdict` in peerlinktest.go).
+With growing windows a wait on a deep path is bounded by the others' grown
+windows (7.2-9.2 MiB there, past half the run), so that case holds the
+share alone (`TestFairnessOnADeepPathGrowing`, spec/CreditGrow.tla
+`TurnBound`).
 QUIC (quiclink, both directions): dead peer at 3.0 s with a session
 busy, up to 4.5 s idle (bound 4.5 s); fairness 499-505 KiB each (under
 0.1 s); opens working again 3.0-5.0 s after a cut (on UDP a cut is a

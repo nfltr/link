@@ -20,7 +20,7 @@ import (
 // scheduler once one waited 2.4 s) fails the verdict on its wait.
 func TestFairnessCatchesAWait(t *testing.T) {
 	f := measureFairness(t, func(t *testing.T) Pair {
-		p := linkPair(t, 0)
+		p := linkPair(t, 0, 0)
 		p.A = &holdFirst{Link: p.A}
 		return p
 	})
@@ -39,21 +39,40 @@ func TestFairnessCatchesAWait(t *testing.T) {
 // moves enough that this round of grants is not half of it (at 1 MiB/s
 // over 4 s it was, and Fairness failed a fair Link: link fbc982501,
 // 5f322678d; at 2 MiB/s, under load, now and then: lane LINKSTABLE3).
-// Half the run is past the wait the others' credit allows (verdict).
+// Half the run is past the wait the others' credit allows (verdict). The
+// windows stay fixed (WindowMax = Window): that bound is the others' first
+// windows, and growth makes it their grown ones (spec/CreditGrow.tla
+// TurnBound; TestFairnessOnADeepPathGrowing).
 func TestFairnessOnADeepPath(t *testing.T) {
 	if credit := int64(fairSessions-1) * link.DefaultWindow; int64(fairRate*fairRun.Seconds())/2 <= credit {
 		t.Fatalf("half of Fairness's run (%d B/s for %v) is within the %d B the other sessions' credit lets one wait", fairRate, fairRun, credit)
 	}
-	f := measureFairness(t, func(t *testing.T) Pair { return linkPair(t, 16<<20) })
+	f := measureFairness(t, func(t *testing.T) Pair { return linkPair(t, 16<<20, link.DefaultWindow) })
 	t.Logf("%v", f)
 	if err := f.verdict(); err != nil {
 		t.Fatal(err)
 	}
 }
 
+// TestFairnessOnADeepPathGrowing: the deep path with windows that grow
+// (FeatureGrow, link's default). A wait is then bounded by the others'
+// grown windows, not by the run: each window's growth leaves with one
+// update, so the round in which the sessions grow puts a growth-sized run
+// of each on the path, and a session waited 7.2-9.2 MiB, past half the
+// run (10 of 50 runs failed the verdict with -race, lane FAIRNESS; fixed
+// windows 2.0-3.9 MiB, none). Every session still gets its share.
+func TestFairnessOnADeepPathGrowing(t *testing.T) {
+	f := measureFairness(t, func(t *testing.T) Pair { return linkPair(t, 16<<20, 0) })
+	t.Logf("%v", f)
+	if err := f.share(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // linkPair is a Pair of link Nodes through a Proxy whose path buffers
-// deep bytes (Proxy.deep; 0: the kernel's).
-func linkPair(t *testing.T, deep int) Pair {
+// deep bytes (Proxy.deep; 0: the kernel's), their windows growing to
+// windowMax (link.Config.WindowMax; 0: link's default).
+func linkPair(t *testing.T, deep, windowMax int) Pair {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -61,12 +80,12 @@ func linkPair(t *testing.T, deep int) Pair {
 	t.Cleanup(func() { _ = ln.Close() })
 	px := NewProxy(t, ln.Addr().String())
 	px.deep.Store(int64(deep))
-	b, err := peerlink.New(peerlink.Config{Listener: ln, Link: link.Config{Auth: link.NameAuth("b")}})
+	b, err := peerlink.New(peerlink.Config{Listener: ln, Link: link.Config{Auth: link.NameAuth("b"), WindowMax: windowMax}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	a, err := peerlink.New(peerlink.Config{
-		Link: link.Config{Auth: link.NameAuth("a")},
+		Link: link.Config{Auth: link.NameAuth("a"), WindowMax: windowMax},
 		Dial: func(ctx context.Context, _ string) (net.Conn, error) {
 			var d net.Dialer
 			return d.DialContext(ctx, "tcp", px.Addr())
