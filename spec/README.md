@@ -843,6 +843,76 @@ nil-channel bug put back (`writeWait` makes no channel); the guard hung
 to its bound and the trace was rejected at line 2 (a `Take` of channel
 0), fixture `write-nil-channel`; `write-ok` accepted.
 
+## Growing windows (CreditGrow.tla, 2026-11-22, lane RELAYWIN)
+
+A session's window was the hello's `window` for its whole life, so one
+session moved at most a window per round trip: 1 MiB at 20 ms is 52 MB/s
+(lane NF1TEST: a relayed nf1 session 398 Mbit/s at 20 ms against 3.1
+Gbit/s at 0). On a connection where both sides announce FeatureGrow
+(WIRE.md section 6) a session's window starts at the hello's `window` and
+grows with the path, as TCP's receive window does (dynamic right sizing:
+Fisk and Feng 2001, Linux `tcp_rcv_space_adjust`; quic-go's and
+Chromium's flow control auto-tuning double a window that the reader
+emptied within a round trip). Link measures no round trip during a bulk
+transfer (pings go only when idle), so the signal is the sender's own: a
+sender that must wait for credit sends a window frame of increment 0 for
+the session, BLOCKED (RFC 9000 section 19.13, STREAM_DATA_BLOCKED, "input
+to tuning of flow control algorithms"), once until its next window update.
+It travels behind every data frame the sender sent, so when the receiver
+reads it every byte the sender could send has arrived: little unread
+means the path, not the reader, held the sender back.
+
+The receiver's rule (`Credit.blocked`): the window doubles when
+- the reader keeps up: less than half the window is unread;
+- a whole window arrived since it last grew (`epoch`), so a window grows at
+  most once per window of bytes, a peer's early or repeated BLOCKED earns
+  nothing;
+- within `Config.MaxWindow` (default 16 MiB) and the connection's budget
+  `Config.MaxGrowth` (default 64 MiB: the growth past `window`, summed over
+  the connection's sessions); a session's end gives its growth back.
+
+The receive loop sends nothing (it never writes: a frame it waited on
+could stall every session): the bytes the window grew by go out with the
+session's next window update (`Credit.Consumed`, `owed`), which a reader
+that keeps up sends within the next quarter window read. A window never
+shrinks (credit given is not taken back). The sender's check of a window
+update is then the protocol's `MaxWindow` (1 GiB), not the peer's hello.
+
+| action | the Go it models |
+|---|---|
+| `Send(s)` | `Credit.acquire` takes a byte, the data frame goes out |
+| `Block(s)` | `Credit.acquire` must wait: `Credit.blockedFrame` buffers the BLOCKED once until the next update; or any peer's BLOCKED at any time |
+| `RecvWin` | `Credit.Grant` (the sender's cap: `MaxWindow`) |
+| `RecvAB` | `Credit.receivedSID` (data charged against the session's window) and `Credit.blocked` (the growth, or nothing) |
+| `Read(s)` | `Credit.Consumed`: the update once a quarter window was read (`Q`), with `owed` |
+| `Stop(s)` | a reader that reads no more |
+| `Drop(s)` | `Credit.dropLocked`: the session's growth back to the budget |
+
+Invariants: `NoErr` (no data past a window, no update past the sender's
+cap), `Conservation` (credit, data on the way, held, updates on the way and
+`owed` make up the window), `CreditBounds` (credit never negative, never
+past the window), `WinBounds` (`W <= win <= Max`), `Budget`,
+`GrownAccount` (the budget used is the live sessions' growth), `QueueBound`
+and `ConnBound` (memory: a session's queue at most its window, a
+connection's at most `sessions x W + G`), `NeverReadNoGrowth` (a reader that
+never read leaves its window as it was: a stopped reader grows no one's
+memory), `StoppedGrowsOnce` (one that stopped lets it grow at most once
+more), `NoGrowthAhead` (at most a doubling per window received).
+Liveness: `AllDelivered`. `CreditGrow.cfg` (two sessions, the budget
+binding; ~30 s), `CreditGrowOne.cfg` (one session to its cap; seconds),
+`CreditGrowWide.cfg` (4 bytes each, full only, ~3 min); `-coverage 1`
+takes every action and branch but the two error branches (only mutants
+reach them).
+
+Mutants (`make spec-mutants`): `no-keepup` (NeverReadNoGrowth), `no-epoch`
+(NeverReadNoGrowth: a BLOCKED before any data), `no-cap` (WinBounds),
+`no-budget` (Budget), `drop-keeps-growth` (GrownAccount),
+`grant-not-counted` (Conservation: data past the window, ErrCredit),
+`fixed-cap-sender` (NoErr: growth toward a peer without FeatureGrow).
+Witnesses (each violated): `WitnessGrew`, `WitnessCapped`,
+`WitnessBudgetFull`, `WitnessStoppedFull`, `WitnessBlockedNoGrowth`,
+`WitnessGrownDelivered`.
+
 ## Credit's waiters (CreditWaiters.tla, 2026-11-05, lane LINKWAKE)
 
 `Credit`'s methods are safe from any goroutine, so several senders may
@@ -1549,6 +1619,7 @@ holds in a `Spec-Reviewed:` trailer).
 | `EndAckLeg.tla`, `TraceEndAckLeg.tla` | one leg's end acknowledgement per transport: link, gRPC frames, TCP's kernel ACK, QUIC (reassembly, control stream); the idle bound's progress rule | `endack.go`, `peerlink/quiclink/quiclink.go`, `peerlink/quiclink/endack.go`, `peerlink/quiclink/trace_on.go`, `pathswitch/conn.go` |
 | `AckFrequency.tla`, `TraceAckFrequency.tla` | a QUIC receiver's ACK policy under ACK_FREQUENCY against the sender's loss detection (the fork's `ackhandler` and its `trace_on.go`); the policy quiclink asks for | `peerlink/quiclink/quiclink.go`, `peerlink/quiclink/knobs.go`, `peerlink/quiclink/ackfreq.go` |
 | `CreditWaiters.tla`, `TraceCreditWaiters.tla` | senders waiting in `Credit.Acquire` on one session: the wait and `wakeAll` | `credit.go`, `trace_wait_on.go` |
+| `CreditGrow.tla` | a session's window grown with the path (FeatureGrow): BLOCKED, the growth rule, the cap and the connection budget, the growth sent with the next update | `credit.go`, `conn.go`, `config.go` |
 | `SessionRead.tla`, `TraceSessionRead.tla` | `Session.Read` from several goroutines (or ones running `WriteTo`, or `Pump` with a `WriteTo` refused), the read deadline set and cleared meanwhile | `mux.go`, `internal/bytequeue/`, `trace_read_on.go` |
 | `SessionWrite.tla`, `TraceSessionWrite.tla` | `Session.Write` waiting for credit while `SetWriteDeadline` and its timer run | `mux.go`, `credit.go`, `trace_write_on.go` |
 | `DirectPath.tla`, `TraceDirectPath.tla` | the path layer: OPEN, RESUME, ACK, END, ABORT, the window, `Move` and `Attach` | `pathswitch/conn.go`, `pathswitch/frame.go`, `pathswitch/trace_on.go` |
@@ -1794,6 +1865,7 @@ What the models take of the world below link, and where that is stated.
 | a process may vanish (killed, its host gone) and nothing tells its peer: a direct QUIC path idles out only after its idle timeout (30 s), a relayed stream when the relay sees the agent link end | `DirectPath` (`Vanish`) | RFC 9000 section 10.1 (idle timeout); quic-go `Config.MaxIdleTimeout` (default 30 s) |
 | each path stream is an authenticated channel that delivers in order or is cut (a forged, dropped or reordered byte is a channel error: that epoch's end, never a changed frame): an nf1 session's epoch 0 is its own TLS, a direct epoch the QUIC connection, each relayed re-attach a fresh TLS 1.3 to the pinned key; an organisation session's frames are under its end-to-end TLS. No new action: a channel error is a path death (`PathDies`), and an attach's handshake before its OPEN is the token check `Attach` already abstracts | `DirectPath` | relay `spec/proverif/direct_once.pv` (queries 1-10; nfltr `docs/decisions/direct-once-2026-11-22.md`), `e2ee_tcp.pv` 21-28; RFC 8446 section 5.2 (record AEAD), RFC 9001 section 5 (QUIC packet protection) |
 | a live peer answers a closing end within `Config.Linger` (an ACK, a byte, its END or FIN): a peer silent that long is taken as gone, as TCP's user timeout takes unacknowledged data (`LingerOut` fires only once the peer vanished) | `DirectPath` (`LingerOut`) | RFC 5482 (TCP User Timeout); pathswitch `Config.Linger` |
+| a peer may send any frame at any time, a BLOCKED among them: the receiver's growth rule holds against any peer, not only an honest one (`Block`'s second branch) | `CreditGrow` | WIRE.md section 7; RFC 9000 section 19.13 (STREAM_DATA_BLOCKED is advisory) |
 
 ## Review findings (2026-11-02, lane LINKREVIEW)
 

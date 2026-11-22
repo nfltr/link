@@ -5,7 +5,7 @@
 # spec.sh check|mutants|traces: the TLA+ model of spec/ (spec/README.md).
 #   check    TLC on spec/Link.cfg, LinkDrain.cfg and LinkSess.cfg (no crash),
 #            LinkCrash.cfg, then spec/Pool.cfg, Liveness.cfg, Join.cfg,
-#            JoinClose.cfg and CreditWaiters.cfg, SessionRead.cfg, SessionReadWriteTo.cfg, SessionReadPump.cfg, SessionReadPumpWriteTo.cfg, SessionReadWriteTos.cfg, SessionWrite.cfg, DirectPath.cfg, RelayedClose.cfg, RelayedCloseEmpty.cfg, HopHold.cfg, HopHoldSeq.cfg, HopHoldConc.cfg, EndAckLeg.cfg, EndAckLegQuic.cfg:
+#            JoinClose.cfg and CreditWaiters.cfg, CreditGrow.cfg, CreditGrowOne.cfg, SessionRead.cfg, SessionReadWriteTo.cfg, SessionReadPump.cfg, SessionReadPumpWriteTo.cfg, SessionReadWriteTos.cfg, SessionWrite.cfg, DirectPath.cfg, RelayedClose.cfg, RelayedCloseEmpty.cfg, HopHold.cfg, HopHoldSeq.cfg, HopHoldConc.cfg, EndAckLeg.cfg, EndAckLegQuic.cfg:
 #            every invariant and liveness property, and Refines.
 #   invariants  the same, Link's invariants only, Refines only on
 #            LinkCrash.cfg (CI's; Pool's liveness is checked too, seconds).
@@ -451,15 +451,15 @@ check | invariants)
 	# PoolDrain (Min 2: a Drain failing halfway) and QuicWatchStops (two
 	# short stops, ~10 s) only in full: their mutants are CI's.
 	# PoolGrow: background growth (Max above Min).
-	pools="Pool PoolGrow PoolClient Liveness LivenessStarve QuicWatch QuicWatchPTO QuicWatchStarve Join JoinClose CreditWaiters SessionRead SessionReadWriteTo SessionReadPump SessionReadPumpWriteTo SessionReadWriteTos SessionWrite DirectPath DirectPathReset DirectPathRebind DirectPathProof DirectPathClose RelayedClose RelayedCloseEmpty HopHold HopHoldSeq HopHoldConc EndAckLeg EndAckLegQuic AckFrequency AckFrequencyDeep"
-	[ "$1" = invariants ] || pools="$pools PoolDrain QuicWatchStops DirectPathWide"
+	pools="Pool PoolGrow PoolClient Liveness LivenessStarve QuicWatch QuicWatchPTO QuicWatchStarve Join JoinClose CreditWaiters SessionRead SessionReadWriteTo SessionReadPump SessionReadPumpWriteTo SessionReadWriteTos SessionWrite DirectPath DirectPathReset DirectPathRebind DirectPathProof DirectPathClose RelayedClose RelayedCloseEmpty HopHold HopHoldSeq HopHoldConc EndAckLeg EndAckLegQuic AckFrequency AckFrequencyDeep CreditGrow CreditGrowOne"
+	[ "$1" = invariants ] || pools="$pools PoolDrain QuicWatchStops DirectPathWide CreditGrowWide"
 	for m in $pools; do
 		echo "== $m.cfg"
 		st=0
 		# Liveness explores a horizon of ticks, Join one session,
 		# CreditWaiters a fixed number of Acquires, SessionRead a fixed number of bytes, SessionWrite a fixed number of SetWriteDeadlines: their last states end there; PoolDrain has no Open to keep it going.
 		dl=; [ $m = Pool ] || [ $m = PoolGrow ] || [ $m = PoolClient ] || dl=-deadlock
-		mod=$m.tla; case $m in Pool*) mod=Pool.tla ;; Liveness*) mod=Liveness.tla ;; QuicWatch*) mod=QuicWatch.tla ;; CreditWaiters*) mod=CreditWaiters.tla ;; SessionRead*) mod=SessionRead.tla ;; DirectPath*) mod=DirectPath.tla ;; RelayedClose*) mod=RelayedClose.tla ;; HopHold*) mod=HopHold.tla ;; EndAckLeg*) mod=EndAckLeg.tla ;; AckFrequency*) mod=AckFrequency.tla ;; esac
+		mod=$m.tla; case $m in Pool*) mod=Pool.tla ;; Liveness*) mod=Liveness.tla ;; QuicWatch*) mod=QuicWatch.tla ;; CreditWaiters*) mod=CreditWaiters.tla ;; SessionRead*) mod=SessionRead.tla ;; DirectPath*) mod=DirectPath.tla ;; RelayedClose*) mod=RelayedClose.tla ;; HopHold*) mod=HopHold.tla ;; EndAckLeg*) mod=EndAckLeg.tla ;; AckFrequency*) mod=AckFrequency.tla ;; CreditGrow*) mod=CreditGrow.tla ;; esac
 		cfg=$m.cfg
 		# DirectPath's liveness (AllDelivered, ResetReaches: minutes) only in
 		# full; spec-mutants catches keep-dead-path and abort-not-resent by it.
@@ -486,7 +486,7 @@ mutants)
 		else
 			sed -e "s/$2/$3/" "spec/$1" >"$jw/Mutant.cfg"
 		fi
-		dl=; [ "$mod" != Liveness.tla ] && [ "$mod" != QuicWatch.tla ] && [ "$mod" != Join.tla ] && [ "$mod" != JoinClose.tla ] && [ "$mod" != CreditWaiters.tla ] && [ "$mod" != SessionRead.tla ] && [ "$mod" != SessionWrite.tla ] && [ "$mod" != DirectPath.tla ] && [ "$mod" != RelayedClose.tla ] && [ "$mod" != HopHold.tla ] && [ "$mod" != EndAckLeg.tla ] && [ "$mod" != AckFrequency.tla ] && [ "$1" != PoolDrain.cfg ] || dl=-deadlock
+		dl=; [ "$mod" != Liveness.tla ] && [ "$mod" != QuicWatch.tla ] && [ "$mod" != Join.tla ] && [ "$mod" != JoinClose.tla ] && [ "$mod" != CreditWaiters.tla ] && [ "$mod" != SessionRead.tla ] && [ "$mod" != SessionWrite.tla ] && [ "$mod" != DirectPath.tla ] && [ "$mod" != RelayedClose.tla ] && [ "$mod" != HopHold.tla ] && [ "$mod" != EndAckLeg.tla ] && [ "$mod" != AckFrequency.tla ] && [ "$mod" != CreditGrow.tla ] && [ "$1" != PoolDrain.cfg ] || dl=-deadlock
 		if tlc "$jw/Mutant.cfg" "$mod" $dl >"$jw/m.out" 2>&1; then
 			echo "$3: not caught"
 			return 1
@@ -519,7 +519,7 @@ mutants)
 		# WitnessAct*: an action property (checked as a PROPERTY).
 		case $2 in WitnessAct*) kind=PROPERTY what="Action property" ;; *) kind=INVARIANT what=Invariant ;; esac
 		printf '%s %s\n' "$kind" "$2" >>"$jw/Witness.cfg"
-		dl=; [ "${3:-}" != Join.tla ] && [ "${3:-}" != JoinClose.tla ] && [ "${3:-}" != Liveness.tla ] && [ "${3:-}" != QuicWatch.tla ] && [ "${3:-}" != CreditWaiters.tla ] && [ "${3:-}" != SessionRead.tla ] && [ "${3:-}" != SessionWrite.tla ] && [ "${3:-}" != DirectPath.tla ] && [ "${3:-}" != RelayedClose.tla ] && [ "${3:-}" != HopHold.tla ] && [ "${3:-}" != EndAckLeg.tla ] && [ "${3:-}" != AckFrequency.tla ] || dl=-deadlock
+		dl=; [ "${3:-}" != Join.tla ] && [ "${3:-}" != JoinClose.tla ] && [ "${3:-}" != Liveness.tla ] && [ "${3:-}" != QuicWatch.tla ] && [ "${3:-}" != CreditWaiters.tla ] && [ "${3:-}" != SessionRead.tla ] && [ "${3:-}" != SessionWrite.tla ] && [ "${3:-}" != DirectPath.tla ] && [ "${3:-}" != RelayedClose.tla ] && [ "${3:-}" != HopHold.tla ] && [ "${3:-}" != EndAckLeg.tla ] && [ "${3:-}" != AckFrequency.tla ] && [ "${3:-}" != CreditGrow.tla ] || dl=-deadlock
 		if tlc "$jw/Witness.cfg" "${3:-MCLink.tla}" $dl >"$jw/m.out" 2>&1; then
 			echo "$2: never violated (vacuous)"
 			return 1
@@ -841,6 +841,16 @@ mutants)
 	# sender that never asks again once its packet threshold is off.
 	job mutant AckFrequencyDeep.cfg 'Mutant = "none"' 'Mutant = "no-update"' AckFrequency.tla
 	for w in WitnessSpurious WitnessApplied; do job witness AckFrequencyDeep.cfg $w AckFrequency.tla; done
+	# Growing windows (CreditGrow.tla, lane RELAYWIN): growth whatever the
+	# reader left unread or at every BLOCKED (a stopped reader's, a peer's
+	# early one), past the cap or the budget, an end that keeps its growth,
+	# growth sent but not counted, a sender capping credit at the hello's
+	# window (a peer without FeatureGrow).
+	for m in no-keepup no-epoch no-cap drop-keeps-growth grant-not-counted fixed-cap-sender; do
+		job mutant CreditGrowOne.cfg 'Mutant = "none"' "Mutant = \"$m\"" CreditGrow.tla
+	done
+	job mutant CreditGrow.cfg 'Mutant = "none"' 'Mutant = "no-budget"' CreditGrow.tla
+	for w in WitnessGrew WitnessCapped WitnessBudgetFull WitnessStoppedFull WitnessBlockedNoGrowth WitnessGrownDelivered; do job witness CreditGrow.cfg $w CreditGrow.tla; done
 	# Credit's waiters (CreditWaiters.tla, lane LINKWAKE): the one-slot
 	# wake (the code before) strands a waiter and leaves its Acquire for
 	# good; passing the token on strands one that needs less (a stall
