@@ -1664,6 +1664,67 @@ here `peerlink/quiclink/knobs.go` (`MaxStreamReceiveWindow` from
 `TestBulkUploadOnLongFatPath` (one stream reaches 98 % of a 1 Gbit/s, 260
 ms path). Open: no trace recorder yet (the fork's flow controller logs no
 steps; the next lane adds one behind a tag, as `quicacktrace`).
+## ACK ranges (AckRanges.tla, 2026-11-22, lane SPURIOUS)
+
+Finding (lane SPURIOUS; Helsinki ccx23 -> GCP asia-southeast1-b, 260 ms,
+nfltr-send v0.1.13 on the fork with its sender loss trace,
+`~/nfltr-evidence/spurious-2026-11-22/`): the 0.6-2.4 % "resent" lanes
+REORDERWAN and FINALWAN estimated were not spurious losses. The sender
+declared 1.2-4.6 % of a 4-connection run's packets lost (time threshold,
+age = 9/8 RTT) on a path that lost 0.01-0.03 %, and almost none of them was
+acknowledged later. The receiver had processed them: its history keeps at
+most `MaxNumAckRanges` (64) ranges, and that path delivers 44-50 % of the
+packets of some connections tens to hundreds of places late (100-300
+holes open at once). Past 64 the history drops its lowest range, so a late
+packet arriving below the lowest range kept is a new lowest range dropped
+at once: processed, never in an ACK (522,211 ranges dropped in one run).
+The connections a path's hash sends that way lose; the others do not
+(bimodal: 0.03 % and 2.5 % in one run).
+
+Design. The receiver remembers the packets received since its last ACK
+(at most `MaxNumAckRanges`: an ACK goes after more than T, 9 for
+quiclink), and an ACK reports first the ranges holding one of them (a
+packet the history dropped is its own range, merged with a neighbour),
+then the highest other ranges, `MaxNumAckRanges` in all, in descending
+order. Prior art: RFC 2018 section 4 (the first SACK block holds the
+segment that triggered the ACK), RFC 9000 13.2.3 (a receiver limiting
+ranges omits old ones; an omitted range is not a NACK: a QUIC ACK may
+leave any acknowledged packet out). The history's bound (the DoS defence)
+and the frame's size stay as they are; no new wire. Rejected: a larger
+history and frame (upstream's 500 ranges, cut to 32 and then 64 for CPU
+and memory: still a depth past which a late packet goes unreported, and an
+ACK every 10 packets carrying hundreds of ranges); the sender widening its
+time threshold (the packets were never acknowledged: no threshold is wide
+enough).
+
+| Invariant | Meaning | Mutant that breaks it |
+| --- | --- | --- |
+| `ReportedOnce` | every packet received before the last ACK is acknowledged (so the sender declares none lost) | `top-k` (the history's ranges only: quic-go before), `top-first` (the highest K ranges, the new ones not first) |
+| `AckedReceived` | no packet not received is acknowledged | |
+| `HistoryBound`, `FrameBound` | the history and an ACK hold at most K ranges | |
+
+Witnesses (each violated): `WitnessEvicted` (the history dropped a
+received packet), `WitnessFull` (an ACK with K ranges),
+`WitnessOrphanAcked` (a packet acknowledged the history no longer holds).
+`AckRanges.cfg` (N 7, any delivery order, K 2, T 1, packet 4 lossy): 3508
+states, 2 s, every action taken (`-coverage 1`).
+
+| Environment assumption | Source |
+| --- | --- |
+| an ACK reaches the sender and is not lost (one lost leaves its new packets to the next ACK only if they are among its ranges: a spurious retransmission at the ACK loss rate) | the model's `Ack`; RFC 9000 13.2.3 |
+| at most T + 1 <= K packets arrive between ACKs (ASSUME): ACK_FREQUENCY's threshold, or RFC 9000's every second packet | draft-ietf-quic-ack-frequency-14 6.1; the fork's `GetAckFrame` keeps the newest K if more |
+| an ACK riding a packet with little room may be cut to fit (`AckFrame.Truncate` drops its lowest ranges): not modelled; quiclink's receiver sends ACK-only packets | the fork's `packet_packer.go` |
+| the sender drops a packet from its history once acknowledged: a range reported again changes nothing | RFC 9002 A.7 |
+
+Code: the fork `internal/ackhandler/received_packet_tracker.go`
+(`GetAckFrame`), `received_packet_history.go`. Conformance: the fork's
+`TestReceivedPacketTrackerReportedOnce` (random late deliveries, every ACK
+checked against `ReportedOnce` and `FrameBound`) and
+`TestBulkUploadOnReorderingPath/bbr/many-holes/ackfreq`. Trace recorder:
+the fork's `loss_trace_on.go` (tag `quicacktrace`, `QUICLOSSTRACE=<dir>`)
+records each loss the sender declares and each one acknowledged later, and
+each range the receiver's history drops; a TLC check of those files
+against this model is open (spec/README.md "ACK ranges" follow-up).
 
 ## Code map (lane W5-LINK)
 
@@ -1684,6 +1745,7 @@ holds in a `Spec-Reviewed:` trailer).
 | `HopHold.tla`, `TraceHopHold.tla` | two joints on one path (the agent's, the relay's), both ends TCP apps, crossing half closes: the hold ends at the next hop's receipt, the ENDACK at the onward end | `peerlink/chain.go`, `endack.go`, `peerlink/trace_on.go` |
 | `EndAckLeg.tla`, `TraceEndAckLeg.tla` | one leg's end acknowledgement per transport: link, gRPC frames, TCP's kernel ACK, QUIC (reassembly, control stream); the idle bound's progress rule | `endack.go`, `peerlink/quiclink/quiclink.go`, `peerlink/quiclink/endack.go`, `peerlink/quiclink/trace_on.go`, `pathswitch/conn.go` |
 | `AckFrequency.tla`, `TraceAckFrequency.tla` | a QUIC receiver's ACK policy under ACK_FREQUENCY against the sender's loss detection (the fork's `ackhandler` and its `trace_on.go`); the policy quiclink asks for | `peerlink/quiclink/quiclink.go`, `peerlink/quiclink/knobs.go`, `peerlink/quiclink/ackfreq.go` |
+| `AckRanges.tla` | a QUIC receiver's bounded ACK ranges against what its ACKs report (the fork's `ackhandler`); the ACK policy quiclink asks for bounds the packets between ACKs | `peerlink/quiclink/knobs.go` |
 | `CreditWaiters.tla`, `TraceCreditWaiters.tla` | senders waiting in `Credit.Acquire` on one session: the wait and `wakeAll` | `credit.go`, `trace_wait_on.go` |
 | `CreditGrow.tla` | a session's window grown with the path (FeatureGrow): BLOCKED, the growth rule, the cap and the connection budget, the growth sent with the next update | `credit.go`, `conn.go`, `config.go`, `trace_grow_on.go` |
 | `SessionRead.tla`, `TraceSessionRead.tla` | `Session.Read` from several goroutines (or ones running `WriteTo`, or `Pump` with a `WriteTo` refused), the read deadline set and cleared meanwhile | `mux.go`, `internal/bytequeue/`, `trace_read_on.go` |

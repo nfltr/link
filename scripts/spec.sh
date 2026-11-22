@@ -485,7 +485,7 @@ check | invariants)
 	# PoolDrain (Min 2: a Drain failing halfway) and QuicWatchStops (two
 	# short stops, ~10 s) only in full: their mutants are CI's.
 	# PoolGrow: background growth (Max above Min).
-	pools="Pool PoolGrow PoolClient Liveness LivenessStarve QuicWatch QuicWatchPTO QuicWatchStarve Join JoinClose CreditWaiters SessionRead SessionReadWriteTo SessionReadPump SessionReadPumpWriteTo SessionReadWriteTos SessionWrite DirectPath DirectPathReset DirectPathRebind DirectPathProof DirectPathClose RelayedClose RelayedCloseEmpty HopHold HopHoldSeq HopHoldConc EndAckLeg EndAckLegQuic AckFrequency AckFrequencyDeep CreditGrow CreditGrowOne AutoWindow"
+	pools="Pool PoolGrow PoolClient Liveness LivenessStarve QuicWatch QuicWatchPTO QuicWatchStarve Join JoinClose CreditWaiters SessionRead SessionReadWriteTo SessionReadPump SessionReadPumpWriteTo SessionReadWriteTos SessionWrite DirectPath DirectPathReset DirectPathRebind DirectPathProof DirectPathClose RelayedClose RelayedCloseEmpty HopHold HopHoldSeq HopHoldConc EndAckLeg EndAckLegQuic AckFrequency AckFrequencyDeep CreditGrow CreditGrowOne AutoWindow AckRanges"
 	[ "$1" = invariants ] || pools="$pools PoolDrain QuicWatchStops DirectPathWide CreditGrowWide"
 	for m in $pools; do
 		echo "== $m.cfg"
@@ -520,7 +520,7 @@ mutants)
 		else
 			sed -e "s/$2/$3/" "spec/$1" >"$jw/Mutant.cfg"
 		fi
-		dl=; [ "$mod" != Liveness.tla ] && [ "$mod" != QuicWatch.tla ] && [ "$mod" != Join.tla ] && [ "$mod" != JoinClose.tla ] && [ "$mod" != CreditWaiters.tla ] && [ "$mod" != SessionRead.tla ] && [ "$mod" != SessionWrite.tla ] && [ "$mod" != DirectPath.tla ] && [ "$mod" != RelayedClose.tla ] && [ "$mod" != HopHold.tla ] && [ "$mod" != EndAckLeg.tla ] && [ "$mod" != AckFrequency.tla ] && [ "$mod" != CreditGrow.tla ] && [ "$1" != PoolDrain.cfg ] || dl=-deadlock
+		dl=; [ "$mod" != Liveness.tla ] && [ "$mod" != QuicWatch.tla ] && [ "$mod" != Join.tla ] && [ "$mod" != JoinClose.tla ] && [ "$mod" != CreditWaiters.tla ] && [ "$mod" != SessionRead.tla ] && [ "$mod" != SessionWrite.tla ] && [ "$mod" != DirectPath.tla ] && [ "$mod" != RelayedClose.tla ] && [ "$mod" != HopHold.tla ] && [ "$mod" != EndAckLeg.tla ] && [ "$mod" != AckFrequency.tla ] && [ "$mod" != CreditGrow.tla ] && [ "$mod" != AckRanges.tla ] && [ "$1" != PoolDrain.cfg ] || dl=-deadlock
 		if tlc "$jw/Mutant.cfg" "$mod" $dl >"$jw/m.out" 2>&1; then
 			echo "$3: not caught"
 			return 1
@@ -553,7 +553,7 @@ mutants)
 		# WitnessAct*: an action property (checked as a PROPERTY).
 		case $2 in WitnessAct*) kind=PROPERTY what="Action property" ;; *) kind=INVARIANT what=Invariant ;; esac
 		printf '%s %s\n' "$kind" "$2" >>"$jw/Witness.cfg"
-		dl=; [ "${3:-}" != Join.tla ] && [ "${3:-}" != JoinClose.tla ] && [ "${3:-}" != Liveness.tla ] && [ "${3:-}" != QuicWatch.tla ] && [ "${3:-}" != CreditWaiters.tla ] && [ "${3:-}" != SessionRead.tla ] && [ "${3:-}" != SessionWrite.tla ] && [ "${3:-}" != DirectPath.tla ] && [ "${3:-}" != RelayedClose.tla ] && [ "${3:-}" != HopHold.tla ] && [ "${3:-}" != EndAckLeg.tla ] && [ "${3:-}" != AckFrequency.tla ] && [ "${3:-}" != CreditGrow.tla ] || dl=-deadlock
+		dl=; [ "${3:-}" != Join.tla ] && [ "${3:-}" != JoinClose.tla ] && [ "${3:-}" != Liveness.tla ] && [ "${3:-}" != QuicWatch.tla ] && [ "${3:-}" != CreditWaiters.tla ] && [ "${3:-}" != SessionRead.tla ] && [ "${3:-}" != SessionWrite.tla ] && [ "${3:-}" != DirectPath.tla ] && [ "${3:-}" != RelayedClose.tla ] && [ "${3:-}" != HopHold.tla ] && [ "${3:-}" != EndAckLeg.tla ] && [ "${3:-}" != AckFrequency.tla ] && [ "${3:-}" != CreditGrow.tla ] && [ "${3:-}" != AckRanges.tla ] || dl=-deadlock
 		if tlc "$jw/Witness.cfg" "${3:-MCLink.tla}" $dl >"$jw/m.out" 2>&1; then
 			echo "$2: never violated (vacuous)"
 			return 1
@@ -893,6 +893,14 @@ mutants)
 		job mutant AutoWindow.cfg 'Mutant = "none"' "Mutant = \"$m\"" AutoWindow.tla
 	done
 	for w in WitnessGrown WitnessFull; do job witness AutoWindow.cfg $w AutoWindow.tla; done
+	# A QUIC receiver's bounded ACK ranges (AckRanges.tla, lane SPURIOUS):
+	# the history's ranges only (quic-go before: a packet below the lowest
+	# range kept, dropped at once, never acknowledged), and the highest K
+	# ranges with the new packets not first.
+	for m in top-k top-first; do
+		job mutant AckRanges.cfg 'Mutant = "none"' "Mutant = \"$m\"" AckRanges.tla
+	done
+	for w in WitnessEvicted WitnessFull WitnessOrphanAcked; do job witness AckRanges.cfg $w AckRanges.tla; done
 	# Credit's waiters (CreditWaiters.tla, lane LINKWAKE): the one-slot
 	# wake (the code before) strands a waiter and leaves its Acquire for
 	# good; passing the token on strands one that needs less (a stall
