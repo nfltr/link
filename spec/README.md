@@ -1622,6 +1622,49 @@ sender's packet threshold (S = R: the fork's
 `TestSentPacketHandlerSetPacketThreshold`); IMMEDIATE_ACK is never taken (no
 sender of the fork's sends it; the fork's unit tests cover the receiver).
 
+## Auto-tuned windows (AutoWindow.tla, 2026-11-22, lane LONGFAT)
+
+One QUIC stream's receive window auto-tuned from `W0` up to `MaxW`:
+quiclink `Config.MaxWindow` sets the fork's `MaxStreamReceiveWindow` above
+`InitialStreamReceiveWindow` (`Config.Window`), and the fork's flow
+controller (upstream quic-go's auto-tuning, after Chromium's) doubles a
+stream's window at a window update when the reader took the last window
+fast, never past `MaxW`, advertising read + window. Fixed at 16 MiB, one
+direct session Helsinki -> Singapore (260 ms) carried 16 MiB per round
+trip at most; relay client's direct sessions now start at 16 MiB and may
+grow to 64 MiB. The model: one stream of `Total` bytes, the sender below
+the limit it heard, bytes in order, window updates in any order (the
+sender keeps the largest), the app reading a byte at a time, an update
+once a quarter window was read (`protocol.WindowUpdateThreshold`), and
+"fast" the environment's choice at each update.
+
+| Invariant | Meaning | Mutant that breaks it |
+| --- | --- | --- |
+| `Credit` | the sender never sends past a limit the receiver advertised; no update in flight is above the receiver's limit | `shrink` (a slow epoch halves the window: the limit falls below what was sent) |
+| `MemoryBound` | the receiver holds at most `MaxW` unread bytes, whatever the window grew to (quiclink's per-session memory bound) | `grant-unread` (an update counts bytes received, not read) |
+| `WindowBound` | the window never exceeds `MaxW` | `no-clamp` |
+| `Monotone` (action property) | an advertised limit never falls (RFC 9000 section 4.1) | `shrink` |
+| `AllRead` (liveness) | every byte is read | `stale-update` (an update re-sends the old limit) |
+
+Witnesses (each violated): `WitnessGrown` (the window reached `MaxW`),
+`WitnessFull` (`MaxW` unread bytes held: the bound is tight).
+`AutoWindow.cfg` (Total 12, W0 2, MaxW 4): 66,386 states, seconds, every
+action taken (`-coverage 1`).
+
+| Environment assumption | Source |
+| --- | --- |
+| a stream's bytes are delivered to the app in order once they arrive (reassembly); a lost packet's bytes are sent again | RFC 9000 sections 2.2, 13.3 |
+| MAX_STREAM_DATA frames may arrive reordered or be lost; a lost one is sent again with the current limit; a smaller limit than one heard is ignored | RFC 9000 sections 4.1, 13.3, 19.10 |
+| the receiver's auto-tuning reads the RTT and the time since its last update (not modelled: "fast" is free); it only doubles, at an update, up to `MaxStreamReceiveWindow` | the fork's `flow_controller_base.go` `maybeAdjustWindowSize` |
+| the connection's window (16 Windows, fixed) bounds the sum of the streams' and is not modelled: it only stops senders earlier | the fork's `flow_controller_connection.go`; quiclink `knobs.go` |
+
+Code: the fork's `flow_controller_base.go`, `flow_controller_stream.go`;
+here `peerlink/quiclink/knobs.go` (`MaxStreamReceiveWindow` from
+`Config.MaxWindow`). Guards: quiclink `TestMaxWindowAutoTunes`, the fork's
+`TestBulkUploadOnLongFatPath` (one stream reaches 98 % of a 1 Gbit/s, 260
+ms path). Open: no trace recorder yet (the fork's flow controller logs no
+steps; the next lane adds one behind a tag, as `quicacktrace`).
+
 ## Code map (lane W5-LINK)
 
 The files each model stands for (`scripts/check-spec-drift.sh`: a commit
@@ -1646,6 +1689,7 @@ holds in a `Spec-Reviewed:` trailer).
 | `SessionRead.tla`, `TraceSessionRead.tla` | `Session.Read` from several goroutines (or ones running `WriteTo`, or `Pump` with a `WriteTo` refused), the read deadline set and cleared meanwhile | `mux.go`, `internal/bytequeue/`, `trace_read_on.go` |
 | `SessionWrite.tla`, `TraceSessionWrite.tla` | `Session.Write` waiting for credit while `SetWriteDeadline` and its timer run | `mux.go`, `credit.go`, `trace_write_on.go` |
 | `DirectPath.tla`, `TraceDirectPath.tla` | the path layer: OPEN, RESUME, ACK, END, ABORT, the window, `Move` and `Attach` | `pathswitch/conn.go`, `pathswitch/frame.go`, `pathswitch/trace_on.go` |
+| `AutoWindow.tla` | a stream's receive window auto-tuned up to `MaxWindow` (the fork's flow controller); the windows quiclink asks for | `peerlink/quiclink/knobs.go` |
 
 ## Action map (lane CONFORM-link)
 

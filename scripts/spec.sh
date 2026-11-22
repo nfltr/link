@@ -5,7 +5,7 @@
 # spec.sh check|mutants|traces: the TLA+ model of spec/ (spec/README.md).
 #   check    TLC on spec/Link.cfg, LinkDrain.cfg and LinkSess.cfg (no crash),
 #            LinkCrash.cfg, then spec/Pool.cfg, Liveness.cfg, Join.cfg,
-#            JoinClose.cfg and CreditWaiters.cfg, CreditGrow.cfg, CreditGrowOne.cfg, SessionRead.cfg, SessionReadWriteTo.cfg, SessionReadPump.cfg, SessionReadPumpWriteTo.cfg, SessionReadWriteTos.cfg, SessionWrite.cfg, DirectPath.cfg, RelayedClose.cfg, RelayedCloseEmpty.cfg, HopHold.cfg, HopHoldSeq.cfg, HopHoldConc.cfg, EndAckLeg.cfg, EndAckLegQuic.cfg:
+#            JoinClose.cfg and CreditWaiters.cfg, CreditGrow.cfg, CreditGrowOne.cfg, SessionRead.cfg, SessionReadWriteTo.cfg, SessionReadPump.cfg, SessionReadPumpWriteTo.cfg, SessionReadWriteTos.cfg, SessionWrite.cfg, DirectPath.cfg, RelayedClose.cfg, RelayedCloseEmpty.cfg, HopHold.cfg, HopHoldSeq.cfg, HopHoldConc.cfg, EndAckLeg.cfg, EndAckLegQuic.cfg, AutoWindow.cfg:
 #            every invariant and liveness property, and Refines.
 #   invariants  the same, Link's invariants only, Refines only on
 #            LinkCrash.cfg (CI's; Pool's liveness is checked too, seconds).
@@ -485,7 +485,7 @@ check | invariants)
 	# PoolDrain (Min 2: a Drain failing halfway) and QuicWatchStops (two
 	# short stops, ~10 s) only in full: their mutants are CI's.
 	# PoolGrow: background growth (Max above Min).
-	pools="Pool PoolGrow PoolClient Liveness LivenessStarve QuicWatch QuicWatchPTO QuicWatchStarve Join JoinClose CreditWaiters SessionRead SessionReadWriteTo SessionReadPump SessionReadPumpWriteTo SessionReadWriteTos SessionWrite DirectPath DirectPathReset DirectPathRebind DirectPathProof DirectPathClose RelayedClose RelayedCloseEmpty HopHold HopHoldSeq HopHoldConc EndAckLeg EndAckLegQuic AckFrequency AckFrequencyDeep CreditGrow CreditGrowOne"
+	pools="Pool PoolGrow PoolClient Liveness LivenessStarve QuicWatch QuicWatchPTO QuicWatchStarve Join JoinClose CreditWaiters SessionRead SessionReadWriteTo SessionReadPump SessionReadPumpWriteTo SessionReadWriteTos SessionWrite DirectPath DirectPathReset DirectPathRebind DirectPathProof DirectPathClose RelayedClose RelayedCloseEmpty HopHold HopHoldSeq HopHoldConc EndAckLeg EndAckLegQuic AckFrequency AckFrequencyDeep CreditGrow CreditGrowOne AutoWindow"
 	[ "$1" = invariants ] || pools="$pools PoolDrain QuicWatchStops DirectPathWide CreditGrowWide"
 	for m in $pools; do
 		echo "== $m.cfg"
@@ -885,6 +885,14 @@ mutants)
 	done
 	job mutant CreditGrow.cfg 'Mutant = "none"' 'Mutant = "no-budget"' CreditGrow.tla
 	for w in WitnessGrew WitnessCapped WitnessBudgetFull WitnessStoppedFull WitnessBlockedNoGrowth WitnessGrownDelivered; do job witness CreditGrow.cfg $w CreditGrow.tla; done
+	# A stream window auto-tuned up to MaxW (AutoWindow.tla, lane LONGFAT):
+	# a window doubled past MaxW, an update counting bytes not yet read, a
+	# window halved (its limit falls below what was sent), an update that
+	# re-sends the old limit.
+	for m in no-clamp grant-unread shrink stale-update; do
+		job mutant AutoWindow.cfg 'Mutant = "none"' "Mutant = \"$m\"" AutoWindow.tla
+	done
+	for w in WitnessGrown WitnessFull; do job witness AutoWindow.cfg $w AutoWindow.tla; done
 	# Credit's waiters (CreditWaiters.tla, lane LINKWAKE): the one-slot
 	# wake (the code before) strands a waiter and leaves its Acquire for
 	# good; passing the token on strands one that needs less (a stall
