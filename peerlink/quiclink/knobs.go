@@ -27,7 +27,9 @@ const (
 // Socket is a UDP socket's settings (the fork's quic.Transport fields).
 type Socket struct {
 	// ReceiveBuffer and SendBuffer are the SO_RCVBUF and SO_SNDBUF sizes
-	// asked for, at least (0: quic.SocketBufferWanted, 7 MiB). The host
+	// asked for, at least (0: quic.SocketBufferWanted, 7 MiB, to receive;
+	// quic.SocketSendBufferWanted, 256 KiB, to send: a larger send buffer
+	// queues more than CoDel's 5 ms in the host's qdisc). The host
 	// may give less (Linux net.core.rmem_max, wmem_max): Node.SocketBuffers.
 	ReceiveBuffer, SendBuffer int
 	// NoGSO and NoGRO turn off UDP segmentation offload on send and

@@ -233,7 +233,7 @@ refuses an invalid one, naming the field. No knob changes the wire.
 | `Congestion` | `CongestionBBR` | `CongestionBBR`, `CongestionReno` | `QUICConfig().CongestionControl` |
 | `NoPacing` | paced at the controller's rate | any | `QUICConfig().DisablePacing` |
 | `MaxPacketSize` | 1452 (an Ethernet MTU less IPv6 and UDP) | 0 or 1200..8952 (above 1452: jumbo, a 9000-byte MTU's); the largest packet sent and read | `QUICConfig().MaxPacketSize`; the peer's: `SendDatagram`'s `*quic.DatagramTooLargeError` |
-| `Socket.ReceiveBuffer`, `SendBuffer` | `quic.SocketBufferWanted` (7 MiB), asked at least | >= 0; needs `PacketConn` | `Node.SocketBuffers()`: what the host gave, less where `net.core.rmem_max`/`wmem_max` (Linux) or `kern.ipc.maxsockbuf` (macOS) is lower |
+| `Socket.ReceiveBuffer`, `SendBuffer` | `quic.SocketBufferWanted` (7 MiB) to receive, `quic.SocketSendBufferWanted` (256 KiB; Linux reports 512 KiB, its bookkeeping doubled) to send, asked at least | >= 0; needs `PacketConn` | `Node.SocketBuffers()`: what the host gave, less where `net.core.rmem_max`/`wmem_max` (Linux) or `kern.ipc.maxsockbuf` (macOS) is lower |
 | `Socket.NoGSO`, `NoGRO` | GSO and GRO on where Linux 5.0+ has them | any; needs `PacketConn` | the fork's `TestGRODisabled` (one datagram per read) |
 | `Socket.NoECN` | ECN on (ECT(0) sent, ECN bits read) on Linux 5.0+, macOS, FreeBSD | any; needs `PacketConn` | the fork's `TestTransportSocketOptions/ecn_off` |
 
