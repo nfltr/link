@@ -640,6 +640,7 @@ func (n *Node) acceptStream(c *conn, st *quic.Stream) {
 		refuse()
 		return
 	}
+	traceAWRead(c.q, st, preambleLen(c.chain, h))
 	_ = st.SetReadDeadline(time.Time{})
 	n.mu.Lock()
 	accept, draining := n.accept, n.draining

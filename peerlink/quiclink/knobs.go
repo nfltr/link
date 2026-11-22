@@ -82,12 +82,13 @@ func (cfg Config) validateKnobs() error {
 // limit, ACK policy and speed knobs.
 func quicConfig(cfg Config, l link.Liveness, acks AckPolicy) *quic.Config {
 	window := uint64(max(cmpOr(cfg.Window, link.DefaultWindow), 1)) // #nosec G115 -- at least 1
+	maxWindow := max(window, uint64(max(cfg.MaxWindow, 0)))         // #nosec G115 -- non-negative; New: 0 or at least Window
 	return &quic.Config{
 		HandshakeIdleTimeout:           l.Interval + l.Timeout,
 		MaxIdleTimeout:                 idleBackstop * (l.Interval + l.Timeout), // watch judges; this is its backstop
 		KeepAlivePeriod:                l.Interval,
 		InitialStreamReceiveWindow:     window,
-		MaxStreamReceiveWindow:         max(window, uint64(max(cfg.MaxWindow, 0))), // #nosec G115 -- non-negative; New: 0 or at least Window
+		MaxStreamReceiveWindow:         maxWindow,
 		InitialConnectionReceiveWindow: 16 * window,
 		MaxConnectionReceiveWindow:     16 * window,
 		MaxIncomingStreams:             int64(cmpOr(cfg.MaxSessions, link.DefaultMaxSessions)),
@@ -105,6 +106,8 @@ func quicConfig(cfg Config, l link.Liveness, acks AckPolicy) *quic.Config {
 		DisablePacing:     cfg.NoPacing,
 		MaxPacketSize:     uint16(cfg.MaxPacketSize), // #nosec G115 -- validated: at most maxPacketSize
 		// #nosec G115 -- validate: non-negative
+		// -tags linktrace, LINKTRACE_AUTOWIN: the window trace (trace_autowin_on.go); nil otherwise.
+		Tracer: autoWinTracer(window, maxWindow),
 		AckFrequency: &quic.AckFrequency{AckElicitingThreshold: uint64(acks.AckElicitingThreshold),
 			ReorderingThreshold: uint64(acks.ReorderingThreshold), MaxAckDelay: acks.MaxAckDelay},
 	}

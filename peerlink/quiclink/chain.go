@@ -101,6 +101,7 @@ func (s *Session) answer() error {
 		}
 		b := make([]byte, need)
 		k, err := s.stream.Read(b)
+		traceAWRead(s.c.q, s.stream, k)
 		s.abuf = append(s.abuf, b[:k]...)
 		if _, _, need, perr := parseAnswer(s.abuf); err != nil && need == 0 && perr == nil {
 			continue // whole, with the FIN (a refusal's)
@@ -157,6 +158,7 @@ func (s *Session) Read(b []byte) (int, error) {
 		}
 	}
 	n, err := s.stream.Read(b)
+	traceAWRead(s.c.q, s.stream, n)
 	if err == io.EOF {
 		s.readEOF()
 	}

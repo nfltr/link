@@ -5,9 +5,13 @@ package quiclink_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/nfltr/link/peerlink"
 	"github.com/nfltr/link/peerlink/quiclink"
 	"github.com/nfltr/quic-go"
 )
@@ -41,4 +45,77 @@ func TestMaxWindowAutoTunes(t *testing.T) {
 			t.Errorf("Window %d MaxWindow %d: New %v, want an error naming Config.MaxWindow", cfg.Window, cfg.MaxWindow, err)
 		}
 	}
+}
+
+// TestMaxWindowOnALongPath: 4 MiB in order over a 10 ms path with a
+// window of 128 KiB (MinWindow) that may grow to 1 MiB (quic-go's auto-tuning, the
+// reader keeping up). make spec-traces runs it with -tags linktrace: both
+// ends' window steps (trace_autowin_on.go), checked by
+// spec/TraceAutoWindow.tla.
+func TestMaxWindowOnALongPath(t *testing.T) {
+	if testing.Short() {
+		t.Skip("moves data over a delayed path")
+	}
+	pc := listenUDP(t)
+	addr := reorderingPath(t, pc.LocalAddr().String(), 5*time.Millisecond, 0, 0, 0)
+	cfg := func(c quiclink.Config) quiclink.Config { c.Window, c.MaxWindow = 128<<10, 1<<20; return c }
+	b := mustNew(t, cfg(quiclink.Config{PacketConn: pc, TLS: serverTLS("b")}))
+	a := mustNew(t, cfg(quiclink.Config{Dial: dialer("a", "b", addr), Connect: []string{"b"}}))
+	const size = 4 << 20
+	done := make(chan error, 1)
+	go func() {
+		_ = a.Serve(func(_ string, _ []byte, s peerlink.Session) {
+			buf := make([]byte, 32<<10)
+			var n int
+			for {
+				k, err := s.Read(buf)
+				for i := range k {
+					if buf[i] != byte(n+i) {
+						done <- errors.New("a byte out of order")
+						return
+					}
+				}
+				n += k
+				if err != nil {
+					if n != size {
+						err = fmt.Errorf("read %d bytes of %d: %w", n, size, err)
+					} else {
+						err = nil
+					}
+					done <- err
+					return
+				}
+			}
+		})
+	}()
+	go func() { _ = b.Serve(func(string, []byte, peerlink.Session) {}) }()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	s, err := b.Open(ctx, "a", []byte("window"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, size)
+	for i := range buf {
+		buf[i] = byte(i)
+	}
+	if _, err := s.Write(buf); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	_ = s.Close()
+	dctx, dcancel := context.WithCancel(context.Background())
+	dcancel()
+	_ = a.Drain(dctx)
+	_ = b.Drain(dctx)
 }
