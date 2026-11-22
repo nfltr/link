@@ -604,20 +604,23 @@ rule (a peer's BLOCKED before any data would grow an empty window).
   in flight (was 1000: at the larger cap BBR's startup overflowed a short
   queue and the receiver closed the connection, "too many gaps in received
   data", the direct path lost in both first one-connection runs).
-- **Gain**: Helsinki -> Singapore, 10 GiB, interleaved: `--connections 1`
-  0.355/0.362 -> 0.889/0.926 Gbit/s (x2.5), `--connections 4` 1.084/1.198
-  -> 1.939/1.722 Gbit/s (+59 %); CPU s per 10 GiB at 1 connection 61.6/75.0
-  -> 44.1/39.2 sending, 79.8/98.3 -> 65.9/63.5 receiving. Fork
-  `TestBulkUploadOnLongFatPath/clean` 349 -> 977 Mbit/s of 1000. Box
-  `BenchmarkDirectCPU` (loopback, send bench-ab, n=6): median 5.39 -> 4.99
-  CPU-s/GiB, relayed 3.56 -> 3.42 (no regression at a short RTT).
+- **Gain**: Helsinki -> Singapore, 10 GiB, interleaved, medians:
+  `--connections 1` 0.360 -> 0.988 Gbit/s (x2.7, n=3/2), `--connections 4`
+  1.198 -> 1.709 (+43 %); CPU s per GiB at 4 connections 6.1-6.7 -> 4.1-4.4
+  sending, 8.6 -> 7.1 receiving, at 1 connection 6.0-7.5 -> 8.0-8.3
+  sending, 8.0-9.8 -> 9.5-9.8 receiving (open: one connection now holds
+  ~45,000 packets in flight; the fork's per-ACK loss detection walks
+  them). Fork `TestBulkUploadOnLongFatPath/clean` 349 -> 977 Mbit/s of
+  1000. Box `BenchmarkDirectCPU` (loopback, send bench-ab, n=6): median
+  5.39 -> 4.99 CPU-s/GiB, relayed 3.56 -> 3.42 (no regression at a short
+  RTT).
 - **Cost (memory)**: a direct session buffers at most 64 MiB
   unacknowledged at its sender (pathswitch) beside what QUIC keeps in
   flight (at most the peer's 64 MiB), and at most 64 MiB (QUIC) + 96 MiB
   (pathswitch's receive ring) at its receiver; a connection's QUIC buffers
   are 16 Windows (256 MiB) as before. Measured peak RSS: one connection
-  108 -> 330-340 MB sending, 93-137 -> 260-400 MB receiving; four 323-401
-  -> 925-1521 MB sending, 213-304 -> 650-717 MB receiving.
+  107-108 -> 353-365 MB sending, 93-137 -> 191-343 MB receiving; four
+  321-401 -> 1296-1397 MB sending, 213-304 -> 690-816 MB receiving.
 - **Guard**: the fork's `TestBulkUploadOnLongFatPath` (clean at least 70 %
   of the rate; burst-loss delivers every byte), quiclink
   `TestMaxWindowAutoTunes`, relay client
