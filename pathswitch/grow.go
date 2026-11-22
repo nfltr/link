@@ -8,8 +8,9 @@ import "time"
 // RoundTripper is a Stream that knows its path's least round trip (a
 // direct QUIC stream: quiclink Session.MinRTT). A session grows its window
 // (Config.MaxWindow) only on such a stream: the round trip must be the
-// transport's, since this layer's ACKs wait on the reader (ackDue's gate)
-// and a round trip timed from them is the reader's pace.
+// transport's, since this layer's ACKs wait on the reader (at most
+// Config.Window / 2 unread) and a round trip timed from them is the
+// reader's pace.
 type RoundTripper interface {
 	MinRTT() time.Duration
 }
