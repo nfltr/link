@@ -3,28 +3,26 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # pre-push: every ref's new commits and tags are nfltr's (check-identity.sh);
-# and a push to main or a tag needs nfltr's Linux CI runner's green result for
-# that exact commit (owner 2026-11-02: the runner is the gate; the Mac runs
-# no tests here). Push the commit to a branch, `make ci-request REPO=<repo>
-# REF=<sha>` in nfltr, wait for green, then push main; or a rule of admit()
-# below admits it (docs-only, or a rebase of a green commit). Installed by `make
-# hooks` (.git/hooks/pre-push calls this file).
+# and a push to main or a tag needs a green `make ci` on the Mac for
+# that exact commit (owner 2026-11-25: the build box is deleted, CI runs on
+# the Mac only): its line in the Mac's results (scripts/ci.sh records every
+# clean-tree run) or this clone's ci.sh stamp for its tree; or a rule of
+# admit() below admits it (docs-only, or a rebase of a green commit).
+# Installed by `make hooks` (.git/hooks/pre-push calls this file).
 #
 # Bypass: NFLTR_CI_BYPASS="<reason>" git push ...  Each bypassed ref is
-# logged to <git-common-dir>/ci-bypass.log and to stderr; the Linux runner
-# still tests the pushed commit after the push.
+# logged to <git-common-dir>/ci-bypass.log and to stderr.
 set -uo pipefail
 
 remote="${1:-}"
 root="$(git rev-parse --show-toplevel)" || exit 1
 common="$(cd "$(git rev-parse --git-common-dir)" && pwd)"
-results="${NFLTR_CI_RESULTS:-$HOME/.local/state/nfltr-linux-node/ci/results.jsonl}"
+results="${NFLTR_CI_RESULTS:-$HOME/.local/state/nfltr-ci/results.jsonl}"
 repo=link
 
 # --- admit (the same block in nfltr, link, relay, relay-core and relay-server)
-# A push to main may go without a runner result for its own sha under one of
-# two rules (docs/guides/linux-node.md "Pre-push rules"); tags never: they
-# need their exact sha green. The runner still tests main after the push.
+# A push to main may go without a result for its own sha under one of two
+# rules; tags never: they need their exact sha green.
 #  docs:   <main>..<sha> adds or edits only files in $docsonly (prose nothing
 #          builds, embeds or renders), deletes nothing, and adds no line with
 #          the pre-rename name or a Go code block (the repositories' tests
@@ -40,8 +38,12 @@ docsonly='docs/decisions/*.md docs/reports/*.md docs/task-analysis/*.md docs/evi
 legacy="onprem""link" # split so this file does not match the legacy-name check
 LC_ALL=C && export LC_ALL # sort and comm agree on order
 
-# A requested target's run ("target", make ci-request TARGET=) is not a CI result.
-green() { grep -F "\"repo\":\"$repo\",\"sha\":\"$1\"" "$results" 2>/dev/null | grep -vF '"target":' | grep -F '"ok":true' >/dev/null; }
+# green <sha>: a green make ci result for it (a run of one target, "target",
+# is not one), or this clone's ci.sh pass stamp for its tree.
+green() {
+	grep -F "\"repo\":\"$repo\",\"sha\":\"$1\"" "$results" 2>/dev/null | grep -vF '"target":' | grep -F '"ok":true' >/dev/null ||
+		{ [ -x "$root/scripts/ci.sh" ] && "$root/scripts/ci.sh" verified "$1" 2>/dev/null; }
+}
 
 # docs_only: 0 when every path on stdin matches $docsonly.
 docs_only() {
@@ -136,11 +138,11 @@ while read -r _lref lsha rref rsha; do
 		continue
 	fi
 	if green "$sha"; then
-		echo "pre-push: $rref $short: green on the Linux runner" >&2
+		echo "pre-push: $rref $short: green (make ci on this Mac)" >&2
 	elif [ "$rref" = refs/heads/main ] && why="$(admit "$sha" "$rsha")"; then
-		echo "pre-push: $rref $short: admitted without its own runner result: $why (the runner tests main after the push)" >&2
+		echo "pre-push: $rref $short: admitted without its own make ci result: $why" >&2
 	else
-		echo "pre-push: $rref $short: no green Linux runner result for this commit and no rule admits it: push it to a branch, make ci-request REPO=$repo REF=$sha in nfltr, wait for green (make ci-status), push again" >&2
+		echo "pre-push: $rref $short: no green make ci result for this commit and no rule admits it: run make ci in a clean checkout at $short on this Mac, push again" >&2
 		exit 1
 	fi
 done

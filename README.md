@@ -522,11 +522,12 @@ and vets; `make check-linkvet`: linkvet's tests, then its checks over
 link's own packages; `make test-linkdebug` (in `check`): debug mode's
 tests. `make ci` (alias `check-all`) runs every one of them: the steps
 `.github/workflows/check.yml` runs on a push, read from that file
-(`scripts/ci.sh`). CI is `make ci`, not GitHub Actions: a Linux runner on
-the maintainer's machine runs it for each new sha of main and each tag,
-and `make hooks` installs a pre-push hook that checks each pushed commit's
-author and refuses a push to main or a tag whose commit has no green
-result there (bypass `NFLTR_CI_BYPASS=<reason>`, logged). The
+(`scripts/ci.sh`). CI is `make ci`, not GitHub Actions: the maintainer runs it on their
+machine before each push to main or a tag (`scripts/ci.sh` records each
+clean-tree run's result), and `make hooks` installs a pre-push hook that
+checks each pushed commit's author and refuses a push to main or a tag
+whose commit has no green `make ci` result (bypass
+`NFLTR_CI_BYPASS=<reason>`, logged). The
 workflow still runs on GitHub as an extra signal, and every fuzz target
 for 5 minutes weekly. `make fuzz-long FUZZTIME=30m`
 is the long fuzz run ([FUZZING.md](FUZZING.md)).

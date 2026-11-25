@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # stress-flaky.sh: hammer the known-flaky tests of scripts/flaky-tests.txt
-# on a starved machine, so a CI runner can reproduce a flake on demand
-# (`make ci-request REPO=<repo> REF=<sha> TARGET=stress-flaky`).
+# on a starved machine, to reproduce a flake on demand on the Mac
+# (`taskpolicy -b make stress-flaky`).
 #
 #   scripts/stress-flaky.sh [list]
 #

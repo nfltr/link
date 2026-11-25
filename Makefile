@@ -51,7 +51,7 @@ test-under-load:
 	@test -n "$(PKGS)" || { echo "test-under-load: PKGS='<packages>' is required" >&2; exit 2; }
 	@./scripts/test-under-load.sh $(LOAD_COUNT) $(PKGS)
 # stress-race: PKGS (go test arguments: packages, -run) with -race -count
-# COUNT (20) (`ci-request TARGET=stress-race PKGS='-run TestX ./peerlink/'`);
+# COUNT (20) (`make stress-race PKGS='-run TestX ./peerlink/'`);
 # a nested module's: PKGS='-C peerlink/quiclink -run TestX .'.
 COUNT ?= 20
 stressC = $(if $(filter -C,$(firstword $(PKGS))),$(wordlist 1,2,$(PKGS)))
@@ -60,8 +60,8 @@ stress-race:
 	@test -n "$(PKGS)" || { echo "stress-race: PKGS='<packages>' is required" >&2; exit 2; }
 	go test $(stressC) -race -count=$(COUNT) $(filter-out $(stressC),$(PKGS))
 # stress-flaky: every known-flaky test of scripts/flaky-tests.txt -race -count
-# STRESS_COUNT (10) under test-under-load (scripts/stress-flaky.sh); the CI
-# runners hammer them with `ci-request TARGET=stress-flaky`.
+# STRESS_COUNT (10) under test-under-load (scripts/stress-flaky.sh); a release
+# candidate runs it on the Mac (`taskpolicy -b make stress-flaky`).
 .PHONY: stress-flaky
 stress-flaky:
 	@./scripts/stress-flaky.sh
@@ -130,9 +130,9 @@ check-linkvet:
 	GOWORK=off "$$t/linkvet" -test=false $$(GOWORK=off go list ./... | grep -v /peerlinktest); s=$$?; rm -rf "$$t"; exit $$s
 
 # bench: the benchmarks nfltr's perf series measures (its
-# deploy/linux-node/perf-series.sh link; keep the two sets the same),
-# -benchmem -count BENCH_COUNT (6, for benchstat), into BENCH_OUT (TMPDIR's:
-# a CI runner's `ci-request TARGET=bench` keeps it in the result's out).
+# perf series; keep the two sets the same),
+# -benchmem -count BENCH_COUNT (6, for benchstat), into BENCH_OUT (TMPDIR's
+# by default).
 BENCH_COUNT ?= 6
 BENCH_OUT ?= $(or $(TMPDIR:%/=%),/tmp)/link-bench.txt
 BENCH_SET := '^BenchmarkThroughput$$/^tr=(tcp|tls)$$/^size=(64|65536)$$/^sessions=8$$/^dir=oneway$$' '^BenchmarkLatency$$/^tr=tcp$$/^held$$'
@@ -145,7 +145,7 @@ bench:
 # bench-ab-quiclink: quiclink's benchmarks AB_BENCH at AB_OLD against
 # AB_NEW (HEAD^ and HEAD: a change of one commit, e.g. a quic-go fork
 # bump), 6 runs each, old and new alternating (scripts/perf.sh ab), into
-# AB_OUT (a CI runner's `ci-request TARGET=bench-ab-quiclink` keeps it).
+# AB_OUT.
 AB_OLD ?= HEAD^
 AB_NEW ?= HEAD
 AB_BENCH ?= BulkCPU|ConnsCPU|SessionDatagrams
@@ -155,7 +155,7 @@ bench-ab-quiclink:
 	PERF_PKG=peerlink/quiclink ./scripts/perf.sh ab $(AB_OLD) $(AB_NEW) "$(AB_OUT)" 6 '$(AB_BENCH)'
 
 # bench-ab-pathswitch: the same for pathswitch's benchmarks (AB_PS_BENCH),
-# into AB_OUT-pathswitch (`ci-request TARGET=bench-ab-pathswitch`).
+# into AB_OUT-pathswitch.
 AB_PS_BENCH ?= PathswitchRelayed|PathswitchMoves|Window
 .PHONY: bench-ab-pathswitch
 bench-ab-pathswitch:
@@ -164,9 +164,8 @@ bench-ab-pathswitch:
 # profile-baseline: the profile baseline of this commit (scripts/perf.sh
 # baseline: every benchmark of link, pathswitch and quiclink, -benchmem
 # -count 6, then cpu, heap, mutex, block, goroutine and goroutine leak
-# profiles of each, and manifest.json) into OUT (TMPDIR's by default: a CI
-# runner's `ci-request TARGET=profile-baseline` keeps it in the result's
-# out). Run at every v1+ tag on the box and on the Mac; docs/performance.md.
+# profiles of each, and manifest.json) into OUT (TMPDIR's by default). Run
+# at every v1+ tag on the Mac; docs/performance.md.
 .PHONY: profile-baseline
 profile-baseline: OUT = $(or $(TMPDIR:%/=%),/tmp)/link-profile-baseline
 profile-baseline:

@@ -4,8 +4,8 @@
 #
 # ci.sh: `make ci`, the commands this repository's GitHub workflow runs on a
 # push, run here in the same order. GitHub Actions is not a gate for nfltr
-# repositories; the Linux runner (nfltr's deploy/linux-node/ci-runner.sh) runs
-# this per sha and is the gate, which scripts/pre-push checks before a push.
+# repositories; a run on the Mac is the gate (below), which scripts/pre-push
+# checks before a push.
 #
 #   scripts/ci.sh [run]           run the steps; a pass is stamped against the tree
 #   scripts/ci.sh steps           print the steps, one per line: <job><TAB><dir><TAB><command>
@@ -44,6 +44,16 @@
 # <git-common-dir>/ci-verified/ against the tree and the Go toolchain; a
 # later `make ci` or push of the identical tree skips the run (CI_FORCE=1
 # runs it anyway). Stamps older than 30 days are pruned.
+#
+# The Mac is the gate (owner 2026-11-25: the build box is deleted; lane
+# CIMAC). A run on a clean tree appends one JSON line (repo, sha, ok,
+# failed_step, failed_tests, log) to NFLTR_CI_RESULTS (default
+# ~/.local/state/nfltr-ci/results.jsonl) and its output to a log beside it;
+# a stamp hit records the sha too. The pre-push hooks, the land train and
+# the release's ci-green read that file. Runs never overlap: CI_LOCK
+# (default ~/nfltr-evidence/ci-mac.lock, a directory taken with mkdir) is
+# held for the run and waited for while another run holds it; one older
+# than 2 h is stale and taken over.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -123,6 +133,43 @@ stamp_key() { # stamp_key <rev>
 	{ git rev-parse "$1^{tree}" && go version; } | shasum -a 256 | cut -c1-40
 }
 STAMPS="$(git rev-parse --git-common-dir 2>/dev/null)/ci-verified"
+RESULTS="${NFLTR_CI_RESULTS:-$HOME/.local/state/nfltr-ci/results.jsonl}"
+LOCK="${CI_LOCK:-$HOME/nfltr-evidence/ci-mac.lock}"
+
+# lock: take LOCK, waiting while another run holds it; released on exit.
+lock() {
+	local said=""
+	mkdir -p "$(dirname "$LOCK")" || return 1
+	until mkdir "$LOCK" 2>/dev/null; do
+		if [ -n "$(find "$LOCK" -maxdepth 0 -mmin +120 2>/dev/null)" ]; then
+			# ponytail: two waiters may both see it stale; mv lets only one remove it.
+			mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null &&
+				echo "ci: $LOCK older than 2 h, taken over ($(cat "$LOCK.stale.$$/owner" 2>/dev/null))" &&
+				rm -rf "$LOCK.stale.$$"
+			continue
+		fi
+		[ -n "$said" ] || echo "ci: waiting for $LOCK (held by $(cat "$LOCK/owner" 2>/dev/null))"
+		said=1
+		sleep 10
+	done
+	echo "$$ $ROOT $(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$LOCK/owner"
+	trap unlock EXIT
+	trap 'exit 130' INT TERM
+}
+unlock() { [ "$(cut -d' ' -f1 "$LOCK/owner" 2>/dev/null)" != "$$" ] || rm -rf "$LOCK"; }
+
+repo_name() { echo "${CI_REPO:-$(basename "$(git remote get-url origin 2>/dev/null)" .git)}"; }
+
+# record <true|false> <log> <seconds>: HEAD's result line in RESULTS.
+record() {
+	local fs ft
+	fs="$(sed -n 's/^ci: FAIL step [0-9]*\/[0-9]*: //p' "$2" 2>/dev/null | sed -n 1p | tr -d '\t' | sed 's/\\/\\\\/g; s/"/\\"/g')"
+	ft="$(sed -n 's/^.*--- FAIL: \([^ ]*\).*/"\1"/p' "$2" 2>/dev/null | sort -u | paste -sd, -)"
+	mkdir -p "$(dirname "$RESULTS")" &&
+		printf '{"repo":"%s","sha":"%s","ref":"%s","ok":%s,"duration_s":%s,"failed_step":%s,"failed_tests":[%s],"log":"%s","at":"%s","runner":"mac"}\n' \
+			"$(repo_name)" "$(git rev-parse HEAD)" "$(git rev-parse HEAD)" "$1" "$3" "$([ -n "$fs" ] && printf '"%s"' "$fs" || echo null)" \
+			"$ft" "$2" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$RESULTS"
+}
 
 TAB="$(printf '\t')"
 
@@ -371,8 +418,23 @@ exec_test() {
 	rm -rf "$d"
 }
 
+# mac_test: a stale lock is taken over, a held one released on exit, and a
+# result line is JSON with the failed step and tests.
+mac_test() {
+	local d
+	d="$(mktemp -d)" || return 1
+	mkdir "$d/l" && touch -t 202001010000 "$d/l" &&
+		(LOCK="$d/l" && lock >/dev/null && [ -f "$LOCK/owner" ]) && [ ! -e "$d/l" ] ||
+		{ echo "ci.sh mac-test: a stale lock was not taken over, or not released" >&2; rm -rf "$d"; return 1; }
+	printf 'ci: FAIL step 2/3: echo "a\\b" (after 1s)\n--- FAIL: TestX (0.1s)\n    --- FAIL: TestX/y (0s)\n' >"$d/log"
+	(RESULTS="$d/r.jsonl" CI_REPO=x && record false "$d/log" 1) &&
+		jq -e '.repo == "x" and .ok == false and .failed_step == "echo \"a\\b\" (after 1s)" and .failed_tests == ["TestX", "TestX/y"] and (.sha | length) == 40' "$d/r.jsonl" >/dev/null ||
+		{ echo "ci.sh mac-test: result line: $(cat "$d/r.jsonl")" >&2; rm -rf "$d"; return 1; }
+	rm -rf "$d"
+}
+
 run() {
-	local steps key=""
+	local steps key="" log="" rc t0
 	self_test || exit 1
 	[ -n "$WF" ] && [ -f "$WF" ] || { echo "ci.sh: no workflow file (CI_WORKFLOW)" >&2; exit 1; }
 	steps="$(parse "$WF")" || exit 1
@@ -380,10 +442,24 @@ run() {
 		key="$(stamp_key HEAD)"
 		if [ -z "${CI_FORCE:-}" ] && [ -f "$STAMPS/$key" ]; then
 			echo "ci: ok, verified for this exact tree ($(git rev-parse --short HEAD), $(go version | cut -d' ' -f3)); CI_FORCE=1 runs it again"
+			grep -F "\"repo\":\"$(repo_name)\",\"sha\":\"$(git rev-parse HEAD)\"" "$RESULTS" 2>/dev/null | grep -F '"ok":true' >/dev/null ||
+				record true "stamp $STAMPS/$key" 0
 			exit 0
 		fi
 	fi
-	execute "$steps" || exit 1
+	lock || exit 1
+	if [ -n "$key" ]; then
+		log="$(dirname "$RESULTS")/logs/$(date -u +%Y%m%dT%H%M%SZ)-$(repo_name)-$(git rev-parse --short=12 HEAD).log"
+		mkdir -p "$(dirname "$log")" || exit 1
+	fi
+	t0=$(date +%s)
+	execute "$steps" 2>&1 | tee ${log:+"$log"}
+	rc=${PIPESTATUS[0]}
+	if [ -n "$key" ]; then
+		record "$([ "$rc" -eq 0 ] && echo true || echo false)" "$log" $(($(date +%s) - t0))
+		echo "ci: result in $RESULTS, log $log"
+	fi
+	[ "$rc" -eq 0 ] || exit 1
 	# The jobs share this checkout: a step that changes it may race another
 	# job, so name what changed (the stamp needs a clean tree anyway).
 	[ -z "$key" ] || [ -z "$(git status --porcelain 2>/dev/null)" ] ||
@@ -398,6 +474,6 @@ case "${1:-run}" in
 run) run ;;
 steps) parse "$WF" ;;
 verified) [ -f "$STAMPS/$(stamp_key "${2:-HEAD}")" ] ;;
-self-test) self_test && exec_test && echo "ci.sh self-test: ok" ;;
+self-test) self_test && exec_test && mac_test && echo "ci.sh self-test: ok" ;;
 *) echo "usage: scripts/ci.sh [run|steps|verified [rev]|self-test]" >&2; exit 2 ;;
 esac
