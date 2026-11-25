@@ -25,8 +25,9 @@ repo=link
 # rules; tags never: they need their exact sha green.
 #  docs:   <main>..<sha> adds or edits only files in $docsonly (prose nothing
 #          builds, embeds or renders), deletes nothing, and adds no line with
-#          the pre-rename name or a Go code block (the repositories' tests
-#          read every file for the one and every Markdown file for the other).
+#          a Go code block (the repositories' tests read every Markdown file
+#          for one; nfltr's copy also refuses its pre-rename name, which this
+#          public copy does not spell).
 #  rebase: <sha> is a green B rebased onto <main>: the files B changes (from
 #          its base on main) and the files main changed since that base do
 #          not overlap, <sha> is B's tree with main's files, and <main> is
@@ -35,7 +36,6 @@ repo=link
 #          (the docs rule's) on top; a code commit never inherits.
 # Anything else needs the exact sha green: when unsure, the rules refuse.
 docsonly='docs/decisions/*.md docs/reports/*.md docs/task-analysis/*.md docs/evidence/*.md CHANGELOG.md LICENSE LICENSE.* NOTICE'
-legacy="onprem""link" # split so this file does not match the legacy-name check
 LC_ALL=C && export LC_ALL # sort and comm agree on order
 
 # green <sha>: a green make ci result for it (a run of one target, "target",
@@ -58,12 +58,12 @@ docs_only() {
 }
 
 # docs_change <a> <b>: 0 when <a>..<b> changes only $docsonly files, deletes
-# nothing and adds no line with the legacy name or a Go block.
+# nothing and adds no line with a Go block.
 docs_change() {
 	[ -n "$(git diff --name-only --no-renames "$1" "$2")" ] &&
 		[ -z "$(git diff --name-only --no-renames --diff-filter=D "$1" "$2")" ] &&
 		git diff --name-only --no-renames "$1" "$2" | docs_only &&
-		! git diff "$1" "$2" | grep -iE "^\+.*($legacy|\`\`\`go)" >/dev/null # not -q: no SIGPIPE under pipefail
+		! git diff "$1" "$2" | grep -iE "^\+.*\`\`\`go" >/dev/null # not -q: no SIGPIPE under pipefail
 }
 
 # green_main <main>: prints the green commit <main> inherits from: itself
