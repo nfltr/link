@@ -38,8 +38,7 @@ every benchmark of link, pathswitch and quiclink with `-benchmem -count 6`
 cpu, heap, mutex and block profiles and the goroutine (debug=2) and
 goroutine-leak profiles of what it left once it ended
 (`<module>.<Benchmark>.*`, the totals in `summary.txt`); it runs at each
-v1+ tag on the Linux build box (`ci-request TARGET=profile-baseline`) and
-on the Mac, into `~/nfltr-evidence/profiles/<date>-<lane>/link@<sha>/`.
+v1+ tag on the Mac, into `~/nfltr-evidence/profiles/<date>-<lane>/link@<sha>/`.
 Every run writes a `manifest.json` (repo, sha, series: the commit's v1+
 tag or `pre-freeze`, Go, machine, load average at start and end, command,
 date; its test is `make test-perf`). The evidence of this work is

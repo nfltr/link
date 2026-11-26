@@ -186,12 +186,13 @@ check-soak:
 
 CI_WORKFLOW_FILE := .github/workflows/check.yml
 # ci: what the GitHub workflow runs on a push (CI_WORKFLOW_FILE), run here.
-# GitHub Actions is not a gate; this is, before a push (the pre-push hook)
-# and after it (nfltr's Linux CI runner). scripts/ci.sh reads the steps from
+# GitHub Actions is not a gate; make ci on the operator's Mac is (the build
+# box is deleted, 2026-11-25). scripts/ci.sh reads the steps from
 # the workflow file itself, so the two cannot drift; a pass on a clean tree
 # is stamped and not rerun for the same tree.
 # hooks: install the pre-push hook (scripts/pre-push): a push to main or a
-# tag needs nfltr's Linux runner's green result for that sha; bypass only with
+# tag needs a green make ci result for that sha (scripts/ci.sh records it)
+# or this clone's stamp for its tree; bypass only with
 # NFLTR_CI_BYPASS=<reason> (logged to <git-common-dir>/ci-bypass.log).
 .PHONY: ci hooks
 ci:
@@ -239,8 +240,8 @@ check-spec-drift:
 
 # spec-nightly: spec, then Link.cfg with its crash (invariants and Refines,
 # 45 million states); spec-nightly-wide: the wider Pool and Link
-# configurations. Two jobs of the Linux runner's CI_NIGHTLY, each inside
-# its 90 min bound.
+# configurations. Each ran inside a 90 min bound as a nightly job on the
+# deleted build box; no nightly runs them now.
 spec-nightly: spec
 	./scripts/spec.sh nightly
 
