@@ -157,7 +157,16 @@ return `ErrCredit`/`ErrFrame` or break 2-4, so one invariant,
 
 `make spec-mutants` checks each `Mutant` value on `Link.cfg` (and
 `open-after-goaway` on `LinkDrain.cfg`) and passes only when TLC reports a
-violation for each:
+violation for each. Its checks (mutants, witnesses, trace fixtures) run
+`SPEC_JOBS` (default 4) at a time, one TLC worker each, the next starting
+as soon as any one ends; `make spec-invariants` runs Link's configurations
+beside the other models (lane CIFAST); make ci runs the two as jobs of
+their own. Checks that need no more run on smaller constants derived in
+`scripts/spec.sh`: `Link.cfg` without its crash (`Crash = 0`, a tenth of the
+states; `WitnessLost`, `CleanEndReceived` and `lost-as-eof` need the crash
+and keep `Link.cfg`), `RelayedClose.cfg` with `K = 1`, `DirectPath.cfg` with
+`Total = 2`; each mutant there is still caught and each witness reached,
+and `make spec-invariants` checks every invariant on the full ones:
 
 - `fin-skips-queue`: a close goes ahead of the frames buffered before it
   (the FIN overtakes data);
@@ -279,7 +288,9 @@ only on connections that never end. Found by the interface's witness
 `Crashed` counts on `CloseAt`, the close itself; `WitnessLost` guards it.
 Severity: medium (a vacuous part of the model, not a code bug: the
 connection's end was checked by `LinkDrain.cfg`'s drain and the traces).
-`make spec` and `make spec-invariants` run `Link.cfg` with `Crash = 0`.
+`make spec` runs `Link.cfg` with `Crash = 0`; `make spec-invariants` (CI)
+leaves it to `make spec-nightly` (4.6 million states, its long pole; lane
+CIFAST), and `make spec-mutants` runs its mutants and witnesses.
 With the crash taken, invariants and `Refines` hold on `Link.cfg`
 (checked once, 2026-11-02: 87,768,000 states, 20,031,413 distinct, depth
 43, 51 min with 3 workers on a loaded Mac): `make spec-nightly` (the Linux

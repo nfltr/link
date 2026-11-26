@@ -95,7 +95,8 @@ jobs:
         with:
           go-version-file: go.mod
       - run: make ${{ matrix.target }}
-  spec:
+  # spec-mutants and spec-invariants: two jobs, side by side (lane CIFAST).
+  spec-mutants:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -112,6 +113,22 @@ jobs:
           path: ~/.cache/link-tla
           key: link-tla-${{ hashFiles('scripts/fetch-tla.sh') }}
       - run: make spec-mutants
+  spec-invariants:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/link-tla
+          key: link-tla-${{ hashFiles('scripts/fetch-tla.sh') }}
       - run: make spec-invariants
   spec-full:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'

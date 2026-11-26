@@ -516,45 +516,65 @@ nightly-wide)
 	tlcrun "$work/LinkCutHalf.cfg"
 	;;
 check | invariants)
-	for cfg in Link.cfg LinkDrain.cfg LinkSess.cfg LinkSessHalf.cfg LinkCrash.cfg LinkRefuse.cfg LinkCut.cfg; do
-		echo "== $cfg ($1)"
-		# No crash in the first three: Link.cfg's crash grows its states past
-		# 20 million (spec-nightly); LinkCrash.cfg takes it on fewer bytes.
-		# invariants (CI) checks Refines only on LinkCrash.cfg: the
-		# interface's mutants and witnesses (spec-mutants) are CI's too.
-		if [ "$1" = invariants ] && [ $cfg != LinkCrash.cfg ]; then
-			sed -e '/^PROPERTY Refines/d' -e '/^PROPERTIES/,$d' -e 's/Crash = 1/Crash = 0/' "spec/$cfg" >"$work/$cfg"
-		else
-			sed -e 's/Crash = 1/Crash = 0/' "spec/$cfg" >"$work/$cfg"
-		fi
-		# LinkCrash.cfg, LinkRefuse.cfg and LinkSessHalf.cfg (seconds): Refines and liveness in CI too.
-		# LinkCut.cfg's (the drain's cut, 142,465 states): in check only (minutes).
-		[ $cfg != LinkCrash.cfg ] && [ $cfg != LinkRefuse.cfg ] && [ $cfg != LinkSessHalf.cfg ] || cp spec/$cfg "$work/$cfg"
-		tlcrun "$work/$cfg"
-	done
-	# PoolDrain (Min 2: a Drain failing halfway) and QuicWatchStops (two
-	# short stops, ~10 s) only in full: their mutants are CI's.
-	# PoolGrow: background growth (Max above Min).
-	pools="Pool PoolGrow PoolClient Liveness LivenessStarve QuicWatch QuicWatchPTO QuicWatchStarve Join JoinClose CreditWaiters SessionRead SessionReadWriteTo SessionReadPump SessionReadPumpWriteTo SessionReadWriteTos SessionWrite DirectPath DirectPathReset DirectPathRebind DirectPathProof DirectPathClose DirectPathGrow RelayedClose RelayedCloseEmpty HopHold HopHoldSeq HopHoldConc EndAckLeg EndAckLegQuic AckFrequency AckFrequencyDeep CreditGrow CreditGrowOne AutoWindow AckRanges"
-	[ "$1" = invariants ] || pools="$pools PoolDrain QuicWatchStops DirectPathWide CreditGrowWide"
-	for m in $pools; do
-		echo "== $m.cfg"
-		st=0
-		# Liveness explores a horizon of ticks, Join one session,
-		# CreditWaiters a fixed number of Acquires, SessionRead a fixed number of bytes, SessionWrite a fixed number of SetWriteDeadlines: their last states end there; PoolDrain has no Open to keep it going.
-		dl=; [ $m = Pool ] || [ $m = PoolGrow ] || [ $m = PoolClient ] || dl=-deadlock
-		mod=$m.tla; case $m in Pool*) mod=Pool.tla ;; Liveness*) mod=Liveness.tla ;; QuicWatch*) mod=QuicWatch.tla ;; CreditWaiters*) mod=CreditWaiters.tla ;; SessionRead*) mod=SessionRead.tla ;; DirectPath*) mod=DirectPath.tla ;; RelayedClose*) mod=RelayedClose.tla ;; HopHold*) mod=HopHold.tla ;; EndAckLeg*) mod=EndAckLeg.tla ;; AckFrequency*) mod=AckFrequency.tla ;; CreditGrow*) mod=CreditGrow.tla ;; esac
-		cfg=$m.cfg
-		# DirectPath's liveness (AllDelivered, ResetReaches: minutes) only in
-		# full; spec-mutants catches keep-dead-path and abort-not-resent by it.
-		if [ "$1" = invariants ] && [ "${m#DirectPath}" != "$m" ]; then
-			sed -e '/^PROPERTIES/,$d' spec/$m.cfg >"$work/$m.cfg"
-			cfg=$work/$m.cfg
-		fi
-		tlc "$cfg" "$mod" $dl >"$work/check.out" 2>&1 || st=$?
-		grep -E '^[0-9]+ states generated|depth of|Finished in|Error|violated' "$work/check.out" || true
-		[ $st = 0 ] || exit $st
-	done
+	# Link's configurations and the other models run side by side, each
+	# group in order with its own state directory (Link.cfg alone takes
+	# minutes; the others, most of a second each, would wait behind it);
+	# their outputs printed in this order.
+	links() {
+		for cfg in Link.cfg LinkDrain.cfg LinkSess.cfg LinkSessHalf.cfg LinkCrash.cfg LinkRefuse.cfg LinkCut.cfg; do
+			# Not Link.cfg in invariants (CI; lane CIFAST): 4.6 million states,
+			# 10 to 16 minutes, the job's long pole. spec-nightly checks it
+			# with its crash (every state of this check and more, with Refines),
+			# and spec-mutants runs its mutants and witnesses on it in CI.
+			[ "$1" != invariants ] || [ $cfg != Link.cfg ] || continue
+			echo "== $cfg ($1)"
+			# No crash in the first three: Link.cfg's crash grows its states past
+			# 20 million (spec-nightly); LinkCrash.cfg takes it on fewer bytes.
+			# invariants (CI) checks Refines only on LinkCrash.cfg: the
+			# interface's mutants and witnesses (spec-mutants) are CI's too.
+			if [ "$1" = invariants ] && [ $cfg != LinkCrash.cfg ]; then
+				sed -e '/^PROPERTY Refines/d' -e '/^PROPERTIES/,$d' -e 's/Crash = 1/Crash = 0/' "spec/$cfg" >"$work/$cfg"
+			else
+				sed -e 's/Crash = 1/Crash = 0/' "spec/$cfg" >"$work/$cfg"
+			fi
+			# LinkCrash.cfg, LinkRefuse.cfg and LinkSessHalf.cfg (seconds): Refines and liveness in CI too.
+			# LinkCut.cfg's (the drain's cut, 142,465 states): in check only (minutes).
+			[ $cfg != LinkCrash.cfg ] && [ $cfg != LinkRefuse.cfg ] && [ $cfg != LinkSessHalf.cfg ] || cp spec/$cfg "$work/$cfg"
+			tlcrun "$work/$cfg"
+		done
+	}
+	models() {
+		# PoolDrain (Min 2: a Drain failing halfway) and QuicWatchStops (two
+		# short stops, ~10 s) only in full: their mutants are CI's.
+		# PoolGrow: background growth (Max above Min).
+		pools="Pool PoolGrow PoolClient Liveness LivenessStarve QuicWatch QuicWatchPTO QuicWatchStarve Join JoinClose CreditWaiters SessionRead SessionReadWriteTo SessionReadPump SessionReadPumpWriteTo SessionReadWriteTos SessionWrite DirectPath DirectPathReset DirectPathRebind DirectPathProof DirectPathClose DirectPathGrow RelayedClose RelayedCloseEmpty HopHold HopHoldSeq HopHoldConc EndAckLeg EndAckLegQuic AckFrequency AckFrequencyDeep CreditGrow CreditGrowOne AutoWindow AckRanges"
+		[ "$1" = invariants ] || pools="$pools PoolDrain QuicWatchStops DirectPathWide CreditGrowWide"
+		for m in $pools; do
+			echo "== $m.cfg"
+			st=0
+			# Liveness explores a horizon of ticks, Join one session,
+			# CreditWaiters a fixed number of Acquires, SessionRead a fixed number of bytes, SessionWrite a fixed number of SetWriteDeadlines: their last states end there; PoolDrain has no Open to keep it going.
+			dl=; [ $m = Pool ] || [ $m = PoolGrow ] || [ $m = PoolClient ] || dl=-deadlock
+			mod=$m.tla; case $m in Pool*) mod=Pool.tla ;; Liveness*) mod=Liveness.tla ;; QuicWatch*) mod=QuicWatch.tla ;; CreditWaiters*) mod=CreditWaiters.tla ;; SessionRead*) mod=SessionRead.tla ;; DirectPath*) mod=DirectPath.tla ;; RelayedClose*) mod=RelayedClose.tla ;; HopHold*) mod=HopHold.tla ;; EndAckLeg*) mod=EndAckLeg.tla ;; AckFrequency*) mod=AckFrequency.tla ;; CreditGrow*) mod=CreditGrow.tla ;; esac
+			cfg=$m.cfg
+			# DirectPath's liveness (AllDelivered, ResetReaches: minutes) only in
+			# full; spec-mutants catches keep-dead-path and abort-not-resent by it.
+			if [ "$1" = invariants ] && [ "${m#DirectPath}" != "$m" ]; then
+				sed -e '/^PROPERTIES/,$d' spec/$m.cfg >"$work/$m.cfg"
+				cfg=$work/$m.cfg
+			fi
+			tlc "$cfg" "$mod" $dl >"$work/models-check.out" 2>&1 || st=$?
+			grep -E '^[0-9]+ states generated|depth of|Finished in|Error|violated' "$work/models-check.out" || true
+			[ $st = 0 ] || exit $st
+		done
+	}
+	st=0
+	(META=$work/states-models TLC_WORKERS=$(((${TLC_WORKERS:-4} + 1) / 2)) models "$1") >"$work/models.out" 2>&1 &
+	mp=$!
+	(META=$work/states-links links "$1") >"$work/links.out" 2>&1 || st=1
+	wait $mp || st=1
+	cat "$work/links.out" "$work/models.out"
+	exit $st
 	;;
 mutants)
 	# Each check below runs in a job of its own (SPEC_JOBS at once, one
@@ -566,9 +586,9 @@ mutants)
 		mod=${4:-MCLink.tla}
 		if [ "$mod" = MCLink.tla ]; then
 			# its invariant must catch it (the interface's checks are iface's)
-			sed -e "s/$2/$3/" -e '/^PROPERTY Refines/d' -e '/^PROPERTIES/,$d' "spec/$1" >"$jw/Mutant.cfg"
+			sed -e "s/$2/$3/" -e '/^PROPERTY Refines/d' -e '/^PROPERTIES/,$d' "$(cfgpath "$1")" >"$jw/Mutant.cfg"
 		else
-			sed -e "s/$2/$3/" "spec/$1" >"$jw/Mutant.cfg"
+			sed -e "s/$2/$3/" "$(cfgpath "$1")" >"$jw/Mutant.cfg"
 		fi
 		dl=; [ "$mod" != Liveness.tla ] && [ "$mod" != QuicWatch.tla ] && [ "$mod" != Join.tla ] && [ "$mod" != JoinClose.tla ] && [ "$mod" != CreditWaiters.tla ] && [ "$mod" != SessionRead.tla ] && [ "$mod" != SessionWrite.tla ] && [ "$mod" != DirectPath.tla ] && [ "$mod" != RelayedClose.tla ] && [ "$mod" != HopHold.tla ] && [ "$mod" != EndAckLeg.tla ] && [ "$mod" != AckFrequency.tla ] && [ "$mod" != CreditGrow.tla ] && [ "$mod" != AckRanges.tla ] && [ "$1" != PoolDrain.cfg ] || dl=-deadlock
 		if tlc "$jw/Mutant.cfg" "$mod" $dl >"$jw/m.out" 2>&1; then
@@ -585,7 +605,7 @@ mutants)
 	# iface CFG MUTANT: Link with MUTANT fails the session interface
 	# (Refines, LinkSession.tla) with every invariant of Link left out.
 	iface() {
-		sed -e "s/Mutant = \"none\"/Mutant = \"$2\"/" -e '/^INVARIANTS/,$d' "spec/$1" >"$jw/Mutant.cfg"
+		sed -e "s/Mutant = \"none\"/Mutant = \"$2\"/" -e '/^INVARIANTS/,$d' "$(cfgpath "$1")" >"$jw/Mutant.cfg"
 		if tlc "$jw/Mutant.cfg" MCLink.tla >"$jw/m.out" 2>&1; then
 			echo "$2: not caught by the interface"
 			return 1
@@ -599,7 +619,7 @@ mutants)
 	}
 	# witness CFG NAME [MODULE]: the witness NAME must be violated.
 	witness() {
-		sed -e '/^PROPERTY/,$d' "spec/$1" >"$jw/Witness.cfg"
+		sed -e '/^PROPERTY/,$d' "$(cfgpath "$1")" >"$jw/Witness.cfg"
 		# WitnessAct*: an action property (checked as a PROPERTY).
 		case $2 in WitnessAct*) kind=PROPERTY what="Action property" ;; *) kind=INVARIANT what=Invariant ;; esac
 		printf '%s %s\n' "$kind" "$2" >>"$jw/Witness.cfg"
@@ -713,16 +733,37 @@ mutants)
 			;;
 		esac
 	}
-	# job CHECK ARGS: CHECK in the background, SPEC_JOBS at once.
+	# cfgpath CFG: spec/CFG, or CFG itself when it is a path (a smaller
+	# configuration below).
+	cfgpath() { case $1 in /*) echo "$1" ;; *) echo "spec/$1" ;; esac; }
+	# Smaller constants for the checks that need no more (lane CIFAST:
+	# each mutant still caught, each witness still reached, measured 10 to
+	# 40 times faster): Link.cfg without its crash (a tenth of its states:
+	# WitnessLost, CleanEndReceived and lost-as-eof need the crash and keep
+	# Link.cfg), RelayedClose.cfg with one byte, DirectPath.cfg with two.
+	# make spec checks every invariant on the full configurations.
+	nocrash=$work/LinkNoCrash.cfg rc1=$work/RelayedCloseOne.cfg dp2=$work/DirectPathTwo.cfg
+	sed 's/^    Crash = 1$/    Crash = 0/' spec/Link.cfg >"$nocrash"
+	sed 's/^    K = 2$/    K = 1/' spec/RelayedClose.cfg >"$rc1"
+	sed 's/^    Total = 3$/    Total = 2/' spec/DirectPath.cfg >"$dp2"
+	# job CHECK ARGS: CHECK in the background, SPEC_JOBS at once: a job
+	# takes a token from fd 9 to start and puts it back when it ends, so
+	# the next starts as soon as any one ends (not when a batch's slowest
+	# does); their TLC_JVMS share the job's heap (CI_MEM_BUDGET_MB).
 	n=0
+	mkfifo "$work/tokens"
+	exec 9<>"$work/tokens"
+	i=0
+	while [ $i -lt "${SPEC_JOBS:-4}" ]; do echo >&9; i=$((i + 1)); done
 	job() {
 		n=$((n + 1))
-		(jw=$work/job$n && mkdir -p "$jw" && export TLC_JVMS="${SPEC_JOBS:-3}" && META=$jw/states TLC_WORKERS=1 "$@" >"$work/job$n.txt" 2>&1 || touch "$work/job$n.fail") &
-		[ $((n % ${SPEC_JOBS:-3})) != 0 ] || wait
+		read -r _ <&9
+		(jw=$work/job$n && mkdir -p "$jw" && export TLC_JVMS="${SPEC_JOBS:-4}" && META=$jw/states TLC_WORKERS=1 "$@" >"$work/job$n.txt" 2>&1 || touch "$work/job$n.fail"; echo >&9) &
 	}
-	for m in fin-skips-queue grant-early write-race turns-no-recheck release-early abort-as-fin lost-as-eof local-abort-eof; do
-		job iface Link.cfg $m
+	for m in fin-skips-queue grant-early write-race turns-no-recheck release-early abort-as-fin local-abort-eof; do
+		job iface "$nocrash" $m
 	done
+	job iface Link.cfg lost-as-eof
 	for m in open-after-goaway open-no-recheck; do job iface LinkDrain.cfg $m; done
 	for m in abort-forget-early reopen-known local-abort-eof; do job iface LinkSess.cfg $m; done
 	job iface LinkRefuse.cfg refuse-then-write
@@ -740,17 +781,18 @@ mutants)
 		job mutant LinkCut.cfg 'Mutant = "none"' "Mutant = \"$m\""
 	done
 	job witness LinkCut.cfg WitnessDrainRefused
-	for w in WitnessEof WitnessReset WitnessLost WitnessHere WitnessCredit; do job witness Link.cfg $w; done
+	for w in WitnessEof WitnessReset WitnessHere WitnessCredit; do job witness "$nocrash" $w; done
+	job witness Link.cfg WitnessLost
 	job witness LinkDrain.cfg WitnessRefused
 	# A witness per invariant of Link (spec/README.md "Witnesses").
-	for w in WitnessNoCredit WitnessWindowFull WitnessQueueHeld WitnessInFlight; do job witness Link.cfg $w; done
+	for w in WitnessNoCredit WitnessWindowFull WitnessQueueHeld WitnessInFlight; do job witness "$nocrash" $w; done
 	job witness LinkSess.cfg WitnessOpenAtMax
 	job witness LinkDrain.cfg WitnessFinRace
 	# Not a guarantee: a clean end at one side while its FIN is lost
 	# with the connection (spec/README.md "The session interface").
 	job witness Link.cfg CleanEndReceived
 	for m in fin-skips-queue grant-early write-race turns-no-recheck release-early; do
-		job mutant Link.cfg 'Mutant = "none"' "Mutant = \"$m\""
+		job mutant "$nocrash" 'Mutant = "none"' "Mutant = \"$m\""
 	done
 	for m in open-after-goaway open-no-recheck drop-on-mark; do
 		job mutant LinkDrain.cfg 'Mutant = "none"' "Mutant = \"$m\""
@@ -784,7 +826,7 @@ mutants)
 	# Lane PSCLOSE: the client leaving before the agent's FIN. Lane
 	# ENDACKCODE: a Close with a total bound resets a live, slow tail.
 	for m in free-on-send send-before-resume write-stale resume-from-acked read-stale no-bind keep-dead-path end-early resume-drops-fin leave-at-complete total-bound; do
-		job mutant DirectPath.cfg 'Mutant = "none"' "Mutant = \"$m\"" DirectPath.tla
+		job mutant "$dp2" 'Mutant = "none"' "Mutant = \"$m\"" DirectPath.tla
 	done
 	job mutant DirectPathReset.cfg 'Mutant = "none"' 'Mutant = "abort-not-resent"' DirectPath.tla
 	# Lane DIRECTSTALL: a move before the agent acknowledged the client's
@@ -812,7 +854,7 @@ mutants)
 		job mutant DirectPathGrow.cfg 'Mutant = "none"' "Mutant = \"$m\"" DirectPath.tla
 	done
 	for w in WitnessGrown WitnessGated; do job witness DirectPathGrow.cfg $w DirectPath.tla; done
-	for w in WitnessDirect WitnessFallback WitnessResent WitnessRogue WitnessFull WitnessWithheld WitnessEndResent WitnessLeftAnswer; do job witness DirectPath.cfg $w DirectPath.tla; done
+	for w in WitnessDirect WitnessFallback WitnessResent WitnessRogue WitnessFull WitnessWithheld WitnessEndResent WitnessLeftAnswer; do job witness "$dp2" $w DirectPath.tla; done
 	for w in WitnessResetAcross WitnessResetDirect; do job witness DirectPathReset.cfg $w DirectPath.tla; done
 	job witness DirectPathProof.cfg WitnessDirect DirectPath.tla
 	for m in rearm-timeout deadline-from-rx reader-writes never-dead; do
@@ -873,9 +915,9 @@ mutants)
 	# end's whole close before the FIN reached it taken for its ENDACK
 	# (closeAckErr before lane ENDACKTRUTH).
 	for m in close-before-ack relay-read-ack ack-lost-hang sync-hang fail-drops-fin abort-at-write-fail liveness-counts-as-progress reset-keeps-endack-wait close-after-reset-waits close-acks; do
-		job mutant RelayedClose.cfg 'Mutant = "none"' "Mutant = \"$m\"" RelayedClose.tla
+		job mutant "$rc1" 'Mutant = "none"' "Mutant = \"$m\"" RelayedClose.tla
 	done
-	for w in WitnessExitThenEof WitnessFinThenAbort WitnessHeld WitnessCloseErr WitnessIdle WitnessResetWaiting WitnessResetFirst WitnessCClose; do job witness RelayedClose.cfg $w RelayedClose.tla; done
+	for w in WitnessExitThenEof WitnessFinThenAbort WitnessHeld WitnessCloseErr WitnessIdle WitnessResetWaiting WitnessResetFirst WitnessCClose; do job witness "$rc1" $w RelayedClose.tla; done
 	# J's clean close (C closed whole first) read as a reset of an empty
 	# stream (closeAckErr, closedFirst after ENDACKTRUTH; lane PIPERESET2).
 	job mutant RelayedCloseEmpty.cfg 'Mutant = "none"' 'Mutant = "close-resets"' RelayedClose.tla

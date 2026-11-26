@@ -60,7 +60,7 @@ printf 'INIT Init\nNEXT Next\n' >"$s/A.cfg"
 tlc() {
 	: >"$t/runs"
 	stage=$("$c" begin)
-	(cd "$s" && CICACHE_STAGE=$stage "$c" tlc -- "$t/java" -XX:+UseParallelGC -cp "$t/tla2tools.jar" tlc2.TLC -workers 2 \
+	(cd "$s" && CICACHE_STAGE=$stage "$c" tlc -- "$t/java" -XX:+UseParallelGC -cp "$t/tla2tools.jar" tlc2.TLC -workers "${WORKERS:-2}" \
 		-metadir "$t/states.$RANDOM" -config "${CFG:-A.cfg}" A.tla >"$t/out" 2>&1) && st=0 || st=$?
 	"$c" end "$stage" "${1:-$st}" 2>"$t/end" || echo mismatch >>"$t/runs"
 	wc -l <"$t/runs" | tr -d ' '
@@ -68,6 +68,7 @@ tlc() {
 expect "tlc: first run runs" 1 "$(tlc)"
 expect "tlc: unchanged inputs hit (another metadir)" 0 "$(tlc)"
 grep -q '^Finished in' "$t/out" && ok "tlc: a hit replays TLC's output" || bad "tlc: a hit did not replay the output"
+expect "tlc: another -workers count hits" 0 "$(WORKERS=1 tlc)"
 echo '\* edit' >>"$s/B.tla"
 expect "tlc: a changed module it extends misses" 1 "$(tlc)"
 echo '\* edit' >>"$s/C.tla"

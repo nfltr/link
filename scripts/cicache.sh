@@ -28,7 +28,8 @@
 #   tlc -- JAVA ARGS...  run TLC (in the spec's directory) through the cache:
 #                      key = the config, every module of that directory the
 #                      model names (transitively), the classpath jars, the
-#                      java path and every argument but -metadir's; staged in
+#                      java path and every argument but -metadir's and
+#                      -workers'; staged in
 #                      CICACHE_STAGE (no CICACHE_STAGE: plain run). TLC's
 #                      verdict is the caller's to judge: its output and exit
 #                      status are replayed as they were.
@@ -200,7 +201,10 @@ tlc() {
 		a=$1
 		shift
 		case $a in
-		-metadir) shift ;;
+		# Not inputs: where TLC keeps its states, and how many threads it
+		# runs (a run's verdict is the same on any count; a key with it
+		# missed whenever a caller ran TLC at another share of the CPUs).
+		-metadir | -workers) shift ;;
 		-cp | -classpath)
 			IFS=: read -r -a cp <<<"$1"
 			for j in "${cp[@]}"; do files+=("$j"); done
