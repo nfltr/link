@@ -25,14 +25,17 @@
 #   - anything else it does not understand (a multi-line run, another
 #     ${{ }} expression, a step-level if/env/working-directory, a top-level
 #     env or defaults, a job's needs:) fails closed.
-# The jobs run at once, as on GitHub (at most CI_JOBS at a time, default the
-# CPUs this process may use: the cgroup's cpu.max quota, else the online
-# CPUs; CI_JOBS=1 runs them one after another), started in workflow order;
+# The jobs run at once, as on GitHub (at most CI_JOBS at a time, default 3,
+# or the CPUs this process may use when fewer: the cgroup's cpu.max quota,
+# else the online CPUs; CI_JOBS=1 runs them one after another; a job's go
+# test and TLC pools use every CPU, so ten jobs at once held a 10-CPU Mac
+# at load 51, lane CIFAST), started in workflow order;
 # under a memory limit (CI_MEM_MB, default the cgroup's memory.max; 0:
 # none) also at most one job per CI_JOB_MEM_MB (3072: relay-server's static
 # job peaked at 2.9 GiB, its deadcode step, and three jobs at once in a
 # 5 GiB runner were OOM-killed, lane CIMEM), each job told its share,
-# CI_MEM_BUDGET_MB (scripts/fetch-tla.sh's java sizes TLC's heap from it);
+# CI_MEM_BUDGET_MB (scripts/fetch-tla.sh's java sizes TLC's heap from it),
+# and its share of the CPUs, CI_JOB_CPUS (go-mutants' -P);
 # a job's steps run in order, each as GitHub runs it: bash -eo pipefail.
 # Jobs share this checkout, so a job must not change a file another job
 # reads (GitHub gives each job a checkout of its own). Each job's output
@@ -224,11 +227,12 @@ job() {
 # at once (at most CI_JOBS), each job's output printed whole in workflow
 # order; exit 1 at the first failure, after stopping the running jobs.
 execute() {
-	local max="${CI_JOBS:-$(cpus)}" mb t0 tmp n=0 nj=0 next=1 shown=1 running=0 failed=0 k rc secs busy prev="" jb dir cmd plan=""
+	local max="${CI_JOBS:-$(cpus)}" c mb t0 tmp n=0 nj=0 next=1 shown=1 running=0 failed=0 k rc secs busy prev="" jb dir cmd plan=""
 	local -a name st pid
 	t0=$(date +%s)
 	tmp="$(mktemp -d)" || return 1
 	[ "$max" -ge 1 ] 2>/dev/null || max=1
+	[ -n "${CI_JOBS:-}" ] || [ "$max" -le 3 ] || max=3
 	mb=$(mem)
 	if [ "${mb:-0}" -gt 0 ] 2>/dev/null; then
 		k=$((mb / ${CI_JOB_MEM_MB:-3072}))
@@ -237,6 +241,13 @@ execute() {
 		export CI_MEM_BUDGET_MB=$((mb / max))
 		plan=" (${mb} MiB, ${CI_MEM_BUDGET_MB} MiB a job)"
 	fi
+	# Each job's share of the CPUs, CI_JOB_CPUS (go-mutants' default -P: a
+	# job's -P 10 beside two other jobs held a 10-CPU Mac at load 37, lane
+	# CIFAST).
+	c=$(cpus)
+	CI_JOB_CPUS=$((c / max))
+	[ "$CI_JOB_CPUS" -ge 1 ] || CI_JOB_CPUS=1
+	export CI_JOB_CPUS
 	while IFS="$TAB" read -r jb dir cmd; do
 		[ -n "$jb" ] || continue
 		n=$((n + 1))
@@ -385,6 +396,13 @@ exec_test() {
 	t=$(date +%s)
 	CI_MEM_MB=0 CI_JOBS=1 execute "$(printf 'a\t.\tsleep 1\nb\t.\tsleep 1\n')" >/dev/null || { echo "ci.sh exec-test: a serial run failed" >&2; rm -rf "$d"; return 1; }
 	[ $(($(date +%s) - t)) -ge 2 ] || { echo "ci.sh exec-test: CI_JOBS=1 ran jobs at once" >&2; rm -rf "$d"; return 1; }
+	# By default at most 3 at once, on any number of CPUs.
+	t=$(date +%s)
+	(unset CI_JOBS && CI_MEM_MB=0 execute "$(printf 'a\t.\tsleep 1\nb\t.\tsleep 1\nc\t.\tsleep 1\nd\t.\tsleep 1\n')") >/dev/null || { echo "ci.sh exec-test: a default run failed" >&2; rm -rf "$d"; return 1; }
+	[ $(($(date +%s) - t)) -ge 2 ] || { echo "ci.sh exec-test: the default ran 4 jobs at once" >&2; rm -rf "$d"; return 1; }
+	out="$(CI_MEM_MB=0 CI_JOBS=2 execute "$(printf 'a\t.\techo C=$CI_JOB_CPUS\n')")" &&
+		printf '%s\n' "$out" | grep "^C=$(($(cpus) / 2 > 0 ? $(cpus) / 2 : 1))\$" >/dev/null ||
+		{ echo "ci.sh exec-test: a job's CPU share: $out" >&2; rm -rf "$d"; return 1; }
 	# Under a memory limit: one job per CI_JOB_MEM_MB, each told its share.
 	t=$(date +%s)
 	out="$(CI_MEM_MB=5120 CI_JOB_MEM_MB=3072 CI_JOBS=3 execute "$(printf 'a\t.\tsleep 1; echo A=$CI_MEM_BUDGET_MB\nb\t.\tsleep 1\n')")" ||
