@@ -36,7 +36,7 @@ version 2 unless an entry says otherwise.
 - A `WriteTo` (or `io.Copy`) of a session `peerlink.Join` took returns an error and takes nothing, as a `Read` does; a `Join` of a session a `WriteTo` reads ends at once. Both popped the session's queue, so the joined session missed bytes (spec/SessionRead.tla `SessionReadPumpWriteTo.cfg` `PumpAlone`, mutant `writeto-beside-pump`; `TestSessionWriteToBesidePumpRefused`; lane SESSIONAPI).
 - Tests only: every pair of `Session` calls the docs let run at once that no test raced is raced by `TestSessionAPIPairs` (table: spec/README.md "Session API pairs"); `FuzzSessionAPI` drives a session's API from several goroutines against a reference model (lane SESSIONAPI).
 - Tests only: quiclink `TestJoinsHoldOntoASequentialQuicApp`, two joints with a QUIC far end app, recorded for spec/TraceHopHold.tla (`AppRead` logged by quiclink under `-tags linktrace`, `internal/linkhook`; `make spec-traces` `hopholdquic`); no API change (lane LINKGATE).
-## v0.13.1 (unreleased): a close is no end acknowledgement
+## v0.13.1 (2026-11-21): a close is no end acknowledgement
 
 - `Session.CloseWriteSync` (FeatureEndAck) never reports a dropped tail
   as delivered: when the peer closes the session whole (close code 0)
@@ -75,7 +75,7 @@ version 2 unless an entry says otherwise.
   safe from any goroutine and what a second `Close`/`Drain` returns
   (`TestCloseTwice`). No API change.
 
-## peerlink/quiclink v0.7.0 (unreleased): end acknowledgements
+## peerlink/quiclink v0.7.0 (2026-11-21): end acknowledgements
 
 - End acknowledgements (lane ENDACKQUIC, nfltr
   docs/decisions/endack-every-transport-2026-11-20.md finding 3): ALPN
@@ -107,7 +107,7 @@ version 2 unless an entry says otherwise.
   `CloseWriteSyncReceived` (a quiclink session among them), not only a
   `*link.Session`'s (spec/HopHold.tla `hold-until-ack` over QUIC).
 
-## v0.13.0 (unreleased): the v1 API cut
+## v0.13.0 (2026-11-20): the v1 API cut
 
 The API link v1.0 will freeze (docs/v1-api-review.md, lane LINKAPI; done
 in lane LINKV013). The wire is unchanged: version 2, byte for byte
