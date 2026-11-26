@@ -693,7 +693,7 @@ rule (a peer's BLOCKED before any data would grow an empty window).
   96 k data packets (the update applied at packet 49-558); total ACKs
   unchanged there (0.036 per data packet: the in-process receiver reads in
   batches and acks once per batch, as SPEED-ACK found).
-- **Guard**: `TestBulkUploadOnReorderingPath/bbr/deep-reorder/ackfreq` (at
+- **Guard**: the fork's `TestBulkUploadOnReorderingPath/bbr/deep-reorder/ackfreq` (at
   most 0.12); spec mutant `no-update`.
 
 ## quiclink: QUIC ACK frequency (2026-11-21, lane SPEED-ACK, unreleased)
@@ -728,7 +728,7 @@ rule (a peer's BLOCKED before any data would grow an empty window).
   netem a receiver reads its packets in batches and acknowledges once per
   batch, so both builds send about 10 k ACKs per GiB: the WAN's 0.15-0.36 M
   is not reproduced there, and the simulated path above is the evidence.
-- **Guard**: `TestBulkUploadOnReorderingPath/bbr/*/ackfreq` (at most 0.12
+- **Guard**: the fork's `TestBulkUploadOnReorderingPath/bbr/*/ackfreq` (at most 0.12
   and 0.15 ACK packets per data packet), the fork's
   `TestAckFrequencyPolicyInvariants`; here `TestNodeAsksForAckFrequency`.
 

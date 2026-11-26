@@ -251,10 +251,10 @@ Measured (Apple M5, TCP loopback, in process):
 
 Medians of three runs (`go test -run '^$' -bench BenchmarkChain -benchmem -count 3`;
 8 MiB per session; a shared host, load average 14-26 on 10 CPUs, so the
-spread between runs is wide). A joined session at rest holds
+spread between runs is wide). A joined session at rest held
 0 goroutines and about 7.0 KiB of heap for its three
-sessions and joint (origin, one Forward hop, far end; `TestChainIdleCost`,
-200 sessions). In-flight bytes for a stalled far reader stay within the
+sessions and joint (origin, one Forward hop, far end; `TestChainIdleCost`
+logs both for 200 sessions and fails above one goroutine per 20). In-flight bytes for a stalled far reader stay within the
 links' windows plus 256 KiB per hop (`TestChainStalledFarReader`).
 
 ## Performance
@@ -480,11 +480,11 @@ or `go build -tags linkdebug`), link reports on stderr:
 Each Read and Write records a stack in this mode: for tests and
 debugging, not production.
 
-We run both on ourselves: the relay's repositories and nfltr have a
+We run both on ourselves: nfltr/relay, the relay server and nfltr have a
 `make check-linkvet`, a CI step (fails on a finding outside tests that
 their allow-list does not list with a reason, and on a stale entry), and
-the relay's soaks build the relay and its agents with `-tags linkdebug`
-and fail on any report.
+nfltr/relay and the relay server run their tests with `-tags linkdebug`
+(`make test-linkdebug`, in `make check`), failing on any report.
 
 ## Packages
 
@@ -581,7 +581,7 @@ Evidence that link works, provable from this repository alone:
 | every decoder fuzzed, corpus checked in, 24 h cumulative without a crasher | FUZZING.md (hours per target, crashers), `testdata/fuzz/` | 4.85 h, no crasher in the library (target: 24 h) |
 | security review of the hello and the Authenticator contract | SECURITY.md (threat model, review record) | met (2026-10-14) |
 | standard library only | `TestModuleBoundary` | met |
-| CI green on every change, with history | GitHub Actions (`check`) | since 2026-10-14 |
+| CI green on every change, with history | `make ci` before each push to main or a tag (the pre-push hook, [Checks](#checks)); GitHub Actions (`check`) as an extra signal | since 2026-10-14 |
 | cumulative soak hours under faults, with leak and integrity checks | SOAK.md (`make soak`), summaries in `soak/results/` | 2.89 h (macOS, Linux CI; chain-3hop since v0.10.0), clean (target: 24 h) |
 | benchmarks published in the repository | [docs/performance.md](docs/performance.md), `peerlink/quiclink/README.md` | met |
 | API reviewed for v1.0 | the checklist below; `make check-api` (apidiff against the latest release, in CI); `TestExportedNamesDocumented` | open (v0.9.0: the review applied; the peerlink contract changed in v0.9.0) |
