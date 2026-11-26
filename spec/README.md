@@ -160,7 +160,8 @@ return `ErrCredit`/`ErrFrame` or break 2-4, so one invariant,
 violation for each. Its checks (mutants, witnesses, trace fixtures) run
 `SPEC_JOBS` (default 4) at a time, one TLC worker each, the next starting
 as soon as any one ends; `make spec-invariants` runs Link's configurations
-beside the other models (lane CIFAST); make ci runs the two as jobs of
+beside the other models (lane CIFAST), `Pool.cfg` and `PoolGrow.cfg` a
+third group beside both (lane SPECFAST); make ci runs the two as jobs of
 their own. Checks that need no more run on smaller constants derived in
 `scripts/spec.sh`: `Link.cfg` without its crash (`Crash = 0`, a tenth of the
 states; `WitnessLost`, `CleanEndReceived` and `lost-as-eof` need the crash

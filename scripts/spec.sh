@@ -473,10 +473,10 @@ CFG
 # tlcrun CFG: TLC on MCLink.tla with CFG, which must pass.
 tlcrun() {
 	st=0
-	tlc "$1" MCLink.tla >"$work/check.out" 2>&1 || st=$?
-	grep -E '^[0-9]+ states generated|depth of|Finished in|Error|violated' "$work/check.out" || true
+	tlc "$1" MCLink.tla >"$work/check-$(basename "$1").out" 2>&1 || st=$?
+	grep -E '^[0-9]+ states generated|depth of|Finished in|Error|violated' "$work/check-$(basename "$1").out" || true
 	if [ $st != 0 ]; then
-		tail -60 "$work/check.out"
+		tail -60 "$work/check-$(basename "$1").out"
 		exit $st
 	fi
 }
@@ -543,12 +543,12 @@ check | invariants)
 			tlcrun "$work/$cfg"
 		done
 	}
+	allmodels="Pool PoolGrow PoolClient Liveness LivenessStarve QuicWatch QuicWatchPTO QuicWatchStarve Join JoinClose CreditWaiters SessionRead SessionReadWriteTo SessionReadPump SessionReadPumpWriteTo SessionReadWriteTos SessionWrite DirectPath DirectPathReset DirectPathRebind DirectPathProof DirectPathClose DirectPathGrow RelayedClose RelayedCloseEmpty HopHold HopHoldSeq HopHoldConc EndAckLeg EndAckLegQuic AckFrequency AckFrequencyDeep CreditGrow CreditGrowOne AutoWindow AckRanges"
 	models() {
 		# PoolDrain (Min 2: a Drain failing halfway) and QuicWatchStops (two
 		# short stops, ~10 s) only in full: their mutants are CI's.
 		# PoolGrow: background growth (Max above Min).
-		pools="Pool PoolGrow PoolClient Liveness LivenessStarve QuicWatch QuicWatchPTO QuicWatchStarve Join JoinClose CreditWaiters SessionRead SessionReadWriteTo SessionReadPump SessionReadPumpWriteTo SessionReadWriteTos SessionWrite DirectPath DirectPathReset DirectPathRebind DirectPathProof DirectPathClose DirectPathGrow RelayedClose RelayedCloseEmpty HopHold HopHoldSeq HopHoldConc EndAckLeg EndAckLegQuic AckFrequency AckFrequencyDeep CreditGrow CreditGrowOne AutoWindow AckRanges"
-		[ "$1" = invariants ] || pools="$pools PoolDrain QuicWatchStops DirectPathWide CreditGrowWide"
+		pools=$2
 		for m in $pools; do
 			echo "== $m.cfg"
 			st=0
@@ -563,17 +563,24 @@ check | invariants)
 				sed -e '/^PROPERTIES/,$d' spec/$m.cfg >"$work/$m.cfg"
 				cfg=$work/$m.cfg
 			fi
-			tlc "$cfg" "$mod" $dl >"$work/models-check.out" 2>&1 || st=$?
-			grep -E '^[0-9]+ states generated|depth of|Finished in|Error|violated' "$work/models-check.out" || true
+			tlc "$cfg" "$mod" $dl >"$work/models-check-$m.out" 2>&1 || st=$?
+			grep -E '^[0-9]+ states generated|depth of|Finished in|Error|violated' "$work/models-check-$m.out" || true
 			[ $st = 0 ] || exit $st
 		done
 	}
 	st=0
-	(META=$work/states-models TLC_WORKERS=$(((${TLC_WORKERS:-4} + 1) / 2)) models "$1") >"$work/models.out" 2>&1 &
+	[ "$1" = invariants ] || allmodels="$allmodels PoolDrain QuicWatchStops DirectPathWide CreditGrowWide"
+	half=$(((${TLC_WORKERS:-4} + 1) / 2))
+	# Pool.cfg and PoolGrow.cfg (the models' longest, 7 of their 13
+	# minutes on the Mac) a third group beside the other two (lane SPECFAST).
+	(META=$work/states-pools TLC_WORKERS=$half models "$1" "Pool PoolGrow") >"$work/pools.out" 2>&1 &
+	pp=$!
+	(META=$work/states-models TLC_WORKERS=$half models "$1" "${allmodels#Pool PoolGrow }") >"$work/models.out" 2>&1 &
 	mp=$!
 	(META=$work/states-links links "$1") >"$work/links.out" 2>&1 || st=1
+	wait $pp || st=1
 	wait $mp || st=1
-	cat "$work/links.out" "$work/models.out"
+	cat "$work/links.out" "$work/pools.out" "$work/models.out"
 	exit $st
 	;;
 mutants)
@@ -758,7 +765,8 @@ mutants)
 	job() {
 		n=$((n + 1))
 		read -r _ <&9
-		(jw=$work/job$n && mkdir -p "$jw" && export TLC_JVMS="${SPEC_JOBS:-4}" && META=$jw/states TLC_WORKERS=1 "$@" >"$work/job$n.txt" 2>&1 || touch "$work/job$n.fail"; echo >&9) &
+		(job_t0=$(date +%s) jw=$work/job$n && mkdir -p "$jw" && export TLC_JVMS="${SPEC_JOBS:-4}" && META=$jw/states TLC_WORKERS=1 "$@" >"$work/job$n.txt" 2>&1 || touch "$work/job$n.fail"
+			echo "$(($(date +%s) - job_t0)) $*" >"$work/job$n.secs"; echo >&9) &
 	}
 	for m in fin-skips-queue grant-early write-race turns-no-recheck release-early abort-as-fin local-abort-eof; do
 		job iface "$nocrash" $m
@@ -1082,6 +1090,9 @@ mutants)
 		cat "$work/job$i.txt"
 		[ ! -e "$work/job$i.fail" ] || fail=1
 	done
+	# The longest checks, for a timing table (lane SPECFAST).
+	cat "$work"/job*.secs | sort -rn | sed -n '1,8s/^/slowest: /p'
+	cat "$work"/job*.secs | awk '{ t += $1 } END { print "checks: " NR ", " t " s in all" }'
 	exit $fail
 	;;
 traces)
