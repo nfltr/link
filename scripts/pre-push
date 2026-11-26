@@ -3,10 +3,10 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # pre-push: every ref's new commits and tags are nfltr's (check-identity.sh);
-# and a push to main or a tag needs a green `make ci` on the Mac for
-# that exact commit (owner 2026-11-25: the build box is deleted, CI runs on
-# the Mac only): its line in the Mac's results (scripts/ci.sh records every
-# clean-tree run) or this clone's ci.sh stamp for its tree; or a rule of
+# and a push to main or a tag needs a green `make ci` for that exact
+# commit, on this Mac or on the Linux CI VM (lead 2026-11-26; both runs land
+# in this Mac's results, scripts/ci.sh writing every clean-tree run here):
+# its line there or this clone's ci.sh stamp for its tree; or a rule of
 # admit() below admits it (docs-only, or a rebase of a green commit).
 # Installed by `make hooks` (.git/hooks/pre-push calls this file).
 #
@@ -138,7 +138,7 @@ while read -r _lref lsha rref rsha; do
 		continue
 	fi
 	if green "$sha"; then
-		echo "pre-push: $rref $short: green (make ci on this Mac)" >&2
+		echo "pre-push: $rref $short: green (make ci on this Mac or the Linux CI VM)" >&2
 	elif [ "$rref" = refs/heads/main ] && why="$(admit "$sha" "$rsha")"; then
 		echo "pre-push: $rref $short: admitted without its own make ci result: $why" >&2
 	else
