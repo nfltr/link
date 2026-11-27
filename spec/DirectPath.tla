@@ -108,7 +108,9 @@ CONSTANTS
               \* R counts the END once it took it, before its application
               \* read it (pathswitch before lane ENDACK); "close-took-end":
               \* a Close counts the END whatever it dropped (lane PIPERACE's
-              \* prototype)
+              \* prototype); "ack-end-unsent": R's ACK counts an END it
+              \* took on a stream it left, before S sent it again on this
+              \* one (pathswitch at lane ENDACK: "ACK(2797), sent 2796")
 
 Paths == {"relay", "direct"}
 Max(a, b) == IF a > b THEN a ELSE b
@@ -129,6 +131,7 @@ VARIABLES
     rEnds,   \* how often R took an END (its direction's end)
     rAck,    \* the count R last told S on rEp
     out,     \* the bytes R delivered, in order
+    rEndHere, \* R took the END on rEp, or the RESUME that opened rEp counted it
     ab,      \* who reset the session: "none", "S" or "R"
     sGone,   \* S knows the session is reset (it reset it, or took the ABORT)
     rGone,   \* R knows
@@ -153,12 +156,12 @@ VARIABLES
     rEOF,     \* R's application read the END (Read's io.EOF)
     vanished  \* the end whose process vanished: "none", "S", "R"
 
-vars == <<decider, st, d, k, sEp, sWait, hi, nxt, acked, w, rEp, rcvd, rEnds, rAck, out,
+vars == <<decider, st, d, k, sEp, sWait, hi, nxt, acked, w, rEp, rcvd, rEnds, rAck, out, rEndHere,
           ab, sGone, rGone, relayUp, dir, dies, punches, moves, sends, endSends, abSends,
           sFin, rFin, sGot, rGot, sLeft, rLeft, answers, addr, rebinds, repunched, blocked, tok,
           got, rBlocked, rShut, rEOF, vanished>>
 sVars == <<sEp, sWait, hi, nxt, acked, w>>
-rVars == <<rEp, rcvd, rEnds, rAck, out>>
+rVars == <<rEp, rcvd, rEnds, rAck, out, rEndHere>>
 endVars == <<ab, sGone, rGone, endSends, abSends>>
 rbVars == <<addr, rebinds, repunched, blocked, tok>>
 pathVars == <<relayUp, dir, dies, punches, addr, rebinds, repunched, blocked, tok>>
@@ -172,7 +175,7 @@ Init ==
     /\ st = <<[path |-> "relay", h |-> "peer", dead |-> FALSE, c |-> 0, a |-> 0]>>
     /\ d = <<<<>>>> /\ k = <<<<>>>>
     /\ sEp = 1 /\ sWait = FALSE /\ hi = 0 /\ nxt = 0 /\ acked = 0 /\ w = W
-    /\ rEp = 1 /\ rcvd = 0 /\ rEnds = 0 /\ rAck = 0 /\ out = <<>>
+    /\ rEp = 1 /\ rcvd = 0 /\ rEnds = 0 /\ rAck = 0 /\ out = <<>> /\ rEndHere = FALSE
     /\ ab = "none" /\ sGone = FALSE /\ rGone = FALSE
     /\ relayUp = TRUE /\ dir = [s |-> "none", h |-> "peer", a |-> 0]
     /\ dies = [p \in Paths |-> 0] /\ punches = 0 /\ moves = 0 /\ sends = 0
@@ -198,6 +201,11 @@ Sendable == IF hi = Total THEN Total + 1 ELSE hi
 \* it, or closed its end having read every byte (lane ENDACK).
 EndRead == ~AppSteps \/ Mutant = "ack-on-receipt" \/ rEOF \/ (rShut # "no" /\ (got = rcvd \/ Mutant = "close-took-end"))
 RPos == rcvd + (IF rEnds > 0 /\ EndRead THEN 1 ELSE 0)
+\* An ACK's count: RPos, the END only once R took it on rEp or the RESUME
+\* that opened rEp counted it. A RESUME without the END makes S send it
+\* again from there (nxt = Total), so until R took that one an ACK of it
+\* exceeds what S sent (AckSent; lane ENDACKFIX).
+AckPos == rcvd + (IF rEnds > 0 /\ EndRead /\ (rEndHere \/ Mutant = "ack-end-unsent") THEN 1 ELSE 0)
 RResume == RPos
 \* the direction ended cleanly: every byte and the END delivered, all freed
 Clean == rcvd = Total /\ rEnds > 0 /\ acked = Total + 1
@@ -296,13 +304,13 @@ Open(p) ==
        THEN /\ d' = Append(d, <<>>)
             /\ k' = Append(k, <<IF rGone THEN Abort ELSE [t |-> "resume", n |-> RResume]>>)
             /\ abSends' = abSends + (IF rGone THEN 1 ELSE 0)
-            /\ rEp' = e /\ rAck' = RResume
+            /\ rEp' = e /\ rAck' = RResume /\ rEndHere' = (RResume > rcvd)
             /\ UNCHANGED <<sEp, sWait>>
        ELSE /\ d' = Append(d, IF sGone THEN <<[t |-> "open"], Abort>> ELSE <<[t |-> "open"]>>)
             /\ k' = Append(k, <<>>)
             /\ abSends' = abSends + (IF sGone THEN 1 ELSE 0)
             /\ sEp' = e /\ sWait' = TRUE
-            /\ UNCHANGED <<rEp, rAck>>
+            /\ UNCHANGED <<rEp, rAck, rEndHere>>
 \* Fallback: the decider's stream ended (its path died); it opens one on a
 \* path that works. Mutant "keep-dead-path": a dead direct path is kept.
 Fallback(p) ==
@@ -446,7 +454,7 @@ TakeOpen ==
         /\ d' = [d EXCEPT ![e] = Tail(@)]
         /\ k' = [k EXCEPT ![e] = Append(@, IF rGone THEN Abort ELSE [t |-> "resume", n |-> RResume])]
         /\ abSends' = abSends + (IF rGone THEN 1 ELSE 0)
-        /\ rEp' = e /\ rAck' = RResume
+        /\ rEp' = e /\ rAck' = RResume /\ rEndHere' = (RResume > rcvd)
         /\ UNCHANGED <<decider, st, rcvd, rEnds, out, ab, sGone, rGone, endSends, moves, sends>>
         /\ UNCHANGED <<sVars, pathVars>>
         /\ UNCHANGED closeVars
@@ -460,6 +468,7 @@ RecvOn(e) ==
        /\ rcvd' = rcvd + (IF f.t = "data" THEN 1 ELSE 0)
        /\ rEnds' = rEnds + (IF f.t = "end" /\ rEnds = 0 THEN 1 ELSE 0) \* a resent END R holds: dropped
        /\ rGone' = (f.t = "abort")
+       /\ rEndHere' = (rEndHere \/ (f.t = "end" /\ e = rEp))
     /\ d' = [d EXCEPT ![e] = Tail(@)]
     /\ UNCHANGED <<decider, st, k, rEp, rAck, ab, sGone, endSends, abSends, moves, sends>>
     /\ UNCHANGED <<sVars, pathVars>>
@@ -478,9 +487,9 @@ Held == IF rShut # "no" /\ Mutant # "close-keeps-held" THEN 0 ELSE rcvd - got
 Gate == IF Mutant = "gate-at-cap" THEN MaxW \div 2 ELSE W \div 2
 AckGate == ~AppSteps \/ rEnds > 0 \/ Held <= Gate
 Ack ==
-    /\ RLive /\ RPos > rAck /\ ~st[rEp].dead /\ AckGate
-    /\ k' = [k EXCEPT ![rEp] = Append(@, [t |-> "ack", n |-> RPos])] /\ rAck' = RPos
-    /\ UNCHANGED <<decider, st, d, rEp, rcvd, rEnds, out, moves, sends>> /\ UNCHANGED <<sVars, endVars, pathVars>>
+    /\ RLive /\ AckPos > rAck /\ ~st[rEp].dead /\ AckGate
+    /\ k' = [k EXCEPT ![rEp] = Append(@, [t |-> "ack", n |-> AckPos])] /\ rAck' = AckPos
+    /\ UNCHANGED <<decider, st, d, rEp, rcvd, rEnds, out, rEndHere, moves, sends>> /\ UNCHANGED <<sVars, endVars, pathVars>>
     /\ UNCHANGED closeVars
 
 \* --- the close (lane PSCLOSE) ------------------------------------------
@@ -518,7 +527,7 @@ RLeftAnswer ==
         /\ d' = [d EXCEPT ![e] = Tail(@)]
         /\ k' = [k EXCEPT ![e] = @ \o <<[t |-> "resume", n |-> RResume], Fin>>]
         /\ rEp' = e /\ rFin' = e /\ answers' = answers + 1
-        /\ UNCHANGED <<decider, st, rcvd, rEnds, rAck, out, sFin, sGot, rGot, sLeft, rLeft, moves, sends>>
+        /\ UNCHANGED <<decider, st, rcvd, rEnds, rAck, out, rEndHere, sFin, sGot, rGot, sLeft, rLeft, moves, sends>>
         /\ UNCHANGED <<sVars, endVars, pathVars>> /\ UNCHANGED appVars
 SLeftAnswer ==
     \E e \in DOMAIN k :
@@ -651,7 +660,7 @@ TypeOK ==
     /\ decider \in {"S", "R"} /\ Len(st) = Len(d) /\ Len(st) = Len(k)
     /\ sEp \in DOMAIN st /\ rEp \in DOMAIN st /\ sWait \in BOOLEAN
     /\ 0 <= acked /\ acked <= Sendable /\ hi <= Total /\ nxt <= Sendable
-    /\ rcvd = Len(out) /\ rEnds \in Nat
+    /\ rcvd = Len(out) /\ rEnds \in Nat /\ rEndHere \in BOOLEAN
     /\ ab \in {"none", "S", "R"} /\ sGone \in BOOLEAN /\ rGone \in BOOLEAN
     /\ {sFin, rFin, sGot, rGot} \subseteq 0..Len(st) /\ sLeft \in BOOLEAN /\ rLeft \in BOOLEAN /\ answers \in Nat
     /\ addr = rebinds + 1 /\ repunched <= rebinds /\ blocked \in BOOLEAN /\ tok \in 0..addr
@@ -661,6 +670,13 @@ TypeOK ==
 InOrder == \A i \in 1..Len(out) : out[i] = i - 1
 \* S never frees a position R lacks: a switch can always resend what R misses.
 NoLoss == acked <= RPos
+\* An ACK S takes never exceeds what S sent on that stream, the END
+\* included (pathswitch take: "ACK(n), sent nxt" is the peer's protocol
+\* error, a reset). After a RESUME S sends again from its count, so an
+\* END R took on a stream it left counts in an ACK only once S sent it
+\* again (lane ENDACKFIX: "ACK(2797), sent 2796", a direct session's END
+\* read after the move).
+AckSent == (SLive /\ ~sWait /\ k[sEp] # <<>> /\ Head(k[sEp]).t = "ack") => Head(k[sEp]).n <= nxt
 \* S keeps at most w bytes per direction of a session; w starts at W and
 \* grows to MaxW at most (lane LINKLEFT).
 BufferBound == hi - acked <= w
@@ -758,5 +774,8 @@ WitnessResetRead == ~(rGone /\ ab = "S" /\ got = Total)
 \* R's application read the END, S's direction clean (lane ENDACK)
 WitnessEndRead == ~(AppSteps /\ Clean /\ rEOF)
 \* R's end closed with bytes dropped, the END taken: its reset reached S
+\* An END R took on a stream it left, S sent again and R acknowledged on the
+\* new one (lane ENDACKFIX).
+WitnessEndAckMoved == ~(SLive /\ ~sWait /\ sEp > 1 /\ endSends > 1 /\ k[sEp] # <<>> /\ Head(k[sEp]) = [t |-> "ack", n |-> Total + 1])
 WitnessCloseDropReset == ~(ab = "R" /\ rShut # "no" /\ got < Total /\ sGone /\ rEnds > 0)
 =============================================================================

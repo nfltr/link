@@ -1565,6 +1565,20 @@ the design, R drops the END sent again), relay `TLSEnd.tla` (mutants
 `ack-on-receipt`, `stop-at-notify`). Every earlier mutant is still
 caught, every witness reached.
 
+An END taken on a stream left (lane ENDACKFIX): a RESUME (OPEN) sent
+while the END was taken but not yet read has no END, so S sends it
+again from there (nxt = Total). R's ACK of the END, once its program
+read it, then exceeded what S had sent on that stream, S's protocol
+error ("ACK(2797), sent 2796": a direct session's END read just after
+the move, nfltr `TestGroupDial`). R's ACK counts the END only once it
+took it on its stream or the RESUME that opened it counted it
+(`AckPos`, `rEndHere`; pathswitch `ackPos`, `rEndHere`); invariant
+`AckSent` (an ACK S takes never exceeds `nxt`), mutant `ack-end-unsent`
+(today's code before the fix), witness `WitnessEndAckMoved` (an END
+sent again, then acknowledged on the new stream). Prior art: TCP's
+receiver acknowledges only what arrived on the connection (RFC 9293
+3.10.7.4: an ACK of something not yet sent is answered and dropped).
+
 Prior art: the end-to-end argument (Saltzer, Reed, Clark 1984: a
 transport's delivery is no application's receipt); TCP's close with
 unread data sends RST (RFC 9293 3.10.4 and RFC 1122 4.2.2.13), the
@@ -3072,6 +3086,7 @@ Mutants (`make spec-mutants`), each caught:
 | `end-early` | S sends END once the application closed, before its last bytes went | `EndAfterData` |
 | `ack-on-receipt` (`DirectPathClose.cfg`) | R counts the END once taken, before its application read it: S's Close clean while R's program may still fail (pathswitch before lane ENDACK) | `EndTruth` |
 | `close-took-end` (`DirectPathClose.cfg`) | a Close counts the END whatever it dropped (lane PIPERACE's prototype) | `EndTruth` |
+| `ack-end-unsent` (`DirectPathClose.cfg`) | R's ACK counts an END it took on a stream it left, before S sent it again on the new one (its RESUME had no END): S's take is a protocol error, the session reset (pathswitch at lane ENDACK: "ACK(2797), sent 2796", lane ENDACKFIX) | `AckSent` |
 | `leave-at-complete` | the decider (the client) leaves at its own FIN, not after the peer's: its last ACK lost with a path, the agent waits for a stream nobody opens (the code before lane PSCLOSE) | `LeaveLast`; `CloseEnds` without it |
 | `move-before-proof` | the client moves before the agent acknowledged its handshake's bytes: they wait on the new stream, which the agent takes only after them (relay `client/agent` before lane DIRECTSTALL) | `AllDelivered`, `CloseEnds` (`DirectPathProof.cfg`) |
 | `total-bound` | S's Close gives up a fixed time after it began, whatever the progress: a live, slowly acknowledged tail is reset (pathswitch `Conn.Close` before lane ENDACKCODE: `waitHeard(Detach)` with no stall bound, every frame heard extending the silence; now `Detach` with no acknowledgement advancing, as `WaitAcked`) | `CloseKeepsLive` |

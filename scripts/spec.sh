@@ -845,11 +845,12 @@ mutants)
 	# for a vanished peer (the detach bound), a reset that drops the bytes
 	# an end took (relay PIPEMATRIX defect 1). Lane ENDACK: the END
 	# acknowledged once taken, before the application read it; a Close
-	# that dropped bytes counting the END.
-	for m in close-no-wake close-waits-gone-peer reset-drops-taken ack-on-receipt close-took-end; do
+	# that dropped bytes counting the END. Lane ENDACKFIX: an ACK of an END
+	# taken on a stream left, before the peer sent it again (AckSent).
+	for m in close-no-wake close-waits-gone-peer reset-drops-taken ack-on-receipt close-took-end ack-end-unsent; do
 		job mutant DirectPathClose.cfg 'Mutant = "none"' "Mutant = \"$m\"" DirectPath.tla
 	done
-	for w in WitnessCloseWake WitnessLingerOut WitnessResetRead WitnessEndRead WitnessCloseDropReset; do job witness DirectPathClose.cfg $w DirectPath.tla; done
+	for w in WitnessCloseWake WitnessLingerOut WitnessResetRead WitnessEndRead WitnessCloseDropReset WitnessEndAckMoved; do job witness DirectPathClose.cfg $w DirectPath.tla; done
 	# Lane DIRECTREBIND: the agent's address changes; a token kept from the
 	# old connection, a re-punch of the old candidates, none, data on both
 	# paths (the stale stream kept).
