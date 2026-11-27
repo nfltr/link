@@ -50,6 +50,7 @@ type rigOpts struct {
 	cfg       ForwardConfig
 	wrap      func(i int, nc net.Conn) net.Conn // the dialer's side of link i
 	noGrow    bool                              // the dialers announce no FeatureGrow (v0.13's)
+	hop       bool                              // the hops' conns are Config.Hop (relay-core's)
 }
 
 func newChainRig(t testing.TB, o rigOpts, far func([]byte, *Session)) *chainRig {
@@ -73,6 +74,7 @@ func newChainRig(t testing.TB, o rigOpts, far func([]byte, *Session)) *chainRig 
 		}
 		dcfg := Config{Window: o.window, Auth: testToken, Liveness: o.live, noChain: !l.chain, noGrow: o.noGrow}
 		lcfg := Config{Window: o.window, Auth: testToken, noChain: !l.chain}
+		dcfg.Hop, lcfg.Hop = o.hop && i > 0, o.hop && i < o.n-1
 		if i < o.n-1 { // hop i+1 forwards what link i brings
 			obs := &hopObserver{}
 			r.obs = append(r.obs, obs)
