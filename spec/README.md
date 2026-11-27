@@ -377,7 +377,7 @@ passed on: `TestEndAckFarEndCloseBeforeFinFails`) (`CloseTruth`). Witnesses: `Wi
 | assumption | source |
 |---|---|
 | Each link connection is one FIFO; a connection's end loses the frames not yet read | WIRE.md 1, 4; TCP (RFC 9293) |
-| A far end's Mux acknowledges a half close it received; a hop only once passed on | WIRE.md 13 (`Config.Hop`) |
+| A far end acknowledges a half close once its reader took it (io.EOF, or a Close after every byte); a hop only once passed on | WIRE.md 13 (`Config.Hop`), lane ENDACK |
 | A connection whose peer is gone ends (the dead-peer bound) | `Liveness.tla` `DetectBound` |
 | A program's exit ends its connections; a relay's crash ends both of its | the OS closes a process's sockets |
 
@@ -1474,6 +1474,104 @@ took `joint.sync`, unheld, and its connection went unwatched (Join.tla
 the `wrapped` cases of `TestJoinHoldsAnEndOntoASyncingApp`,
 `TestJoinLostWhileTheClientIsIdle` and quiclink
 `TestJoinHoldsOntoAConcurrentQuicApp`.
+
+## The end read by the far program (lane ENDACK, 2026-11-27)
+
+Finding (lane PIPERACE, pipe `TestReceiverStopsAfterArrival`, 100 of 100
+runs red on the Linux VM on both paths; pipe `docs/reliability.md`
+defect 5): a receiver whose transport holds the whole stream and whose
+program then fails (its stdout broke) left the sender's clean Close nil:
+nfltr-pipe's listener exited 0 while the dialler exited 6. Relayed,
+link's far end sent ENDACK when its receive loop took the CLOSE
+(`mux.go`, "a far end: received is taken"); direct, pathswitch counted
+the END in its ACK once `take` had it; the relay SDK's acked end
+(`client/agent/queue_close.go` `ackedEnd`) waited for the data bytes
+only. All three are a receipt, not the far program's read.
+
+Invariant (pipe `spec/Pipe.tla` CleanExit's assumption, now the
+transport's contract): a clean `CloseWriteSync` (or a direct `Close`,
+`WaitAcked` of the END) returns nil only once the peer's program read
+the end: its `Read` (`WriteTo`, a Pump) returned io.EOF, or it closed
+the session whole after reading every byte (a reader that knows the
+stream's length). Otherwise the Close reports the peer's reset or
+failure, or the idle bound.
+
+Who acknowledges when:
+
+| transport | the acknowledgement | code |
+|---|---|---|
+| link far end | ENDACK at the reader's io.EOF (`Session.end` -> `readEnd`), or at `Close` after every byte read (`ackAtClose`); a Close with a byte unread sends the CLOSE (or, both halves passed, a reset): the waiter reads `ErrReset` | `endack.go`, `mux.go` (the receipt ack deleted) |
+| link hop (`Config.Hop`) | unchanged: the join holds it until its onward `CloseWriteSync` returned (`HoldEndAck`, `HopHold.tla`) | `join.go`, `peerlink/chain.go` |
+| quiclink | unchanged: 'E' at Read's io.EOF (the reference this lane follows) | `peerlink/quiclink/endack.go` `readEOF` |
+| pathswitch | the END counts in R's ACK (and RESUME, OPEN) only once its application read it (Read's io.EOF) or closed its reading with every byte read; a Close that dropped bytes never acknowledges it and resets the session once the END came (`DirectPath.tla` `RCloseReset`); a RESUME without an END not yet read makes S send it again, which R drops | `pathswitch/conn.go` (`rEOF`, `rLost`, `rpos`, `take`) |
+| relay SDK acked end (direct) | `WaitAcked(Written()+1)`: the END too, not only the bytes | relay `client/agent/queue_close.go` |
+| end-to-end TLS | tlsend's `Read` takes the transport's END behind the peer's close_notify before it returns io.EOF (within `EndBound` when the peer keeps the transport): the link END is read by the program, so its ENDACK goes | relay `client/tlsend` (`TLSEnd.tla` `YTake`) |
+| TCP visitor leg, gRPC stream | unchanged: a receipt (the far program is not ours; `EndAckLeg.tla` `AtReceipt`) | relay-core |
+
+TLS close_notify: crypto/tls reads nothing past the close_notify, so a
+reader under end-to-end TLS never reads the link's END itself. With the
+acknowledgement at the reader's io.EOF and tlsend's Read stopping at the
+close_notify (lane PIPERACE's prototype), each end's `CloseWriteSync`
+waited for the other's ENDACK, which each end's Close (after its own
+`CloseWriteSync`, nfltr-pipe's order) was to send: every clean relayed
+session held 30 s (the idle bound) and exited 6. The acknowledgement is
+not redefined against close_notify (link knows nothing of TLS); tlsend's
+Read takes the END instead (`TLSEnd.tla` mutant `stop-at-notify`:
+`XEnds`, `YWEnds`, `YCloses`).
+
+Tests that encoded acknowledgement on receipt: `TestEndAckWaitsForTheFarEnd`,
+`TestEndAckExitThenTheFarEndWrites`, `TestCloseWriteSyncOnALeavingConnection`,
+`TestFinThenFailureReadsEOF`, `TestJoinFailureAfterFinDeliversTheTail`
+waited in `CloseWriteSync` while the far end read nothing yet. They
+change, because their far end never read the end while the Close waited:
+the first now asserts the new rule (C's Mux holds the end, the Close
+still waits until C's reader takes it); the next two read concurrently
+with the Close, as a far program does; the last two wanted only "the
+peer's Mux has the FIN" and use `CloseWrite` then `sync` (the ping's
+pong), which is exactly that. New guard: `TestEndAckWaitsForTheReader`
+(read to EOF, read every byte then Close: nil; a reset after arrival, a
+Close with a byte unread: `ErrReset`).
+
+Specs (checked with `-coverage 1`, every action taken): `EndAckLeg.tla`
+(R's application `RRead`, `REof`; invariant `ReadTruth`, mutant
+`ack-on-receipt` on both configurations; witnesses
+`WitnessFailAfterArrival`, `WitnessReadThenClose`; 878 and 1,172
+states), `RelayedClose.tla` (C's acknowledgement at `CEnd` or at
+`CClose` after every byte, C's reset `CReset`; invariant `ReadTruth`,
+mutant `ack-on-receipt`; witnesses `WitnessResetAfterArrival`,
+`WitnessReadThenClose`; 144,149 states), `DirectPath.tla` (`rEOF`,
+`AppEOF`, `RCloseReset`, `EndRead`; invariant `EndTruth`, mutants
+`ack-on-receipt`, `close-took-end`; witnesses `WitnessEndRead`,
+`WitnessCloseDropReset`; `DirectPathClose.cfg` 109,825 states; mutant
+`resume-drops-fin` deleted: a RESUME without an END not yet read is now
+the design, R drops the END sent again), relay `TLSEnd.tla` (mutants
+`ack-on-receipt`, `stop-at-notify`). Every earlier mutant is still
+caught, every witness reached.
+
+Prior art: the end-to-end argument (Saltzer, Reed, Clark 1984: a
+transport's delivery is no application's receipt); TCP's close with
+unread data sends RST (RFC 9293 3.10.4 and RFC 1122 4.2.2.13), the
+model for a Close with a byte unread; SSH's channel close answered by
+the peer's (RFC 4254 5.3); quiclink's 'E' at Read's EOF.
+
+Cross-version (an old peer acknowledges on receipt, the new one at its
+reader): a new sender with an old far end gets the ENDACK at the old
+Mux's receipt, the contract before (no hang, the weaker guarantee); an
+old sender with a new far end waits until the new end's program read
+the end, so its Close returns later, and with an error where the far
+program failed or closed with bytes unread (before: nil). An old
+pathswitch R acknowledges the END at take; a new R acknowledges it
+later and drops an END sent again (an old R took a second END as a
+protocol error, but an old S resends only from a RESUME without it,
+which an old R never sends). No wire change: no feature bit.
+
+Idle bound: a far program that holds the session but neither reads its
+end nor closes for 30 s (`endAckIdle`) now ends the sender's
+`CloseWriteSync` with `ErrEndAckIdle` and a reset, as a mute far end
+did; before, its Mux's receipt ended the wait at once.
+
+Dogfood: nfltr-pipe (nfltr's own pipe, its matrix in pipe's `make ci`)
+is the first user; `TestReceiverStopsAfterArrival` runs on both paths.
 
 ## One leg's end acknowledgement (EndAckLeg.tla, 2026-11-20, lane ENDACK2D)
 
@@ -2955,7 +3053,8 @@ Mutants (`make spec-mutants`), each caught:
 | `no-bind` | the direct handshake takes whoever answers at the address: the relay redirects | `OnlyPeer` |
 | `keep-dead-path` | a dead direct path is kept, no fallback | `AllDelivered`, `CloseEnds` |
 | `end-early` | S sends END once the application closed, before its last bytes went | `EndAfterData` |
-| `resume-drops-fin` | a RESUME leaves out the END R took: S sends it again and R takes it twice | `EndOnce` |
+| `ack-on-receipt` (`DirectPathClose.cfg`) | R counts the END once taken, before its application read it: S's Close clean while R's program may still fail (pathswitch before lane ENDACK) | `EndTruth` |
+| `close-took-end` (`DirectPathClose.cfg`) | a Close counts the END whatever it dropped (lane PIPERACE's prototype) | `EndTruth` |
 | `leave-at-complete` | the decider (the client) leaves at its own FIN, not after the peer's: its last ACK lost with a path, the agent waits for a stream nobody opens (the code before lane PSCLOSE) | `LeaveLast`; `CloseEnds` without it |
 | `move-before-proof` | the client moves before the agent acknowledged its handshake's bytes: they wait on the new stream, which the agent takes only after them (relay `client/agent` before lane DIRECTSTALL) | `AllDelivered`, `CloseEnds` (`DirectPathProof.cfg`) |
 | `total-bound` | S's Close gives up a fixed time after it began, whatever the progress: a live, slowly acknowledged tail is reset (pathswitch `Conn.Close` before lane ENDACKCODE: `waitHeard(Detach)` with no stall bound, every frame heard extending the silence; now `Detach` with no acknowledgement advancing, as `WaitAcked`) | `CloseKeepsLive` |

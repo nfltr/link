@@ -82,6 +82,14 @@
 (* this direction is Clean (for the other direction) is outside this       *)
 (* model; the code resets no session complete at its end (Abort is then   *)
 (* the clean end) and keeps a direction it took the END of readable.      *)
+(*                                                                         *)
+(* The END read (lane ENDACK): with the applications modelled, R counts    *)
+(* the END in its ACK (and RESUME) only once its application read it      *)
+(* (Read's io.EOF, AppEOF) or closed its end having read every byte; a    *)
+(* Close that dropped bytes (some unread, or arriving after it) never      *)
+(* acknowledges the END: R resets the session once it took the END        *)
+(* (RCloseReset), so S's Close reads a reset, never a clean end (pipe      *)
+(* TestReceiverStopsAfterArrival, docs/reliability.md defect 5).          *)
 EXTENDS Integers, Sequences
 
 CONSTANTS
@@ -96,7 +104,11 @@ CONSTANTS
     Proof,    \* bytes R must hold before it takes an OPEN (decider S): the handshake; 0: none
     AppSteps, \* TRUE: R's application's reads and close are modelled (lane DIRECTCLOSE)
     MaxVanish, \* 0 or 1: whether an end's process may vanish
-    Mutant    \* "none" or a bug put back (spec-mutants)
+    Mutant    \* "none" or a bug put back (spec-mutants); "ack-on-receipt":
+              \* R counts the END once it took it, before its application
+              \* read it (pathswitch before lane ENDACK); "close-took-end":
+              \* a Close counts the END whatever it dropped (lane PIPERACE's
+              \* prototype)
 
 Paths == {"relay", "direct"}
 Max(a, b) == IF a > b THEN a ELSE b
@@ -138,19 +150,20 @@ VARIABLES
     got,      \* the bytes R's application read (a prefix of out)
     rBlocked, \* R's application waits in a Read
     rShut,    \* R's application closed its end: "no", "idle", "woke" (a Read was waiting)
+    rEOF,     \* R's application read the END (Read's io.EOF)
     vanished  \* the end whose process vanished: "none", "S", "R"
 
 vars == <<decider, st, d, k, sEp, sWait, hi, nxt, acked, w, rEp, rcvd, rEnds, rAck, out,
           ab, sGone, rGone, relayUp, dir, dies, punches, moves, sends, endSends, abSends,
           sFin, rFin, sGot, rGot, sLeft, rLeft, answers, addr, rebinds, repunched, blocked, tok,
-          got, rBlocked, rShut, vanished>>
+          got, rBlocked, rShut, rEOF, vanished>>
 sVars == <<sEp, sWait, hi, nxt, acked, w>>
 rVars == <<rEp, rcvd, rEnds, rAck, out>>
 endVars == <<ab, sGone, rGone, endSends, abSends>>
 rbVars == <<addr, rebinds, repunched, blocked, tok>>
 pathVars == <<relayUp, dir, dies, punches, addr, rebinds, repunched, blocked, tok>>
 leaveVars == <<sFin, rFin, sGot, rGot, sLeft, rLeft, answers>>
-appVars == <<got, rBlocked, rShut, vanished>>
+appVars == <<got, rBlocked, rShut, rEOF, vanished>>
 closeVars == <<leaveVars, appVars>>
 
 Init ==
@@ -167,7 +180,7 @@ Init ==
     /\ sFin = 0 /\ rFin = 0 /\ sGot = 0 /\ rGot = 0 /\ sLeft = FALSE /\ rLeft = FALSE /\ answers = 0
     /\ addr = 1 /\ rebinds = 0 /\ repunched = 0 /\ tok = 0
     /\ blocked \in IF MaxRebind > 0 THEN BOOLEAN ELSE {FALSE}
-    /\ got = 0 /\ rBlocked = FALSE /\ rShut = "no" /\ vanished = "none"
+    /\ got = 0 /\ rBlocked = FALSE /\ rShut = "no" /\ rEOF = FALSE /\ vanished = "none"
 
 \* R's caller holds the session's proof (the other direction, decider R, is
 \* complete already)
@@ -177,9 +190,15 @@ Cur == IF decider = "S" THEN sEp ELSE rEp     \* the decider's stream
 \* the positions S may send: its bytes, and the END once it wrote them all
 Sendable == IF hi = Total THEN Total + 1 ELSE hi
 \* R's count: the bytes it delivered, and the END once it took it. Mutant
-\* "resume-drops-fin": a RESUME leaves the END out (S sends it again).
-RPos == rcvd + (IF rEnds > 0 THEN 1 ELSE 0)
-RResume == IF Mutant = "resume-drops-fin" THEN rcvd ELSE RPos
+\* A RESUME carries R's count: an END taken but not yet read is not in it,
+\* so S sends the END again, and R drops the one it holds (RecvOn; lane
+\* ENDACK: the mutant "resume-drops-fin" of lane DIRECTPATH2 is the design
+\* for such an END, and harmless).
+\* With the applications modelled the END counts once R's application read
+\* it, or closed its end having read every byte (lane ENDACK).
+EndRead == ~AppSteps \/ Mutant = "ack-on-receipt" \/ rEOF \/ (rShut # "no" /\ (got = rcvd \/ Mutant = "close-took-end"))
+RPos == rcvd + (IF rEnds > 0 /\ EndRead THEN 1 ELSE 0)
+RResume == RPos
 \* the direction ended cleanly: every byte and the END delivered, all freed
 Clean == rcvd = Total /\ rEnds > 0 /\ acked = Total + 1
 \* the aborter keeps answering with ABORT; an end that took the peer's is done.
@@ -439,7 +458,7 @@ RecvOn(e) ==
     /\ LET f == Head(d[e]) IN
        /\ out' = IF f.t = "data" THEN Append(out, f.b) ELSE out
        /\ rcvd' = rcvd + (IF f.t = "data" THEN 1 ELSE 0)
-       /\ rEnds' = rEnds + (IF f.t = "end" THEN 1 ELSE 0)
+       /\ rEnds' = rEnds + (IF f.t = "end" /\ rEnds = 0 THEN 1 ELSE 0) \* a resent END R holds: dropped
        /\ rGone' = (f.t = "abort")
     /\ d' = [d EXCEPT ![e] = Tail(@)]
     /\ UNCHANGED <<decider, st, k, rEp, rAck, ab, sGone, endSends, abSends, moves, sends>>
@@ -468,7 +487,7 @@ Ack ==
 Fin == [t |-> "fin"]
 \* the end's view of the direction is complete
 SDone == acked = Total + 1
-RDone == rEnds > 0 /\ rAck = RPos
+RDone == rEnds > 0 /\ EndRead /\ rAck = RPos
 \* An end complete in its view ends its stream with FIN after its last
 \* frame and leaves; the decider only once it took the peer's FIN on that
 \* stream. Mutant "leave-at-complete": the decider does not wait for it
@@ -518,19 +537,26 @@ AppRead ==
     /\ AppSteps /\ RUp /\ rShut = "no" /\ got < rcvd
     /\ (Mutant = "reset-drops-taken" => ~rGone)
     /\ got' = got + 1 /\ rBlocked' = FALSE
-    /\ UNCHANGED <<decider, st, d, k, moves, sends, rShut, vanished>> /\ UNCHANGED <<sVars, rVars, endVars, pathVars>>
+    /\ UNCHANGED <<decider, st, d, k, moves, sends, rShut, rEOF, vanished>> /\ UNCHANGED <<sVars, rVars, endVars, pathVars>>
     /\ UNCHANGED leaveVars
 \* R's application waits in a Read: nothing taken unread, no END, no reset.
 ReadBlock ==
     /\ AppSteps /\ RLive /\ rShut = "no" /\ ~rBlocked /\ got = rcvd /\ rEnds = 0
     /\ rBlocked' = TRUE
-    /\ UNCHANGED <<decider, st, d, k, moves, sends, got, rShut, vanished>> /\ UNCHANGED <<sVars, rVars, endVars, pathVars>>
+    /\ UNCHANGED <<decider, st, d, k, moves, sends, got, rShut, rEOF, vanished>> /\ UNCHANGED <<sVars, rVars, endVars, pathVars>>
     /\ UNCHANGED leaveVars
 \* The Read waiting returns the direction's end (EOF) or the reset.
 ReadEnd ==
     /\ rBlocked /\ RUp /\ got = rcvd /\ (rEnds > 0 \/ rGone)
-    /\ rBlocked' = FALSE
+    /\ rBlocked' = FALSE /\ rEOF' = (rEOF \/ rEnds > 0)
     /\ UNCHANGED <<decider, st, d, k, moves, sends, got, rShut, vanished>> /\ UNCHANGED <<sVars, rVars, endVars, pathVars>>
+    /\ UNCHANGED leaveVars
+\* R's application reads the END (io.EOF): every byte it took read, the END
+\* taken; R's next ACK counts it (lane ENDACK).
+AppEOF ==
+    /\ AppSteps /\ RUp /\ rShut = "no" /\ ~rEOF /\ ~rBlocked /\ got = rcvd /\ rEnds > 0
+    /\ rEOF' = TRUE
+    /\ UNCHANGED <<decider, st, d, k, moves, sends, got, rBlocked, rShut, vanished>> /\ UNCHANGED <<sVars, rVars, endVars, pathVars>>
     /\ UNCHANGED leaveVars
 \* R's application closes its end: a Read waiting returns at once. R goes
 \* on taking (and dropping) the peer's bytes. Mutant "close-no-wake": the
@@ -540,14 +566,14 @@ RClose ==
     /\ AppSteps /\ RUp /\ rShut = "no"
     /\ rShut' = IF rBlocked THEN "woke" ELSE "idle"
     /\ rBlocked' = (Mutant = "close-no-wake" /\ rBlocked)
-    /\ UNCHANGED <<decider, st, d, k, moves, sends, got, vanished>> /\ UNCHANGED <<sVars, rVars, endVars, pathVars>>
+    /\ UNCHANGED <<decider, st, d, k, moves, sends, got, rEOF, vanished>> /\ UNCHANGED <<sVars, rVars, endVars, pathVars>>
     /\ UNCHANGED leaveVars
 \* An end's process vanishes (after the handshake: before, it is the
 \* handshake's failure): it takes no step from now on.
 Vanish(x) ==
     /\ MaxVanish > 0 /\ vanished = "none" /\ Proved
     /\ vanished' = x
-    /\ UNCHANGED <<decider, st, d, k, moves, sends, got, rBlocked, rShut>> /\ UNCHANGED <<sVars, rVars, endVars, pathVars>>
+    /\ UNCHANGED <<decider, st, d, k, moves, sends, got, rBlocked, rShut, rEOF>> /\ UNCHANGED <<sVars, rVars, endVars, pathVars>>
     /\ UNCHANGED leaveVars
 \* An end whose application closed (S: wrote its last byte and closed; R:
 \* RClose) hears nothing from its vanished peer for its close bound: it
@@ -558,6 +584,17 @@ LingerOut(x) ==
     /\ IF x = "S" THEN SLive /\ hi = Total /\ sGone' = TRUE /\ UNCHANGED rGone
                   ELSE RLive /\ rShut # "no" /\ rGone' = TRUE /\ UNCHANGED sGone
     /\ UNCHANGED <<decider, st, d, k, moves, sends, ab, endSends, abSends>> /\ UNCHANGED <<sVars, rVars, pathVars>>
+    /\ UNCHANGED closeVars
+
+\* R's end closed having dropped bytes (unread at its Close, or arriving
+\* after it): once it took the END, which it never acknowledges, it resets
+\* the session (pathswitch Close: not clean, an ABORT), so S's Close reads
+\* a reset at once (lane ENDACK).
+RCloseReset ==
+    /\ AppSteps /\ RLive /\ rShut # "no" /\ rEnds > 0 /\ ~EndRead /\ ab = "none" /\ ~sLeft
+    /\ ab' = "R" /\ abSends' = abSends + 1 /\ rGone' = TRUE
+    /\ k' = IF st[rEp].dead THEN k ELSE [k EXCEPT ![rEp] = Append(@, Abort)]
+    /\ UNCHANGED <<sGone, d, decider, st, endSends, moves, sends>> /\ UNCHANGED <<sVars, rVars, pathVars>>
     /\ UNCHANGED closeVars
 
 \* S's Close waits for its direction's acknowledgement with no total bound:
@@ -585,7 +622,7 @@ Next ==
     \/ Write \/ Send \/ SendEndEarly \/ SendStale \/ Resume \/ TakeAck \/ STakeAbort \/ SAnswerAbort
     \/ TakeOpen \/ Recv \/ RecvStale \/ Ack
     \/ SFin \/ RFin \/ STakeFin \/ RTakeFin \/ RLeftAnswer \/ SLeftAnswer
-    \/ AppRead \/ ReadBlock \/ ReadEnd \/ RClose
+    \/ AppRead \/ ReadBlock \/ ReadEnd \/ AppEOF \/ RClose \/ RCloseReset
     \/ \E x \in {"S", "R"} : Vanish(x) \/ LingerOut(x)
     \/ CloseGiveUp
 
@@ -605,7 +642,7 @@ Fairness ==
     /\ WF_vars(RePunch) /\ WF_vars(rebinds > 0 /\ (Verify \/ Refuse))
     \* R's application reads what it took; the close bound fires (a vanish
     \* and a close are free choices)
-    /\ WF_vars(AppRead) /\ WF_vars(ReadEnd) /\ WF_vars(\E x \in {"S", "R"} : LingerOut(x))
+    /\ WF_vars(AppRead) /\ WF_vars(ReadEnd) /\ WF_vars(AppEOF) /\ WF_vars(RCloseReset) /\ WF_vars(\E x \in {"S", "R"} : LingerOut(x))
 
 Spec == Init /\ [][Next]_vars /\ Fairness
 
@@ -618,7 +655,7 @@ TypeOK ==
     /\ ab \in {"none", "S", "R"} /\ sGone \in BOOLEAN /\ rGone \in BOOLEAN
     /\ {sFin, rFin, sGot, rGot} \subseteq 0..Len(st) /\ sLeft \in BOOLEAN /\ rLeft \in BOOLEAN /\ answers \in Nat
     /\ addr = rebinds + 1 /\ repunched <= rebinds /\ blocked \in BOOLEAN /\ tok \in 0..addr
-    /\ got \in 0..rcvd /\ rBlocked \in BOOLEAN /\ rShut \in {"no", "idle", "woke"} /\ vanished \in {"none", "S", "R"}
+    /\ got \in 0..rcvd /\ rBlocked \in BOOLEAN /\ rShut \in {"no", "idle", "woke"} /\ rEOF \in BOOLEAN /\ vanished \in {"none", "S", "R"}
 \* R delivers bytes 0, 1, 2, ... once each, in order: none lost, none
 \* twice, none out of place (at a switch or ever).
 InOrder == \A i \in 1..Len(out) : out[i] = i - 1
@@ -665,6 +702,9 @@ CloseEnds == <>((sLeft /\ rLeft) \/ ab # "none" \/ vanished # "none")
 \* Without an application's reset, no session is reset: a Close's bound
 \* never resets a live peer's slow tail (lane ENDACKCODE).
 CloseKeepsLive == MaxAbort = 0 => ab = "none"
+\* S frees the END only once R's application read it, or closed its end
+\* having read every byte (lane ENDACK; pipe spec/Pipe.tla CleanExit).
+EndTruth == (AppSteps /\ acked = Total + 1) => (rEOF \/ (rShut # "no" /\ got = Total))
 \* A Close wakes a Read waiting in it at once (lane DIRECTCLOSE).
 CloseWakes == rShut # "no" => ~rBlocked
 \* R's application reads every byte R took, a reset or not, unless it
@@ -715,4 +755,8 @@ WitnessCloseWake == rShut # "woke"
 WitnessLingerOut == ~(vanished # "none" /\ (sGone \/ rGone) /\ ab = "none")
 \* R took the reset and its application read every byte
 WitnessResetRead == ~(rGone /\ ab = "S" /\ got = Total)
+\* R's application read the END, S's direction clean (lane ENDACK)
+WitnessEndRead == ~(AppSteps /\ Clean /\ rEOF)
+\* R's end closed with bytes dropped, the END taken: its reset reached S
+WitnessCloseDropReset == ~(ab = "R" /\ rShut # "no" /\ got < Total /\ sGone /\ rEnds > 0)
 =============================================================================

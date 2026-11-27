@@ -19,6 +19,12 @@
 (* failed session fails, leaves C's abort to the other direction while    *)
 (* that one runs (held), so the abort never overtakes the tail.           *)
 (*                                                                         *)
+(* The far end's program (lane ENDACK): C acknowledges the end only once   *)
+(* its application read it (CEnd's io.EOF), or closed the session whole   *)
+(* after reading every byte (ackAtClose); never at its Mux's receipt of   *)
+(* the FIN, after which C's application may still fail (CReset: pipe      *)
+(* TestReceiverStopsAfterArrival, docs/reliability.md defect 5).          *)
+(*                                                                         *)
 (* Progress bound (lane RELAYCLOSE, V1READY's finding): a far end that    *)
 (* answers the link's pings but never acknowledges (mute) holds no wait   *)
 (* past the idle bound: a wait (A's Close, J's onward one) gives up N s   *)
@@ -29,7 +35,9 @@ EXTENDS Naturals, Sequences
 
 CONSTANTS
     K,       \* A's bytes
-    Mutant   \* "none"; "close-before-ack": Close returns once the FIN is
+    Mutant   \* "none"; "ack-on-receipt": C's Mux acknowledges the FIN it
+             \* received, before C's application read it (link's far end
+             \* before lane ENDACK); "close-before-ack": Close returns once the FIN is
              \* buffered (the code before: an accepted relayed Conn's Close
              \* returned at once); "relay-read-ack": J acknowledges A's end
              \* once its own Mux read it (a Sync's pong, lane RELAYCLOSE's
@@ -88,8 +96,9 @@ VARIABLES
     cfail,   \* C's session failed (the abort, its connection's end)
     crd,     \* bytes C read
     cend,    \* how C's reads ended: "", "eof", "err", "closed" (C closed
-             \* the session whole before its reads ended)
-    fromC,   \* frames C -> J: "eack", "close" (C's whole close)
+             \* the session whole before its reads ended), "reset" (C's
+             \* application failed and reset the session)
+    fromC,   \* frames C -> J: "eack", "close" (C's whole close), "abort" (its reset)
     ccut,    \* C's connection to the relay ended
     mute     \* C answers pings but never acknowledges (broken or hostile)
 
@@ -265,9 +274,10 @@ CloseAnswers ==
 JAck ==
     /\ ~gone /\ fromC # <<>>
     /\ fromC' = Tail(fromC)
-    /\ IF Head(fromC) = "close" /\ d1 \in {"run", "sync"}
+    /\ IF Head(fromC) \in {"close", "abort"} /\ d1 \in {"run", "sync"}
        THEN /\ d1' = "done"
-            /\ \E x \in CloseAnswers : fromJ' = IF lost1 THEN fromJ ELSE Append(fromJ, x)
+            /\ \E x \in (IF Head(fromC) = "abort" THEN {"abort"} ELSE CloseAnswers) :
+                   fromJ' = IF lost1 THEN fromJ ELSE Append(fromJ, x)
             /\ cabort' = TRUE /\ UNCHANGED toC
             /\ d0' = IF d0 = "held" THEN "done" ELSE d0
        ELSE IF Head(fromC) = "eack" /\ d1 = "sync"
@@ -330,13 +340,13 @@ CWrite ==
 CRecv ==
     /\ toC # <<>>
     /\ toC' = Tail(toC)
-    /\ cend # "closed"
+    /\ cend \notin {"closed", "reset"}
     /\ CASE Head(toC) = "d"     -> cq' = cq + 1 /\ UNCHANGED <<cfin, cfail>>
          [] Head(toC) = "fin"   -> cfin' = TRUE /\ UNCHANGED <<cq, cfail>>
          [] Head(toC) = "abort" -> cfail' = TRUE /\ UNCHANGED <<cq, cfin>>
-    \* the far end's Mux acknowledges the FIN on receipt (in order: it
-    \* holds every byte before it), unless mute or failed
-    /\ fromC' = IF Head(toC) = "fin" /\ ~cfail /\ ~mute THEN Append(fromC, "eack") ELSE fromC
+    \* with the mutant the far end's Mux acknowledges the FIN on receipt
+    \* (in order: it holds every byte before it), unless mute or failed
+    /\ fromC' = IF Mutant = "ack-on-receipt" /\ Head(toC) = "fin" /\ ~cfail /\ ~mute THEN Append(fromC, "eack") ELSE fromC
     /\ UNCHANGED aVars /\ UNCHANGED <<toJ, fromJ, lost1, gone>> /\ UNCHANGED jVars /\ UNCHANGED <<cw, crd, cend, ccut, mute>>
 
 CRead ==
@@ -344,20 +354,32 @@ CRead ==
     /\ cq' = cq - 1 /\ crd' = crd + 1
     /\ UNCHANGED aVars /\ UNCHANGED <<toJ, fromJ, lost1, gone, toC>> /\ UNCHANGED jVars /\ UNCHANGED <<cw, cfin, cfail, cend, fromC, ccut, mute>>
 
-\* C's reads end.
+\* C's reads end: at io.EOF C's application took the end, which C
+\* acknowledges now (Session.end, readEnd), unless mute or failed.
 CEnd ==
     /\ cend = "" /\ cq = 0 /\ (cfin \/ cfail)
     /\ cend' = IF ReadsEof(cfin, cfail) THEN "eof" ELSE "err"
-    /\ UNCHANGED aVars /\ UNCHANGED <<toJ, fromJ, lost1, gone, toC>> /\ UNCHANGED jVars /\ UNCHANGED <<cw, cq, cfin, cfail, crd, fromC, ccut, mute>>
+    /\ fromC' = IF ReadsEof(cfin, cfail) /\ ~cfail /\ ~mute /\ Mutant # "ack-on-receipt" THEN Append(fromC, "eack") ELSE fromC
+    /\ UNCHANGED aVars /\ UNCHANGED <<toJ, fromJ, lost1, gone, toC>> /\ UNCHANGED jVars /\ UNCHANGED <<cw, cq, cfin, cfail, crd, ccut, mute>>
 \* C closes the session whole before A's FIN reached it (an app that ends
 \* the session early): J reads its close; C's Mux drops what comes after.
+\* After every byte and the FIN (C's reader knows the stream's length:
+\* ackAtClose) its close acknowledges the end first.
 CClose ==
-    /\ cend = "" /\ ~cfin /\ ~cfail /\ ~ccut /\ ~gone
-    /\ cend' = "closed" /\ fromC' = Append(fromC, "close")
+    /\ cend = "" /\ ~cfail /\ ~ccut /\ ~gone
+    /\ cend' = "closed"
+    /\ fromC' = IF cfin /\ cq = 0 /\ ~mute /\ Mutant # "ack-on-receipt" THEN fromC \o <<"eack", "close">> ELSE Append(fromC, "close")
+    /\ UNCHANGED aVars /\ UNCHANGED <<toJ, fromJ, lost1, gone, toC>> /\ UNCHANGED jVars /\ UNCHANGED <<cw, cq, cfin, cfail, crd, ccut, mute>>
+\* C's application fails before its reads ended (it took bytes, maybe the
+\* whole stream, and stops: pipe's dialler whose stdout broke) and resets
+\* the session.
+CReset ==
+    /\ cend = "" /\ ~cfail /\ ~ccut /\ ~gone
+    /\ cend' = "reset" /\ fromC' = Append(fromC, "abort")
     /\ UNCHANGED aVars /\ UNCHANGED <<toJ, fromJ, lost1, gone, toC>> /\ UNCHANGED jVars /\ UNCHANGED <<cw, cq, cfin, cfail, crd, ccut, mute>>
 \* What comes for C's session after its close is dropped.
 CDrop ==
-    /\ toC # <<>> /\ cend = "closed"
+    /\ toC # <<>> /\ cend \in {"closed", "reset"}
     /\ toC' = Tail(toC)
     /\ UNCHANGED aVars /\ UNCHANGED <<toJ, fromJ, lost1, gone>> /\ UNCHANGED jVars /\ UNCHANGED cVars
 
@@ -379,7 +401,7 @@ CCut ==
 Next ==
     \/ AWrite \/ AClose \/ ARecv \/ ADown \/ AIdle \/ AReset \/ AResetWaiting \/ AResetFirst \/ Exit \/ Cut
     \/ JRecv \/ JDown \/ D1Copy \/ D1End \/ JAck \/ JIdle \/ JSyncFail \/ D0CFail \/ D0Fail \/ RelayGone
-    \/ CWrite \/ CRecv \/ CRead \/ CEnd \/ CCut \/ CMute \/ CClose \/ CDrop
+    \/ CWrite \/ CRecv \/ CRead \/ CEnd \/ CCut \/ CMute \/ CClose \/ CReset \/ CDrop
 
 \* A, J and C take their own steps; the program's exit, its stop's reset,
 \* A's reset before or while its Close, the network's cuts, the relay's
@@ -396,7 +418,7 @@ Spec == Init /\ [][Next]_vars /\ Fairness
 TypeOK ==
     /\ aw \in 0..K /\ ret \in {"no", "wait", "clean", "err"} /\ aclosed \in BOOLEAN
     /\ d1 \in {"run", "sync", "done"} /\ d0 \in {"run", "held", "done"}
-    /\ cend \in {"", "eof", "err", "closed"} /\ crd \in 0..K /\ jq \in 0..K /\ cq \in 0..K /\ mute \in BOOLEAN
+    /\ cend \in {"", "eof", "err", "closed", "reset"} /\ crd \in 0..K /\ jq \in 0..K /\ cq \in 0..K /\ mute \in BOOLEAN
 
 \* C reads io.EOF only after every byte A wrote.
 NoSilentLoss == cend = "eof" => crd = K
@@ -405,6 +427,11 @@ NoSilentLoss == cend = "eof" => crd = K
 \* Mux received them; C's reads need no network then): a program that
 \* exits then loses nothing it wrote (pipe spec/Pipe.tla CleanExit).
 CloseTruth == ret = "clean" => ((cfin /\ crd + cq = K) \/ (aw = 0 /\ cend = "closed"))
+
+\* A clean Close only once C's application took the whole stream: it read
+\* every byte and io.EOF, or closed whole after reading every byte (lane
+\* ENDACK); C's later failure cannot make it a lie.
+ReadTruth == ret = "clean" => ((cfin /\ crd = K /\ cend \in {"eof", "closed"}) \/ (aw = 0 /\ cend = "closed"))
 
 \* J's clean close fails no Close of an empty stream: an error there only
 \* from A's reset, a cut, the idle bound or the relay's crash.
@@ -416,7 +443,7 @@ WitnessEmptyClosed == ~(ret = "clean" /\ cend = "closed")
 \* Once J read A's FIN, C reads every byte and io.EOF whatever A does
 \* next (exit, a cut, a reset), unless C's connection or the relay ended
 \* or C closed the session first.
-TailDelivered == jfin ~> ((cend = "eof" /\ crd = K) \/ gone \/ ccut \/ cend = "closed")
+TailDelivered == jfin ~> ((cend = "eof" /\ crd = K) \/ gone \/ ccut \/ cend \in {"closed", "reset"})
 
 \* A Close ends: never a wait past its connection's or the far end's end,
 \* nor past the idle bound when the far end is mute.
@@ -442,4 +469,9 @@ WitnessResetWaiting == ~(ret = "err" /\ rst /\ ~mute /\ ~lost1 /\ ~ccut /\ ~gone
 \* A Close that ends with an error because C closed the session whole
 \* before A's FIN reached it, on live connections.
 WitnessCClose == ~(ret = "err" /\ cend = "closed" /\ ~rst /\ ~mute /\ ~lost1 /\ ~ccut /\ ~gone)
+\* C's Mux held the whole stream, its application reset the session
+\* before io.EOF: A's Close errs (pipe TestReceiverStopsAfterArrival).
+WitnessResetAfterArrival == ~(ret = "err" /\ cfin /\ cend = "reset" /\ ~rst /\ ~mute /\ ~lost1 /\ ~ccut /\ ~gone)
+\* C read every byte, then closed whole: A's Close clean (ackAtClose).
+WitnessReadThenClose == ~(ret = "clean" /\ cend = "closed" /\ aw > 0)
 =============================================================================

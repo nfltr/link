@@ -829,11 +829,12 @@ mutants)
 	# lane DIRECTPATH): a byte freed before R had it, sent before R's RESUME,
 	# sent on or read from a stream left, resent from the wrong place, a
 	# stream to whoever the relay pointed at, a dead direct path kept; an
-	# END before the last byte, a RESUME without the END taken (lane
-	# DIRECTPATH2: the END taken twice), a reset sent once only.
+	# END before the last byte, a reset sent once only (a RESUME without
+	# an END not yet read is the design since lane ENDACK: R drops the
+	# END sent again).
 	# Lane PSCLOSE: the client leaving before the agent's FIN. Lane
 	# ENDACKCODE: a Close with a total bound resets a live, slow tail.
-	for m in free-on-send send-before-resume write-stale resume-from-acked read-stale no-bind keep-dead-path end-early resume-drops-fin leave-at-complete total-bound; do
+	for m in free-on-send send-before-resume write-stale resume-from-acked read-stale no-bind keep-dead-path end-early leave-at-complete total-bound; do
 		job mutant "$dp2" 'Mutant = "none"' "Mutant = \"$m\"" DirectPath.tla
 	done
 	job mutant DirectPathReset.cfg 'Mutant = "none"' 'Mutant = "abort-not-resent"' DirectPath.tla
@@ -842,11 +843,13 @@ mutants)
 	job mutant DirectPathProof.cfg 'Mutant = "none"' 'Mutant = "move-before-proof"' DirectPath.tla
 	# Lane DIRECTCLOSE: a Close that leaves a Read waiting, one that waits
 	# for a vanished peer (the detach bound), a reset that drops the bytes
-	# an end took (relay PIPEMATRIX defect 1).
-	for m in close-no-wake close-waits-gone-peer reset-drops-taken; do
+	# an end took (relay PIPEMATRIX defect 1). Lane ENDACK: the END
+	# acknowledged once taken, before the application read it; a Close
+	# that dropped bytes counting the END.
+	for m in close-no-wake close-waits-gone-peer reset-drops-taken ack-on-receipt close-took-end; do
 		job mutant DirectPathClose.cfg 'Mutant = "none"' "Mutant = \"$m\"" DirectPath.tla
 	done
-	for w in WitnessCloseWake WitnessLingerOut WitnessResetRead; do job witness DirectPathClose.cfg $w DirectPath.tla; done
+	for w in WitnessCloseWake WitnessLingerOut WitnessResetRead WitnessEndRead WitnessCloseDropReset; do job witness DirectPathClose.cfg $w DirectPath.tla; done
 	# Lane DIRECTREBIND: the agent's address changes; a token kept from the
 	# old connection, a re-punch of the old candidates, none, data on both
 	# paths (the stale stream kept).
@@ -922,10 +925,12 @@ mutants)
 	# Close after it that waits (a CloseWrite racing the Reset); the far
 	# end's whole close before the FIN reached it taken for its ENDACK
 	# (closeAckErr before lane ENDACKTRUTH).
-	for m in close-before-ack relay-read-ack ack-lost-hang sync-hang fail-drops-fin abort-at-write-fail liveness-counts-as-progress reset-keeps-endack-wait close-after-reset-waits close-acks; do
+	# Lane ENDACK: the far end's Mux acknowledging the FIN it received,
+	# before its program read it (its program may still fail).
+	for m in close-before-ack relay-read-ack ack-lost-hang sync-hang fail-drops-fin abort-at-write-fail liveness-counts-as-progress reset-keeps-endack-wait close-after-reset-waits close-acks ack-on-receipt; do
 		job mutant "$rc1" 'Mutant = "none"' "Mutant = \"$m\"" RelayedClose.tla
 	done
-	for w in WitnessExitThenEof WitnessFinThenAbort WitnessHeld WitnessCloseErr WitnessIdle WitnessResetWaiting WitnessResetFirst WitnessCClose; do job witness "$rc1" $w RelayedClose.tla; done
+	for w in WitnessExitThenEof WitnessFinThenAbort WitnessHeld WitnessCloseErr WitnessIdle WitnessResetWaiting WitnessResetFirst WitnessCClose WitnessResetAfterArrival WitnessReadThenClose; do job witness "$rc1" $w RelayedClose.tla; done
 	# J's clean close (C closed whole first) read as a reset of an empty
 	# stream (closeAckErr, closedFirst after ENDACKTRUTH; lane PIPERESET2).
 	job mutant RelayedCloseEmpty.cfg 'Mutant = "none"' 'Mutant = "close-resets"' RelayedClose.tla
@@ -960,16 +965,18 @@ mutants)
 	# on link too: closeAckErr before lane ENDACKTRUTH).
 	# A clean whole close read as a reset of a stream that carried no byte
 	# (closeAckErr and closedFirst after ENDACKTRUTH; lane PIPERESET2).
-	for m in ack-at-write liveness-counts-as-progress total-bound close-acks close-resets; do
+	# Lane ENDACK: acknowledged at the transport's receipt, before the far
+	# end's program read the end (link's far end and pathswitch before).
+	for m in ack-at-write liveness-counts-as-progress total-bound close-acks close-resets ack-on-receipt; do
 		job mutant EndAckLeg.cfg 'Mutant = "none"' "Mutant = \"$m\"" EndAckLeg.tla
 	done
 	# QUIC: a clean Close's bare 'A', read as a reset of an empty stream
 	# (quiclink before lane QUICEND).
-	for m in ack-at-final-size wait-on-stream-reset close-acks close-resets; do
+	for m in ack-at-final-size wait-on-stream-reset close-acks close-resets ack-on-receipt; do
 		job mutant EndAckLegQuic.cfg 'Mutant = "none"' "Mutant = \"$m\"" EndAckLeg.tla
 	done
-	for w in WitnessClean WitnessIdle WitnessEmptyClosed; do job witness EndAckLeg.cfg $w EndAckLeg.tla; done
-	for w in WitnessFinFirst WitnessEmptyClosed; do job witness EndAckLegQuic.cfg $w EndAckLeg.tla; done
+	for w in WitnessClean WitnessIdle WitnessEmptyClosed WitnessFailAfterArrival WitnessReadThenClose; do job witness EndAckLeg.cfg $w EndAckLeg.tla; done
+	for w in WitnessFinFirst WitnessEmptyClosed WitnessFailAfterArrival; do job witness EndAckLegQuic.cfg $w EndAckLeg.tla; done
 	# A QUIC receiver's ACK policy under ACK_FREQUENCY (AckFrequency.tla,
 	# lane SPEED-ACK): the fork's wasMissing rule before (an immediate ACK
 	# for every reordered packet), no ACK for a deep hole, IMMEDIATE_ACK

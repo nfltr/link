@@ -322,16 +322,20 @@ A side refuses an open it does not take with an abort refuse (code 1, or
 ## 13. End acknowledgement (`FeatureEndAck`)
 
 Where both sides announced bit 2, a half close (close code 1) is
-acknowledged once the stream it ends was taken, so a sender that waits
-for the acknowledgement knows the far end has every byte, across joins
-(`spec/RelayedClose.tla`).
+acknowledged once the far end's program took the stream it ends, so a
+sender that waits for the acknowledgement knows the far end's program
+read every byte and the end, across joins (`spec/RelayedClose.tla`
+ReadTruth).
 
 - **Endack (11)**: body exactly 1 + sid_len (sid_len, sid). A far end
   (a side that does not join the session onward) sends it once for a
-  session whose peer half-closed it (close code 1), when it receives
-  that close: in order, so the far end holds every byte before it. It
-  sends none for a session it reset or that failed before. For an
-  unknown sid it is ignored.
+  session whose peer half-closed it (close code 1), when its reader took
+  that close (the read after the last byte: end of stream), or when it
+  closes the session (code 0) after reading every byte; never at the
+  close's receipt alone, after which its program may still fail (link
+  v0.14.0 and earlier sent it at receipt: the waiting side accepts both).
+  It sends none for a session it reset or that failed before, nor at a
+  close with bytes unread. For an unknown sid it is ignored.
 - **Joins.** A side that joins the session to another (section 12's hop)
   sends the endack only once the end it passed on was acknowledged there
   (the onward endack, or on a connection without the bit the onward pong
@@ -345,8 +349,8 @@ for the acknowledgement knows the far end has every byte, across joins
 - **The waiting side.** A sender's wait for the endack ends with it, or
   with an error: a close code 0 from the peer without the endack before
   it (the peer closed the session before the half close reached it: a far
-  end acknowledges what it holds before it closes, so the end is not
-  known delivered, as a TCP close with data unread is an RST), close code
+  end acknowledges what its reader took before it closes, so the end is
+  not known delivered, as a TCP close with data unread is an RST), close code
   2, an abort, or the connection's end. It gives up (and resets the session) once nothing of
   the session was acknowledged (no window update) for its idle bound,
   30 s: pings are no progress. A leaving connection (section 9) closes
