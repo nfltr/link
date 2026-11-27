@@ -471,11 +471,19 @@ func TestCloseWriteSyncOnALeavingConnection(t *testing.T) {
 		drained := make(chan error, 1)
 		go func() { drained <- lm.Drain(context.Background()) }()
 		waitUntil(t, func() bool { return closed(lm.c.drained) }) // the peer read the GOAWAY
+		read := make(chan error, 1)
+		go func() { // the opener's reader takes the end: its ENDACK goes (lane ENDACK)
+			b, err := io.ReadAll(o)
+			if err == nil && len(b) != 0 {
+				err = errors.New("the opener read bytes")
+			}
+			read <- err
+		}()
 		if err := s.CloseWriteSync(); err != nil {
 			t.Fatalf("round %d: CloseWriteSync on a leaving connection: %v", i, err)
 		}
-		if b, err := io.ReadAll(o); err != nil || len(b) != 0 {
-			t.Fatalf("the opener read %q, %v", b, err)
+		if err := <-read; err != nil {
+			t.Fatalf("the opener's read: %v", err)
 		}
 		if err := <-drained; err != nil {
 			t.Fatalf("Drain: %v", err)

@@ -10,8 +10,10 @@ import (
 
 // featureEndAck is feature bit 2 (WIRE.md sections 6 and 13): the side
 // reads ENDACK frames and sends one when its reader takes the peer's half
-// close, so the peer's CloseWriteSync returns once the far end has the
-// session's whole stream, through any joins (spec/RelayedClose.tla).
+// close (io.EOF), so the peer's CloseWriteSync returns once the far end's
+// program read the session's whole stream, through any joins
+// (spec/RelayedClose.tla ReadTruth; lane ENDACK: not at the Mux's
+// receipt, after which the program may still fail).
 const featureEndAck uint32 = 1 << 2
 
 // ackWait is a half close's wait for the peer's ENDACK.
@@ -124,8 +126,8 @@ var ErrEndAckIdle = errors.New("link: the far end acknowledged nothing of the se
 func (s *Session) HoldEndAck() { s.heldAck.Store(true) }
 
 // AckEnd sends the session's ENDACK once: the peer's half close was
-// received (a far end), passed on (a join's, HoldEndAck), or taken by
-// this side's reader. Without end acknowledgements (WIRE.md section 13),
+// taken by this side's reader (io.EOF; a Close after every byte read),
+// or passed on (a join's, HoldEndAck). Without end acknowledgements (WIRE.md section 13),
 // or before the peer's half close, it sends nothing.
 func (s *Session) AckEnd() {
 	if s.m.c.muteEndAck {
@@ -145,8 +147,9 @@ func (s *Session) AckEnd() {
 	}
 }
 
-// readEnd: a reader took the peer's half close (a clean io.EOF): on a
-// hop, the end of a session no join holds is acknowledged here.
+// readEnd: a reader took the peer's half close (a clean io.EOF): the end
+// of a session no join holds is acknowledged here (spec/EndAckLeg.tla
+// REof, spec/RelayedClose.tla CEnd).
 func (s *Session) readEnd() {
 	if !s.heldAck.Load() {
 		s.AckEnd()
@@ -154,12 +157,10 @@ func (s *Session) readEnd() {
 }
 
 // ackAtClose: a Close after the reader took every byte but not yet the
-// end acknowledges it (a reader that knows the stream's length).
+// end acknowledges it (a reader that knows the stream's length; before
+// the close, so the peer reads the ENDACK first). With a byte unread it
+// does not: the peer's wait reads the close as a reset (closeAckErr).
 func (s *Session) ackAtClose() {
-	if !s.m.c.hop { // a far end: acknowledged on receipt (this keeps the ENDACK before the close)
-		s.AckEnd()
-		return
-	}
 	if s.heldAck.Load() || !s.q.Empty() {
 		return
 	}
@@ -174,9 +175,10 @@ func (s *Session) ackAtClose() {
 }
 
 // closeAckErr is how the peer's whole close ends this side's wait, its
-// ENDACK not read first: never nil. A far end acknowledges an end it holds
-// before its close (AckEnd on receipt, ackAtClose), so a close without one
-// came before this side's FIN reached it: the end is not known delivered,
+// ENDACK not read first: never nil. A far end acknowledges an end its
+// reader took before its close (readEnd, ackAtClose), so a close without
+// one came before its program read the whole stream (or this side's FIN
+// reached it): the end is not known delivered,
 // ErrReset (as a TCP close with data unread is an RST; quiclink's 'A');
 // an abort its own error (spec/EndAckLeg.tla RClose, spec/RelayedClose.tla
 // CClose, mutant close-acks: a clean close read as the ENDACK).

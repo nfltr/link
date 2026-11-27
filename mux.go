@@ -365,9 +365,8 @@ func (m *Mux) serve(f rxFrame, accept func([]byte, *Session)) {
 		s.peerHalf.Store(true) // before the queue's end: a Pump's done (Join) reads it
 		s.q.Close()            // reads end once the queue drains
 		s.kick()
-		if !m.c.hop && m.c.endAcks() { // a far end: received is taken (a goroutine: the receive loop never writes)
-			go s.AckEnd()
-		}
+		// A far end acknowledges once its reader takes the end (readEnd),
+		// never here: its program may still fail (lane ENDACK).
 		if s.finSent.Load() { // not halfClosed: its CLOSE may not be buffered yet (review r2 LinkSession finding 1)
 			s.peerClosed.Store(true)
 			m.drop(s) // both sides stopped sending
@@ -1429,10 +1428,11 @@ func (s *Session) Close() error {
 		}
 		if !s.peerClosed.Load() {
 			_ = s.m.sendClose(s.id, false) // before drop: a leaving connection closes after it
-		} else if s.m.c.hop && s.m.c.endAcks() && s.peerHalf.Load() && s.err.Load() == nil {
-			// both ends' halves passed, so no CLOSE goes: a hop's clean
-			// close of a session whose peer's end its join never passed on
-			// (the onward peer closed whole first) ends the peer's wait as
+		} else if s.m.c.endAcks() && s.peerHalf.Load() && s.err.Load() == nil {
+			// both ends' halves passed, so no CLOSE goes: a clean close
+			// of a session whose peer's end its reader never took (a far
+			// end, lane ENDACK) or its join never passed on (a hop: the
+			// onward peer closed whole first) ends the peer's wait as
 			// a whole close would: not known delivered, a reset (closeAckErr;
 			// relay-core TestConnIsANetConn hung on the agent's Close
 			// without; an ENDACK here was the lie of spec/RelayedClose.tla

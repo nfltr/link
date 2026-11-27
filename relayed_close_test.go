@@ -47,7 +47,10 @@ func TestFinThenFailureReadsEOF(t *testing.T) {
 			sent := make(chan *Session, 1)
 			c, srv := muxPairCut(t, func(_ []byte, s *Session) {
 				_, _ = s.Write(tail)
-				if err := s.CloseWriteSync(); err != nil {
+				if err := s.CloseWrite(); err != nil { // the FIN, then a sync: the peer's Mux read it
+					t.Error(err)
+				}
+				if err := s.sync(); err != nil { // not CloseWriteSync: its ENDACK waits for a reader (lane ENDACK)
 					t.Error(err)
 				}
 				sent <- s
@@ -89,7 +92,10 @@ func TestJoinFailureAfterFinDeliversTheTail(t *testing.T) {
 	agentDone := make(chan struct{})
 	agent, agentSrv := muxPairCut(t, func(_ []byte, s *Session) {
 		_, _ = s.Write(tail)
-		if err := s.CloseWriteSync(); err != nil {
+		if err := s.CloseWrite(); err != nil {
+			t.Error(err)
+		}
+		if err := s.sync(); err != nil { // the relay holds the tail and the FIN (CloseWriteSync waits for the client's reader)
 			t.Error(err)
 		}
 		close(agentDone)

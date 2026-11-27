@@ -116,10 +116,12 @@ func newHopRigWith(t *testing.T, mute, cOpen bool) *hopRig {
 }
 
 // TestEndAckWaitsForTheFarEnd (spec/RelayedClose.tla CloseTruth, mutant
-// relay-read-ack): through a hop, A's CloseWriteSync returns once C's Mux
-// took the end, not once the hop read it (pipe
-// TestRelayedEndDropAfterLastByte: the hop's pong let the agent exit 0
-// while the client's link was not carrying).
+// relay-read-ack; ReadTruth, mutant ack-on-receipt): through a hop, A's
+// CloseWriteSync returns once C's reader took the end (io.EOF), not once
+// the hop read it (pipe TestRelayedEndDropAfterLastByte: the hop's pong
+// let the agent exit 0 while the client's link was not carrying), nor
+// once C's Mux held it (pipe TestReceiverStopsAfterArrival: C's program
+// could still fail; lane ENDACK).
 func TestEndAckWaitsForTheFarEnd(t *testing.T) {
 	r := newHopRig(t)
 	r.armed.Store(true)
@@ -135,6 +137,15 @@ func TestEndAckWaitsForTheFarEnd(t *testing.T) {
 	case <-time.After(300 * time.Millisecond): // the hop read the end long since
 	}
 	close(r.open)
+	waitUntil(t, func() bool { return r.c.peerHalf.Load() }) // C's Mux holds the end
+	select {
+	case err := <-ret:
+		t.Fatalf("CloseWriteSync returned %v before C's reader took the end", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if b, err := io.ReadAll(r.c); err != nil || !bytes.Equal(b, tail) {
+		t.Fatalf("C read %d bytes, %v", len(b), err)
+	}
 	select {
 	case err := <-ret:
 		if err != nil {
@@ -142,9 +153,6 @@ func TestEndAckWaitsForTheFarEnd(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("CloseWriteSync never returned once C took the end")
-	}
-	if b, err := io.ReadAll(r.c); err != nil || !bytes.Equal(b, tail) {
-		t.Fatalf("C read %d bytes, %v", len(b), err)
 	}
 }
 
@@ -273,26 +281,34 @@ func TestEndAckCloseWriteRacingResetEndsTheWait(t *testing.T) {
 }
 
 // TestEndAckExitThenTheFarEndWrites (spec/RelayedClose.tla Exit, JDown,
-// D0Fail, TailDelivered): A's Close returns clean (C took the end), then
-// A's program exits; the hop finds A's connection ended, and C's write
-// toward A fails there: C reads A's bytes and io.EOF, its session then
-// aborted (the failure passed on after the FIN).
+// D0Fail, TailDelivered): A's Close returns clean (C read A's bytes and
+// io.EOF), then A's program exits; the hop finds A's connection ended,
+// and C's write toward A fails there: C's session is then aborted (the
+// failure passed on after the FIN).
 func TestEndAckExitThenTheFarEndWrites(t *testing.T) {
 	r := newHopRigWith(t, false, true)
 	if _, err := r.a.Write([]byte("tail")); err != nil {
 		t.Fatal(err)
 	}
+	read := make(chan error, 1)
+	go func() {
+		b, err := io.ReadAll(r.c)
+		if err == nil && string(b) != "tail" {
+			err = errors.New("C read " + string(b))
+		}
+		read <- err
+	}()
 	if err := r.a.CloseWriteSync(); err != nil {
 		t.Fatalf("CloseWriteSync: %v", err)
+	}
+	if err := <-read; err != nil {
+		t.Fatalf("C's read: %v: want A's bytes, then io.EOF", err)
 	}
 	traceRCEnv("Exit")
 	_ = r.aMux.Close() // A's program exits: its connection ends
 	waitDone(t, r.jin, "the hop's session from A")
 	if _, err := r.c.Write([]byte("x")); err != nil {
 		t.Fatal(err)
-	}
-	if b, err := io.ReadAll(r.c); err != nil || string(b) != "tail" {
-		t.Fatalf("C read %q, %v: want A's bytes, then io.EOF", b, err)
 	}
 	waitDone(t, r.c, "C's session")
 	if r.c.Err() == nil {
