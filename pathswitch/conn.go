@@ -56,6 +56,7 @@ type Conn struct {
 	rcvd, rAck uint64
 	rEnd       bool
 	rEOF       bool   // this end's application read the END (Read's io.EOF): only then is it acknowledged
+	rEndHere   bool   // the END was taken on the current stream, or the count that opened it (OPEN, RESUME) had it: only then may an ACK on it count the END (ackPos)
 	rShut      bool   // this end's application closed its reading (CloseRead, Close)
 	rLost      bool   // its reading closed with bytes unread, or bytes came after: the END is never acknowledged
 	heard      uint64 // frames read from the peer (Config.Linger's silence)
@@ -140,7 +141,28 @@ func (c *Conn) rpos() uint64 {
 
 // clean: both directions ended and acknowledged, the peer's END taken by
 // this end's application (rpos).
-func (c *Conn) clean() bool { return c.closed && c.acked == c.hi+1 && c.rpos() == c.rcvd+1 }
+func (c *Conn) clean() bool { return c.closed && c.acked == c.hi+1 && c.ackPos() == c.rcvd+1 }
+
+// ackPos: the count an ACK on the current stream carries: rpos, its END
+// only once taken on this stream or counted by the OPEN or RESUME that
+// opened it. A count without the END makes the peer send it again from
+// there, and an ACK of it before that END came exceeds what the peer sent
+// on the stream, its protocol error (spec DirectPath.tla AckPos, AckSent,
+// mutant ack-end-unsent; TestEndReadAfterMove; lane ENDACKFIX).
+func (c *Conn) ackPos() uint64 {
+	if c.rEndHere {
+		return c.rpos()
+	}
+	return c.rcvd
+}
+
+// opened: the count that opens a new stream (OPEN, RESUME); an END it
+// leaves out comes again on the stream (ackPos).
+func (c *Conn) opened() uint64 {
+	n := c.rpos()
+	c.rEndHere = n > c.rcvd
+	return n
+}
 
 // left: this end's Close ended the session cleanly (shutdown(true)).
 func (c *Conn) left() bool { return c.gone && c.err == io.ErrClosedPipe }
@@ -344,7 +366,7 @@ func (c *Conn) Close() error {
 	if c.err == nil {
 		c.closed = true
 		c.cond.Broadcast()
-		c.waitHeard(noBound, func() bool { return c.err != nil || c.acked == c.hi+1 && c.rEnd }, c.cfg.Detach)
+		c.waitHeard(noBound, func() bool { return c.err != nil || c.acked == c.hi+1 && c.rEndHere }, c.cfg.Detach)
 	}
 	switch {
 	case c.ab == abLocal:
@@ -442,7 +464,7 @@ func (c *Conn) abort(err error) {
 		return
 	}
 	if !c.cur.dead && c.ackDue() { // what this end's program took, first: an END read, then a stop, leaves the peer's direction clean (spec Ack, then AbortBy; lane ENDACK)
-		c.rAck = c.rpos()
+		c.rAck = c.ackPos()
 		c.trace("Ack", c.end(c.client), c.cur.epoch, c.rAck, "")
 		c.cur.ctrl = append(c.cur.ctrl, appendCount(nil, fAck, c.rAck))
 	}
@@ -545,10 +567,11 @@ func (c *Conn) Move(s Stream, path string, token func(epoch uint64) []byte) (uin
 		return 0, fmt.Errorf("pathswitch: token of %d bytes", len(tok))
 	}
 	ps := &pstream{s: s, r: bufio.NewReaderSize(s, 32<<10), epoch: e, path: path}
-	ps.ctrl = [][]byte{appendOpen(nil, e, c.rpos(), c.ab == abLocal, tok)}
+	n := c.opened()
+	ps.ctrl = [][]byte{appendOpen(nil, e, n, c.ab == abLocal, tok)}
 	c.ep = e
 	if c.ab == abNone {
-		c.rAck = c.rpos()
+		c.rAck = n
 		c.sWait = true
 	}
 	if !c.cur.ended {
@@ -645,8 +668,8 @@ func (c *Conn) Attach(o Open, path string) error {
 	case c.ab == abLocal:
 		ps.ctrl = [][]byte{{fAbort}}
 	default:
-		ps.ctrl = [][]byte{appendCount(nil, fResume, c.rpos())}
-		c.rAck = c.rpos()
+		c.rAck = c.opened()
+		ps.ctrl = [][]byte{appendCount(nil, fResume, c.rAck)}
 		c.nxt = o.rcvd
 		c.free(o.rcvd)
 	}
@@ -800,13 +823,14 @@ func (c *Conn) take(ps *pstream, f frame) error {
 		c.traceN("Recv", c.end(c.client), ps.epoch, uint64(len(f.data)))
 	case fEnd:
 		if c.rEnd && f.n == c.rcvd { // sent again: a RESUME (OPEN) left out an END not yet read (spec RecvOn)
+			c.rEndHere = true
 			c.trace("RecvEnd", c.end(c.client), ps.epoch, 0, "")
 			break
 		}
 		if c.rEnd || f.n != c.rcvd {
 			return fmt.Errorf("%w: END(%d) after %d bytes", ErrProtocol, f.n, c.rcvd)
 		}
-		c.rEnd = true
+		c.rEnd, c.rEndHere = true, true
 		c.trace("RecvEnd", c.end(c.client), ps.epoch, 0, "")
 	case fAck:
 		if c.sWait || f.n > c.nxt {
@@ -849,7 +873,7 @@ func (c *Conn) takeAbort(ps *pstream) {
 }
 
 func (c *Conn) ackDue() bool {
-	rp := c.rpos()
+	rp := c.ackPos()
 	if rp <= c.rAck || c.ab != abNone {
 		return false
 	}
@@ -885,8 +909,8 @@ func (c *Conn) next(ps *pstream, wbuf []byte) ([]byte, bool) {
 				return nil, true
 			}
 			if ps == c.cur && c.left() {
-				if c.rpos() > c.rAck { // the peer's END acknowledged before the FIN
-					c.rAck = c.rpos()
+				if c.ackPos() > c.rAck { // the peer's END acknowledged before the FIN
+					c.rAck = c.ackPos()
 					c.trace("Ack", c.end(c.client), ps.epoch, c.rAck, "")
 					return appendCount(wbuf[:0], fAck, c.rAck), true
 				}
@@ -944,7 +968,7 @@ func (c *Conn) more(ps *pstream, b []byte) []byte {
 // Ack, Send, SendEnd).
 func (c *Conn) frame(ps *pstream, b []byte) ([]byte, bool) {
 	if c.ackDue() {
-		c.rAck = c.rpos()
+		c.rAck = c.ackPos()
 		c.trace("Ack", c.end(c.client), ps.epoch, c.rAck, "")
 		return appendCount(b, fAck, c.rAck), true
 	}
