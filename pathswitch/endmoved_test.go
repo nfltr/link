@@ -55,6 +55,7 @@ func endReadAfterMove(t *testing.T, serverReads, abortAfterEOF bool) {
 	}
 	_ = snd.CloseWrite()
 	waitFor(t, func() bool { rcv.mu.Lock(); defer rcv.mu.Unlock(); return rcv.rEnd }) // taken, not read
+	h.directUp()
 	cl, sv := memPair()
 	held := cl.r // the reader's frames to the sender: the server's RESUME, then its ACK
 	if !serverReads {

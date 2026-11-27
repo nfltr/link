@@ -3167,7 +3167,8 @@ application's `Read` per byte is `AppRead` of the direction it reads, the
 first `Close` or `CloseRead` its `RClose`, `TestAbortAfterCleanKeepsTheTail`
 and `TestCloseReadDropsAndAcknowledges` traced; lane ENDACK: it is
 `TestCloseReadDropsAndResets`, and `TestEndAckedOnlyOnceRead` is traced,
-`ReadEOF` its `AppEOF`). Not in the model:
+`ReadEOF` its `AppEOF`; lane ENDACKFIX: `TestEndReadAfterMove` is
+traced). Not in the model:
 the ABORT a peer sends back on taking one (it ends the aborter's linger
 early), `Refuse` (no session: the trace has no server end). Fixtures
 `spec/traces/path-*` (`make spec-mutants`): three recorded runs accepted
@@ -3177,7 +3178,10 @@ was clean (`path-abort-after-clean`: PIPEMATRIX defect 1, the code before
 lane DIRECTCLOSE), a Read after the end closed (`path-read-after-close`)
 and the END acknowledged with no read of it (`path-end-acked-unread`:
 `TestEndAckedOnlyOnceRead/read_to_EOF` without its `ReadEOF`, the code
-before lane ENDACK) rejected. `path-ok-end-resent` is
+before lane ENDACK), and an ACK of an END taken on the stream left,
+before the sender sent it again (`path-end-ack-unsent`:
+`TestEndReadAfterMove/server_reads_to_EOF` with the code before lane
+ENDACKFIX, its ACK(2) after the RESUME(1)) rejected. `path-ok-end-resent` is
 `TestEndOnceResentAcrossSwitch` recorded again (lane ENDACK): the one
 recorded before acknowledged the END at receipt.
 
