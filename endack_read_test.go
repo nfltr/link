@@ -74,3 +74,27 @@ func TestEndAckWaitsForTheReader(t *testing.T) {
 		})
 	}
 }
+
+// TestJoinPassesTheEndAckBeforeTheClose (lane ENDACK; spec/RelayedClose.tla
+// JAck: the join passes the far end's frames on in order): a far end that
+// reads to EOF and closes at once sends its ENDACK and its CLOSE back to
+// back. The hop's two directions raced: one passed the ENDACK on after its
+// wait, the other closed the opener's session whole at the CLOSE, which
+// often came first, so the opener's CloseWriteSync read a reset.
+func TestJoinPassesTheEndAckBeforeTheClose(t *testing.T) {
+	r := newChainRig(t, rigOpts{n: 2}, func(_ []byte, s *Session) {
+		_ = s.Accept()
+		_, _ = io.Copy(io.Discard, s)
+		_ = s.Close()
+	})
+	for i := range 200 {
+		s := r.open("end")
+		if _, err := s.Write([]byte("tail")); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.CloseWriteSync(); err != nil {
+			t.Fatalf("run %d: CloseWriteSync: %v, want nil (the far end read the end)", i, err)
+		}
+		_ = s.Close()
+	}
+}

@@ -220,9 +220,16 @@ type joint struct {
 	// peer's FIN) while the direction toward this side still ran: that
 	// direction aborts this side with it after its tail and FIN
 	// (spec/RelayedClose.tla TailDelivered, mutant abort-at-write-fail).
-	cut   *Abort
-	moved [2]atomic.Int64 // bytes written [0]->[1] and [1]->[0] (HopEvent.Moved)
-	jtr   joinTrace       // linktrace builds only (trace_join_on.go); zero size otherwise
+	cut *Abort
+	// taking[i]: direction i waits for the onward peer to take s[i]'s end
+	// (onwardTook), closed once it passed the answer back (AckEnd or the
+	// abort). The other direction's whole close of s[i] waits for it: the
+	// far end's ENDACK and its CLOSE, back to back on one stream, reach
+	// s[i]'s peer in that order (spec/RelayedClose.tla JAck; lane ENDACK,
+	// TestJoinPassesTheEndAckBeforeTheClose).
+	taking [2]chan struct{}
+	moved  [2]atomic.Int64 // bytes written [0]->[1] and [1]->[0] (HopEvent.Moved)
+	jtr    joinTrace       // linktrace builds only (trace_join_on.go); zero size otherwise
 }
 
 // movedBytes is HopEvent.Moved.
@@ -388,6 +395,10 @@ func (j *joint) ended(i int, n int64, err, werr error) {
 		if traceOn {
 			traceRC(src.m, src.id, "Jin", "D1End", "eof", "1")
 		}
+		took := make(chan struct{}) // before the FIN: the far end's CLOSE can come only after it
+		j.mu.Lock()
+		j.taking[i] = took
+		j.mu.Unlock()
 		_ = dst.CloseWrite()
 		if err := dst.onwardTook(); err == nil { // src's end is the far end's now (FeatureEndAck, spec/RelayedClose.tla JAck)
 			src.AckEnd()
@@ -400,6 +411,7 @@ func (j *joint) ended(i int, n int64, err, werr error) {
 			}
 			j.abort(src, abortFor(err)) // the onward peer never took it (JSyncFail)
 		}
+		close(took)
 		// src cut after its FIN (its reads ended cleanly): the failure goes
 		// on after the tail and the FIN, so dst's writes fail too
 		if a := j.takeCut(); a != nil {
@@ -408,6 +420,12 @@ func (j *joint) ended(i int, n int64, err, werr error) {
 			j.abort(dst, abortFor(e))
 		}
 	default:
+		j.mu.Lock()
+		took := j.taking[1-i]
+		j.mu.Unlock()
+		if took != nil { // dst's end passed back first (taking)
+			<-took
+		}
 		_ = dst.Close()
 	}
 	j.finish()

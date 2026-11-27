@@ -49,7 +49,8 @@ type Config struct {
 	// It acknowledges a peer's half close (end acknowledgements, WIRE.md
 	// section 13) only once its join passed it on and the onward peer
 	// acknowledged it (peerlink.Join), or once its reader took it; a far
-	// end (Hop false) acknowledges it on receipt.
+	// end (Hop false) once its reader took it too (io.EOF, or a Close
+	// after every byte read; lane ENDACK: never on receipt).
 	Hop bool
 
 	noChain    bool          // tests: announce what v0.9.4 did (no FeatureChain)

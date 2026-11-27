@@ -1501,11 +1501,11 @@ Who acknowledges when:
 | transport | the acknowledgement | code |
 |---|---|---|
 | link far end | ENDACK at the reader's io.EOF (`Session.end` -> `readEnd`), or at `Close` after every byte read (`ackAtClose`); a Close with a byte unread sends the CLOSE (or, both halves passed, a reset): the waiter reads `ErrReset` | `endack.go`, `mux.go` (the receipt ack deleted) |
-| link hop (`Config.Hop`) | unchanged: the join holds it until its onward `CloseWriteSync` returned (`HoldEndAck`, `HopHold.tla`) | `join.go`, `peerlink/chain.go` |
+| link hop (`Config.Hop`) | unchanged: the join holds it until its onward `CloseWriteSync` returned (`HoldEndAck`, `HopHold.tla`); the other direction's whole close of that session now waits for that answer to go first (`joint.taking`): the far end's ENDACK and CLOSE come back to back once it acknowledges at its read, and the CLOSE overtook the ENDACK in the two directions' race (`TestJoinPassesTheEndAckBeforeTheClose`, red at run 0; `RelayedClose.tla` `JAck` passes them in order) | `join.go` |
 | quiclink | unchanged: 'E' at Read's io.EOF (the reference this lane follows) | `peerlink/quiclink/endack.go` `readEOF` |
-| pathswitch | the END counts in R's ACK (and RESUME, OPEN) only once its application read it (Read's io.EOF) or closed its reading with every byte read; a Close that dropped bytes never acknowledges it and resets the session once the END came (`DirectPath.tla` `RCloseReset`); a RESUME without an END not yet read makes S send it again, which R drops | `pathswitch/conn.go` (`rEOF`, `rLost`, `rpos`, `take`) |
+| pathswitch | the END counts in R's ACK (and RESUME, OPEN) only once its application read it (Read's io.EOF) or closed its reading with every byte read; a Close that dropped bytes never acknowledges it and resets the session once the END came (`DirectPath.tla` `RCloseReset`); a RESUME without an END not yet read makes S send it again, which R drops; an Abort first sends the ACK due (an END read, then a stop: the peer's direction stays clean; `Ack` then `AbortBy`) | `pathswitch/conn.go` (`rEOF`, `rLost`, `rpos`, `take`, `abort`) |
 | relay SDK acked end (direct) | `WaitAcked(Written()+1)`: the END too, not only the bytes | relay `client/agent/queue_close.go` |
-| end-to-end TLS | tlsend's `Read` takes the transport's END behind the peer's close_notify before it returns io.EOF (within `EndBound` when the peer keeps the transport): the link END is read by the program, so its ENDACK goes | relay `client/tlsend` (`TLSEnd.tla` `YTake`) |
+| end-to-end TLS | tlsend's `Read`, at the peer's close_notify, starts taking the transport's END behind it in the background (within `EndBound` when the peer keeps the transport; `Close` waits for it): the link END is read once the program read the close_notify, so its ENDACK goes; in the background, a peer that sends its FIN only after this end's Close costs the Read nothing | relay `client/tlsend` (`TLSEnd.tla` `YTake`) |
 | TCP visitor leg, gRPC stream | unchanged: a receipt (the far program is not ours; `EndAckLeg.tla` `AtReceipt`) | relay-core |
 
 TLS close_notify: crypto/tls reads nothing past the close_notify, so a
@@ -1530,7 +1530,24 @@ with the Close, as a far program does; the last two wanted only "the
 peer's Mux has the FIN" and use `CloseWrite` then `sync` (the ping's
 pong), which is exactly that. New guard: `TestEndAckWaitsForTheReader`
 (read to EOF, read every byte then Close: nil; a reset after arrival, a
-Close with a byte unread: `ErrReset`).
+Close with a byte unread: `ErrReset`), pathswitch `TestEndAckedOnlyOnceRead`
+(the same four and read to EOF then Abort: clean) and
+`TestCloseReadDropsAndResets` (was `TestCloseReadDropsAndAcknowledges`:
+the END of a stream dropped unread is never acknowledged).
+Pathswitch tests changed for the same reason: `TestCloseWaitsForALivePeerPastLinger`
+(the bytes after the Close are dropped: a reset, not the clean end),
+`TestAbortAfterCleanKeepsTheTail` (the client reads while the server
+waits), `TestResetKeepsACleanDirection` and
+`TestCleanCloseThenStreamDiesEndsTheWriter` (the waits name the END's
+acknowledgement only where the reader read it).
+
+Traces: pathswitch's `Abort` line carries x "unread" when the end resets
+for a peer's END its program never took; `TraceDirectPath.tla` maps it
+to `RCloseReset` at R, and at S, once this direction is Clean, the
+reset is the other direction's, outside `DirectPath.tla` (its header):
+the trace is accepted up to it (`OtherReset`); any other reset after
+Clean (fixture `path-abort-after-clean`) still maps to no action.
+`ReadEOF` maps to `AppEOF`.
 
 Specs (checked with `-coverage 1`, every action taken): `EndAckLeg.tla`
 (R's application `RRead`, `REof`; invariant `ReadTruth`, mutant
@@ -3133,15 +3150,19 @@ sends and `RFin` of the other; the client's `TakeFin` is `STakeFin` of
 `TestCloseLeftAnswersAReattach` are traced too; lane DIRECTCLOSE: an
 application's `Read` per byte is `AppRead` of the direction it reads, the
 first `Close` or `CloseRead` its `RClose`, `TestAbortAfterCleanKeepsTheTail`
-and `TestCloseReadDropsAndAcknowledges` traced). Not in the model:
+and `TestCloseReadDropsAndAcknowledges` traced; lane ENDACK: it is
+`TestCloseReadDropsAndResets`, and `TestEndAckedOnlyOnceRead` is traced,
+`ReadEOF` its `AppEOF`). Not in the model:
 the ABORT a peer sends back on taking one (it ends the aborter's linger
 early), `Refuse` (no session: the trace has no server end). Fixtures
 `spec/traces/path-*` (`make spec-mutants`): three recorded runs accepted
 (`path-ok-read-after-reset`: R reads its taken bytes after the reset), an
 END taken twice, data sent before the RESUME, a reset after the direction
 was clean (`path-abort-after-clean`: PIPEMATRIX defect 1, the code before
-lane DIRECTCLOSE) and a Read after the end closed (`path-read-after-close`)
-rejected.
+lane DIRECTCLOSE), a Read after the end closed (`path-read-after-close`)
+and the END acknowledged with no read of it (`path-end-acked-unread`:
+`TestEndAckedOnlyOnceRead/read_to_EOF` without its `ReadEOF`, the code
+before lane ENDACK) rejected.
 
 The agent's address changes (lane DIRECTREBIND, nfltr
 `docs/decisions/direct-paths-2026-11-11.md` "Lane DIRECTREBIND"). The
