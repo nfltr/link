@@ -216,6 +216,8 @@ func (g *readGate) Read(p []byte) (int, error) {
 // before the joint passed on the ENDACK of B's own end, and B's peer
 // read that close as a reset (spec/HopHold.tla CloseAfterAck, mutant
 // close-at-end; lane PIPERESET: nfltr-pipe's relayed listener exited 6).
+// The far ends read to their end, as a program does: each acknowledges
+// the other's end only then (lane ENDACK).
 func TestHopClosesASessionOnlyOnceItsEndIsAcknowledged(t *testing.T) {
 	ctx := context.Background()
 	joined := make(chan *link.Session, 2)
@@ -255,6 +257,9 @@ func TestHopClosesASessionOnlyOnceItsEndIsAcknowledged(t *testing.T) {
 	roundTrip(t, a, b, "up")
 	roundTrip(t, b, a, "down")
 
+	for _, s := range []*link.Session{a, b} { // the far programs read to the end: their ENDACKs go then (lane ENDACK)
+		go func() { _, _ = io.Copy(io.Discard, s) }()
+	}
 	gate.armed.Store(true)
 	bEnd := make(chan error, 1)
 	go func() { bEnd <- b.CloseWriteSync() }()
