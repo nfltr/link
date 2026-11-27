@@ -55,7 +55,9 @@ type Conn struct {
 	rbuf       ring
 	rcvd, rAck uint64
 	rEnd       bool
+	rEOF       bool   // this end's application read the END (Read's io.EOF): only then is it acknowledged
 	rShut      bool   // this end's application closed its reading (CloseRead, Close)
+	rLost      bool   // its reading closed with bytes unread, or bytes came after: the END is never acknowledged
 	heard      uint64 // frames read from the peer (Config.Linger's silence)
 
 	ab     int
@@ -125,15 +127,20 @@ func (c *Conn) sendable() uint64 {
 	return c.hi
 }
 
-// rpos: R's count, its bytes and the END once taken.
+// rpos: R's count, its bytes and the END once this end's application
+// took it: read it (io.EOF), or closed its reading with every byte read
+// (spec DirectPath.tla EndRead, lane ENDACK): a peer's clean Close says
+// the application here had the whole stream, not only this end's buffer.
 func (c *Conn) rpos() uint64 {
-	if c.rEnd {
+	if c.rEnd && (c.rEOF || c.rShut && !c.rLost) {
 		return c.rcvd + 1
 	}
 	return c.rcvd
 }
 
-func (c *Conn) clean() bool { return c.closed && c.acked == c.hi+1 && c.rEnd }
+// clean: both directions ended and acknowledged, the peer's END taken by
+// this end's application (rpos).
+func (c *Conn) clean() bool { return c.closed && c.acked == c.hi+1 && c.rpos() == c.rcvd+1 }
 
 // left: this end's Close ended the session cleanly (shutdown(true)).
 func (c *Conn) left() bool { return c.gone && c.err == io.ErrClosedPipe }
@@ -259,6 +266,11 @@ func (c *Conn) Read(p []byte) (int, error) {
 		return n, nil
 	}
 	if c.rEnd {
+		if !c.rEOF {
+			c.rEOF = true
+			c.trace("ReadEOF", c.end(c.client), 0, 0, "") // spec AppEOF
+			c.cond.Broadcast()                            // the END's ACK is due
+		}
 		return 0, io.EOF
 	}
 	return 0, c.err
@@ -280,6 +292,7 @@ func (c *Conn) closeRead() {
 		return
 	}
 	c.rShut = true
+	c.rLost = c.rbuf.len() > 0
 	c.rbuf.drop(c.rbuf.len())
 	c.trace("CloseRead", c.end(c.client), 0, 0, "")
 	c.cond.Broadcast() // the Read waiting; an ACK may be due
@@ -415,9 +428,18 @@ func (c *Conn) abort(err error) {
 	if c.gone || c.ab != abNone {
 		return
 	}
+	if !c.cur.dead && c.ackDue() { // what this end's program took, first: an END read, then a stop, leaves the peer's direction clean (spec Ack, then AbortBy; lane ENDACK)
+		c.rAck = c.rpos()
+		c.trace("Ack", c.end(c.client), c.cur.epoch, c.rAck, "")
+		c.cur.ctrl = append(c.cur.ctrl, appendCount(nil, fAck, c.rAck))
+	}
+	why := "" // the trace's: "unread", the reset of a peer's END this end's program never took (spec RCloseReset)
+	if c.rEnd && c.rpos() == c.rcvd {
+		why = "unread"
+	}
 	c.ab = abLocal
 	c.fail(err)
-	c.trace("Abort", c.end(c.client), 0, 0, "")
+	c.trace("Abort", c.end(c.client), 0, 0, why)
 	if !c.cur.dead {
 		c.cur.ctrl = append(c.cur.ctrl, []byte{fAbort})
 	}
@@ -758,10 +780,16 @@ func (c *Conn) take(ps *pstream, f frame) error {
 		}
 		if !c.rShut { // else dropped: its application no longer reads
 			c.rbuf.push(f.data)
+		} else if len(f.data) > 0 {
+			c.rLost = true
 		}
 		c.rcvd += uint64(len(f.data))
 		c.traceN("Recv", c.end(c.client), ps.epoch, uint64(len(f.data)))
 	case fEnd:
+		if c.rEnd && f.n == c.rcvd { // sent again: a RESUME (OPEN) left out an END not yet read (spec RecvOn)
+			c.trace("RecvEnd", c.end(c.client), ps.epoch, 0, "")
+			break
+		}
 		if c.rEnd || f.n != c.rcvd {
 			return fmt.Errorf("%w: END(%d) after %d bytes", ErrProtocol, f.n, c.rcvd)
 		}

@@ -203,12 +203,15 @@ func writers() int {
 func TestCleanCloseThenStreamDiesEndsTheWriter(t *testing.T) {
 	before := writers()
 	h := newHarness(t, 64, false)
-	rc := readAll(h.c)
-	_ = h.s.CloseWrite() // the server's END, not its FIN
+	rc, rs := readAll(h.c), readAll(h.s) // the server's program reads the client's END (lane ENDACK)
+	_ = h.s.CloseWrite()                 // the server's END, not its FIN
 	if err := <-rc; err != nil {
 		t.Fatal(err)
 	}
-	_ = h.c.Close() // clean: the server acknowledged the client's END
+	_ = h.c.Close() // clean: the server's program read the client's END
+	if err := <-rs; err != nil {
+		t.Fatal(err)
+	}
 	h.c.mu.Lock()
 	left := h.c.left()
 	h.c.mu.Unlock()

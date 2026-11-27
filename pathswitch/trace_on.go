@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -46,7 +47,8 @@ func tracePair(name string, a, b *Conn) {
 	if dir == "" {
 		return
 	}
-	f, err := os.Create(dir + "/" + name + ".ndjson")
+	f, err := os.Create(dir + "/" + strings.ReplaceAll(name, "/", "-") + ".ndjson") // a subtest's name
+
 	if err != nil {
 		panic(err)
 	}

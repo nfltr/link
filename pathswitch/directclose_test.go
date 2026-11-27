@@ -57,20 +57,34 @@ func TestCloseWakesABlockedRead(t *testing.T) {
 	}
 }
 
-// After CloseRead the peer's bytes are taken and dropped, so its
-// direction still ends cleanly (its writes never stall on the window).
-func TestCloseReadDropsAndAcknowledges(t *testing.T) {
-	h := newHarness(t, 1024, false)
+// After CloseRead the peer's bytes are taken, acknowledged and dropped
+// (its writes never stall on the window), but its END is never
+// acknowledged: this end's program did not read the stream (spec
+// DirectPath.tla EndTruth, mutant close-took-end; lane ENDACK). Its Close
+// then resets the session (RCloseReset), as a TCP close with data unread.
+func TestCloseReadDropsAndResets(t *testing.T) {
+	h := newHarness(t, 16, false)
 	h.c.CloseRead()
-	if _, err := h.s.Write(payload(4<<10, 3)); err != nil { // 4 windows
+	if _, err := h.s.Write(payload(64, 3)); err != nil { // 4 windows; small: the test is traced
 		t.Fatal(err)
 	}
 	_ = h.s.CloseWrite()
-	if !h.s.WaitAcked(h.s.Written()+1, 5*time.Second) {
-		t.Fatal("the peer's direction did not end: its bytes were not acknowledged")
+	if !h.s.WaitAcked(h.s.Written(), 5*time.Second) {
+		t.Fatal("the peer's bytes were not acknowledged")
 	}
 	if n := func() int { h.c.mu.Lock(); defer h.c.mu.Unlock(); return h.c.rbuf.len() }(); n != 0 {
 		t.Fatalf("the closed end holds %d bytes", n)
+	}
+	if h.s.WaitAcked(h.s.Written()+1, 200*time.Millisecond) {
+		t.Fatal("the END of a stream dropped unread was acknowledged")
+	}
+	go h.s.Close()
+	h.c.Close()
+	h.s.mu.Lock()
+	err := h.s.err
+	h.s.mu.Unlock()
+	if !errors.Is(err, ErrReset) {
+		t.Fatalf("the peer's session: %v, want a reset", err)
 	}
 }
 
@@ -132,15 +146,21 @@ func TestCloseWaitsForALivePeerPastLinger(t *testing.T) {
 		_ = h.s.CloseWrite()
 	}()
 	h.c.Close()
-	<-done
+	select {
+	case <-done:
+	default:
+		t.Fatal("Close returned before the live peer's END: its bound was on the close's length")
+	}
 	if err := <-rs; err != nil {
 		t.Fatalf("the peer's read: %v (reset by the Close's bound)", err)
 	}
+	// The bytes that came after the Close were dropped unread: a reset,
+	// not the clean end (lane ENDACK: spec RCloseReset).
 	h.c.mu.Lock()
 	err := h.c.err
 	h.c.mu.Unlock()
-	if !errors.Is(err, io.ErrClosedPipe) {
-		t.Fatalf("Close ended with %v, want the clean end", err)
+	if !errors.Is(err, ErrReset) {
+		t.Fatalf("Close ended with %v, want a reset (bytes dropped)", err)
 	}
 }
 
@@ -155,6 +175,12 @@ func TestAbortAfterCleanKeepsTheTail(t *testing.T) {
 	if _, err := io.ReadAll(h.s); err != nil {
 		t.Fatal(err)
 	}
+	type res struct {
+		b   []byte
+		err error
+	}
+	rc := make(chan res, 1)
+	go func() { b, err := io.ReadAll(h.c); rc <- res{b, err} }() // the END is acknowledged once read (lane ENDACK)
 	if _, err := h.s.Write(want); err != nil {
 		t.Fatal(err)
 	}
@@ -163,9 +189,9 @@ func TestAbortAfterCleanKeepsTheTail(t *testing.T) {
 		t.Fatal("not acknowledged")
 	}
 	h.s.Abort()
-	got, err := io.ReadAll(h.c) // the client reads late: all of it was taken
-	if err != nil || !bytes.Equal(got, want) {
-		t.Fatalf("client read %d of %d bytes, err %v", len(got), len(want), err)
+	r := <-rc
+	if r.err != nil || !bytes.Equal(r.b, want) {
+		t.Fatalf("client read %d of %d bytes, err %v", len(r.b), len(want), r.err)
 	}
 	h.c.mu.Lock()
 	ab := h.c.ab
@@ -185,9 +211,10 @@ func TestResetKeepsACleanDirection(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = h.s.CloseWrite()
-	if !h.s.WaitAcked(h.s.Written()+1, 5*time.Second) {
+	if !h.s.WaitAcked(h.s.Written(), 5*time.Second) { // every byte taken; the END too, unread (lane ENDACK)
 		t.Fatal("not acknowledged")
 	}
+	waitFor(t, func() bool { h.c.mu.Lock(); defer h.c.mu.Unlock(); return h.c.rEnd })
 	h.s.Abort()
 	waitFor(t, func() bool { _, err := h.c.Write([]byte{1}); return errors.Is(err, ErrReset) })
 	got, err := io.ReadAll(h.c)

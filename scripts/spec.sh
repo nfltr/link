@@ -1226,7 +1226,7 @@ traces)
 	# The path layer (pathswitch, lane DIRECTPATH2): each session's trace,
 	# both directions, against DirectPath.tla (TraceDirectPath.tla).
 	mkdir -p "$work/dtraces"
-	(cd pathswitch && LINKTRACE=$work/dtraces GOWORK=off go test -tags linktrace -count=1 -run "${TRACE_PATHSWITCH_TESTS:-^(TestInOrderRelayed|TestInOrderAcrossMoves|TestNoLossDirectDies|TestDirectAgainAfterRebind|TestAllDeliveredRelayRestart|TestEndOnceResentAcrossSwitch|TestResetReachesFromClient|TestResetReachesFromServer|TestStaleEpochRefused|TestCleanClose|TestCloseAfterReattachEndsBeforeTheBound|TestCloseAfterReattachPathDiesBeforeTheFIN|TestCloseLeftAnswersAReattach|TestWaitAckedThenMove|TestCleanCloseThenStreamDiesEndsTheWriter|TestAbortAfterCleanKeepsTheTail|TestCloseReadDropsAndAcknowledges|TestWindowGrowsTraced)\$}" .) >"$work/test.out" 2>&1 || {
+	(cd pathswitch && LINKTRACE=$work/dtraces GOWORK=off go test -tags linktrace -count=1 -run "${TRACE_PATHSWITCH_TESTS:-^(TestInOrderRelayed|TestInOrderAcrossMoves|TestNoLossDirectDies|TestDirectAgainAfterRebind|TestAllDeliveredRelayRestart|TestEndOnceResentAcrossSwitch|TestResetReachesFromClient|TestResetReachesFromServer|TestStaleEpochRefused|TestCleanClose|TestCloseAfterReattachEndsBeforeTheBound|TestCloseAfterReattachPathDiesBeforeTheFIN|TestCloseLeftAnswersAReattach|TestWaitAckedThenMove|TestCleanCloseThenStreamDiesEndsTheWriter|TestAbortAfterCleanKeepsTheTail|TestCloseReadDropsAndResets|TestEndAckedOnlyOnceRead|TestWindowGrowsTraced)\$}" .) >"$work/test.out" 2>&1 || {
 		cat "$work/test.out"
 		exit 1
 	}

@@ -34,7 +34,7 @@ Step ==
       [] E.ev = "Rebind" -> Rebind
       [] E.ev = "RePunch" -> RePunch
       [] E.ev = "Open" -> (Fallback(E.x) \/ Move(E.x)) /\ Len(st') = E.e
-      [] E.ev = "Abort" -> AbortBy(IF E.by = SEnd THEN "S" ELSE "R")
+      [] E.ev = "Abort" -> AbortBy(IF E.by = SEnd THEN "S" ELSE "R") \/ (E.by = REnd /\ RCloseReset)
       [] E.ev = "Write" -> IF E.by = SEnd THEN Write ELSE Skip
       [] E.ev = "Send" -> IF E.by = SEnd THEN Send /\ sEp = E.e /\ nxt < Total ELSE Skip
       [] E.ev = "SendEnd" -> IF E.by = SEnd THEN Send /\ sEp = E.e /\ nxt = Total ELSE Skip
@@ -61,13 +61,21 @@ Step ==
       [] E.ev = "TakeAbort" ->
             IF E.by = SEnd THEN STakeAbort /\ sEp' = E.e
             ELSE Recv /\ rEp = E.e /\ Head1(d[rEp]).t = "abort"
-      \* R's application read a byte (Read); closed its end (Close, CloseRead)
+      \* R's application read a byte (Read), the END (ReadEOF, lane ENDACK);
+      \* closed its end (Close, CloseRead)
       [] E.ev = "Read" -> IF E.by = REnd THEN AppRead ELSE Skip
+      [] E.ev = "ReadEOF" -> IF E.by = REnd THEN AppEOF ELSE Skip
       [] E.ev = "CloseRead" -> IF E.by = REnd THEN RClose ELSE Skip
       [] OTHER -> Print(<<"unknown event", E>>, FALSE)
 
 TraceInit == Init /\ decider = (IF Dir = "c2a" THEN "S" ELSE "R") /\ l = 1
-TraceNext == l <= Len(Log) /\ Step /\ l' = l + 1
+\* S's reset of the session for its reading (the other direction: the
+\* peer's END its program never took, x "unread"; lane ENDACK) once this
+\* direction is Clean is outside DirectPath.tla (its header): the trace is
+\* a behaviour up to there. Any other reset after Clean (fixture
+\* path-abort-after-clean) still maps to no action.
+OtherReset == E.ev = "Abort" /\ E.by = SEnd /\ E.x = "unread" /\ Clean
+TraceNext == l <= Len(Log) /\ IF OtherReset THEN Skip /\ l' = Len(Log) + 1 ELSE Step /\ l' = l + 1
 
 \* Violated once every line was taken: the trace is a behaviour of DirectPath.
 TraceUnfinished == l <= Len(Log)
