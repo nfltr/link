@@ -1,0 +1,3 @@
+# NAME FILE: violations of scripts/dep-ports.txt that exist today (check-dep-ports.sh --update); it may only shrink.
+docker scripts/check-grepq.sh
+docker scripts/check-semgrep.sh

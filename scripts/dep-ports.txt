@@ -1,0 +1,9 @@
+# Dependencies behind ports (scripts/check-dep-ports.sh; nfltr
+# docs/decisions/dependencies-behind-ports-2026-11-27.md). One rule per line:
+# NAME KIND PATTERN ALLOWED... (ALLOWED: the adapter and the escape hatches).
+# link itself is standard library only; these rules keep its satellites honest.
+quic import github\.com/nfltr/quic-go peerlink/quiclink/** soak/**
+# linkvet's analyzer fixtures name the gRPC API they check.
+grpc import google\.golang\.org/(grpc|genproto) linkvet/testdata/**
+analysis import golang\.org/x/tools linkvet/**
+docker name (^|[^[:alnum:]_./-])docker[[:space:]]+(compose|run|exec|build|buildx|rm|pull|push|ps|inspect|network|volume|logs|cp|kill|stop|start|image|info|wait|save|load|tag|context)([[:space:]]|$)
