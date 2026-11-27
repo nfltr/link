@@ -3162,7 +3162,9 @@ was clean (`path-abort-after-clean`: PIPEMATRIX defect 1, the code before
 lane DIRECTCLOSE), a Read after the end closed (`path-read-after-close`)
 and the END acknowledged with no read of it (`path-end-acked-unread`:
 `TestEndAckedOnlyOnceRead/read_to_EOF` without its `ReadEOF`, the code
-before lane ENDACK) rejected.
+before lane ENDACK) rejected. `path-ok-end-resent` is
+`TestEndOnceResentAcrossSwitch` recorded again (lane ENDACK): the one
+recorded before acknowledged the END at receipt.
 
 The agent's address changes (lane DIRECTREBIND, nfltr
 `docs/decisions/direct-paths-2026-11-11.md` "Lane DIRECTREBIND"). The
