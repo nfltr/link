@@ -63,6 +63,9 @@ func TestEndAckedOnlyOnceRead(t *testing.T) {
 			if err := tc.end(h.c); err != nil {
 				t.Fatal(err)
 			}
+			if d, want := h.c.Dropped(), tc.name == "read a byte, then Close"; d != want {
+				t.Fatalf("Dropped %v, want %v", d, want)
+			}
 			if got := h.s.WaitAcked(h.s.Written()+1, 5*time.Second); got != tc.clean {
 				t.Fatalf("WaitAcked of the END: %v, want %v", got, tc.clean)
 			}

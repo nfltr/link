@@ -278,13 +278,26 @@ func (c *Conn) Read(p []byte) (int, error) {
 
 // CloseRead ends this end's reading: a Read waiting returns
 // net.ErrClosed at once, as every later one. The peer's bytes are still
-// taken and acknowledged, then dropped, so its direction ends cleanly
+// taken and acknowledged, then dropped; if any was dropped unread, its
+// END is never acknowledged and the session ends reset (spec
+// RCloseReset, Dropped; lane ENDACK), else its direction ends cleanly
 // (spec RClose).
 func (c *Conn) CloseRead() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.closeRead()
 	return nil
+}
+
+// Dropped reports whether this end dropped bytes of the peer's unread
+// (CloseRead or Close with bytes unread, or bytes that came after): the
+// session can end only reset, and an Abort now sends that reset while
+// the stream is up (relay's direct conn does, before its Close returns
+// and the caller ends the transport: lane ENDACK).
+func (c *Conn) Dropped() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.rLost
 }
 
 func (c *Conn) closeRead() {
@@ -433,8 +446,8 @@ func (c *Conn) abort(err error) {
 		c.trace("Ack", c.end(c.client), c.cur.epoch, c.rAck, "")
 		c.cur.ctrl = append(c.cur.ctrl, appendCount(nil, fAck, c.rAck))
 	}
-	why := "" // the trace's: "unread", the reset of a peer's END this end's program never took (spec RCloseReset)
-	if c.rEnd && c.rpos() == c.rcvd {
+	why := "" // the trace's: "unread", the reset of the peer's bytes or END this end's program never took (spec RCloseReset)
+	if c.rLost || c.rEnd && c.rpos() == c.rcvd {
 		why = "unread"
 	}
 	c.ab = abLocal
